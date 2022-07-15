@@ -1,0 +1,261 @@
+From reality@twistedmatrix.com  Fri May 24 01:15:10 2002
+From: reality@twistedmatrix.com (Glyph Lefkowitz)
+Date: Thu, 23 May 2002 19:15:10 -0500 (CDT)
+Subject: [Reality] Re: [Twisted-Python] Reality and global Thing tables
+In-Reply-To: <Pine.LNX.4.44.0205231758100.22318-100000@localhost>
+References: <Pine.LNX.4.44.0205231758100.22318-100000@localhost>
+Message-ID: <20020523.191510.133290392.glyph@twistedmatrix.com>
+
+This is cross-posted to reality@twistedmatrix.com, where further discussion of
+the Reality framework should continue.
+
+    http://twistedmatrix.com/cgi-bin/mailman/listinfo/reality
+
+From: exarkun@meson.dyndns.org
+Subject: [Twisted-Python] Reality and global Thing tables
+Date: Thu, 23 May 2002 18:33:32 -0400 (EDT)
+
+>  From what brief conversations we've had on the topic, my understanding of
+> the situation is this:  I like to have large global tables, each for a
+> certain "type" of Thing, that references every instance in the game; an
+> alternative approach favored by others is for references to only those
+> objects that will be useful to be kept around locally (locally with
+> respect to the objects that will find them useful).
+
+>  The main argument I've heard against global tables is they use
+> resources unnecessarily.  A game with a billion Widgets will have an
+> unreasonably large table, which must apparently be kept entirely in memory
+> (whereas, with a bit of cleverness, the Widgets themselves can be tossed
+> onto disk when not needed).  Are there other arguments against using
+> global tables?
+
+They encourage poor programming practices.  Having coded on more than a few
+games that worked this way, I can say with relative certainty that the code
+begins to acquire crufty crap like 
+
+    if self.universe.objects[util.REFRIGERATOR_PROTOTYPE_ID].model.maxTemperature < 7:
+
+, which has all kinds of unpleasant implications.  Better not to provide a hook
+that encourages people to do this, or to think it's valid.
+
+They create trouble with slow, blocking persistence systems (like an RDBMS, or
+a persistence server).  This should be obvious, but it bears mentioning.  Were
+you planning on keeping all your objects in memory all the time?
+
+They create a class of problems which need to be solved with them, which
+otherwise don't exist.  For example, "global tell", or a system of global
+"guild" game-objects which get referred to by all the code, rather than a
+data-driven system for describing guilds that's sensibly located in a module
+someplace... perhaps merely a symptom of "poor programming practices", you end
+up with lots of code that requires objects of specific names/IDs to exist to
+work.  This creates a maintenance and set-up nightmare if people ever want to
+make a derivative game with a similar world.
+
+>  I don't find this to be convincing for a few reasons.  Firstly (and least
+> importantly), hardware is cheap and expanding a server to meet the needs
+> of a game isn't all that unreasonable.  Besides, I'll never have to worry
+> about it because my game will never become that large or popular ;)
+> Second, distributing references locally gives us a large performance hit
+> for certain operations.
+
+It becomes impossible to grow the world beyond the confines of a single
+machine.  And yes, this *does* happen, for games of any complexity; many
+relatively popular MUDs wrestle with hardware scale issues, and I'll bet money
+that a really popular one written in Python would definitely need some help in
+the scalability department.  For example, the Dikumud FAQ describes the problem
+of "machine lag":
+
+    http://www.faqs.org/faqs/games/mud-faq/diku/
+
+> Consider the common case of game-wide communication.  This can either be
+> an inherent ability (think "tell" from most MUDs) or something granted by
+> a device (the commlinks of SWR).  Either way brings essentially the same
+> programmatic challenges.  Determine who the message is addressed to and
+> deliver it.  Using global tables, we can look up a player name (in linear
+> time) and deliver the message or look up a "device address"  (cellphone
+> number, frequency ID, whatever floats your boat) and deliver the message
+> to anyone in close proximity to the Thing.
+
+OK; I consider the "common case of game-wide communication" to be an issue of
+its own, for several reasons:
+
+    1) it totally breaks immersion in the world
+
+"tell" is not really an interaction between simulation-domain objects, as a
+message between two people.  This is better handled by having a *real*
+messaging system integrated with your game, rather than a halfassed tack-on
+(see (3) below)
+
+    2) it only works with a *very* special class of objects (Players)
+
+Players are far from "common".  Having a global lookup table of all online
+players has many advantages; it can be abused if you use it too frequently, and
+for the wrong things (I would characterize "tell" as "one of the wrong things",
+as explained in (4)).  They also happen to have client objects attached to
+them.  Are you communicating with the player or directly with his client?
+Also, players have guaranteed unique names pretty much regardless of what other
+rules are in your game world; they are the most important kind of Thing, they
+are always unique, etc.
+
+    3) it is hard to do right; chat is a problem all its own
+
+On the surface of it, chat is easy.  But once you start talking about
+moderation, ban lists, buddy lists, status notification, idle time... the
+system can get complex really fast.  Why would you want to pollute your
+game-world with all that stuff?  Leave it in the chat service, which should
+work considerably differently than a virtual world sim.  Have it maintained by
+chat hackers, not game hackers.  If 'tell' in-game is really important between
+characters, you can use the chat library as an add-on or mix-in with a
+game-based user interface, rather than as a separate service.
+
+    4) you might want it to work between servers -- then, a global table is
+       useless
+
+This is a specific example of the general case where being able to look up an
+*asynchronous reference to a uniquely named object* is really much more useful
+than having a table of everything, everywhere.  The table then becomes an
+implementation detail, and you can dispatch to PB's equivalent of DNS in order
+to locate the object that you want to be talking to.  This is another problem
+which is deceptively simple on the surface of it, but gets more complex as you
+manage hierarchies of naming, etc.  This also makes it far less convenient to
+just hack in a reference to a global object and makes people think about
+failure conditions a bit more.
+
+    5) it only works for people who are "currently online"
+
+Or does it?  Do you have persistent messaging?  Oh ho, that there sounds like a
+mail delivery system.  Now you have to interface to a *mail* system, which is
+even more fun than chat.  Otherwise, a global table of persistent objects
+doesn't make sense, really, 'cause you need to check if the user's online.
+What should happen when these lookups fail?  Are tells in some way
+transactional?  Can you tell if delivery succeeds?
+
+> Contrast this with a system lacking global tables.  To determine who the
+> message is addressed to, one essentially has to walk through the graph of
+> the entire game.  Start with your highest level organizational unit
+> ("areas" on most MUDs) and work down to rooms, then room contents
+> (including players and containers, and containers in containers, etc).  A
+> very expensive operation that could end up costing many levels of
+> recursion along with numerous unneeded levels of indirection in the form
+> of rooms and containers.  Of course, after the first lookup you can cache
+> the result (and hope it doesn't change in the mean time) obviating the
+> need for further lookups, but this comes with the problem of eventually
+> costing as much memory as the global solution (if not more) unless you do
+> cache management and culling and all sorts of other complexities.  Fun?
+> No.
+
+OK; having an *extremely* slow API which essentially does the same thing as a
+global table of references was never advocated as a good idea.  It's the idea
+that you should be able to refer to every blade of grass in the world by its
+name and synchronously retrieve a reference to it that I object to.  A table is
+merely a side-effect of this requirement.
+
+>  So, am I just missing some clever way to operate without global tables,
+> or some other disadvantage to keeping them around?  I am as an empty pot,
+> fill me up.
+
+Make URI-based "tables" that refer to objects that might be local or remote,
+and have a restricted set of operations that can be performed on them,
+asynchronously only.
+
+I have to get going for a dinner engagement now, but if you think I'm not
+totally on crack, I can describe this in more detail later.  Send a link to
+your PGP public key, while you're at it :)
+
+
+-- 
+ |    <`'>    |  Glyph Lefkowitz: Traveling Sorcerer  |
+ |   < _/ >   |  Lead Developer,  the Twisted project  |
+ |  < ___/ >  |      http://www.twistedmatrix.com      |
+
+
+From reality@twistedmatrix.com  Fri May 24 03:47:37 2002
+From: reality@twistedmatrix.com (reality@twistedmatrix.com)
+Date: Thu, 23 May 2002 22:47:37 -0400 (EDT)
+Subject: [Reality] Re: [Twisted-Python] Reality and global Thing tables
+In-Reply-To: <20020523.191510.133290392.glyph@twistedmatrix.com>
+Message-ID: <Pine.LNX.4.44.0205232239360.24381-100000@localhost>
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+
+For the benefit of the list, personal correspondance tonight on IRC:
+
+<exarkun> glyph: Am I to take it that you do not object to such tables of
+which I spoke, as long as they are hidden behind an elegant and well
+designed API that prevents developers from injuring themselves in fits of
+stupidity and/or laziness?
+
+<exarkun> (And potentially allows distribution and other nifty features)
+
+<glyph> exarkun: Are you logging this?  If you like my response, you
+should post this log to one or both lists :)
+
+* exarkun starts logging this.
+
+<glyph> exarkun: It depends.  Are you talking about a table of
+*everything*, or of *unique* things?
+
+<exarkun> glyph: Mainly a table of unique instances.  If we look at the
+cellphone example, each instance is unique inasmuch as it has a phone
+number that no other phone has.  If we look at blades of grass, I see no
+point whatsoever in keeping a list of the 366,238 different blades that
+occupy my front yard, regardless of their possibly differences.
+
+<glyph> exarkun: Basically, i think that the same rules should be followed
+for unique objects as for URIs
+
+<exarkun> glyph: something along the lines of
+someQueryFunc("reality://objects/instances/phones/867-5309").addCallbacks(foundPhone,
+phoneFindFailed)?  Or ... ?
+
+<glyph> exarkun: Yes.
+
+<glyph> exarkun: more like "../instances/phones/" more likely :)
+
+<exarkun> hmmm
+
+<glyph> exarkun: unless you have an absolute URI
+
+<exarkun> I see the advantages
+
+<exarkun> And no disadvantages yet
+
+<glyph> reality://reality.twistedmatrix.com/objects/phones/867-5309 ...
+
+<glyph> or BETTER YET
+
+<radix> you still pretty much have a bunch of GID lists, but each object
+type registers itself?
+
+<glyph> http://www.twistedmatrix.com/reality/objects/phones/864-5309
+
+<exarkun> mmmh :)
+
+<exarkun> Well that's cool, then.
+
+- ---
+
+  So this is basically a much more general and well thought out mechanism
+than my puny "getPhone()" et al. ideas.  I like.  Now I need to actually
+get some time to dig into Reality and do some of this.
+
+ Jp
+
+A sad spectacle.  If they be inhabited, what a scope for misery and folly.
+If they be not inhabited, what a waste of space.
+                -- Thomas Carlyle, looking at the stars
+- --
+ 10:39pm up 2 days, 23:18, 0 users, load average: 0.09, 0.09, 0.02
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.0.7 (GNU/Linux)
+
+iD8DBQE87anNedcO2BJA+4YRAjmBAJ0Xh0HzhI/LkaGLmrUSaWZeUqrrGQCfb+cv
+e4CV0JcgVDs5gulkWr6FOgk=
+=FvWB
+-----END PGP SIGNATURE-----
+
+
+

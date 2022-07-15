@@ -1,0 +1,238 @@
+From glyph at divmod.com  Wed Oct 11 23:33:01 2006
+From: glyph at divmod.com (glyph@divmod.com)
+Date: Wed Oct 11 23:33:18 2006
+Subject: [Reality] still in effect, the mock you made
+Message-ID: <20061012043301.17968.438412056.divmod.xquotient.243@joule.divmod.com>
+
+Well, it's been, what, 5 months since the last post here?  And most of the 
+problems we were thinking about then are the same ones we're thinking about now.
+
+Today radix and I had a chat about how events ought to work, again.  I started
+off thinking that we needed some comprehensive refactoring to do this, but I'm
+glad to say I was disuaded.  The code is pretty close to how it should work
+already.  Everything happens in roughly the right order and all the right
+objects exist.
+
+First, we framed the problem:
+
+    The hiragana mouse was too hard to write, hard to test, and has lots of
+    code which is prone to transaction errors (ie, reactor interaction) and
+    does not cooperate sanely with other code.
+
+Our goal was to come up with an "event system" design that diverged as little
+as possible from the current design but resolved these issues:
+
+    1. There should be no need to interact with the reactor or the persistent
+       scheduler directly.  All repeating event setup and scheduling should be
+       done by framework code, so as to deal with errors and guaranteeing
+       execution across restarts in a uniform way.
+
+    2. There should be less boilerplate.  The amount of code necessary to
+       implement such a simple object when there is so much infrastructure
+       already is bordering on ridiculous.
+
+    3. Correct timing interaction should be supported directly by the
+       framework.  This is similar to point #1: the calls to callLater should
+       be eliminated and replaced with something reactor-aware, so that other
+       things like the mouse listening for speech can be ordered properly based
+       on their responsiveness stats, rather than ad-hoc timed event ordering.
+
+All of these issues are aided by reducing the amount of procedural code and
+introducing some procedural statements.  We also agreed early in the
+conversation that "magic" (automatic generation of interfaces, especially)
+needed be avoided, since the savings that such implicit behavior generate are
+often misleading, since you end up paying for the complexity they add in other
+ways.
+
+We eventually decided that our ideal interface would look something like this:
+
+    class Bite(TargetAction):
+        ...
+
+    class Salute(TargetAction):
+        ...
+
+    class HiraganaMouse(Item, IntelligenceMixin):
+        currentChallenge = attributes.text(default=None)
+        actor = attributes.reference()
+
+        def vetteChallengeResponse(self, romajiResponse): ...
+
+        def challenge(self):
+            if self.currentChallenge is not None:
+                Bite.perform(actor=self.actor, target=random.choice(
+                        Actor.getAllPresentNear(self.actor)))
+            self.currentChallenge = random.choice(japanese.hiragana.keys())
+            Say.perform(actor=self.actor, string=self.currentChallenge)
+        events.whenPlayersPresentRepeat(10.0, challenge)
+
+        def responseReceived(self, sayAction):
+            if self.vetteChallengeResponse(sayAction.string):
+                sayAction.consequentlyDo(Salute(actor=self, target=sayAction.actor))
+            else:
+                sayAction.consequentlyDo(Bite(actor=self, target=sayAction.actor))
+        Say.whenSucceded(responseReceived)
+
+This is still kind of vague, but I think it communicates the general idea.  It
+is, as it should be, FAR shorter and less error-prone than the current hiragana
+mouse implementation.
+
+There are a couple of things going on here.  I'm going to list them in order of
+most to least important, to get the things which are probably contentious and I
+don't really care about out of the way first:
+
+    - The "IntelligenceMixin" class is just there to say "maybe we should do
+      something to help with the drudgery associated with setting up a
+      connection to an actor".  A mixin like this is not necessarily the right
+      thing.
+
+    - The "perform" classmethod immediately performs an action, with no
+      parsing.  This is really just a utility class method, which reads a bit
+      more nicely than the current form, "Bite().do(self.actor, None, ...)"
+
+    - You'll notice a few actions being constructed with arguments, but not
+      performed.  This is actually an important change.  Actions, really, are
+      supposed to be stateful.  While this particular API is not necessarily
+      the right way to go (although it would certainly be useful) the notion of
+      action objects holding state is important, and I'll get to that in a
+      minute...
+
+    - There is no repeating timer manually managed in this code.  The use case
+      it proposes, "do something every X seconds when I am present in a
+      player's sensory field", is extremely common.  Even in our meager set of
+      examples I can think of several off the top of my head: the mouse, the
+      cockroach, the cloud teleporter in Divunal, the elevator in tenth's
+      mansion, the mummy's moaning in Inheritance. I am therefore proposing an
+      actual built-in API for doing that.  The
+      'events.whenPlayersPresentRepeat' API is declarative: it says "when
+      players are present, call the mentioned method every X seconds".  This
+      may require a bit more context be passed to it, for example perhaps the
+      'actor' attribute (since raw Items do not have location), but I think the
+      idea is basically sound.
+
+    - Say.whenSucceded is similarly a declaration of intent: it says "when a
+      'Say' event succeeds, execute that method with this event".  The argument
+      given is the "Say" event.
+
+    - Notice I said the "Say" event and not the "SpeechEvent" event.  The idea
+      there is, to reduce boilerplate on the event side of things (and, for
+      example, to allow for the use of the handy 'Bite' and 'Salute' events,
+      rather than a generic message), we take advantage of the fact that
+      actions are objects (with appropriate state) and use them as the
+      success-response event for their own execution.
+
+    - The 'consequentlyDo' method of Action is the implementation of ordering
+      referred to above.  Actions have Consequences.  In this example (and I
+      think for the first implementation) consequences will be non-persistent
+      and will execute at the end of the transaction that the subject Action is
+      executing in.  An action's lifecycle is like this:
+
+        parse -> do -> perform checks, broadcast test events -> broadcast
+        success event -> execute consequences -> send network notifications to
+        clients
+
+      radix and I discussed a potential need for transactional (future, timed)
+      consequences, and for some things that will definitely eventualy be
+      necessary, but for the time being we can just have methods which accept
+      actions and possibly arbitrary Python callables.  Consequences SHOULD NOT
+      raise exceptions, and if they do, it's a catastrophic failure of the
+      whole event - for example, consider that one might in some cases
+      implement a "consequence" of buying something being the decrement of your
+      account.  Consequences have to be inexorably tied to their causes.
+
+It looks to me like the code is already in a shape fairly amenable to most of
+these changes, and with a little bit of fiddling with argument lists, all the
+existing actions should be kept in working shape without trouble.
+
+The major amount of work is going to be in the particulars of the
+implementation of the event-responder decorators.  While I'm not completely
+sure how the implementation is going to work, I don't forsee any major
+difficulties.  The basic idea is just to leverage the existing code, perhaps
+changing the signature of 'prepare' to take a specific IEvent type rather than
+a IConcept (although in practice it would always be a more specific interface,
+since you'd be registering by asking the type of event involved).  The changes
+to the interaction between parsing and instantiation of items seems entirely
+straightforward.
+
+What this does NOT involve:
+
+    - no changes to proxies
+    - nothing to do with IWaveform
+    - no illumination- or tethering-based use-cases
+
+I think that the dynamic proxies implementation is mostly OK and we can happily
+address those areas once we have something as concrete as the hiragana mouse
+(i.e. an actual game mechanic use for darkness) to base some design discussions
+off of.  The mouse made for a remarkably focused discussion of this area of the
+code: thanks JP and Chris.
+
+If I'm lucky I'll have some time this weekend to actually attack this, after
+having finished off the tagbox branch and my taxes this week.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/reality/attachments/20061012/6429b7c3/attachment.htm
+From radix at twistedmatrix.com  Thu Oct 12 10:32:48 2006
+From: radix at twistedmatrix.com (Christopher Armstrong)
+Date: Thu Oct 12 10:32:51 2006
+Subject: [Reality] still in effect, the mock you made
+In-Reply-To: <20061012043301.17968.438412056.divmod.xquotient.243@joule.divmod.com>
+References: <20061012043301.17968.438412056.divmod.xquotient.243@joule.divmod.com>
+Message-ID: <60ed19d40610120832i57cc0761uc78e6f037060e826@mail.gmail.com>
+
+On 10/12/06, glyph@divmod.com <glyph@divmod.com> wrote:
+>     - The 'consequentlyDo' method of Action is the implementation of
+> ordering
+>       referred to above.  Actions have Consequences.  In this example (and I
+>       think for the first implementation) consequences will be
+> non-persistent
+>       and will execute at the end of the transaction that the subject Action
+> is
+>       executing in.  An action's lifecycle is like this:
+>
+>         parse -> do -> perform checks, broadcast test events -> broadcast
+>         success event -> execute consequences -> send network notifications
+> to
+>         clients
+
+This doesn't sound right: If I want to perform an Action in response
+to your Action, my action should definitely not be in the same
+transaction. That's what I was imagining that consequentlyDo
+("respond" in my proposal) would allow you to do. If it doesn't, then
+what *do* you do if you want to run an Action in response?
+
+
+
+-- 
+Christopher Armstrong
+International Man of Twistery
+http://radix.twistedmatrix.com/
+http://twistedmatrix.com/
+http://canonical.com/
+
+From glyph at divmod.com  Thu Oct 12 13:30:21 2006
+From: glyph at divmod.com (glyph@divmod.com)
+Date: Thu Oct 12 13:30:24 2006
+Subject: [Reality] still in effect, the mock you made
+Message-ID: <20061012183021.17968.878133127.divmod.xquotient.334@joule.divmod.com>
+
+On 03:32 pm, radix@twistedmatrix.com wrote:
+>On 10/12/06, glyph@divmod.com <glyph@divmod.com> wrote:
+
+>This doesn't sound right: If I want to perform an Action in response
+>to your Action, my action should definitely not be in the same
+>transaction. That's what I was imagining that consequentlyDo
+>("respond" in my proposal) would allow you to do. If it doesn't, then
+>what *do* you do if you want to run an Action in response?
+
+Whoops.  I remembered that, but forgot to mention that you didn't agree with that conclusion.
+
+Here's my thinking.  _Something_ has to happen in the same transaction, even if it's scheduling another transaction to run.  The basic level of assurance that a system in imaginary needs is this: if the player performs an action that nets them something positive, but something present causes a negative consequence, it shouldn't be possible for the player to manipulate anything in the game state to avoid the negative consequence unless that is explicitly allowed.
+
+This is the reason I chose the word "consequence" instead of "response" to describe these kinds of reactions.  The word "response" implies a discretionary reaction from another player, not an enforced, necessary reaction from the system.
+
+If, for some reason, the consequent action causes an exception (which it really, really never should) then the player's action can't take place either.  It's a bug, but if the player's action fails at least it won't be an exploit.
+
+Later, it may make sense to do something more clever where the later actions are actually independent and are database persistent, but I think that involves more subtle use cases (where NPCs are really their own agents and not direct enforcers of game logic).  Once all the other stuff I've mentioned is implemented, though, it should be easy enough to implement an extended version where the consequence that runs in the same transaction is just something that guarantees that a later scheduled transaction will run some other action.  I believe we can keep that scheduling a separate discussion.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/reality/attachments/20061012/1d2d33f8/attachment.htm
