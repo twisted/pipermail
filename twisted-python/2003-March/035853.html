@@ -1,0 +1,145 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Problems with PB and Jelly...
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Problems%20with%20PB%20and%20Jelly...&In-Reply-To=%3C20030323.142253.52688406.warner%40lothar.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035848.html">
+   <LINK REL="Next"  HREF="035861.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Problems with PB and Jelly...</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Problems%20with%20PB%20and%20Jelly...&In-Reply-To=%3C20030323.142253.52688406.warner%40lothar.com%3E"
+       TITLE="[Twisted-Python] Problems with PB and Jelly...">warner at lothar.com
+       </A><BR>
+    <I>Sun Mar 23 15:22:53 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035848.html">[Twisted-Python] Problems with PB and Jelly...
+</A></li>
+        <LI>Next message (by thread): <A HREF="035861.html">[Twisted-Python] Problems with PB and Jelly...
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35853">[ date ]</a>
+              <a href="thread.html#35853">[ thread ]</a>
+              <a href="subject.html#35853">[ subject ]</a>
+              <a href="author.html#35853">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&gt;<i> Hmmmm.  You're implying that the state can't hold references to other
+</I>&gt;<i> objects?  That might explain an exception I'm getting, which I'll describe
+</I>&gt;<i> below.  If this is true, is there some easy way around this, or do I need
+</I>&gt;<i> a custom setCopyableState()?
+</I>
+The state *can* hold references to other objects (as long as those objects
+are themselves somehow transferrable, like pb.Copyable). I draw a distinction
+between having or not having references to other objects because data that is
+standalone makes more sense when transferred to other memory spaces.
+
+Imagine your data structures make up a big directed graph. The edges are
+references, each contained in one object and pointing at another. When you
+copy one of the objects out to another memory space, you're plucking a node
+out of the graph and putting it somewhere else. What happens to the edges?
+
+It depends upon what flavor the referenced objects inherit from. If they are
+pb.Referenceable, the edges turn into pb.RemoteReferences, and it's as if the
+edge-arrows are stretched to run from the object's new location back to the
+home memory space. If they are pb.Copyable, the reference is followed and the
+target object copied just like the original object was. If they are neither,
+you get an InsecureJelly exception. The idea is to prevent you from
+accidentially copying out objects that you didn't intend to be shared.
+
+So if the object points to a lot of other objects, those referents make up an
+environment. If the environment doesn't come with the object, then that
+object could be said to have a &quot;home&quot;, and then it makes sense to talk about
+the &quot;home&quot; version of an object versus a copy that lives somewhere &quot;away&quot;
+from that home. If the object is mostly standalone, then it doesn't matter
+where the object lives and the home/away distinction is moot.
+
+&gt;<i> However, I'm sometimes getting an exception when the actual dictionary
+</I>&gt;<i> copying is done, as something other than a dict is being copied into
+</I>&gt;<i> __dict__.  At this point the &quot;jelType&quot; is &quot;dereference&quot;...
+</I>
+Which exception is being raised? If it's the InsecureJelly, then you're
+referencing an object that doesn't inherit from one of the PB flavors. You
+either need to remove that reference in your getStateToCopy() method (cut the
+edge-arrow) or you need to make the referenced objects inherit from something
+like pb.Copyable.
+
+If it's something else, let us know (and provide a small test case??) so we can
+fix it at the sprint.
+
+&gt;<i> Damn, it looks like this might be the cuplrit.  &quot;reference&quot; jelyTypes are
+</I>&gt;<i> recursively descended into before they are stored, and if a dereference is
+</I>&gt;<i> found before it's stored... some sort of _Dereference object is created?
+</I>&gt;<i> An attempt is then made to copy this into __dict__, and boom.
+</I>
+Yes, the current Jelly code looks for objects that are referenced multiple
+times in the same jellying call and marks them with &quot;reference&quot; tags. When
+another reference to the same object is detected, it is jellied with a
+&quot;dereference&quot; tag that points to the earlier &quot;reference&quot; marker. The &quot;cook&quot;,
+&quot;prepare&quot;, and &quot;preserve&quot; methods are used to implement these multiple
+phases. Circular or recursive references are handled because the reference
+number is allocated when we start to jelly the object, even though the state
+is not yet known.
+
+This scheme will change on Tuesday. The &quot;reference&quot; tags will go away and be
+replaced by an implicit marker that is notionally inserted every time we
+start jellying a new mutable object. The &quot;dereference&quot; tags will then point
+to these implicit markers. This should improve performance quite a bit, and
+will pave the way to a combined jelly+banana extension module that should
+give an enormous speedup (doing everything in C).
+
+&gt;<i> I'll have to look into this more closely latter.  At first glance it appears
+</I>&gt;<i> to be something best fixed in twisted itself rather than a local
+</I>&gt;<i> setCopyableState()... at least to this twisted newbie. ;-)
+</I>
+Definitely. Twisted should &quot;just handle&quot; arbitrary reference graphs with no
+problems right now.. the change planned for the PyCon sprint will make it
+handle them faster and with less on-wire traffic than before.
+
+&gt;<i> I've since looked at this code more closely as well.  The &quot;else&quot; branch in
+</I>&gt;<i> question is most definitely _not_ dead code, but it is confusing.  ;-)
+</I>
+I think _unjelly_instance might be dead code, because I don't see anywhere an
+&quot;instance&quot; tag could be inserted into the stream. That might be compatibility
+with an older version of the jelly side, though. Another item on the PB
+sprint will be to implement proper version markers so this sort of thing can
+be done properly next time.
+
+cheers,
+ -Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035848.html">[Twisted-Python] Problems with PB and Jelly...
+</A></li>
+	<LI>Next message (by thread): <A HREF="035861.html">[Twisted-Python] Problems with PB and Jelly...
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35853">[ date ]</a>
+              <a href="thread.html#35853">[ thread ]</a>
+              <a href="subject.html#35853">[ subject ]</a>
+              <a href="author.html#35853">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

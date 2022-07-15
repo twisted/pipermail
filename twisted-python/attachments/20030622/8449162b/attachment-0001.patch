@@ -1,0 +1,564 @@
+# This is a BitKeeper generated patch for the following project:
+# Project Name: lib_python_twisted-cvs
+# This patch format is intended for GNU patch command version 2.5 or higher.
+# This patch includes the following deltas:
+#	           ChangeSet	1.6420  -> 1.6421 
+#	twisted/protocols/nntp.py	1.29    -> 1.30   
+#	twisted/test/test_nntp.py	1.12    -> 1.13   
+#	      debian/version	1.11    -> 1.12   
+#
+# The following is the BitKeeper ChangeSet Log
+# --------------------------------------------
+# 03/06/22	smurf@play.smurf.noris.de	1.6421
+# twisted/protocols/nntp.py
+#     Fixes for news gateways / 'suck'-style operation / INN as server:
+#     - The client uses \n and does NOT esacpe start-of-line dots.
+#       The server uses \r\n and escapes dots ONCE, not twice (ouch).
+#     - POST temporarily blocks streaming. Make sure this is observed,
+#       pass a Deferred out for clients to restart themselves with
+#     - Add a command to allow MODE READER
+#     - Allow bare reply numbers without text
+#     - Allow the article text to be a callable or a deferred
+#     - use CHECK/TAKETHIS if there's a message ID
+#     - return group article numbers (GROUP reply) as numbers
+#     - Clean up article linefeed handling
+# twisted/test/test_nntp.py
+#     Make sure that dot escapes are passed cleanly.
+#     Make sure that no empty lines are added at the end.
+#     Use the unittest for checking.
+#     Use client-side line endings for the client,
+#       assume that the server side is transparent.
+#     Make sure that the test doesn't just peter out halfway through.
+#     Remove the commented-out iterate() calls.
+#       loopback() already does the work for us.
+# --------------------------------------------
+#
+diff -Nru a/debian/version b/debian/version
+--- a/debian/version	Sun Jun 22 17:00:13 2003
++++ b/debian/version	Sun Jun 22 17:00:13 2003
+@@ -1 +1 @@
+-1.0.5smurf-6
++1.0.5smurf-7
+diff -Nru a/twisted/protocols/nntp.py b/twisted/protocols/nntp.py
+--- a/twisted/protocols/nntp.py	Sun Jun 22 17:00:13 2003
++++ b/twisted/protocols/nntp.py	Sun Jun 22 17:00:13 2003
+@@ -43,7 +43,7 @@
+    - A control protocol
+ """
+ 
+-from twisted.internet import protocol, reactor
++from twisted.internet import protocol, reactor, defer
+ from twisted.protocols import basic
+ from twisted.python import log, failure
+ 
+@@ -74,6 +74,8 @@
+ 
+ def extractCode(line):
+     line = line.split(' ', 1)
++    if len(line) == 1: # bare code. INN likes to send these
++        line.append("")
+     if len(line) != 2:
+         return None
+     try:
+@@ -81,6 +83,12 @@
+     except ValueError:
+         return None
+ 
++def mangle_to_net(text):
++    text = text.replace('\n','\r\n')
++    text = text.replace('\r\n.','\r\n..')
++    if not text.endswith('\r\n'):
++        text = text + '\r\n'
++    return text
+     
+ class NNTPError(Exception):
+     def __init__(self, string):
+@@ -101,12 +109,28 @@
+         self._inputBuffers = []
+         self._responseCodes = []
+         self._responseHandlers = []
++        self._blocked = None
+         
+         self._postText = []
+         
+         self._newState(self._statePassive, None, self._headerInitial)
+ 
+ 
++    def _block(self):
++        assert not self._blocked
++        self._blocked = defer.Deferred()
++    
++    def _unblock(self):
++        d = self._blocked
++        self._blocked = None
++        d.callback(None)
++    
++    def isBlocked(self):
++        """
++        Returns a Deferred if the protocol cannot stream at the moment.
++        """
++        return self._blocked
++
+     def connectionMade(self):
+         try:
+             self.ip = self.transport.socket.getpeername()
+@@ -207,10 +231,18 @@
+         "Override for notification when setStream() action is successful"
+ 
+ 
++    def setReaderSuccess(self):
++        "Override for notification when setReader() action is successful"
++
++
+     def setStreamFailed(self, error):
+         "Override for notification when setStream() action fails"
+ 
+ 
++    def setReaderFailed(self, error):
++        "Override for notification when setReader() action fails. Probably benign, though."
++
++
+     def fetchGroups(self):
+         """
+         Request a list of all news groups from the server.  gotAllGroups()
+@@ -254,6 +286,7 @@
+         article if index is '') from the server.  gotHead() is called on
+         success, getHeadFailed() on failure
+         """
++        assert not self._blocked
+         self.sendLine('HEAD %s' % (index,))
+         self._newState(self._stateHead, self.getHeadFailed)
+ 
+@@ -264,6 +297,7 @@
+         article if index is '') from the server.  gotBody() is called on
+         success, getBodyFailed() on failure
+         """
++        assert not self._blocked
+         self.sendLine('BODY %s' % (index,))
+         self._newState(self._stateBody, self.getBodyFailed)
+ 
+@@ -274,6 +308,7 @@
+         selected article if index is '') or Message-ID from the server.
+         gotArticle() is called on success, getArticleFailed() on failure.
+         """
++        assert not self._blocked
+         self.sendLine('ARTICLE %s' % (index,))
+         self._newState(self._stateArticle, self.getArticleFailed)
+ 
+@@ -286,28 +321,53 @@
+         is called.
+ 
+         If 'msgid' is not None, assume that the article can be sent
+-        as-is and use 'IHAVE' or 'TAKETHIS'.
++        as-is and use 'CHECK' and 'TAKETHIS'.
+         """
+-        text.replace('\n','\r\n')
+-        text.replace('\r\n.','\r\n..')
+-        if text[-2:] != '\r\n':
+-            text = text + '\r\n'
++        assert not self._blocked
+ 
+         if msgid is None:
++            self._block() # 'POST' cannot be streamed
+             self.sendLine('POST')
+-            self._newState(None, self.postFailed, self._headerPost)
++            self._newState(None, self._postFailed, self._headerPost)
+             self._postText.append(text)
+         elif msgid == '':
+-            self.sendLine('TAKETHIS')
+-            self.transport.write(text)
+-            self.sendLine('.')
+-
+-            self._newState(None, self.postFailed, self._headerPosted)
++            self._send_text(text,'TAKETHIS')
+         else:
+-            self.sendLine('IHAVE ' + msgid)
+-            self._newState(None, self.postFailed, self._headerIhave)
++            self.sendLine('CHECK ' + msgid)
++            self._newState(None, self._postFailed, self._headerCheck)
+             self._postText.append(text)
+ 
++    def _postFailed(self, error):
++        if self._blocked: # also used from 
++            self._unblock()
++        self._postText.pop(0)
++        self.postFailed(error)
++
++    def _do_send_text(self, text, line=None):
++        if line:
++            self.sendLine(line)
++        self.transport.write(text)
++        self.sendLine('.')
++        self._newState(None, self.postFailed, self._headerPosted)
++
++    def _send_text(self, text, line=None):
++        """
++        Send an article text. We might want to actually fetch it first, though.
++        """
++        if callable(text):
++            text = text()
++
++        if isinstance(text,defer.Deferred):
++            d = text
++        else:
++            d = defer.Deferred()
++            d.callback(text)
++
++        d.addCallback(mangle_to_net)
++        d.addCallbacks(self._do_send_text, self._getFailed, (line,))
++
++    def _getFailed(self, failure):
++        self.postFailed(str(failure.value))
+ 
+     def fetchNewNews(self, groups, date, distributions = ''):
+         """
+@@ -319,6 +379,7 @@
+         One invocation of this function may result in multiple invocations
+         of gotNewNews()/getNewNewsFailed().
+         """
++        assert not self._blocked
+         date, timeStr = time.strftime('%y%m%d %H%M%S', time.gmtime(date)).split()
+         line = 'NEWNEWS %%s %s %s %s' % (date, timeStr, distributions)
+         groupPart = ''
+@@ -340,6 +401,7 @@
+         restricted to the given distributions.  gotNewGroups() is called
+         on success, getNewGroupsFailed() on failure.
+         """
++        assert not self._blocked
+         date, timeStr = time.strftime('%y%m%d %H%M%S', time.gmtime(date)).split()
+         self.sendLine('NEWGROUPS %s %s %s' % (date, timeStr, distributions))
+         self._newState(self._stateNewGroups, self.getNewGroupsFailed)
+@@ -356,6 +418,7 @@
+         and low will be used as bounds - if one is None the first or last
+         article index will be substituted, as appropriate.
+         """
++        assert not self._blocked
+         if id is not None:
+             r = header + ' <%s>' % (id,)
+         elif low is high is None:
+@@ -376,11 +439,22 @@
+         communications.  setStreamSuccess() is called on success,
+         setStreamFailed() on failure.
+         """ 
++        assert not self._blocked
+         self.sendLine('MODE STREAM')
+         self._newState(None, self.setStreamFailed, self._headerMode)
+ 
+ 
++    def setReader(self):
++        """
++        Send a MODE READER command.
++        """ 
++        assert not self._blocked
++        self.sendLine('MODE READER')
++        self._newState(None, self.setReaderFailed, self._readerMode)
++
++
+     def quit(self):
++        assert not self._blocked
+         self.sendLine('QUIT')
+         self.transport.loseConnection()
+ 
+@@ -474,7 +548,11 @@
+ 
+ 
+     def _headerGroup(self, (code, line)):
+-        self.gotGroup(tuple(line.split()))
++        line = line.split()
++        line[0] = int(line[0])
++        line[1] = int(line[1])
++        line[2] = int(line[2])
++        self.gotGroup(tuple(line))
+         self._endState()
+ 
+ 
+@@ -482,44 +560,39 @@
+         if line != '.':
+             self._newLine(line)
+         else:
+-            self.gotArticle('\n'.join(self._endState()))
++            self.gotArticle('\n'.join(self._endState())+'\n')
+ 
+ 
+     def _stateHead(self, line):
+         if line != '.':
+             self._newLine(line)
+         else:
+-            self.gotHead('\n'.join(self._endState()))
++            self.gotHead('\n'.join(self._endState())+'\n')
+ 
+ 
+     def _stateBody(self, line):
+         if line != '.':
+             self._newLine(line)
+         else:
+-            self.gotBody('\n'.join(self._endState()))
++            self.gotBody('\n'.join(self._endState())+'\n')
+ 
+ 
+     def _headerPost(self, (code, message)):
++        text = self._postText.pop(0)
++        self._unblock()
+         if code == 340:
+-            self.transport.write(self._postText[0])
+-            self.sendLine('.')
+-            del self._postText[0]
+-            self._newState(None, self.postFailed, self._headerPosted)
++            self._send_text(text)
+         else:
+             self.postFailed(line)
+         self._endState()
+ 
+ 
+-    def _headerIhave(self, (code, message)):
+-        if code == 335:
+-            self.transport.write(self._postText[0])
+-            if self._postText[0][-2:] != '\r\n':
+-                self.sendLine('\r\n')
+-            self.sendLine('.')
+-            del self._postText[0]
+-            self._newState(None, self.postFailed, self._headerPosted)
++    def _headerCheck(self, (code, message)):
++        text = self._postText.pop(0)
++        if code == 238:
++            self._send_text(text,'TAKETHIS')
+         else:
+-            self.postFailed(line)
++            self.postFailed(str((code,message)))
+         self._endState()
+ 
+ 
+@@ -533,9 +606,10 @@
+ 
+     def _stateXHDR(self, line):
+         if line != '.':
+-            self._newLine(line.split())
++            line = line.split(None,1)
++            self._newLine((int(line[0]), line[1]))
+         else:
+-            self._gotXHeader(self._endState())
++            self.gotXHeader(self._endState())
+     
+     
+     def _stateNewNews(self, line):
+@@ -560,6 +634,19 @@
+         self._endState()
+ 
+ 
++    def _readerMode(self, (code, message)):
++        if code == 200:
++            self.canPost = 1
++            self.setReaderSuccess()
++        elif code == 201:
++            self.canPost = 0
++            self.setReaderSuccess()
++        else:
++            # anything else is probably OK, but ...
++            self.setReaderFailed((code, message))
++        self._endState()
++
++
+ ### SERVER 
+ 
+ class NNTPServer(basic.LineReceiver):
+@@ -784,8 +871,6 @@
+             defer = self.factory.backend.postRequest(article)
+             defer.addCallbacks(self._gotPost, self._errPost)
+         else:
+-            if line and line[0] == '.':
+-                line = '.' + line
+             self.message = self.message + line + '\r\n'
+ 
+ 
+@@ -828,8 +913,6 @@
+             d = self.factory.backend.postRequest(article)
+             d.addCallbacks(self._didTakeThis, self._errTakeThis)
+         else:
+-            if line and line[0] == '.':
+-                line = '.' + line
+             self.message = self.message + line + '\r\n'
+ 
+ 
+@@ -887,7 +970,7 @@
+     def _gotArticle(self, (index, id, article)):
+         self.currentIndex = index
+         self.sendLine('220 %d %s article' % (index, id))
+-        self.transport.write(article.replace('\r\n..', '\r\n.') + '\r\n')
++        self.transport.write(article)
+         self.sendLine('.')
+ 
+     def _errArticle(self, failure):
+@@ -920,7 +1003,7 @@
+     def _gotHead(self, (index, id, head)):
+         self.currentIndex = index
+         self.sendLine('221 %d %s article retrieved' % (index, id))
+-        self.transport.write(head + '\r\n')
++        self.transport.write(head)
+         self.sendLine('.')
+     
+     
+@@ -938,9 +1021,7 @@
+     def _gotBody(self, (index, id, body)):
+         self.currentIndex = index
+         self.sendLine('221 %d %s article retrieved' % (index, id))
+-        self.transport.write(body.replace('\r\n..', '\r\n.'))
+-        if body[-2:] != '\r\n':
+-            self.transport.write('\r\n')
++        self.transport.write(body)
+         self.sendLine('.')
+ 
+ 
+@@ -1030,8 +1111,6 @@
+             
+             self.message = ''
+         else:
+-            if line.startswith('.'):
+-                line = '.' + line
+             self.message = self.message + line + '\r\n'
+ 
+ 
+diff -Nru a/twisted/test/test_nntp.py b/twisted/test/test_nntp.py
+--- a/twisted/test/test_nntp.py	Sun Jun 22 17:00:13 2003
++++ b/twisted/test/test_nntp.py	Sun Jun 22 17:00:13 2003
+@@ -21,10 +21,11 @@
+ from twisted.internet import reactor, protocol
+ 
+ ALL_GROUPS = ('alt.test.nntp', 0, 1, 'y'),
+-GROUP = ('0', '1', '0', 'alt.test.nntp', 'group', 'selected')
++GROUP = (0, 1, 0, 'alt.test.nntp', 'group', 'selected')
+ SUBSCRIPTIONS = ['alt.test.nntp', 'news.testgroup']
+ 
+-POST_STRING = """Path: not-for-mail
++POST_STRING = """\
++Path: not-for-mail
+ From: <exarkun@somehost.domain.com>
+ Subject: a test
+ Newsgroups: alt.test.nntp
+@@ -33,8 +34,10 @@
+ Keywords: 
+ User-Agent: tin/1.4.5-20010409 ("One More Nightmare") (UNIX) (Linux/2.4.17 (i686))
+ 
+-this is a test
++this is a test. Three two one dots:
+ ...
++..
++.
+ lala
+ moo
+ -- 
+@@ -44,53 +47,53 @@
+  10:56pm up 4 days, 4:42, 1 user, load average: 0.08, 0.08, 0.12
+ """
+ 
++succeeded = 0
++
+ class TestNNTPClient(nntp.NNTPClient):
+     def __init__(self):
+         nntp.NNTPClient.__init__(self)
+ 
+-    def assertEquals(self, foo, bar):
+-        if foo != bar: raise AssertionError("%s != %s!" % (foo, bar))
+-    
+     def connectionMade(self):
+         nntp.NNTPClient.connectionMade(self)
+         self.fetchSubscriptions()
+ 
+ 
+     def gotSubscriptions(self, subscriptions):
+-        self.assertEquals(len(subscriptions), len(SUBSCRIPTIONS))
++        self.tc.assertEquals(len(subscriptions), len(SUBSCRIPTIONS))
+         for s in subscriptions:
+             assert s in SUBSCRIPTIONS
+ 
+         self.fetchGroups()
+     
++
+     def gotAllGroups(self, info):
+-        self.assertEquals(len(info), len(ALL_GROUPS))
+-        self.assertEquals(info[0], ALL_GROUPS[0])
++        self.tc.assertEquals(len(info), len(ALL_GROUPS))
++        self.tc.assertEquals(info[0], ALL_GROUPS[0])
+         
+         self.fetchGroup('alt.test.nntp')
+     
+     
+     def getAllGroupsFailed(self, error):
+-        raise AssertionError("fetchGroups() failed: %s" % (error,))
++        self.tc.fail("fetchGroups() failed: %s" % (error,))
+ 
+ 
+     def gotGroup(self, info):
+-        self.assertEquals(len(info), 6)
+-        self.assertEquals(info, GROUP)
++        self.tc.assertEquals(len(info), 6)
++        self.tc.assertEquals(info, GROUP)
+         
+-        self.postArticle(string.replace(POST_STRING, '\n', '\r\n'))
++        self.postArticle(POST_STRING)
+     
+     
+     def getSubscriptionsFailed(self, error):
+-        raise AssertionError("fetchSubscriptions() failed: %s" % (error,))
++        self.tc.fail("fetchSubscriptions() failed: %s" % (error,))
+ 
+ 
+     def getGroupFailed(self, error):
+-        raise AssertionError("fetchGroup() failed: %s" % (error,))
++        self.tc.fail("fetchGroup() failed: %s" % (error,))
+ 
+ 
+-    def postFailed(self, err):
+-        raise AssertionError("postArticle() failed: %s" % (error,))
++    def postFailed(self, error):
++        self.tc.fail("postArticle() failed: %s" % (error,))
+ 
+ 
+     def postedOk(self):
+@@ -98,21 +101,21 @@
+ 
+     
+     def gotArticle(self, info):
++        global succeeded
+         origBody = POST_STRING.split('\n\n')[1]
+         newBody = info.split('\n\n', 1)[1]
+ 
+-        # XXX The strip shouldn't be necessary, but I don't
+-        # know where it needs fixing and I don't want to commit
+-        # a broken test.  Tailing whitespace is irrelevant anyway. :)
+-        self.assertEquals(origBody.strip(), newBody.strip())
+-
+-        
++        self.tc.assertEquals(origBody, newBody)
++        succeeded = 1
++        self.done()
++    
++    def done(self):
+         # We're done
+         self.transport.loseConnection()
+     
+     
+     def getArticleFailed(self, error):
+-        raise AssertionError("fetchArticle() failed: %s" % (error,))
++        self.tc.fail("fetchArticle() failed: %s" % (error,))
+ 
+ 
+ class NNTPTestCase(unittest.TestCase):
+@@ -126,15 +129,14 @@
+             self.backend.addSubscription(s)
+ 
+         self.client = TestNNTPClient()
++        self.server.tc = self
++        self.client.tc = self
+ 
+     def testLoopback(self):
+         loopback.loopback(self.server, self.client)
++        self.assert_(succeeded, "Something broke -- 'succeeded' is not set.")
+ 
+         # XXX This test is woefully incomplete.  It tests the single
+         # most common code path and nothing else.  Expand it and the
+         # test fairy will leave you a surprise.
+-
+-        #         reactor.iterate(1) # fetchGroups()
+-        #         reactor.iterate(1) # fetchGroup()
+-        #         reactor.iterate(1) # postArticle()
+ 

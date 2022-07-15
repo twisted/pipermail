@@ -1,0 +1,171 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: wired problem with deferreds
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20wired%20problem%20with%20deferreds&In-Reply-To=%3Cm2fxw8ru6u.fsf%40valheru.db3l.homeip.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="049242.html">
+   <LINK REL="Next"  HREF="049244.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: wired problem with deferreds</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20wired%20problem%20with%20deferreds&In-Reply-To=%3Cm2fxw8ru6u.fsf%40valheru.db3l.homeip.net%3E"
+       TITLE="[Twisted-Python] Re: wired problem with deferreds">db3l.net at gmail.com
+       </A><BR>
+    <I>Mon Feb  4 19:52:25 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="049242.html">[Twisted-Python] wired problem with deferreds
+</A></li>
+        <LI>Next message (by thread): <A HREF="049244.html">[Twisted-Python] using conch to create a &quot;chrooted&quot; sftp server
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#49243">[ date ]</a>
+              <a href="thread.html#49243">[ thread ]</a>
+              <a href="subject.html#49243">[ subject ]</a>
+              <a href="author.html#49243">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>markus espenhain &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">me at mocisoft.com</A>&gt; writes:
+
+&gt;<i> im stuck with the following deferred construct - the problem is that cb2
+</I>&gt;<i> is called with None instead of the expected argument
+</I>&gt;<i>
+</I>&gt;<i> from twisted.internet import defer
+</I>&gt;<i>
+</I>&gt;<i> cd = None
+</I>&gt;<i>
+</I>&gt;<i> def req1():
+</I>&gt;<i>     return defer.Deferred().addCallback(req2)
+</I>&gt;<i>
+</I>&gt;<i> def req2(a):
+</I>&gt;<i>     print 'req2', a
+</I>&gt;<i>     global cd
+</I>&gt;<i>     if not cd:
+</I>&gt;<i>         cd = defer.Deferred().addCallback(req3)
+</I>&gt;<i>     return cd
+</I>&gt;<i>
+</I>&gt;<i> def req3(a):
+</I>&gt;<i>     print 'req3', a
+</I>&gt;<i>     return a
+</I>&gt;<i>
+</I>&gt;<i> def cb1(a):
+</I>&gt;<i>     print 'cb1', a
+</I>&gt;<i>     return a
+</I>&gt;<i>
+</I>&gt;<i> def cb2(a):
+</I>&gt;<i>     print 'cb2', a
+</I>&gt;<i>     return a
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> d1 = req1().addCallback(cb1)
+</I>&gt;<i> d1.callback('X')
+</I>&gt;<i> d2 = req1().addCallback(cb2)
+</I>&gt;<i> d2.callback('X')
+</I>&gt;<i> cd.callback('S')
+</I>&gt;<i>
+</I>&gt;<i> output:
+</I>&gt;<i>
+</I>&gt;<i> req2 X
+</I>&gt;<i> req2 X
+</I>&gt;<i> req3 S
+</I>&gt;<i> cb1 S
+</I>&gt;<i> cb2 None # &lt;- ?
+</I>&gt;<i>
+</I>&gt;<i> req1 fetches a mapping for given arguments - req2 tries to create an
+</I>&gt;<i> object + additional resquests by the result of req1 - but these objects
+</I>&gt;<i> should only be created once - so far i didn't find an acceptable
+</I>&gt;<i> workaround for that - req3 applys some modifications but the problem
+</I>&gt;<i> occurs also without the step in req3 
+</I>&gt;<i>
+</I>&gt;<i> is there something i overlooked so that cb2 isn't called with the
+</I>&gt;<i> required arg?
+</I>
+I think it's because you're effectively pausing two callback chains on
+the same nested deferred, and it's the continuation processing of that
+deferred for the first callback chain that is clearing your result for
+the second callback chain.
+
+There are three deferred's involved above, with these initial callbacks:
+
+d1 - Callbacks req2, then cb1
+d2 - Callbacks req2 then cb2
+cd - Callback req3
+
+Now in each of the d1.callback() and d2.callback() calls, the callback
+chain runs the first callback req2(), and then pauses because req2
+returns a deferred (cb) that hasn't finished.
+
+It's important to realize that the way the deferred object &quot;pauses&quot; a
+callback is to simply insert its own continuation method as a final
+callback on the nested deferred.
+
+So, after those two callback() methods, the cd deferred actually has a
+callback chain of req3, d1._continue, and d2._continue.
+
+It's also important to note that the internal _continue method of the
+deferred object has no return (thus None).  That's where your result
+is being lost along the way to cb2.
+
+So, when you finally call cd.callback('S'), I believe you actually
+trigger a sequence of events such as:
+
+  req3('S'), returning 'S'
+  d1._continue('S'), returning None and unpausing d1
+    (recursively)
+    cb1('S') due to the next callback in d1's callback chain.
+  d2._continue(None), returning None and unpausing d2
+    (recursively)
+    cb2(None) due to the next callback in d2's callback chain.
+  
+You'll find that if you temporarily add code to Deferred._continue to
+pass through the result it is handed that you see it show up.
+
+I don't know if sharing a nested deferred chain among more than one
+outer deferred chain something that can be expected to have sane
+behavior.  Then again, I'm not sure it's really a bad thing to have
+the Deferred object pass through the result in addition to using it
+for itself (e.g., adding a &quot;return result&quot; to the Deferred._continue
+method).
+
+You might find that if you need to perform some sort of singleton
+action on the underlying operation, that you would be best off
+manually handling how that callback affects others than relying on the
+default Twisted behavior of nested deferreds.
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="049242.html">[Twisted-Python] wired problem with deferreds
+</A></li>
+	<LI>Next message (by thread): <A HREF="049244.html">[Twisted-Python] using conch to create a &quot;chrooted&quot; sftp server
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#49243">[ date ]</a>
+              <a href="thread.html#49243">[ thread ]</a>
+              <a href="subject.html#49243">[ subject ]</a>
+              <a href="author.html#49243">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

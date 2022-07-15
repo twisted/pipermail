@@ -1,0 +1,199 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20A%20Python%20metaclass%20for%20Twisted%20allowing%20__init__%0A%09to%20return%20a%20Deferred&In-Reply-To=18703.8010.379291.213184%40jon.es">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="018618.html">
+   <LINK REL="Next"  HREF="018623.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred</H1>
+    <B>glyph at divmod.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20A%20Python%20metaclass%20for%20Twisted%20allowing%20__init__%0A%09to%20return%20a%20Deferred&In-Reply-To=18703.8010.379291.213184%40jon.es"
+       TITLE="[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred">glyph at divmod.com
+       </A><BR>
+    <I>Mon Nov  3 15:17:09 EST 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="018618.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+        <LI>Next message: <A HREF="018623.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#18619">[ date ]</a>
+              <a href="thread.html#18619">[ thread ]</a>
+              <a href="subject.html#18619">[ subject ]</a>
+              <a href="author.html#18619">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On 03:56 pm, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">terry at jon.es</A> wrote:
+&gt;<i>Glyph - I appreciate your comments on testing, and agree that's
+</I>&gt;<i>problematic. I also like your pattern, have run into it myself, and 
+</I>&gt;<i>will
+</I>&gt;<i>use it - thanks.
+</I>
+OK, cool :).
+&gt;<i>Glyph also said I didn't really provide a use-case, so I'll do that a 
+</I>&gt;<i>bit
+</I>&gt;<i>more clearly now. That leads me back in the direction of preferring my
+</I>&gt;<i>metaclass solution.
+</I>
+(snip example)
+&gt;<i>The problem with approaches that don't actually create the class 
+</I>&gt;<i>instance,
+</I>&gt;<i>is that __init__ is calling self.createDBTable, but self doesn't exist
+</I>&gt;<i>yet. So putting code to deal with Deferreds into __new__ wont help 
+</I>&gt;<i>unless
+</I>&gt;<i>that code has nothing to do with the instance of the class.
+</I>
+Given that this provides a good object lesson for other folks writing 
+Twisted-based code and potential contributors to Twisted to write code 
+for Twisted itself, I will continue on with my critique.  I hope you 
+find it helpful.
+
+In this specific example, it doesn't seem like there's really any good 
+reason for _createDBTable and createDBTable to be instance methods.  If 
+I understand the thing you're implementing properly, you're not going to 
+be calling those methods again once the instance is fully initialized 
+(to create the table twice would be an error), so they arguably 
+shouldn't even be public.  Assuming they should be public, though, they 
+could easily be class methods - or even static methods or free 
+functions.  The only attribute of 'self' accessed by either method is 
+'db'; so why not just have a function that gets passed 'db' rather than 
+'self'?
+
+But, I'll take a step back and make the problem harder - let's assume 
+you have lots of state on 'self' that these methods want to access, and 
+there really is a complex multi-stage initialization process.  There are 
+a number of simple solutions that don't involve metaclasses or __init__ 
+returning a Deferred.
+
+The simplest is to simply make your class's constructor just take a 'db' 
+object.  Then you can do this:
+
+    class CoordinatorHandler(object):
+        @inlineCallbacks
+        @classmethod
+        # Untested, not totally sure that's the right stacking order...
+        def fromSpec(cls, tableName, tableSpec, dbURI):
+            self = cls(yield database.getDB(dbURI))
+            yield self.createDBTable(tableName, tableSpec)
+            returnValue(self)
+
+        def __init__(self, db):
+            self.db = db
+        # ...
+
+Now, that's a bit of a cop-out: __init__ hands back a partially- 
+initialized object to application code.  The table might not yet be 
+created.  Although your __metaclass__ pattern idea does that as well, 
+what *I'd* want in this situation is a fully-initialized object from 
+__init__, allowing only the internal multi-phase initialization code to 
+see the partially-initialized object, since only that code really knows 
+what methods you can and can't call before the object is fully ready.
+
+The reality of RDBMSes is pretty crummy; it's (by definition) a big pile 
+of global mutable state that you have very little control over and no 
+way[1] of getting notified of changes to.  For example, you can't really 
+know if a table exists or not, hypothetically somebody could come along 
+at any moment and DROP TABLE on you and your whole application will 
+break.  But, let's engage in a bit of fantasy for a moment (as all 
+modern systems which interact with RDBMSes must do) and pretend that 
+rather than spitting a string into a CREATE TABLE statement with no 
+knowledge of success, the database (or some abstraction layer thereof) 
+returns some kind of object to represent the table.
+
+I say that because in this example, there's nothing you can pass to 
+__init__ that will satisfy the object's idea of &quot;fully initialized&quot;.  It 
+just has to perform a bunch of potentially destructive operations on the 
+&quot;universe&quot; object ('db'), then, once the results of those operations has 
+taken effect, return an object.  So we need some kind of marker to say 
+&quot;we have performed those potentially destructive operations and they 
+worked&quot;.  Code will probably be clearer than more prose at this point:
+
+    class CoordinatorHandler(object):
+        def __init__(self, db, tableHandle, otherStuff):
+            &quot;Do you know where to get a tableHandle from?  I do!  Call 
+fromSpec.&quot;
+            self.db = db
+            self.tableHandle = tableHandle
+            self.otherStuff = otherStuff
+
+        @inlineCallbacks
+        @classmethod
+        def fromSpec(cls, tableName, tableSpec, dbURI, stuffFactory):
+            # not fully initialized, but we're not handing this back to 
+application
+            # code yet...
+            self = cls.__new__()
+            # initialize juuuust enough to call that one method we want 
+to call...
+            self.db = yield database.getDB(dbURI)
+            self.__init__(self.db, yield self.createDBTable(tableName, 
+tableSpec),
+                          yield stuffFactory.moreDeferredStuff())
+            returnValue(self)
+
+        def createDBTable(self, tableName, tableSpec):
+            &quot;We know this method only uses 'db' to do its work, so we're 
+fine.&quot;
+            return self.db.execute(&quot;CREATE TABLE ...&quot;).addCallback(
+                lambda nothingUseful: TableHandle(tableName))
+
+
+Here, you can't synchronously create a CoordinatorHandler unless you've 
+got an object to stuff into its tableHandle slot from somewhere.  This 
+provides a useful point at which to document the required type of the 
+tableHandle, how one might create one (a pointer to some test utility 
+classes, perhaps?).
+
+This class also provides a nice factory function for you to generate one 
+from a database, so you still get the same practical effect, but you 
+still get all the benefits of testability that separated initialization 
+can give you.  And your subclasses can still do interesting stuff in 
+__init__ if they want to, since it will get invoked; it's just that 
+there may be some pre-initialization variables present at that point.
+
+This comes at the expense of one redundant line of code - the two times 
+that 'db' is set - but I think the benefits are well worth that almost 
+unmeasurably small cost :).  Plus, if that concerns you, you can factor 
+the table-creation logic somewhere else so you don't need partial 
+initialization.  In most cases, that's a better idea anyway (although 
+I've very rarely seen code where I couldn't figure out how to cleanly do 
+it).
+
+
+[1]: I do know about <A HREF="http://www.postgresql.org/docs/8.1/static/sql-">http://www.postgresql.org/docs/8.1/static/sql-</A> 
+notify.html, but it's a pretty obscure feature that most databases don't 
+have and that's apparently pretty difficult to use.  I hope it becomes 
+more popular in the future though, rarara event-driven etc...
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="018618.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+	<LI>Next message: <A HREF="018623.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#18619">[ date ]</a>
+              <a href="thread.html#18619">[ thread ]</a>
+              <a href="subject.html#18619">[ subject ]</a>
+              <a href="author.html#18619">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

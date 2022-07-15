@@ -1,0 +1,158 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python]  Twisted tips for designing highly concurrent twisted REST API
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20%0A%20%3D%3Futf-8%3Fq%3FTwisted_tips_for_designing_highly_con%3F%3D%0A%20%3D%3Futf-8%3Fq%3Fcurrent_twisted_REST_API%3F%3D&In-Reply-To=%3Ce4757021-5ad8-4b4a-9eb2-120fd3a5de2f%40www.fastmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python]  Twisted tips for designing highly concurrent twisted REST API</H1>
+    <B>Tom Most</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20%0A%20%3D%3Futf-8%3Fq%3FTwisted_tips_for_designing_highly_con%3F%3D%0A%20%3D%3Futf-8%3Fq%3Fcurrent_twisted_REST_API%3F%3D&In-Reply-To=%3Ce4757021-5ad8-4b4a-9eb2-120fd3a5de2f%40www.fastmail.com%3E"
+       TITLE="[Twisted-Python]  Twisted tips for designing highly concurrent twisted REST API">twm at freecog.net
+       </A><BR>
+    <I>Tue Jul  9 15:04:11 MDT 2019</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64862">[ date ]</a>
+              <a href="thread.html#64862">[ thread ]</a>
+              <a href="subject.html#64862">[ subject ]</a>
+              <a href="author.html#64862">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+There are likely a few things wrong here.
+
+1. You are using requests.get() to make a HTTP request. This is blocking. You might consider using Twisted's Agent &lt;<A HREF="https://twistedmatrix.com/documents/current/api/twisted.web.client.Agent.html">https://twistedmatrix.com/documents/current/api/twisted.web.client.Agent.html</A>&gt; API instead (or treq &lt;<A HREF="https://github.com/twisted/treq">https://github.com/twisted/treq</A>&gt;, which puts a requests-like API atop Agent).
+
+2. As you add load your long computations will be queued. deferToThread &lt;<A HREF="https://twistedmatrix.com/documents/current/api/twisted.internet.threads.html#deferToThread">https://twistedmatrix.com/documents/current/api/twisted.internet.threads.html#deferToThread</A>&gt; dispatches the long_computation to the reactor's default thread pool &lt;<A HREF="https://twistedmatrix.com/documents/current/api/twisted.internet.interfaces.IReactorThreads.html">https://twistedmatrix.com/documents/current/api/twisted.internet.interfaces.IReactorThreads.html</A>&gt;. This poll has a maximum size and will queue work once it has spun up that many threads.
+
+Rather than using deferToThread (which we should really deprecate as it doesn't accept a reactor parameter...) I'd recommend instantiating your own ThreadPool &lt;<A HREF="https://twistedmatrix.com/documents/current/api/twisted.python.threadpool.ThreadPool.html">https://twistedmatrix.com/documents/current/api/twisted.python.threadpool.ThreadPool.html</A>&gt; and using deferToThreadPool &lt;<A HREF="https://twistedmatrix.com/documents/current/api/twisted.internet.threads.html#deferToThreadPool">https://twistedmatrix.com/documents/current/api/twisted.internet.threads.html#deferToThreadPool</A>&gt;. The reactor's own thread pool is really for DNS resolution. You risk deadlocks in a system that ThreadPoolThreadPoolThreadPool
+
+3. The specifics of what long_computation are also important. If it doesn't release the GIL you won't get real parallelism (this is a Python thing, not a Twisted thing). See this recent thread on the topic &lt;<A HREF="https://twistedmatrix.com/pipermail/twisted-python/2019-June/032371.html">https://twistedmatrix.com/pipermail/twisted-python/2019-June/032371.html</A>&gt;.
+
+Though the mechanisms differ athis thread on the topicny of the above would cause the response time to increase as you add load.
+
+Good luck,
+Tom
+
+On Tue, Jun 25, 2019, at 11:51 PM, Waqar Khan wrote:
+&gt;<i> 
+</I>&gt;<i> Sorry I had a typo in twisted program
+</I>&gt;<i> 
+</I>&gt;<i> *@defer.inlinecallbacks*
+</I>&gt;<i> *def **long_computation*(rec_type, data)*:
+</I>**     **# some long computation
+**     *defer.returnValue(recs)**
+&gt;<i> @defer.inlinecallbacks
+</I>&gt;<i> def fetch_data(user_id):
+</I>&gt;<i> r *= yield*json.*loads*(requests.*get*('url/to/fetch/%s'*%**user_id*).text)
+</I>&gt;<i>  defer.returnValue(r)
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> @defer.inlinecallbacks
+</I>&gt;<i> def fetch_recs(user_id):
+</I>&gt;<i>  data = yield fetch_data(user_id)
+</I>&gt;<i>  recs = {}
+</I>&gt;<i>  for stype in similar_types:
+</I>&gt;<i> *d = defer.ToThread(long_computation, *(stype, data)) // typo was here*
+</I>&gt;<i>  rec = yield d
+</I>&gt;<i>  recs[stype] = rec
+</I>&gt;<i>  defer.returnValue(recs)
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> On Tue, Jun 25, 2019 at 11:48 PM Waqar Khan &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">wk80333 at gmail.com</A>&gt; wrote:
+</I>&gt;&gt;<i> Hello folks,
+</I>&gt;&gt;<i>  I recently stumbled upon twisted and was wondering if it could suit my needs. On one hand, I want to use python but on another hand there are all these scalability concerns with this language so, I though I would pick the brains of the community. So.. a flask based app would look something like this.
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> similar_types *= *['foo', 'bar', 'baz']
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> *def **long_computation*(rec_type)*:
+</I>**     **# some long computation
+**     **return *recs
+&gt;&gt;<i> 
+</I>&gt;&gt;<i> *@app.route*('/fetch_similar_users/&lt;user_id&gt;'
+</I>&gt;&gt;<i> *def **fetch_similar_users*(*user_id*)
+</I>&gt;&gt;<i>         r *= *json.*loads*(requests.*get*('url/to/fetch/%s'*%**user_id*).text)
+</I>&gt;&gt;<i>         recs *= *{}
+</I>&gt;&gt;<i>         *for *stype *in *similar_types*:
+</I>**             *recs[stype] *= **long_computation*(rec_type)
+&gt;&gt;<i>        *return *recs
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> Now, I tried to &quot;twistify&quot; but it failed.
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> *@defer.inlinecallbacks*
+</I>&gt;&gt;<i> *def **long_computation*(rec_type)*:
+</I>**     **# some long computation
+**     *defer.returnValue(recs)**
+&gt;&gt;<i> @defer.inlinecallbacks
+</I>&gt;&gt;<i> def fetch_data(user_id):
+</I>&gt;&gt;<i> r *= yield*json.*loads*(requests.*get*('url/to/fetch/%s'*%**user_id*).text)
+</I>&gt;&gt;<i>  defer.returnValue(r)
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> @defer.inlinecallbacks
+</I>&gt;&gt;<i> def fetch_recs(user_id):
+</I>&gt;&gt;<i>  data = yield fetch_data(user_id)
+</I>&gt;&gt;<i>  recs = {}
+</I>&gt;&gt;<i>  for stype in similar_types:
+</I>&gt;&gt;<i>  d = defer.ToThread(fetch_data, *(stype))
+</I>&gt;&gt;<i>  rec = yield d
+</I>&gt;&gt;<i>  recs[stype] = rec
+</I>&gt;&gt;<i>  defer.returnValue(recs)
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> I wrapped all the above in twisted render_Get method.. but then I did a load test with locust (<A HREF="https://docs.locust.io/en/latest/what-is-locust.html">https://docs.locust.io/en/latest/what-is-locust.html</A>) framework.
+</I>&gt;&gt;<i> It choked. As the time progressed, the response time increased.
+</I>&gt;&gt;<i> I am guessing, things are still blocking. 
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> Can you please help me look into the right place. Why exactly am I seeing increase in response time as the time progresses. I am guessing things are still working in &quot;blocking&quot; fashion but i thought the above should run things in async.
+</I>&gt;&gt;<i> Thanks
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> 
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20190709/4bab79b0/attachment-0002.html&gt;
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64862">[ date ]</a>
+              <a href="thread.html#64862">[ thread ]</a>
+              <a href="subject.html#64862">[ subject ]</a>
+              <a href="author.html#64862">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

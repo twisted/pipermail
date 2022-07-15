@@ -1,0 +1,119 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] startTLS errors not propagating to Factory
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20startTLS%20errors%20not%20propagating%20to%20Factory&In-Reply-To=%3C51F47263-4A36-4F97-AB05-9EDBE639F22A%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="065600.html">
+   <LINK REL="Next"  HREF="065604.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] startTLS errors not propagating to Factory</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20startTLS%20errors%20not%20propagating%20to%20Factory&In-Reply-To=%3C51F47263-4A36-4F97-AB05-9EDBE639F22A%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] startTLS errors not propagating to Factory">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Thu Apr 29 00:36:23 MDT 2021</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="065600.html">[Twisted-Python] startTLS errors not propagating to Factory
+</A></li>
+        <LI>Next message (by thread): <A HREF="065604.html">[Twisted-Python] startTLS errors not propagating to Factory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65602">[ date ]</a>
+              <a href="thread.html#65602">[ thread ]</a>
+              <a href="subject.html#65602">[ subject ]</a>
+              <a href="author.html#65602">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+
+&gt;<i> On Apr 28, 2021, at 2:43 PM, Richard van der Hoff &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">richard at matrix.org</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> On 28/04/2021 07:06, Glyph wrote:
+</I>&gt;&gt;&gt;<i> Is the SMTP code holding the Factory wrong? Or is it reasonable to expect the verification error to propagate into clientConnectionFailed - in which case, how could this work?
+</I>&gt;&gt;&gt;<i> 
+</I>&gt;&gt;&gt;<i> Thanks for your thoughts!
+</I>&gt;&gt;<i> Hi Richard,
+</I>&gt;&gt;<i> Sorry for the delayed response here.
+</I>&gt;&gt;<i> This is a bug in Twisted, and I think it boils down to this line: <A HREF="https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/protocols/tls.py#L391">https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/protocols/tls.py#L391</A> The code as written here appears to be expecting this sequence:
+</I>&gt;&gt;<i> 1. failVerification is called with a reason containing a helpful
+</I>&gt;&gt;<i>    OpenSSL verification error
+</I>&gt;&gt;<i> 2. we save that reason as `self._reason` for reporting later, calling
+</I>&gt;&gt;<i>    abortConnection()
+</I>&gt;&gt;<i> 3. since the connection got aborted, we expect our underlying transport
+</I>&gt;&gt;<i>    to call loseConnection on us
+</I>&gt;&gt;<i> 4. we will then get a falsey reason [?!?!] and as such we will use
+</I>&gt;&gt;<i>    self._reason instead
+</I>&gt;&gt;<i> Assumption 4 is nonsense and has never been true within Twisted as far as I know; connectionLost always gets a Failure, Failures are never falsey, so we will never use self._reason.  To fix this we need to actually honor self._reason under the conditions we expect, i.e. it's a ConnectionAborted <A HREF="https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/internet/error.py#L209">https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/internet/error.py#L209</A> 
+</I>&gt;<i> 
+</I>&gt;<i> Thanks very much for your thoughts on this, Glyph - it's always helpful to have an insight into the intended design when trying to resolve this sort of thing.
+</I>&gt;<i> 
+</I>&gt;<i> I don't follow your reasoning though. I think you might have misread the line you point to (<A HREF="https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/protocols/tls.py#L391">https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/protocols/tls.py#L391</A>). It is &quot;self._reason or reason&quot; - ie, if self._reason is already set, it will take precedence over reason.
+</I>
+Sigh. You're right, I read it backwards.
+
+&gt;<i> In my tests at least, TLSMemoryBIOProtocol.connectionLost is doing exactly the right thing - it is called with an unhelpful reason, but substitutes back in the helpful reason which has already been stashed.
+</I>&gt;<i> 
+</I>&gt;<i> Rather, the problem, as I see it, is that it's not TLSMemoryBIOProtocol.connectionLost that calls Factory.clientConnectionLost. That is done by tcp.Client.connectionLost, via one of tcp.Client's myriad of base classes, at <A HREF="https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/internet/tcp.py#L508.">https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/internet/tcp.py#L508.</A> Of course, that doesn't get the benefit of TLSMemoryBIOProtocol's reason switcheroo.
+</I>&gt;<i> 
+</I>&gt;<i> I'm still not quite sure who is in the wrong here.
+</I>
+Aah, yeah, this is a weird quirk of the ancient-style layering in the SMTP code :-|.  The way this should work is by using HostnameEndpoint.
+
+I'm not sure exactly where we're going off the rails, but by using both the old 'startTLS' style of starting a TLS connection, as well as relying on ClientFactory rather than an Endpoint of some kind, means that we're getting this duplicate notification; the one that you get to Protocol.connectionLost will come from TLS and have useful information, but the one that goes to the Connector will be coming straight from TCP.
+
+The right thing to fix here, I think, is to ignore clientConnectionLost entirely, and instead to have the protocol object relay its failure to some other differently-named method on SMTPSenderFactory.
+
+-g
+
+&gt;<i> 
+</I>&gt;<i> Cheers
+</I>&gt;<i> 
+</I>&gt;<i> Richard
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> PS: yes, once we figure out what's going wrong here, I'll at least write up an issue...
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20210428/3f019d6b/attachment-0001.htm&gt;
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="065600.html">[Twisted-Python] startTLS errors not propagating to Factory
+</A></li>
+	<LI>Next message (by thread): <A HREF="065604.html">[Twisted-Python] startTLS errors not propagating to Factory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65602">[ date ]</a>
+              <a href="thread.html#65602">[ thread ]</a>
+              <a href="subject.html#65602">[ subject ]</a>
+              <a href="author.html#65602">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

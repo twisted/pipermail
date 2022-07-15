@@ -1,0 +1,135 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] SSL: Getting the client certificate
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20SSL%3A%20Getting%20the%20client%20certificate&In-Reply-To=46D1C5E4.3080207%40dirk-loss.de">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="015925.html">
+   <LINK REL="Next"  HREF="015928.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] SSL: Getting the client certificate</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20SSL%3A%20Getting%20the%20client%20certificate&In-Reply-To=46D1C5E4.3080207%40dirk-loss.de"
+       TITLE="[Twisted-Python] SSL: Getting the client certificate">exarkun at divmod.com
+       </A><BR>
+    <I>Sun Aug 26 15:05:40 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="015925.html">[Twisted-Python] SSL: Getting the client certificate
+</A></li>
+        <LI>Next message: <A HREF="015928.html">[Twisted-Python] SSL: Getting the client certificate
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15926">[ date ]</a>
+              <a href="thread.html#15926">[ thread ]</a>
+              <a href="subject.html#15926">[ subject ]</a>
+              <a href="author.html#15926">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sun, 26 Aug 2007 20:26:44 +0200, Dirk Loss &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">lists at dirk-loss.de</A>&gt; wrote:
+&gt;<i>Hi,
+</I>&gt;<i>
+</I>&gt;<i>following Eli Criffields nice example [1] I implemented a small SSL
+</I>&gt;<i>server with Twisted. My server should not only verify the client
+</I>&gt;<i>certificate, but also check the Common Name (CN) against a whitelist.
+</I>&gt;<i>All this should happen before any user data is exchanged.
+</I>&gt;<i>
+</I>&gt;<i>Verifying the client certificate worked nicely, but I couldn't access
+</I>&gt;<i>its contents: transport.getPeerCertificate() always returned 'None'.
+</I>&gt;<i>Apparently Eli had the same problem [2].
+</I>&gt;<i>
+</I>&gt;<i>After some testing with PyOpenSSL now I think I have found a solution:
+</I>&gt;<i>
+</I>&gt;<i>Before we can get the client certificate, we have to make sure that the
+</I>&gt;<i>SSL handshake has taken place. (If it hasn't, there simply is no client
+</I>&gt;<i>certificate to deal with yet.) This can be done by calling the
+</I>&gt;<i>do_handshake() method of the underlying socket. The SSL handshake takes
+</I>&gt;<i>some time so we will have to try several times.
+</I>
+This is basically a bug in Twisted's SSL support.  I forget if there's a
+way to fix it using PyOpenSSL or if it's a limitation of the bindings.
+
+&gt;<i>
+</I>&gt;<i>Here's an (incomplete) example showing the interesting part:
+</I>&gt;<i>- - cut ---
+</I>&gt;<i>import OpenSSL
+</I>&gt;<i>
+</I>&gt;<i>class MyProtocol(Protocol):
+</I>&gt;<i>
+</I>&gt;<i>     def connectionMade(self):
+</I>&gt;<i>
+</I>&gt;<i>         # Make sure that SSL handshake has taken place
+</I>&gt;<i>         while True:
+</I>&gt;<i>             try:
+</I>&gt;<i>                 self.transport.socket.do_handshake()
+</I>&gt;<i>                 break
+</I>&gt;<i>             except OpenSSL.SSL.WantReadError:
+</I>&gt;<i>                 pass
+</I>&gt;<i>
+</I>&gt;<i>         clientCert = self.transport.getPeerCertificate()
+</I>&gt;<i>         if clientCert is None:
+</I>&gt;<i>             log.msg(&quot;No client cert available.&quot;)
+</I>&gt;<i>         else:
+</I>&gt;<i>             subject = clientCert.get_subject()
+</I>&gt;<i>             log.msg(&quot;Subject: %s&quot; % subject)
+</I>&gt;<i>             log.msg(&quot;Common Name: %s&quot; % subject.CN)
+</I>&gt;<i>- - cut ---
+</I>&gt;<i>
+</I>&gt;<i>If you see a nicer way to wait for the SSL handshake please let me
+</I>&gt;<i>know. Using time.sleep() didn't work for me.
+</I>
+This solution has at least two related problems:
+
+  * it will block the reactor until the handshake for that client completes,
+    which means no other I/O will occur and none other application code will
+    be able to run.  This might be fine for your application, but in general
+    it's not a very good thing.
+
+  * if a malicious client connects, they can just never complete the
+    handshake and your server will hang in that loop indefinitely.
+
+&gt;<i>
+</I>&gt;<i>Side note:
+</I>&gt;<i>Getting the certificate in a dataReceived() instead of connectionMade()
+</I>&gt;<i>works without manually doing the handshake. I think this is because the
+</I>&gt;<i>underlying PyOpenSSL recv() method handles the handshake for us. But at
+</I>&gt;<i>least for my purpose it makes more sense to verify the client cert
+</I>&gt;<i>right upon connection, before any user data is exchanged.
+</I>
+The ideal solution would be to fix the bug in Twisted's SSL support so that
+connectionMade is called at the right time.  Another possible solution might
+be to do your verification using the SSL context object.  CertificateOptions
+might give you some ideas about how to do this:
+
+<A HREF="http://twistedmatrix.com/documents/current/api/twisted.internet.ssl.CertificateOptions.html">http://twistedmatrix.com/documents/current/api/twisted.internet.ssl.CertificateOptions.html</A>
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="015925.html">[Twisted-Python] SSL: Getting the client certificate
+</A></li>
+	<LI>Next message: <A HREF="015928.html">[Twisted-Python] SSL: Getting the client certificate
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15926">[ date ]</a>
+              <a href="thread.html#15926">[ thread ]</a>
+              <a href="subject.html#15926">[ subject ]</a>
+              <a href="author.html#15926">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

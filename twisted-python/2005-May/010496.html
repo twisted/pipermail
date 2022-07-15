@@ -1,0 +1,181 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] cleanup in twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20cleanup%20in%20twisted&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="010543.html">
+   <LINK REL="Next"  HREF="010497.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] cleanup in twisted</H1>
+    <B>Joachim Boomberschloss</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20cleanup%20in%20twisted&In-Reply-To="
+       TITLE="[Twisted-Python] cleanup in twisted">boomberschloss at yahoo.com
+       </A><BR>
+    <I>Sun May 22 11:46:46 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="010543.html">[Twisted-Python] epoll reactor
+</A></li>
+        <LI>Next message: <A HREF="010497.html">[Twisted-Python] cleanup in twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10496">[ date ]</a>
+              <a href="thread.html#10496">[ thread ]</a>
+              <a href="subject.html#10496">[ subject ]</a>
+              <a href="author.html#10496">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi!
+
+I just jotted down a little mechanism for cleaning-up
+in Twisted, and I wanted to see if:
+1. other people think it's needed
+2. other people manage to use it
+
+What this does is enable one to define a __cleanup__
+method which gets call either when the instance is
+deleted, or when the reactor shuts down. It can return
+a dereffed that delays the shutdown. The benefit is
+being able to define communication-related stuff in
+the cleanup method, which is not so useful to do in
+__del__.
+
+The current implementation uses pyDispatcher, but it
+could easily be rewritten without it.
+
+Feedback is welcomed!
+
+Joe.
+
+#----------------------------------------------------------------------------------------------------
+
+from twisted.internet import reactor, defer, task
+
+from dispatch import dispatcher, robustapply
+
+#----------------------------------------------------------------------------------------------------
+
+class CleanUpper:
+
+	# our pydispatcher cleanup event
+	ABOUT_TO_SHUTDOWN = &quot;*about to shutdown*&quot;
+
+	def __init__(self):
+		self._deferreds_to_wait_for_before_shutdown = []
+
+		# register with twisted a special callback that
+		# fires a pydispatcher event.
+		reactor.addSystemEventTrigger('before', 'shutdown',
+self._shutdown_handler)
+
+	def _shutdown_handler(self):
+		&quot;&quot;&quot;this simply dispatches a pydispatcher event&quot;&quot;&quot;
+		results = dispatcher.send(
+			signal = self.ABOUT_TO_SHUTDOWN,
+			sender = self)
+		# any deferred registered by cleanup handlers should
+be waited for
+		dl = defer.DeferredList([response for handler,
+response in results if isinstance(response,
+defer.Deferred)])
+		return dl
+
+	# PUBLIC METHODS
+--------------------------------------------------------------------------
+
+	def register(self, functionToRunBeforeShutdown):
+		&quot;&quot;&quot;makes the given function get called prior to
+communication infrastructure shutdown&quot;&quot;&quot;
+		# register the given function with pydispatcher
+		dispatcher.connect(
+			functionToRunBeforeShutdown,
+			signal = self.ABOUT_TO_SHUTDOWN,
+			sender = self)
+
+#----------------------------------------------------------------------------------------------------
+
+# create an instance of CleanUpper
+# and make its register method global
+_c = CleanUpper()
+register = _c.register
+unregister = _c.unregister
+
+#----------------------------------------------------------------------------------------------------
+
+class Cleanuppable:
+	&quot;&quot;&quot; Inherit from this if you want to do your cleanup
+before
+	    Twisted shuts down and not (only) when you get
+deleted.
+	    If you inherit from this do not implement
+__del__, only
+	    __cleanup__!
+	&quot;&quot;&quot;
+
+	def __init__(self):
+		self._cleanuppable_state = &quot;normal&quot;		# normal,
+deleted, or cleanupped
+		self._cleanuppable_deferred = None
+		# register cleanup method
+	
+register(self._cleanuppable_internal_cleanup_handler)
+
+	def _cleanuppable_apply_cleanup(self):
+		if hasattr(self, &quot;__cleanup__&quot;):
+			# call user-defined cleanup method
+			return robustapply.robustApply(self.__cleanup__)
+
+	def _cleanuppable_internal_cleanup_handler(self):
+		try:
+			if self._cleanuppable_state == &quot;normal&quot;:
+				return self._cleanuppable_apply_cleanup()
+			if self._cleanuppable_state == &quot;deleted&quot; and
+self._cleanuppable_deferred is not None:
+				return self._cleanuppable_deferred
+		finally:
+			self._cleanuppable_state = &quot;cleanupped&quot;
+
+	def __del__(self):
+		if self._cleanuppable_state == &quot;normal&quot;:
+			self._cleanuppable_state = &quot;deleted&quot;
+			response = self._cleanuppable_apply_cleanup()
+			if isinstance(response, defer.Deferred):
+				self._cleanuppable_deferred = response
+
+#----------------------------------------------------------------------------------------------------
+
+
+__________________________________________________
+Do You Yahoo!?
+Tired of spam?  Yahoo! Mail has the best spam protection around 
+<A HREF="http://mail.yahoo.com">http://mail.yahoo.com</A> 
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="010543.html">[Twisted-Python] epoll reactor
+</A></li>
+	<LI>Next message: <A HREF="010497.html">[Twisted-Python] cleanup in twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10496">[ date ]</a>
+              <a href="thread.html#10496">[ thread ]</a>
+              <a href="subject.html#10496">[ subject ]</a>
+              <a href="author.html#10496">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

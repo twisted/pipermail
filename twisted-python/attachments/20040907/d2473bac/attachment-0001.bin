@@ -1,0 +1,252 @@
+--- base.py.orig	2004-09-06 15:23:10.000000000 +0200
++++ base.py	2004-09-07 10:37:08.145414001 +0200
+@@ -26,7 +26,6 @@
+ 
+ import sys
+ import warnings
+-from bisect import insort
+ 
+ try:
+     import fcntl
+@@ -55,7 +54,7 @@
+         self.time, self.func, self.args, self.kw = time, func, args, kw
+         self.resetter = reset
+         self.canceller = cancel
+-        self.cancelled = self.called = 0
++        self.cancelled = self.called = self.delayed = 0
+         if self.debug:
+             self.creator = traceback.format_stack()[:-2]
+ 
+@@ -81,8 +80,8 @@
+         elif self.called:
+             raise error.AlreadyCalled
+         else:
+-            self.canceller(self)
+             self.cancelled = 1
++            self.canceller(self)
+ 
+     def reset(self, secondsFromNow):
+         """Reschedule this call for a different time
+@@ -100,6 +99,7 @@
+             raise error.AlreadyCalled
+         else:
+             self.time = seconds() + secondsFromNow
++            self.delayed = 1
+             self.resetter(self)
+ 
+     def delay(self, secondsLater):
+@@ -118,6 +118,7 @@
+             raise error.AlreadyCalled
+         else:
+             self.time += secondsLater
++            self.delayed = 1
+             self.resetter(self)
+ 
+     def active(self):
+@@ -129,9 +130,20 @@
+         """
+         return not (self.cancelled or self.called)
+ 
+-    def __lt__(self, other):
+-        # Order reversed for efficiency concerns, see below
+-        return self.time >= other.time
++    def __le__(self, other):
++        return self.time <= other.time
++
++##    def __eq__(self, other):
++##        if other == None:
++##            return 0
++
++##        for attribute in ('time', 'func', 'args', 'kw'):
++##            my_val  = getattr(self,  attribute, None)
++##            cmp_val = getattr(other, attribute, None)
++
++##            if my_val != cmp_val:
++##                return 0
++##        return 1
+ 
+     def __str__(self):
+         try:
+@@ -149,6 +161,8 @@
+             reflect.safe_repr(self.args))
+ 
+ 
++
++
+ class ReactorBase:
+     """Default base class for Reactors.
+     """
+@@ -160,7 +174,8 @@
+ 
+     def __init__(self):
+         self._eventTriggers = {}
+-        self._pendingTimedCalls = []
++        self._pendingTimedCalls = CallLaterHeap()
++        self._newTimedCalls = []
+         self.running = 0
+         self.waker = None
+         self.resolver = None
+@@ -366,16 +381,17 @@
+         assert sys.maxint >= _seconds >= 0, \
+                "%s is not greater than or equal to 0 seconds" % (_seconds,)
+         tple = DelayedCall(seconds() + _seconds, _f, args, kw,
+-                           self._pendingTimedCalls.remove,
++                           self._cancelCallLater,
+                            self._resetCallLater)
+-        insort(self._pendingTimedCalls, tple)
++        self._newTimedCalls.append(tple)
+         return tple
+ 
+     def _resetCallLater(self, tple):
+-        assert tple in self._pendingTimedCalls
++        if self._pendingTimedCalls.remove(tple) != None:
++            self._pendingTimedCalls.push(tple)
++
++    def _cancelCallLater(self, tple):
+         self._pendingTimedCalls.remove(tple)
+-        insort(self._pendingTimedCalls, tple)
+-        return tple
+ 
+     def cancelCallLater(self, callID):
+         """See twisted.internet.interfaces.IReactorTime.cancelCallLater.
+@@ -390,7 +406,7 @@
+ 
+     def timeout(self):
+         if self._pendingTimedCalls:
+-            t = self._pendingTimedCalls[-1].time - seconds()
++            t = self._pendingTimedCalls.toptime() - seconds()
+             if t < 0:
+                 t = 0
+             return t
+@@ -412,8 +428,15 @@
+                     log.err()
+                 count += 1
+             del self.threadCallQueue[:count]
++
++        # insert new delayed calls now to avoid doing so while iterating
++        for call in self._newTimedCalls:
++            if not call.cancelled:
++                self._pendingTimedCalls.push(call)
++        self._newTimedCalls = []
++
+         now = seconds()
+-        while self._pendingTimedCalls and (self._pendingTimedCalls[-1].time <= now):
++        while len(self._pendingTimedCalls) > 0 and (self._pendingTimedCalls.toptime() <= now):
+             call = self._pendingTimedCalls.pop()
+             try:
+                 call.called = 1
+@@ -615,4 +638,114 @@
+         raise RuntimeError, "doWrite called on a %s" % reflect.qual(self.__class__)
+ 
+ 
++class CallLaterHeap(object):
++    """Heap implementation for callLater.
++    Keeps track of the position in the heap for fast removal.
++    """
++
++    def __init__(self):
++        self.heap = []
++
++    def __len__(self):
++        return len(self.heap)
++
++    def __iter__(self):
++        return iter(self.heap[:])
++
++    def toptime(self):
++        return self.heap[0].time
++
++    def remove(self, cl):
++        if not hasattr(cl, 'heap_pos'):
++            return None # not on the heap anyway
++
++        heap = self.heap
++        replace_pos = cl.heap_pos
++        heap_length = len(heap)
++        if replace_pos < 0 or replace_pos >= heap_length:
++            return None
++        elif heap[replace_pos] != cl:
++            return None
++
++        if replace_pos == heap_length-1:
++            del heap[-1]
++        else:
++            last_el = heap.pop(-1)
++            heap[replace_pos] = last_el
++            self._siftup(replace_pos)
++
++        return cl
++
++    def push(self, cl):
++        """Push item onto heap, maintaining the heap invariant."""
++        insert_pos = len(self.heap)
++        self.heap.append(cl)
++        self._siftdown(0, insert_pos)
++
++    def pop(self):
++        """Pop the smallest item off the heap, maintaining the heap invariant."""
++        heap = self.heap
++        lastelt = heap.pop()    # raises appropriate IndexError if heap is empty
++        if heap:
++            returnitem = heap[0]
++            heap[0] = lastelt
++            self._siftup(0)
++        else:
++            returnitem = lastelt
++        return returnitem
++
++##    def replace(self, cl):
++##        """Pop and return the current smallest value, and add the new item.
++
++##        This is more efficient than heappop() followed by heappush(), and can be
++##        more appropriate when using a fixed-size heap.  Note that the value
++##        returned may be larger than item!  That constrains reasonable uses of
++##        this routine.
++##        """
++##        returnitem = self.heap[0]    # raises appropriate IndexError if heap is empty
++##        self.heap[0] = cl
++##        self._siftup(0)
++##        return returnitem
++
++    def _siftdown(self, startpos, pos):
++        heap = self.heap
++        newitem = heap[pos]
++        # Follow the path to the root, moving parents down until finding a place
++        # newitem fits.
++        while pos > startpos:
++            parentpos = (pos - 1) >> 1
++            parent = heap[parentpos]
++            if parent <= newitem:
++                break
++            heap[pos] = parent
++            parent.heap_pos = pos
++            pos = parentpos
++        heap[pos] = newitem
++        newitem.heap_pos = pos
++
++    def _siftup(self, pos):
++        heap = self.heap
++        endpos = len(heap)
++        startpos = pos
++        newitem = heap[pos]
++        # Bubble up the smaller child until hitting a leaf.
++        childpos = 2*pos + 1    # leftmost child position
++        while childpos < endpos:
++            # Set childpos to index of smaller child.
++            rightpos = childpos + 1
++            if rightpos < endpos and heap[rightpos] <= heap[childpos]:
++                childpos = rightpos
++            # Move the smaller child up.
++            child = heap[childpos]
++            child.heap_pos = pos
++            heap[pos] = child
++            pos = childpos
++            childpos = 2*pos + 1
++        # The leaf at pos is empty now.  Put newitem there, and bubble it up
++        # to its final resting place (by sifting its parents down).
++        heap[pos] = newitem
++        newitem.heap_pos = pos
++        self._siftdown(startpos, pos)
++
++
+ __all__ = ["ReactorBase"]

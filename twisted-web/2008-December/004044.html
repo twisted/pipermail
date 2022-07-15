@@ -1,0 +1,235 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Finding memory leaks in Nevow/Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Finding%20memory%20leaks%20in%20Nevow/Twisted&In-Reply-To=995fcdb00812160802j6f6b2d1fpeb764a0f33df3978%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004043.html">
+   <LINK REL="Next"  HREF="004045.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Finding memory leaks in Nevow/Twisted</H1>
+    <B>Werner Thie</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Finding%20memory%20leaks%20in%20Nevow/Twisted&In-Reply-To=995fcdb00812160802j6f6b2d1fpeb764a0f33df3978%40mail.gmail.com"
+       TITLE="[Twisted-web] Finding memory leaks in Nevow/Twisted">wthie at thiengineering.ch
+       </A><BR>
+    <I>Tue Dec 16 14:39:06 EST 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004043.html">[Twisted-web] Finding memory leaks in Nevow/Twisted
+</A></li>
+        <LI>Next message: <A HREF="004045.html">[Twisted-web] Finding memory leaks in Nevow/Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4044">[ date ]</a>
+              <a href="thread.html#4044">[ thread ]</a>
+              <a href="subject.html#4044">[ subject ]</a>
+              <a href="author.html#4044">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi
+
+I was bitten by the same problem and went so far to track down all the 
+fishy cycles which easily can be created. Most of the cycles I detected 
+were multi-object cycles which were created by me just storing 
+references to objects to have them handy. Certain types of cycles cannot 
+be broken by the gc, you get a runaway situation either in Python24 or 
+Python25. My code now runs without problems for months serving more than 
+10k users a day providing a card gaming environment.
+
+Things to check:
+- the object hierarchy on the server and the client should be in sync, 
+if not detach might not work correctly
+
+- do you use stateful LivePages?
+if so, check the toremember list in the request if its growing ad libidum
+
+- do you use guard/sessions?
+if so, be careful with the session/mind object and what you store in mind
+
+But without seeing your code it's close to impossible to give you more 
+than hints.
+
+I include some code which I wrote to peek into my running server with a 
+manhole connection. dumpobjects is loosely based on several Python 
+snippets and might not win a contest in programming but it helps to 
+track the number of objects of certain types in the running system when 
+used on the commandline from inside your server.
+
+HTH, Werner
+
+To create a manhole in the same process you started with your .tac file 
+use the following code:
+
+---------------------------------------------------------------
+def ManholeFactory(namespace, **passwords):
+   realm = manhole_ssh.TerminalRealm()
+
+   def getManhole(_):
+     return manhole.Manhole(namespace)
+
+   realm.chainedProtocolFactory.protocolFactory = getManhole
+   p = portal.Portal(realm)
+
+p.registerChecker(checkers.InMemoryUsernamePasswordDatabaseDontUse(**passwords))
+   f = manhole_ssh.ConchFactory(p)
+   return f
+
+console = ManholeFactory(globals(), admin='admin')
+internet.TCPServer(2222, console, 
+interface='localhost').setServiceParent(application)
+---------------------------------------------------------------
+
+exc = [
+   &quot;function&quot;,
+   &quot;type&quot;,
+   &quot;list&quot;,
+   &quot;dict&quot;,
+   &quot;tuple&quot;,
+   &quot;wrapper_descriptor&quot;,
+   &quot;module&quot;,
+   &quot;method_descriptor&quot;,
+   &quot;member_descriptor&quot;,
+   &quot;instancemethod&quot;,
+   &quot;builtin_function_or_method&quot;,
+   &quot;frame&quot;,
+   &quot;classmethod&quot;,
+   &quot;classmethod_descriptor&quot;,
+   &quot;_Environ&quot;,
+   &quot;MemoryError&quot;,
+   &quot;_Printer&quot;,
+   &quot;_Helper&quot;,
+   &quot;getset_descriptor&quot;,
+   &quot;weakreaf&quot;
+]
+
+inc = [
+   'YourObject_One',
+   'YourObject_Two'
+]
+
+prev = {}
+
+def dumpObjects(delta=True, limit=0, include=inc, exclude=[]):
+   global prev
+   if include != [] and exclude != []:
+     print 'cannot use include and exclude at the same time'
+     return
+   print 'working with:'
+   print '   delta: ', delta
+   print '   limit: ', limit
+   print ' include: ', include
+   print ' exclude: ', exclude
+   objects = {}
+   gc.collect()
+   oo = gc.get_objects()
+   for o in oo:
+     if getattr(o, &quot;__class__&quot;, None):
+       name = o.__class__.__name__
+       if ((exclude == [] and include == [])       or \
+           (exclude != [] and name not in exclude) or \
+           (include != [] and name in include)):
+         objects[name] = objects.get(name, 0) + 1
+##    if more:
+##      print o
+   pk = prev.keys()
+   pk.sort()
+   names = objects.keys()
+   names.sort()
+   for name in names:
+     if limit == 0 or objects[name] &gt; limit:
+       if not prev.has_key(name):
+         prev[name] = objects[name]
+       dt = objects[name] - prev[name]
+       if delta or dt != 0:
+         print '%0.6d -- %0.6d -- ' % (dt, objects[name]),  name
+       prev[name] = objects[name]
+
+
+
+
+
+
+
+Abdul-Wahid Paterson wrote:
+&gt;<i> Hi,
+</I>&gt;<i> 
+</I>&gt;<i> I am using Python 2.5.
+</I>&gt;<i> 
+</I>&gt;<i> I will try to use guppy as suggested in another post to so if it will 
+</I>&gt;<i> help. Otherwise yes, I will try to reduce it to the smallest possible 
+</I>&gt;<i> code to demonstrate the leak. At the moment the code is a bit complex so 
+</I>&gt;<i> is hard to track down.
+</I>&gt;<i> 
+</I>&gt;<i> Thanks for the help.
+</I>&gt;<i> 
+</I>&gt;<i> AW
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> On Tue, Dec 16, 2008 at 6:23 PM, Phil Christensen &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">phil at bubblehouse.org</A> 
+</I>&gt;<i> &lt;mailto:<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">phil at bubblehouse.org</A>&gt;&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i>     On Dec 16, 2008, at 10:07 AM, Abdul-Wahid Paterson wrote:
+</I>&gt;<i> 
+</I>&gt;<i>         I have managed to write my nevow/twisted site. I am using a lot
+</I>&gt;<i>         of Athena elements on my site and they are all working well from
+</I>&gt;<i>         a functional point of view. However, the Athena elements are
+</I>&gt;<i>         eating up RAM and as I leave things running the Twisted process
+</I>&gt;<i>         slowly consumes more and more RAM until the process dies.
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i>     The first thing would be to check that you're running at least
+</I>&gt;<i>     Python 2.5. Previous versions have garbage collection problems on
+</I>&gt;<i>     long-running apps like a Twisted web app.
+</I>&gt;<i> 
+</I>&gt;<i>     Athena-based apps should not inherently leak memory, but adding
+</I>&gt;<i>     leaks of your own creation isn't too hard ;-)
+</I>&gt;<i> 
+</I>&gt;<i>     If you are running 2.5 or later, you should try to reduce your app
+</I>&gt;<i>     to the smallest possible test version that demonstrates the leak,
+</I>&gt;<i>     and someone here can probably be of more help.
+</I>&gt;<i> 
+</I>&gt;<i>     -phil
+</I>&gt;<i> 
+</I>&gt;<i>     _______________________________________________
+</I>&gt;<i>     Twisted-web mailing list
+</I>&gt;<i>     <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">Twisted-web at twistedmatrix.com</A> &lt;mailto:<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">Twisted-web at twistedmatrix.com</A>&gt;
+</I>&gt;<i>     <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web</A>
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> ------------------------------------------------------------------------
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-web mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">Twisted-web at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web</A>
+</I>
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004043.html">[Twisted-web] Finding memory leaks in Nevow/Twisted
+</A></li>
+	<LI>Next message: <A HREF="004045.html">[Twisted-web] Finding memory leaks in Nevow/Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4044">[ date ]</a>
+              <a href="thread.html#4044">[ thread ]</a>
+              <a href="subject.html#4044">[ subject ]</a>
+              <a href="author.html#4044">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

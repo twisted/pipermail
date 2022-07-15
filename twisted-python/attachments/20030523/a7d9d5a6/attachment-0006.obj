@@ -1,0 +1,241 @@
+from __future__ import generators
+import struct, sys, time
+import zlib
+from util import IterableBytestreamProtocol, iter_fn
+from twisted.python.compat import True, False
+FTEXT, FHCRC, FEXTRA, FNAME, FCOMMENT = 1, 2, 4, 8, 16
+
+class GunzipStream(IterableBytestreamProtocol):
+
+    def _read_gzip_header(self, buffer_append, buffer_pop):
+        yield iter_fn('read', buffer_append, 2)
+        magic = buffer_pop()
+        if magic is None:
+            raise StopIteration, 'EOF'
+        elif magic != '\037\213':
+            raise IOError, 'Not a gzipped file'
+        yield iter_fn('read', buffer_append, 1)
+        method = ord( buffer_pop() )
+        if method != 8:
+            raise IOError, 'Unknown compression method'
+        yield iter_fn('read', buffer_append, 1)
+        flag = ord( buffer_pop() )
+        # modtime = self.fileobj.read(4)
+        # extraflag = self.fileobj.read(1)
+        # os = self.fileobj.read(1)
+        yield iter_fn('read', buffer_append, 6)
+        buffer_pop()
+
+        if flag & FEXTRA:
+            # Read & discard the extra field, if present
+            yield iter_fn('read', buffer_append, 1)
+            xlen=ord(buffer_pop())
+            yield iter_fn('read', buffer_append, 1)
+            xlen=xlen+256*ord(buffer_pop())
+            yield iter_fn('read', buffer_append, xlen)
+            buffer_pop()
+        if flag & FNAME:
+            # Read and discard a null-terminated string containing the filename
+            while (1):
+                yield iter_fn('read', buffer_append, 1)
+                s=buffer_pop()
+                if not s or s=='\000': break
+        if flag & FCOMMENT:
+            # Read and discard a null-terminated string containing a comment
+            while (1):
+                yield iter_fn('read', buffer_append, 1)
+                s=buffer_pop()
+                if not s or s=='\000': break
+        if flag & FHCRC:
+            yield iter_fn('read', buffer_append, 2)
+            buffer_pop()     # Read & discard the 16-bit header CRC
+
+    def __iter__(self):
+        buffer = []
+        buffer_pop = buffer.pop
+        buffer_append = buffer.append
+        read_any = iter_fn('read', buffer_append)
+        new_member = True
+        extrabuf = ''
+        finished = False
+        _write = self._write
+        while not finished:
+            if new_member:
+                # If the new_member flag is set, we have to
+                # jump to the next member, if there is one.
+
+                crc, size = zlib.crc32(""), 0
+                for iyield in self._read_gzip_header(buffer_append, buffer_pop):
+                    yield iyield
+                decompress = zlib.decompressobj(-zlib.MAX_WBITS)
+                _decompress = decompress.decompress
+                new_member = False
+
+            # read any sized chunk from the stream
+            yield read_any
+            buf = buffer_pop()
+
+            # The EOF has been reached
+            if buf is None:
+                finished = True
+                buf = ''
+
+            crc, size = _write(_decompress(extrabuf + buf), crc, size)
+
+            extrabuf = ''
+
+            if decompress.unused_data != "":
+                # Ending case: we've come to the end of a member in the file,
+                # so seek back to the start of the unused data, finish up
+                # this member, and read a new gzip header.
+                # (The number of bytes to seek back is the length of the unused
+                # data, minus 8 because _read_eof() will rewind a further 8 bytes)
+                extrabuf = decompress.unused_data
+                if len(extrabuf) < 8:
+                    yield iter_fn('read', buffer_append, 8 - len(extrabuf))
+                    extrabuf += buffer_pop()
+                # Check the CRC and file size, and set the flag so we read
+                # a new member on the next call
+                self._read_eof(extrabuf[:8], crc, size)
+                extrabuf = extrabuf[8:]
+                new_member = True
+
+        uncompress = decompress.flush()
+        extrabuf = decompress.unused_data
+        self._read_eof(extrabuf[:8], crc, size)
+        crc, size = _write( uncompress, crc, size)
+
+    def _write(self, data, crc, size):
+        crc = zlib.crc32(data, crc)
+        size += len(data)
+        self.write(data)
+        return crc, size
+        
+    def write(self, data):
+        pass
+
+    def _read_eof(self, data, crc, size):
+        # We've read to the end of the file, so we have to rewind in order
+        # to reread the 8 bytes containing the CRC and the file size.
+        # We check the that the computed CRC and size of the
+        # uncompressed data matches the stored values.
+        if not data:
+            return
+        crc32, isize = struct.unpack('<LL', data)
+        isize, size = isize & 0xFFFFFFFFL, size & 0xFFFFFFFFL
+        crc32, crc = crc32 & 0xFFFFFFFFL, crc & 0xFFFFFFFFL
+        if isize != size:
+            raise ValueError, "Incorrect length of data produced (%d != %d)" % (isize, size)
+        if crc32 != crc:
+            raise ValueError, "CRC check failed (%08X != %08X)" % (crc32, crc)
+
+class GzipStream(IterableBytestreamProtocol):
+    COMPRESSLEVEL = 6
+    def __iter__(self):
+        buffer = []
+        buffer_pop = buffer.pop
+        buffer_append = buffer.append
+        read_any = iter_fn('read', buffer_append)
+
+        crc, size = zlib.crc32(''), 0
+        # magic header, compression method, no flags
+        self.write('\037\213\010\000')
+        # timestamp
+        self.write(struct.pack('<L', long(time.time())))
+        # uh.. stuff
+        self.write('\002\377')
+
+        compress = zlib.compressobj(self.COMPRESSLEVEL, zlib.DEFLATED, -zlib.MAX_WBITS, zlib.DEF_MEM_LEVEL, 0)
+        _compress = compress.compress
+        _crc32 = zlib.crc32
+        
+        while True:
+            # read any sized chunk from the stream
+            yield read_any
+            buf = buffer_pop()
+
+            # The EOF has been reached
+            if buf is None:
+                break
+            elif len(buf) == 0:
+                continue
+
+            crc = _crc32(buf, crc)
+            size += len(buf)
+            self.write(_compress(buf))
+
+        self.write(compress.flush())
+        self.write(struct.pack('<LL', crc & 0xFFFFFFFFL, size & 0xFFFFFFFFL))
+
+    def write(self, data):
+        pass
+
+def test_protocol(data_length=51234, read_length=11):
+    from cStringIO import StringIO
+    import gzip
+    alldata = open('/dev/urandom').read(data_length)
+    ###
+    sio = StringIO()
+    vrfy = StringIO()
+    # verify that it can unzip GzipFile output
+    class GunzipTestProtocol(GunzipStream):
+        def write(self, data):
+            sio.write(data)
+    gzp = GunzipTestProtocol()
+    gzp.connectionMade()
+    gzw = gzip.GzipFile(fileobj=vrfy, mode='wb')
+    gzw.write(alldata)
+    gzw.close()
+    vlen = vrfy.tell()
+    vrfy.seek(0)
+    while vrfy.tell() < vlen:
+        gzp.dataReceived(vrfy.read(read_length))
+    gzp.connectionLost(None)
+    assert sio.getvalue() == alldata
+
+    ####
+    sio.seek(0)
+    sio.truncate()
+
+    vrfy.seek(0)
+    vrfy.truncate()
+    vrfy.write(alldata)
+    
+    # verify that it GzipFile can unzip its output
+    class GzipTestProtocolA(GzipStream):
+        def write(self, data):
+            sio.write(data)
+    gzz = GzipTestProtocolA()
+    gzz.connectionMade()
+
+    vlen = vrfy.tell()
+    vrfy.seek(0)
+    while vrfy.tell() < vlen:
+        gzz.dataReceived(vrfy.read(read_length))
+    gzz.connectionLost(None)
+    sio.seek(0)
+    gzw = gzip.GzipFile(fileobj=sio, mode='rb')
+    assert gzw.read() == alldata
+
+    ###
+    sio.seek(0)
+    sio.truncate()
+
+    # verify that the streams play nicely with each other
+    gzp = GunzipTestProtocol()
+    gzp.connectionMade()
+    class GzipTestProtocolB(GzipStream):
+        def write(self, data):
+            gzp.dataReceived(data)
+    gzz = GzipTestProtocolB()
+    gzz.connectionMade()
+
+    vlen = vrfy.tell()
+    vrfy.seek(0)
+    while vrfy.tell() < vlen:
+        gzz.dataReceived(vrfy.read(read_length))
+    gzz.connectionLost(None)
+    gzp.connectionLost(None)
+    assert sio.getvalue() == alldata
+
+if __name__=='__main__': test_protocol()

@@ -1,0 +1,128 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Understanding the IOCP reactor and adding	spawnProcess
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Understanding%20the%20IOCP%20reactor%20and%20adding%0A%09spawnProcess&In-Reply-To=%3C94a776e7050711085220094f1c%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="043486.html">
+   <LINK REL="Next"  HREF="043471.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Understanding the IOCP reactor and adding	spawnProcess</H1>
+    <B>Justin Johnson</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Understanding%20the%20IOCP%20reactor%20and%20adding%0A%09spawnProcess&In-Reply-To=%3C94a776e7050711085220094f1c%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Understanding the IOCP reactor and adding	spawnProcess">justinjohnson at gmail.com
+       </A><BR>
+    <I>Mon Jul 11 09:52:14 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="043486.html">[Twisted-Python] exceptions in adbapi
+</A></li>
+        <LI>Next message (by thread): <A HREF="043471.html">[Twisted-Python] Understanding the IOCP reactor and adding	spawnProcess
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#43470">[ date ]</a>
+              <a href="thread.html#43470">[ thread ]</a>
+              <a href="subject.html#43470">[ subject ]</a>
+              <a href="author.html#43470">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I am attempting to add spawnProcess to iocpreactor. In order to begin this 
+task I've had to do a lot of reading on Windows network programming, 
+specifically the various Windows I/O methods, to attempt to understand what 
+win32eventreactor and iocpreactor are doing, and also just increase my 
+understanding of how reactors work in general. To understand the various 
+Winsock 2 methods that both of these reactors rely upon, I read chapters 1-5 
+of Network Programming for Microsoft Windows[1].
+ Before actually attempting to add spawnProcess, I would like to present how 
+I think iocpreactor works and how I think I should add spawnProcess, and 
+hopefully be corrected or confirmed in my understanding. If I'm too vague 
+there's a good chance it's because I don't understand it very well. Please 
+feel free to point out things that you might think are obvious but aren't 
+sure I understand.
+ How iocpreactor works
+---------------------------------
+
+   1. Create an IO Completion Port. 
+   2. Create a socket and associate it with the IOCP. This is the socket 
+   we will call AcceptEx (a non-blocking accept) on. The association with the 
+   IOCP is made via CreateIoCompletionPort. 
+   3. Setup any scheduled tasks on the reactor. 
+   4. Call AcceptEx (which doesn't block) on the socket. AcceptEx takes 
+   an overlapped structure as a parameter. Before making the call, we set two 
+   attributes of the struct: the callback and callback_args which will be 
+   called when an accept event completes on the socket. The Winsock 2 methods 
+   don't actually call the callback. The Winsock 2 methods handle copying data 
+   related to the network event that occurred on the socket into the overlapped 
+   structure and making that overlapped structure available to 
+   GetQueuedCompletionStatus. So when we handle events on sockets via 
+   GetQueuedCompletionStatus from within doIteration, we have access to the 
+   data related to the event as well as the callback and callback_args we call 
+   to handle that event. The callbacks are setup in the xxxOp classes in 
+   ops.py and always result in some transport method getting called (such 
+   as readDone, connectionDone, etc). 
+   5. From within doIteration, call GetQueuedCompletionStatus (which does 
+   block) with a timeout of the time until the next scheduled task needs to be 
+   run. If any event occurs on the sockets currently associated with the IOCP 
+   before that time expires, GetQueuedCompletionStatus will return (stop 
+   blocking). Now we have access to the overlapped structure containing data 
+   associated with the event which was copied into the overlapped structure's 
+   buffer, such as data received from WSARecv calls, as well as the callback 
+   and callback_args. From within doIteration we call the callbacks passing in 
+   the data related to the event. Depending on the events we are handling, we 
+   may create new sockets (e.g. end point sockets in TCP connections) and 
+   associate them with the IOCP as well. All Winsock 2 API calls made are 
+   non-blocking accept for GetQueuedCompletionStatus. 
+   6. Step 5 continues until the reactor stops.
+
+  How to add spawnProcess
+---------------------------------------
+
+   1. Create the processes via Windows APIs and associate their 
+   stdout/err with with the IOCP via CreateIoCompletionPort calls. 
+   2. Close stdin. 
+   3. Notify the ProcessProtocol via protocol.makeConnection (not sure 
+   why, looking at win32eventreactor) 
+   4. Receive data from stdout/err via the completion port by calling 
+   GetQueuedCompletionStatus from within doIteration. Is this really possible? 
+   ProcessProtocol's methods won't get called appropriately by letting the 
+   existing callbacks in ops.py make calls to the transport (e.g. 
+   connectionDone, readDone)?
+
+  Thanks for your help.
+Justin
+ [1] <A HREF="http://www.amazon.com/exec/obidos/ASIN/0735615799">http://www.amazon.com/exec/obidos/ASIN/0735615799</A>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20050711/966328e8/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="043486.html">[Twisted-Python] exceptions in adbapi
+</A></li>
+	<LI>Next message (by thread): <A HREF="043471.html">[Twisted-Python] Understanding the IOCP reactor and adding	spawnProcess
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#43470">[ date ]</a>
+              <a href="thread.html#43470">[ thread ]</a>
+              <a href="subject.html#43470">[ subject ]</a>
+              <a href="author.html#43470">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

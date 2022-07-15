@@ -1,0 +1,193 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Event/Notifier Across Pb Boundaries
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Event/Notifier%20Across%20Pb%20Boundaries&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000374.html">
+   <LINK REL="Next"  HREF="000376.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Event/Notifier Across Pb Boundaries</H1>
+    <B>Moshe Zadka</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Event/Notifier%20Across%20Pb%20Boundaries&In-Reply-To="
+       TITLE="[Twisted-Python] Event/Notifier Across Pb Boundaries">m at moshez.org
+       </A><BR>
+    <I>Wed Sep 19 04:13:16 EDT 2001</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000374.html">[Twisted-Python] Adaptive Port
+</A></li>
+        <LI>Next message: <A HREF="000376.html">[Twisted-Python] Mail Support
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#375">[ date ]</a>
+              <a href="thread.html#375">[ thread ]</a>
+              <a href="subject.html#375">[ subject ]</a>
+              <a href="author.html#375">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I've written a small module to do event/notifications. It's a fairly
+small and nice example of how to write pb protocols as well as being
+something useful
+
+&gt;<i>----------- twisted/internet/event.py ---------------&lt;
+</I># Twisted, the Framework of Your Internet
+# Copyright (C) 2001 Matthew W. Lefkowitz
+# 
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of version 2.1 of the GNU Lesser General Public
+# License as published by the Free Software Foundation.
+# 
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+# 
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+from twisted.spread import pb
+from twisted.internet import passport
+from twisted.python import reflect
+
+class EventPublishPerspective(pb.Perspective):
+    def perspective_subscribe(self, event, subscriber):
+        self.service.subscribe(event, subscriber)
+
+    def perspective_notifyEvent(self, event, *args, **kw):
+        self.service.notifyEvent(event, args, kw)
+
+class EventPublishService(pb.Service):
+
+    def __init__(self, *args, **kw):
+        apply(pb.Service.__init__, (self,)+args, kw)
+        self.eventSubscribers = {}
+
+    def subscribe(self, event, subscriber):
+        if not self.eventSubscribers.has_key(event):
+            self.eventSubscribers[event] = []
+        self.eventSubscribers[event].append(subscriber)
+
+    def notifyEvent(self, event, args, kw):
+        for subscriber in self.eventSubscribers.get(event, ()):
+            try:
+                apply(subscriber.notifyEvent, (event,)+args, kw)
+            except pb.ProtocolError:
+                pass
+
+    def getPerspectiveNamed(self, name):
+        return EventPublishPerspective(&quot;any&quot;, self)
+
+
+class EventNotifier(pb.Referenceable):
+
+    def registerAll(self, perspective):
+        dct = {}
+        reflect.addMethodNamesToDict(self.__class__, dct, &quot;event_&quot;)
+        for name in dct.keys():
+            perspective.subscribe(name, self)
+
+    def remote_notifyEvent(self, event, *args, **kw):
+        method = getattr(self, 'event_'+event, None)
+        if method is None:
+            return
+        apply(method, args, kw)
+
+if __name__ == '__main__':
+    import event
+    from twisted.internet.main import Application
+    app = Application(&quot;event&quot;)
+    i = passport.Identity(&quot;guest&quot;, app)
+    i.setPassword(&quot;guest&quot;)
+    app.authorizer.addIdentity(i)
+    bf = pb.BrokerFactory(app)
+    svc = event.EventPublishService(&quot;event&quot;, app)
+    i.addKeyForPerspective(svc.getPerspectiveNamed('any'))
+    app.listenOn(pb.portno, bf)
+    app.save(&quot;start&quot;)
+&gt;<i>-----------------------------------------------------------&lt;
+</I>
+&gt;<i>----------- run this to get &quot;event-start.tap&quot; -------------&lt;
+</I>from twisted.internet import event, passport, main
+from twisted.spread import pb
+
+app = main.Application(&quot;event&quot;)
+i = passport.Identity(&quot;guest&quot;, app)
+i.setPassword(&quot;guest&quot;)
+app.authorizer.addIdentity(i)
+bf = pb.BrokerFactory(app)
+svc = event.EventPublishService(&quot;event&quot;, app)
+i.addKeyForPerspective(svc.getPerspectiveNamed('any'))
+app.listenOn(pb.portno, bf)
+app.save(&quot;start&quot;)
+&gt;<i>--------------------------------------------&lt;
+</I>
+&gt;<i>------------ this connects and gets a notification -----------&lt;
+</I>from twisted.spread import pb
+from twisted.internet import tcp, main, event
+
+class HelloEvent(event.EventNotifier):
+
+    def event_hello(self, who):
+        print &quot;hello&quot;, who
+        main.shutDown()
+
+def failure(error):
+    print &quot;Failure...&quot;,error
+    main.shutDown()
+
+def connected(perspective):
+    hello = HelloEvent()
+    hello.registerAll(perspective)
+    print &quot;registered&quot;
+    perspective.notifyEvent(&quot;hello&quot;, &quot;world&quot;, pberrback=failure)
+    print &quot;connected.&quot;
+
+def preConnected(identity):
+    identity.attach(&quot;event&quot;, &quot;any&quot;, None,
+                    pbcallback=connected,
+                    pberrback=failure)
+
+b = pb.Broker()
+b.requestIdentity(&quot;guest&quot;,  &quot;guest&quot;,
+                  callback = preConnected,
+                  errback  = failure)
+tcp.Client(&quot;localhost&quot;,pb.portno,b)
+main.run()
+&gt;<i>-------------------------------------------&lt;
+</I>
+-- 
+The Official Moshe Zadka FAQ: <A HREF="http://moshez.geek">http://moshez.geek</A>
+The Official Moshe Zadka FAQ For Dummies: <A HREF="http://moshez.org">http://moshez.org</A>
+Read the FAQ
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000374.html">[Twisted-Python] Adaptive Port
+</A></li>
+	<LI>Next message: <A HREF="000376.html">[Twisted-Python] Mail Support
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#375">[ date ]</a>
+              <a href="thread.html#375">[ thread ]</a>
+              <a href="subject.html#375">[ subject ]</a>
+              <a href="author.html#375">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

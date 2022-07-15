@@ -1,0 +1,293 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] load balancing and performance
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20load%20balancing%20and%20performance&In-Reply-To=20050130002633.7026.2143943333.divmod.quotient.13097%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001118.html">
+   <LINK REL="Next"  HREF="001123.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] load balancing and performance</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20load%20balancing%20and%20performance&In-Reply-To=20050130002633.7026.2143943333.divmod.quotient.13097%40ohm"
+       TITLE="[Twisted-web] load balancing and performance">andrea at cpushare.com
+       </A><BR>
+    <I>Sun Jan 30 04:46:35 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001118.html">[Twisted-web] load balancing and performance
+</A></li>
+        <LI>Next message: <A HREF="001123.html">[Twisted-web] load balancing and performance
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1115">[ date ]</a>
+              <a href="thread.html#1115">[ thread ]</a>
+              <a href="subject.html#1115">[ subject ]</a>
+              <a href="author.html#1115">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sun, Jan 30, 2005 at 12:26:33AM +0000, Valentino Volonghi wrote:
+&gt;<i> It's probably also a good idea to write a balancer that works on unix
+</I>&gt;<i> sockets. And this means also writing a good path to which it should
+</I>&gt;<i> dispatch. 
+</I>
+I already wrote something that works for me, but I'm running into
+troubles with ssl. For various reasons I can't use this dirty hack
+unless it covers ssl too, and before I can truly load balance the ssl
+I'll need to share the session first.
+
+Here the hack just in case somebody can find it useful (works perfectly
+with http). Just make sure to leave the 8080/8081 etc.. closed by the
+firewall or it'd be trivial to fake the client IP address in the logs.
+Only the load balancer port must be open in the firewall. You're warned ;)
+
+I'm not proposing this hack for merging, it doesn't even have an API to
+pass to appserver.NevowSite, but this might be useful to get an hint on
+how to make it work.
+
+--- ./Nevow/nevow/appserver.py.~1~	2005-01-29 02:12:44.000000000 +0100
++++ ./Nevow/nevow/appserver.py	2005-01-29 17:11:16.000000000 +0100
+@@ -222,7 +222,8 @@ class NevowSite(server.Site):
+     def __init__(self, *args, **kwargs):
+         server.Site.__init__(self, *args, **kwargs)
+         self.context = context.SiteContext()
+-        
++        self.proxyPeer = True
++
+     def remember(self, obj, inter=None):
+         &quot;&quot;&quot;Remember the given object for the given interfaces (or all interfaces
+         obj implements) in the site's context.
+--- ./Twisted/twisted/web/http.py.~1~	2005-01-14 20:44:45.000000000 +0100
++++ ./Twisted/twisted/web/http.py	2005-01-29 17:43:56.000000000 +0100
+@@ -526,7 +526,10 @@ class Request:
+ 
+         # cache the client and server information, we'll need this later to be
+         # serialized and sent with the request so CGIs will work remotely
+-        self.client = self.channel.transport.getPeer()
++        if not self.channel.proxyPeer:
++            self.client = self.channel.transport.getPeer()
++        else:
++            self.client = self.channel.proxyPeer
+         self.host = self.channel.transport.getHost()
+ 
+         # Argument processing
+@@ -909,6 +912,7 @@ class HTTPChannel(basic.LineReceiver, po
+     __header = ''
+     __first_line = 1
+     __content = None
++    proxyPeer = None
+ 
+     # set in instances or subclasses
+     requestFactory = Request
+@@ -921,11 +925,18 @@ class HTTPChannel(basic.LineReceiver, po
+ 
+     def connectionMade(self):
+         self.setTimeout(self.timeOut)
+-    
++
++    def handleProxyPeer(self, line):
++        self.proxyPeer = self.transport.getPeer()
++        self.proxyPeer.host, self.proxyPeer.port = line.split()
++
+     def lineReceived(self, line):
+         self.resetTimeout()
+ 
+         if self.__first_line:
++            if self.factory.proxyPeer and not self.proxyPeer:
++                self.handleProxyPeer(line)
++                return
+             # if this connection is not persistent, drop any data which
+             # the client (illegally) sent after the last request.
+             if not self.persistent:
+@@ -1086,6 +1097,7 @@ class HTTPFactory(protocol.ServerFactory
+             logPath = os.path.abspath(logPath)
+         self.logPath = logPath
+         self.timeOut = timeout
++        self.proxyPeer = False
+ 
+     def buildProtocol(self, addr):
+         p = protocol.ServerFactory.buildProtocol(self, addr)
+Index: pythondirector/pydirector/pdnetworktwisted.py
+===================================================================
+RCS file: /cvsroot/pythondirector/pythondirector/pydirector/pdnetworktwisted.py,v
+retrieving revision 1.11
+diff -u -p -r1.11 pdnetworktwisted.py
+--- pythondirector/pydirector/pdnetworktwisted.py	14 Dec 2004 13:31:39 -0000	1.11
++++ pythondirector/pydirector/pdnetworktwisted.py	29 Jan 2005 16:49:56 -0000
+@@ -58,7 +58,7 @@ class Sender(Protocol):
+         &quot;&quot;&quot;
+         if self.receiver is not None:
+             if reason.type is twisted.internet.error.ConnectionDone:
+-                return
++                pass
+             elif reason.type is twisted.internet.error.ConnectionLost:
+                 pass
+             else:
+@@ -78,7 +78,8 @@ class Sender(Protocol):
+             we've connected to the destination server. tell the other end
+             it's ok to send any buffered data from the client.
+         &quot;&quot;&quot;
+-        #print &quot;client connection&quot;,self.factory
++        peer = self.receiver.transport.getPeer()
++        self.transport.write('%s %s\r\n' % (peer.host, peer.port))
+         if self.receiver.receiverOk:
+             self.receiver.setSender(self)
+         else:
+
+&gt;<i> Tell me more about the session daemon. Anyway we are designing an
+</I>&gt;<i> ISessionManager interface to let you write whatever sessionFactory you
+</I>&gt;<i> need, a database or a SessionDaemon or a file or something else.
+</I>&gt;<i> Probably you can help with it by coming in #twisted.web and commenting
+</I>&gt;<i> it with one of us (Donovan, Matt, Tv, me and others). 
+</I>
+You're right. I'm having an hard time to use #irc because I'm doing this
+in my spare time, often at weird times, I can't work on this during the
+day or I would go bankrupt ;).
+
+&gt;<i> &gt; Perhaps I'm going with wrong priorities though, the major offender is
+</I>&gt;<i> &gt; compy, compy must be dropped from Nevow ASAP :). Leaving it as a
+</I>&gt;<i> 
+</I>&gt;<i> compy is not going away :). Writing a compy2 speedup in Pyrex will
+</I>&gt;<i> help and will probably also be faster than zope.interface since it
+</I>&gt;<i> will be a lot smaller.
+</I>
+I diagree, see other email for the details on the reasoning of my
+disagreement ;).
+
+&gt;<i> zope.interface is twice as fast without the compatibility stuff in
+</I>&gt;<i> twisted and I think it is the same for Nevow.
+</I>
+So let's use zope.interfaces. I don't care if we pass through twisted,
+especially if raw zope.interfaces is faster and twisted depends on it
+anyway, we should probably avoid passing through twisted.  But like
+twisted is giving it up to use its own implementation, we should give it
+up to use our implementation.
+
+The twice as fast will translate in thousand times faster. This thing
+gets called thousand of  times per page or similar. I get 100000 calls
+of the deprecated API in a trivial workload, so much that removing the
+deprecation warning one liner that I posted some day ago, is already a
+double digit percent boost ;).
+
+So I believe it worth a try, and eliminating duplicated code sure cannot
+make things worse in the long run ;).
+
+&gt;<i> &gt; Secondly I'm looking into caching the html and to render some fragment only
+</I>&gt;<i> &gt; once every 10 seconds in the background (so the downloads will never
+</I>&gt;<i> &gt; have to wait for a rendering of some mostly static fragment anymore).
+</I>&gt;<i> 
+</I>&gt;<i> I wrote this VERY simple stuff for caching a page:
+</I>&gt;<i> 
+</I>&gt;<i> Index: rend.py
+</I>&gt;<i> ===================================================================
+</I>&gt;<i> --- rend.py     (revision 1105)
+</I>&gt;<i> +++ rend.py     (working copy)
+</I>&gt;<i> @@ -30,6 +30,7 @@
+</I>&gt;<i>  from nevow import flat
+</I>&gt;<i>  from nevow.util import log
+</I>&gt;<i>  from nevow import util
+</I>&gt;<i> +from nevow import url
+</I>&gt;<i>  
+</I>&gt;<i>  import formless
+</I>&gt;<i>  from formless import iformless
+</I>&gt;<i> @@ -376,6 +377,7 @@
+</I>&gt;<i>              self.children = {}
+</I>&gt;<i>          self.children[name] = child
+</I>&gt;<i>      
+</I>&gt;<i> +_CACHE = {}
+</I>&gt;<i>  
+</I>&gt;<i>  class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+</I>&gt;<i>      &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+</I>&gt;<i> @@ -417,7 +419,8 @@
+</I>&gt;<i>              io = StringIO()
+</I>&gt;<i>              writer = io.write
+</I>&gt;<i>              def finisher(result):
+</I>&gt;<i> -                request.write(io.getvalue())
+</I>&gt;<i> +                c = _CACHE[url.fromContext(ctx)] = io.getvalue()
+</I>&gt;<i> +                request.write(c)
+</I>&gt;<i>                  finishRequest()
+</I>&gt;<i>                  return result
+</I>&gt;<i>          else:
+</I>&gt;<i> @@ -425,12 +428,17 @@
+</I>&gt;<i>              def finisher(result):
+</I>&gt;<i>                  finishRequest()
+</I>&gt;<i>                  return result
+</I>&gt;<i> +        c = _CACHE.get(url.fromContext(ctx), None)
+</I>&gt;<i> +        if c is None:
+</I>&gt;<i> +            doc = self.docFactory.load()
+</I>&gt;<i> +            ctx =  WovenContext(ctx, tags.invisible[doc])
+</I>&gt;<i> +            
+</I>&gt;<i> +            return self.flattenFactory(doc, ctx, writer, finisher)
+</I>&gt;<i> +        else:
+</I>&gt;<i> +            request.write(c)
+</I>&gt;<i> +            finishRequest()
+</I>&gt;<i> +            return c
+</I>&gt;<i>  
+</I>&gt;<i> -        doc = self.docFactory.load()
+</I>&gt;<i> -        ctx =  WovenContext(ctx, tags.invisible[doc])
+</I>&gt;<i> -
+</I>&gt;<i> -        return self.flattenFactory(doc, ctx, writer, finisher)
+</I>&gt;<i> -
+</I>&gt;<i>      def rememberStuff(self, ctx):
+</I>&gt;<i>          Fragment.rememberStuff(self, ctx)
+</I>&gt;<i>          ctx.remember(self, inevow.IResource)
+</I>&gt;<i> 
+</I>&gt;<i> This works and I've tested it.
+</I>&gt;<i> 
+</I>&gt;<i> Rendering speed went from 6-7 requests/sec to 26 req/sec on my poor ibook with the database on the same computer and ab too.
+</I>
+This is great, I'll play with this code very soon. This is a much more
+significant optimization than the load balancer, with the load balancer
+I could only double the number of pages per second.
+
+&gt;<i> This patch is simple, probably too simple (in fact it would be better
+</I>&gt;<i> to cache the flattening result, this would be a lot more fine grained)
+</I>&gt;<i> since it only works in buffered mode (patching this patch to work in
+</I>&gt;<i> non buffered mode is not hard at all though)
+</I>
+No problem, it's still a good start ;).
+
+&gt;<i> &gt; So overall there's an huge room for improvements. What do other people
+</I>&gt;<i> &gt; think?
+</I>&gt;<i> 
+</I>&gt;<i> I also think that the optimizations branch is worth of some
+</I>&gt;<i> experimentation. I got twice the rendering speed in dynamic pages
+</I>&gt;<i> thanks to its adapters caching. I'd give it a try.
+</I>&gt;<i> 
+</I>&gt;<i> Overall I think nevow can, and will, speedup at least by a factor of
+</I>&gt;<i> 5.
+</I>
+Sounds great, thanks!
+
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001118.html">[Twisted-web] load balancing and performance
+</A></li>
+	<LI>Next message: <A HREF="001123.html">[Twisted-web] load balancing and performance
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1115">[ date ]</a>
+              <a href="thread.html#1115">[ thread ]</a>
+              <a href="subject.html#1115">[ subject ]</a>
+              <a href="author.html#1115">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

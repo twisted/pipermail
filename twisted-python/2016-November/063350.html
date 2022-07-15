@@ -1,0 +1,258 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Twisted 16.6.0rc1 Release Candidate	Announcement
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%2016.6.0rc1%20Release%20Candidate%0A%09Announcement&In-Reply-To=%3CBE39B074-E1D8-4611-9486-A7A6DD5BA0B2%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="063347.html">
+   <LINK REL="Next"  HREF="063351.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Twisted 16.6.0rc1 Release Candidate	Announcement</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%2016.6.0rc1%20Release%20Candidate%0A%09Announcement&In-Reply-To=%3CBE39B074-E1D8-4611-9486-A7A6DD5BA0B2%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Twisted 16.6.0rc1 Release Candidate	Announcement">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue Nov 22 14:37:01 MST 2016</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="063347.html">[Twisted-Python] Twisted 16.6.0rc1 Release Candidate	Announcement
+</A></li>
+        <LI>Next message (by thread): <A HREF="063351.html">[Twisted-Python] Twisted 16.6.0rc1 Release Candidate	Announcement
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#63350">[ date ]</a>
+              <a href="thread.html#63350">[ thread ]</a>
+              <a href="subject.html#63350">[ subject ]</a>
+              <a href="author.html#63350">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Nov 20, 2016, at 19:35, Mark Williams &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">markrwilliams at gmail.com</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> On Fri, Nov 18, 2016 at 05:36:16PM -0800, Glyph Lefkowitz wrote:
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> &quot;doesn't work&quot; is a pretty black-and-white assessment.  Are you anticipating a problem with the way the interface is specified that it can't be easily changed?
+</I>&gt;&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> Yes.  Here's the lede:
+</I>
+Thank you for summarizing!  Point by point, here's my position:
+
+&gt;<i> IRCClient should deal in bytes and we should introduce a ProtocolWrapper-like thing that encodes and decodes
+</I>&gt;<i> command prefixes and parameters.
+</I>
+I disagree.  Any user-facing API should deal in unicode objects.  (There is one caveat here; there really should be a separate layer for dealing with text; IRCClient being a subclassing-based API pollutes the whole issue.  But that API shouldn't be public, so this is largely minutae; the &quot;right&quot; answer here has nothing to do with bytes or text and everything to do with adopting .)
+
+&gt;<i> It should implement an interface, and we can start with an implementation that only knows about UTF-8.
+</I>
+We should have the implementation initially know about UTF-8, yes.
+
+&gt;<i> The obvious advantage of this is that you can more easily write IRCClients that work on both Python 2 and 3.
+</I>
+This is the part that I'm worried about.  It kinda seems like we're moving toward &quot;native string&quot; being the type used in IRCClient, and that is capital-W Wrong.  Native strings are for Python-native types only, i.e. docstrings and method names.
+
+
+&gt;<i> I'm also not entirely sure of the consequences of this interface
+</I>&gt;<i> change.  I think it deserves more thought before it becomes an API
+</I>&gt;<i> that we have to support.  This is the primary reason I opened the
+</I>&gt;<i> revert PR.
+</I>
+One of the things that's informing my decision is that IRCClient is already an incredibly ill-defined API that probably needs to be deprecated and overhauled at some point.  However, in the intervening (what will almost certainly be a) decade, I'd like it to work on Python 3.
+
+&gt;<i> I'm more precisely worried about the fact that the implementation
+</I>&gt;<i> raises a decoding exception that cannot be handled in user code when
+</I>&gt;<i> it receives non-UTF-8 messages,
+</I>
+The right way to deal with this is twofold:
+
+Add the ability to specify both the &quot;encoding&quot; and the &quot;errors&quot; of the relevant codec &lt;<A HREF="https://docs.python.org/2.7/library/codecs.html#codecs.decode">https://docs.python.org/2.7/library/codecs.html#codecs.decode</A> &lt;<A HREF="https://docs.python.org/2.7/library/codecs.html#codecs.decode">https://docs.python.org/2.7/library/codecs.html#codecs.decode</A>&gt;&gt;, so that we can choose error handling strategies.
+(potentially, if you have very nuanced requirements for dealing with weird encodings) write a codec that logs and handles its own errors.  (We probably shouldn't be logging a traceback for encoding problems regardless, if it's UnicodeDecodeError.  But that's something that can easily be fixed in subsequent releases as well)
+
+&gt;<i> and the fact that the line length checks occur prior to encoding, ensuring mid-codepoint truncation. These issues also contributed to my revert.
+</I>
+Line length checks are a super interesting example because I think they also illustrate my concerns as well.
+
+To properly do message-splitting (which is why we're checking line length), you have to:
+
+check the length in octets (because it's actually a message-length limit in octets, not a line-length limit in characters)
+split the textual representation - ideally somewhere relevant like a word break, which you can only detect in text!
+try encoding again and ensure that the encoded representation is the correct length, repeating if necessary.
+
+This is an implementation-level bug though, not an interface-level one, so I'm also comfortable fixing this bug in the future.
+
+&gt;&gt;<i> My points are, separately:
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> IRC is text. It's nonsensical to process it as bytes, because you can't process it as bytes.  This is separate from the question of &quot;what encoding is IRC&quot;.
+</I>&gt;<i> 
+</I>&gt;<i> It's nonsensical that it be finally presented to a human as raw bytes.
+</I>&gt;<i> I'm advocating for the decision to be made as late as possible.  That
+</I>&gt;<i> doesn't mean we can't provide an easy-to-use recoding client that we
+</I>&gt;<i> encourage people to turn to first.
+</I>
+You can't process it as bytes either, though.  In some cases you think you can, but then you get mid-codepoint truncation :-).
+
+&gt;<i> But we can't have *a* fallback encoding.  My encoding detector program
+</I>&gt;<i> indicates that latin-1 is the second most popular encoding for
+</I>&gt;<i> European IRC servers, but Russian servers I sampled (not in
+</I>&gt;<i> netsplit.de's top 10) used a variety of Cyrillic encodings.
+</I>
+If you really want to do something this sophisticated (and, I should note: no other IRC clients or bots I'm aware of do, so I think you've got an unrealistically tight set of requirements) then you can just write your own single codec that composes a bunch of others, and install it.  Python's encoding system is extensible for exactly this reason :).
+
+&gt;<i> I also want to enable arbitrary recovery strategies for bad encodings.
+</I>
+This is totally not an IRC-specific thing though :-).
+
+&gt;<i> For instance, in the case that an IRC client or server truncates a
+</I>&gt;<i> code point at a line boundary, it might be the right idea to binary
+</I>&gt;<i> search until the invalid byte sequence is found, and then exclude it.
+</I>&gt;<i> It might be the right idea to buffer the message for a time in the
+</I>&gt;<i> hopes that the codepoint got split over two lines.
+</I>&gt;<i> 
+</I>&gt;<i> And what if somebody wants to run another encoding survey?
+</I>
+Decode as charmap, which is what we call latin-1 when we want to do this :).  That's a super edge-case, and should not be easy by default.
+
+&gt;<i> I don't expect most users to do any of that, but *I* certainly want to
+</I>&gt;<i> without having to copy and paste a bunch of code.
+</I>
+You can totally do all of these things once we can specify an encoding.
+
+&gt;&gt;<i> &lt;arabic USB drive&gt;
+</I>&gt;<i> 
+</I>&gt;<i> My real point was that dealing with bad encodings is not theoretical.
+</I>&gt;<i> Nobody knew the encoding, by the way; they just knew the USB drive
+</I>&gt;<i> worked for some of them and not others, and were resulting to printing
+</I>&gt;<i> things out or taking screen shots.
+</I>
+Sure, sorry for my sarcastic retort.  The example is totally germane; I didn't mean to say it wasn't.
+
+&gt;<i> That's the situation opinionated software with monolithic abstractions
+</I>&gt;<i> creates.  People *will* find workarounds that are terrible for a bunch
+</I>&gt;<i> of reasons.  I can vouch for the utility of tools that decide on
+</I>&gt;<i> encodings as late as possible.
+</I>
+Wouldn't it have been great if you couldn't create this mess in the first place, though?  The ability to recover is good (and being able to specify the encoding, and write your own custom codec, for IRC is certainly important).
+
+&gt;<i> I don't remember either.  But, now the driver *allows* me to do that
+</I>&gt;<i> without requiring it, and also allows me to mount the file system so
+</I>&gt;<i> that the paths are exposed as bytes.  Since nobody knew the encoding,
+</I>&gt;<i> that was essential to letting me use mlterm to determine it.  Nowadays
+</I>&gt;<i> I'd probably use chardet but would still need the raw bytes.
+</I>
+Using latin-1 in this scenario would have worked as well, though.
+
+&gt;<i> And as far as I know code point sequence truncation can also occur on
+</I>&gt;<i> FAT16/32 partitions.  In the event of such truncation the automatic
+</I>&gt;<i> decoding would only prevent me from mounting the partition.  I'm
+</I>&gt;<i> thankful that the implementation allows me to choose a recovery
+</I>&gt;<i> strategy in a very real edge case.  If it didn't, I'd have to look up
+</I>&gt;<i> the file system's on disk format and reimplement 99% of a FAT16 driver
+</I>&gt;<i> to get at the data.
+</I>
+OK, now we're getting into some real filesystem esoterica which I'm not sure applies any more :-).
+
+&gt;&gt;<i> Sorry, my statement you were responding to here was way too strong.  What I meant to say here is that long term there is no way to get a &quot;right&quot; answer in this ecosystem, so &quot;UTF-8 is the only correct answer&quot; is the only direction we can push in to actually make things work reasonably by default an increasing proportion of the time.  For the forseeable future, adding the ability to cope with other encodings (encoding a fallback to latin-1 so that you can at least do demojibakefication manually after copy/pasting) is something a general-purpose IRC library absolutely needs.  This is why every client has an &quot;encoding&quot; selection menu, too.
+</I>&gt;&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> For what it's worth, I want to make it easy to use UTF-8.  I just
+</I>&gt;<i> don't want to make it hard to use an encoding that's *not* UTF-8.
+</I>
+I want to make it a little hard.  Having a version floating around for a few releases that only supports UTF-8 creates gentle social pressure for everyone to fix their encodings.  Later releasing the version that supports arbitrary stuff including chardet addresses the long tail of brokenness that can't be fixed by a nudge.
+
+&gt;&gt;&gt;<i> It makes more sense to have an implementation that parses protocol
+</I>&gt;&gt;&gt;<i> elements as bytes and provides a bytes API.  It's fine to also provide
+</I>&gt;&gt;&gt;<i> a decoded text API, but not to the exclusion of bytes.
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> This is the point where I think we diverge.  I don't think adding a bytes API actually adds any value.  Trying to process the contents of IRC as bytes as any way leads to inevitable failures (&quot;line&quot; truncation midway through a UTF-8 escape sequence for example).
+</I>&gt;<i> 
+</I>&gt;<i> This is precisely where we disagree.  As I described above, I can
+</I>&gt;<i> think of a couple ways to handle mid-codepoint truncation.  A
+</I>&gt;<i> Twisted-based IRC client should have the option to implement its own.
+</I>&gt;<i> The end result would still be text (or at least an informative log
+</I>&gt;<i> message.)
+</I>
+OK, this is definitely the part where we diverge.
+
+If you care so much about the hairsplitting specifics of IRC byte handling that you want to change the line-splitting algorithm to do something specific, you should be maintaining Twisted, not writing applications with it.
+
+I suppose I should reveal my bias here: IRC is a garbage protocol, and its implementations' main utility should be upward compatibility with something more modern, maybe a line-delimited JSON thing, since XMPP doesn't seem to have taken off.  That thing hasn't arrived yet, whatever it will be, but when we present an application-level interface to it, we should strip away as much IRC-specific junk as we can, while still maintaining enough specificity that consumers of the API can provoke specific desired user-facing behaviors in user interfaces (for example, preserving the distinction between &quot;notice&quot; and &quot;message&quot;).
+
+Twisted's IRC support's job, in my mind, is to support applications that want to interact with users and servers, and possibly process messages in between.  You can't process messages as bytes (see mid-codepoint truncation above), so presenting a bytes-oriented interface is useless for this whole class of application, not just for the final step where the message is presented to a human.  Presenting this low-level interface to enable users the ability to customize line-splitting is just bonkers.
+
+&gt;<i> I think the best way to handle this is to have a bytes-only IRC client
+</I>&gt;<i> that can then be wrapped with something that decodes prefixes and
+</I>&gt;<i> parameters.  We can provide a UTF-8 recoder that people are encouraged
+</I>&gt;<i> to use, and an interface that allows implementers to choose their own
+</I>&gt;<i> encoding strategy.
+</I>
+At the risk of repeating myself, the way you select an encoding strategy in Python is selecting an encoding :).
+
+&gt;<i> I will say I'm happy to take a stab at a recoder.
+</I>
+You've used this word a few times - what is a &quot;recoder&quot;?
+
+&gt;<i> Shipping what we have now will mean we're putting bugs out there (see
+</I>&gt;<i> the line length issues called out in the ticket) and an interface I
+</I>&gt;<i> think we haven't thought through, but that certainly limits what IRC
+</I>&gt;<i> protocol messages you can receive.
+</I>
+I'm OK with there being edge-case bugs like this: we should fix them one at a time.  Smaller PRs are better, even if it means not everything works perfectly in every release.
+
+&gt;<i> I guess charmap could be used to implement the recovery scheme I keep
+</I>&gt;<i> talking about, but then we'd be telling people to work out the
+</I>&gt;<i> recoding interaction between IRCClient and their own implementation.
+</I>&gt;<i> I'd like to provide a defined way of doing so eventually.
+</I>
+As Kay put it, simple things should be easy, and complex things should be possible.  I am happy with this tradeoff - writing this weird transcoding nexus IRC proxy application _should_ be kind of hard ;).  Writing a bot that spits out emoji in response to jokes should be easy.  (And you can't even encode emoji in KOI-8, so.)
+
+&gt;&gt;<i> So... have I sold you?
+</I>&gt;&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> On default UTF-8?  Absolutely!  But I don't know exactly the way to do
+</I>&gt;<i> it, so I'd rather provide a Python 3 port that actually implements the
+</I>&gt;<i> protocol, and then work out a nice recoding API.
+</I>&gt;<i> 
+</I>&gt;<i> Thanks for taking the time to talk through this.  I appreciate it!
+</I>
+
+Sorry to say my final call (as backed up by Amber, apropos of our earlier IRC conversation (WHICH I SHOULD NOTE WAS CONDUCTED USING UTF-8 TEXT!!!)) is not to act on the revert.  But you raise many valid issues and I hope that we can get those nailed by the next release as just regular old bugfixes :).
+
+This has been a great conversation though, I hope we can have more like it on the mailing list :).
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20161122/d2f290e7/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="063347.html">[Twisted-Python] Twisted 16.6.0rc1 Release Candidate	Announcement
+</A></li>
+	<LI>Next message (by thread): <A HREF="063351.html">[Twisted-Python] Twisted 16.6.0rc1 Release Candidate	Announcement
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#63350">[ date ]</a>
+              <a href="thread.html#63350">[ thread ]</a>
+              <a href="subject.html#63350">[ subject ]</a>
+              <a href="author.html#63350">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

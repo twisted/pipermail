@@ -1,0 +1,257 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] SSL Cert Verification howto
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20SSL%20Cert%20Verification%20howto&In-Reply-To=%3C18e3f33d0705111336u56438529sa22d83dd85f650a1%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="047867.html">
+   <LINK REL="Next"  HREF="047866.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] SSL Cert Verification howto</H1>
+    <B>Eli Criffield</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20SSL%20Cert%20Verification%20howto&In-Reply-To=%3C18e3f33d0705111336u56438529sa22d83dd85f650a1%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] SSL Cert Verification howto">elicriffield at gmail.com
+       </A><BR>
+    <I>Fri May 11 14:36:07 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="047867.html">[Twisted-Python] A Solution Re: [Stackless] Advice on Debugging	Stackless/Twisted Problem
+</A></li>
+        <LI>Next message (by thread): <A HREF="047866.html">[Twisted-Python] SSL Cert Verification howto
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#47865">[ date ]</a>
+              <a href="thread.html#47865">[ thread ]</a>
+              <a href="subject.html#47865">[ subject ]</a>
+              <a href="author.html#47865">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I was going to post to the twisted wiki, but apparently there isn't one?
+
+ So here is how I made a twisted based xmlrpc client and server that do
+all verification via SSL Certs.
+
+ The model works like this, the RPC Server accepts all requests from
+ anyone who connects with a cert signed by the CA it trusts.  The client
+ verifies the server is valid because the server's cert is signed by the
+ CA the client trusts.
+
+ Some kind of key verification is the way to go if servers need to
+ authenticate other servers.  Any password would have to be stored in a
+ file somewhere.
+
+ Once you have an authenticated server-to-server rpc connection there's
+ no need to only show some functions to some servers and some to
+ others.  You're in charge of both server and client, so you're trusted as
+ a local superuser at that point.
+
+ A base authentication model like this would work great for a
+ centralized network management protocol, very much like how Puppet
+ works, or a &quot;Super Cron&quot; that might do things like check workload and
+ send scheduled jobs to places that can handle it.  You could work in a
+ different request handler to http put files and use it to distribute
+ files or even distribute files then execute a job to process them --
+any kind of server-to-server automation, really.
+
+ Here's how you set it up...
+
+ Openssl packages have a script called CA.sh that's for demonstrating
+ how to manage a CA. You will be the CA, anything you bless with your
+ signature might as well have the root password.
+
+ You'll want to customize the CA.sh script and the openssl.conf for
+ your setup, but it will work something like this:
+
+ # Make a new CA, it makes a private key and a public key then signs
+ # the public key with its own private key (a signed public key is a
+ # cert)
+ CA.sh -newca
+
+ # This makes a private key and a public key, the public key is what
+ # you need to sign to make a cert
+ CA.sh -newreq
+
+ # This makes signs the public key you just created
+ CA.sh -sign
+
+ # Combine the private key and the signed public key (The Cert) and you
+ # have the pem file needed for your program
+ cat newkey.pem newcert.pem &gt; server.pem
+ # Don't need these anymore
+ rm newcert.pem  newkey.pem  newreq.pem
+
+ # same for the client key
+ CA.sh -newreq
+ CA.sh -sign
+ cat newkey.pem newcert.pem &gt; client.pem
+ rm newcert.pem  newkey.pem  newreq.pem
+
+ # the cacert.pem is what we use to check if the person connecting is
+ # friend or foe
+ cp demoCA/cacert.pem .
+
+
+ --- the code ---
+
+ #!/usr/bin/env python
+ import sys
+ from twisted.web import xmlrpc, server
+ from twisted.internet import reactor, ssl
+ from twisted.python import log
+
+ def makeSSLContext(myKey,trustedCA):
+     '''Returns an ssl Context Object
+    @param myKey a pem formated key and certifcate with for my current host
+           the other end of this connection must have the cert from the CA
+           that signed this key
+    @param trustedCA a pem formated certificat from a CA you trust
+           you will only allow connections from clients signed by this CA
+           and you will only allow connections to a server signed by this CA
+     '''
+
+     # our goal in here is to make a SSLContext object to pass to connectSSL
+     # or listenSSL
+
+     # Why these functioins... Not sure...
+     fd = open(myKey,'r')
+     theCert = ssl.PrivateCertificate.loadPEM(fd.read())
+     fd.close()
+     fd = open(trustedCA,'r')
+     theCA = ssl.Certificate.loadPEM(fd.read())
+     fd.close()
+     ctx = theCert.options(theCA)
+
+     # Now the options you can set look like Standard OpenSSL Library options
+
+     # The SSL protocol to use, one of SSLv23_METHOD, SSLv2_METHOD,
+     # SSLv3_METHOD, TLSv1_METHOD. Defaults to TLSv1_METHOD.
+     ctx.method = ssl.SSL.TLSv1_METHOD
+
+     # If True, verify certificates received from the peer and fail
+     # the handshake if verification fails. Otherwise, allow anonymous
+     # sessions and sessions with certificates which fail validation.
+     ctx.verify = True
+
+     # Depth in certificate chain down to which to verify.
+     ctx.verifyDepth = 1
+
+     # If True, do not allow anonymous sessions.
+     ctx.requireCertification = True
+
+     # If True, do not re-verify the certificate on session resumption.
+     ctx.verifyOnce = True
+
+     # If True, generate a new key whenever ephemeral DH parameters are used
+     # to prevent small subgroup attacks.
+     ctx.enableSingleUseKeys = True
+
+     # If True, set a session ID on each context. This allows a shortened
+     # handshake to be used when a known client reconnects.
+     ctx.enableSessions = True
+
+     # If True, enable various non-spec protocol fixes for broken
+     # SSL implementations.
+     ctx.fixBrokenPeers = False
+
+     return ctx
+
+
+ class Example(xmlrpc.XMLRPC):
+     &quot;&quot;&quot;An example object to be published.
+        see: <A HREF="http://twistedmatrix.com/projects/web/documentation/howto/xmlrpc.html">http://twistedmatrix.com/projects/web/documentation/howto/xmlrpc.html</A>
+     &quot;&quot;&quot;
+
+     def xmlrpc_echo(self, x):
+         &quot;&quot;&quot;Return all passed args.&quot;&quot;&quot;
+         log.msg('xmlrpc call echo, %s'%x)
+         return x
+
+
+ class Proxy(xmlrpc.Proxy):
+     ''' See: <A HREF="http://twistedmatrix.com/projects/web/documentation/howto/xmlrpc.html">http://twistedmatrix.com/projects/web/documentation/howto/xmlrpc.html</A>
+         this is eacly like the xmlrpc.Proxy included in twisted but you can
+         give it a SSLContext object insted of just accepting the defaults..
+     '''
+     def setSSLClientContext(self,SSLClientContext):
+         self.SSLClientContext = SSLClientContext
+     def callRemote(self, method, *args):
+         factory = xmlrpc._QueryFactory(
+             self.path, self.host, method, self.user,
+             self.password, self.allowNone, args)
+         if self.secure:
+             from twisted.internet import ssl
+             try:
+                 self.SSLClientContext
+             except NameError:
+                 print &quot;Must Set a SSL Context&quot;
+                 print &quot;use self.setSSLClientContext() first&quot;
+                 # Its very bad to connect to ssl without some kind of
+                 # verfication of who your talking to
+                 # Using the default sslcontext without verification
+                 # Can lead to man in the middle attacks
+             reactor.connectSSL(self.host, self.port or 443,
+                                factory,self.SSLClientContext)
+         else:
+             reactor.connectTCP(self.host, self.port or 80, factory)
+         return factory.deferred
+
+ def printValue(value):
+     print repr(value)
+     reactor.stop()
+
+ def printError(error):
+     print 'error', error
+     reactor.stop()
+
+ if __name__ == '__main__':
+     # this should look pretty much like the examples given in the twisted
+     # documents
+
+     print &quot;running as&quot;, sys.argv[1]
+     if sys.argv[1] == 'server':
+         log.startLogging(sys.stdout)
+         ctx = makeSSLContext(myKey='server.pem',trustedCA='cacert.pem')
+         r = Example()
+         reactor.listenSSL(7080, server.Site(r),ctx)
+         reactor.run()
+     elif sys.argv[1] == 'client':
+         ctx = makeSSLContext(myKey='client.pem', trustedCA='cacert.pem')
+         proxy = Proxy('<A HREF="https://localhost:7080/">https://localhost:7080/</A>')
+         proxy.setSSLClientContext(ctx)
+         proxy.callRemote('echo',
+                 'hello world').addCallbacks(printValue, printError)
+         reactor.run()
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="047867.html">[Twisted-Python] A Solution Re: [Stackless] Advice on Debugging	Stackless/Twisted Problem
+</A></li>
+	<LI>Next message (by thread): <A HREF="047866.html">[Twisted-Python] SSL Cert Verification howto
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#47865">[ date ]</a>
+              <a href="thread.html#47865">[ thread ]</a>
+              <a href="subject.html#47865">[ subject ]</a>
+              <a href="author.html#47865">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

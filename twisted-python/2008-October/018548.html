@@ -1,0 +1,245 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Deferred in C++
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Deferred%20in%20C%2B%2B&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="018542.html">
+   <LINK REL="Next"  HREF="018555.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Deferred in C++</H1>
+    <B>Jamu Kakar</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Deferred%20in%20C%2B%2B&In-Reply-To="
+       TITLE="[Twisted-Python] Deferred in C++">jkakar at kakar.ca
+       </A><BR>
+    <I>Sat Oct 18 16:34:46 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="018542.html">[Twisted-Python] waiting for results from tcp
+</A></li>
+        <LI>Next message: <A HREF="018555.html">[Twisted-Python] Deferred in C++
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#18548">[ date ]</a>
+              <a href="thread.html#18548">[ thread ]</a>
+              <a href="subject.html#18548">[ subject ]</a>
+              <a href="author.html#18548">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+I've implemented Deferred in C++.  There is room for improvement and
+optimization, but the basic core works.  My focus has been on trying
+to make the best possible API experience for users.  The internal
+implementation is confusing and full of complexity unrelated to the
+problems being solved.  For example, because the implementation
+relies on templates so heavily, order-of-definition is an issue.
+Luckily most of the complexity stays hidden away leaving a mostly
+easy-to-use API, even in tricky cases such as callback pipelines
+that change the result type being passed from one callback to
+another by the Deferred:
+
+  int convert_string(std::string result) {
+      std::cout &lt;&lt; &quot;Converting string &quot; &lt;&lt; result &lt;&lt; std::endl;
+      return ion::Convert::to_integer&lt;int&gt;(result);
+  }
+
+  int add_ten(int result) {
+      std::cout &lt;&lt; &quot;Adding 10 to &quot; &lt;&lt; result
+                &lt;&lt; &quot; and returning &quot; &lt;&lt; result + 10 &lt;&lt; std::endl;
+      return result + 10;
+  }
+
+  Deferred deferred = Deferred::create_deferred&lt;std::string&gt;();
+  deferred.add_callback(&amp;convert_string);
+  deferred.add_callback(&amp;add_ten);
+  std::cout &lt;&lt; &quot;Calling succeed&quot; &lt;&lt; std::endl;
+  deferred.succeed(std::string(&quot;13&quot;));
+  std::cout &lt;&lt; &quot;Callbacks finished&quot; &lt;&lt; std::endl;
+
+Running this code will produce the following output:
+
+  Calling succeed
+  Converting string 13
+  Adding ten to 13 and returning 23
+  Callbacks finished
+
+It's possible to use method pointers as callbacks, too:
+
+  class CallbackHandler {
+  public:
+      int handle_result(int result) {
+          std::cout &lt;&lt; &quot;Handling &quot; &lt;&lt; result &lt;&lt; std::endl;
+          return result;
+      }
+  };
+
+  CallbackHandler handler;
+  deferred.add_callback(&amp;handler, &amp;CallbackHandler::handle_result);
+
+One of the constraints that the API mostly hides is that the return
+and parameter types of every callback in the pipeline need to be
+known at compile time.  add_callbacks, add_callback and add_errback
+are template methods that provide implementations for different
+combinations of function and method pointers.  They infer return and
+parameter types, based on the inputs passed in, and use them to
+create internal structures.
+
+Inferring types breaks down when adding a callback that returns a
+Deferred because there's no way to infer the result type of a
+Deferred that may not exist yet.  In such cases, the result type of
+the Deferred must be explicitly stated:
+
+  class DeferredCallback {
+  public:
+      DeferredCallback()
+          : deferred(Deferred::create_deferred&lt;int&gt;) {}
+
+      Deferred get_deferred(int) {
+          std::cout &lt;&lt; &quot;Returning deferred&quot; &lt;&lt; std::endl;
+          return this-&gt;deferred;
+      }
+
+      Deferred deferred;
+  };
+
+  Deferred deferred = Deferred::create_deferred&lt;std::string&gt;();
+  DeferredCallback callback;
+  // Notice the explicit result type here:
+  deferred.add_callback&lt;int&gt;(&amp;callback, DeferredCallback::get_deferred);
+  deferred.add_callback(&amp;add_ten);
+  std::cout &lt;&lt; &quot;Calling succeed&quot; &lt;&lt; std::endl;
+  deferred.succeed(std::string(&quot;13&quot;));
+  std::cerr &lt;&lt; &quot;Calling deferred&quot; &lt;&lt; std::endl;
+  callback.deferred.succeed(6)
+  std::cout &lt;&lt; &quot;Callbacks finished&quot; &lt;&lt; std::endl;
+
+Running this code will produce the following output:
+
+  Calling succeed
+  Returning deferred
+  Calling deferred
+  Adding ten to 6 and returning 16
+  Callbacks finished
+
+When a callback returns a Deferred, processing of the pipeline
+pauses until a result comes available, which is why add_ten is only
+called after the inner Deferred succeeds.  If you forget the
+explicit result type when adding a Deferred returning callback
+you'll get a compile-time error:
+
+../../ion/defer.h: In member function 'void
+ion::Deferred::add_callbacks(Instance*, ion::Deferred
+(Instance::*)(Param), ion::Deferred
+(Instance::*)(ion::trule&lt;ion::Failure, ion::DeallocObject&gt;)) [with
+Instance = ion::tests::DeferredMethodHandler, Param = int32_t]':
+test-defer.cpp:416:   instantiated from here
+../../ion/defer.h:773: error: no matching function for call to
+'ion::CompileTimeAssertion&lt;false&gt;::CompileTimeAssertion(ion::Deferred::add_callbacks(Instance*,
+ion::Deferred (Instance::*)(Param), ion::Deferred
+(Instance::*)(ion::trule&lt;ion::Failure, ion::DeallocObject&gt;)) [with
+Instance = ion::tests::DeferredMethodHandler, Param =
+int32_t]::STATIC_ASSERT_Deferred_result_type_must_be_specified&amp;)'
+../../ion/debug.h:164: note: candidates are:
+ion::CompileTimeAssertion&lt;false&gt;::CompileTimeAssertion()
+../../ion/debug.h:164: note:
+ion::CompileTimeAssertion&lt;false&gt;::CompileTimeAssertion(const
+ion::CompileTimeAssertion&lt;false&gt;&amp;)
+../../ion/defer.h: At global scope:
+../../ion/defer.h:772: warning: unused parameter 'instance'
+../../ion/defer.h:772: warning: unused parameter 'method_callback'
+../../ion/defer.h:772: warning: unused parameter 'method_errback'
+
+If you look *really* hard you'll see some helpful information
+starting with STATIC_ASSERT.  Yes, that's a feature.
+
+I've implemented a Failure object, but failure handling over all is
+not very good.  Exceptions are tricky because, unless you're
+expecting a particular kind of exception, their types become opaque
+as soon as they're thrown.  There's room for improvement but there's
+no obvious path to a good solution yet.
+
+The behaviour of errbacks is slightly different than in the Python
+implementation.  Errbacks receive a trule&lt;Failure&gt; (a scoped pointer
+that the errback owns) and return a result suitable for the next
+callback.  They can either (a) recover from the error and return a
+result, (b) raise an exception to indicate a new error or (c) raise
+an UnhandledFailureError exception with the failure object.
+Callback processing continues after (a), while errback processing
+continues after (b) or (c).  A new Failure object is created when
+(b) occurs.
+
+  int recover(trule&lt;Failure&gt;) {
+      std::cout &lt;&lt; &quot;Recovering from failure&quot; &lt;&lt; std::endl;
+      return 43;
+  }
+
+  Deferred deferred = Deferred::create_deferred&lt;int&gt;();
+
+  deferred.add_errback(&amp;recover);
+  deferred.add_callback(&amp;add_ten);
+  std::cout &lt;&lt; &quot;Calling fail&quot; &lt;&lt; std::endl;
+  deferred.fail(Exception(&quot;Error message!&quot;));
+  std::cout &lt;&lt; &quot;Callbacks finished&quot; &lt;&lt; std::endl;
+
+Running this code will produce the following output:
+
+  Calling fail
+  Recovering from failure
+  Adding ten to 43 and returning 53
+  Callbacks finished
+
+I'm not sure how practical this component would be in a non-trivial
+application.  The reliance on templates would negatively affect
+compile time, for one thing.  More importantly, I've found
+deciphering the error messages produced by simple mistakes can be
+tricky.  Nonetheless, my main motivation was to see if it was
+possible at all and so I'm pleased that it works in the end.
+
+In the future, I'd like to see what the performance difference is
+between this version and the Python version, but I haven't
+investigated that at all.  There are also memory-management related
+features that could be added to ease using this in C++ that would be
+interesting to explore.  Porting to Windows is another item on the
+list of things that I'd like to do.
+
+The code is part of a project called ion (I/O and Networking
+library), which I use for experiments like this.  I haven't merged
+the deferred branch yet, but will soon.  Until it's merged, it's on
+Launchpad:
+
+<A HREF="https://code.edge.launchpad.net/~jkakar/ion/deferred">https://code.edge.launchpad.net/~jkakar/ion/deferred</A>
+
+It will most likely only build on Ubuntu Intrepid right now.
+
+Thanks,
+J.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="018542.html">[Twisted-Python] waiting for results from tcp
+</A></li>
+	<LI>Next message: <A HREF="018555.html">[Twisted-Python] Deferred in C++
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#18548">[ date ]</a>
+              <a href="thread.html#18548">[ thread ]</a>
+              <a href="subject.html#18548">[ subject ]</a>
+              <a href="author.html#18548">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,812 @@
+diff -urN -x CVS -x '*.pyc' -x '.#*' -x '#*' -x '*~' -x TAGS Twisted.orig/admin/accepttests Twisted/admin/accepttests
+--- Twisted.orig/admin/accepttests	2002-11-12 11:51:46.000000000 +0100
++++ Twisted/admin/accepttests	2003-02-06 14:37:50.000000000 +0100
+@@ -268,4 +268,14 @@
+             "               same situation as above)",
+             "  * USER: your UNIX username.")
+ else:
+-    runAllTests()
++    if block:
++        argv = sys.argv[2:]
++    else:
++        argv = sys.argv[1:]
++
++    if argv:
++        argv.reverse()
++        while argv:
++            globals()[argv.pop()]()
++    else:
++        runAllTests()
+diff -urN -x CVS -x '*.pyc' -x '.#*' -x '#*' -x '*~' -x TAGS Twisted.orig/twisted/mail/relay.py Twisted/twisted/mail/relay.py
+--- Twisted.orig/twisted/mail/relay.py	2002-12-04 20:58:25.000000000 +0100
++++ Twisted/twisted/mail/relay.py	2003-02-06 14:28:25.000000000 +0100
+@@ -63,6 +63,7 @@
+ class SMTPRelayer(smtp.SMTPClient):
+ 
+     def __init__(self, messagePaths):
++        smtp.SMTPClient.__init__(self,smtp.DNSNAME)
+         self.messages = []
+         self.names = []
+         for message in messagePaths:
+@@ -87,8 +88,13 @@
+     def getMailData(self):
+         return self.messages[0][2]
+ 
+-    def sentMail(self, addresses):
+-        if addresses:
++    def sentMail(self, code, resp, numOk, addresses, log):
++        """Since we only use one recipient per envelope, this
++        will be called with 0 or 1 addresses. We probably want
++        to do something with the error message if we failed.
++        """
++        if code in xrange(200,300):
++            # At least one, i.e. all, recipients successfully delivered
+             os.remove(self.names[0]+'-D')
+             os.remove(self.names[0]+'-H')
+         del self.messages[0]
+diff -urN -x CVS -x '*.pyc' -x '.#*' -x '#*' -x '*~' -x TAGS Twisted.orig/twisted/mail/relaymanager.py Twisted/twisted/mail/relaymanager.py
+--- Twisted.orig/twisted/mail/relaymanager.py	2002-12-04 20:58:24.000000000 +0100
++++ Twisted/twisted/mail/relaymanager.py	2003-02-06 13:43:03.000000000 +0100
+@@ -78,13 +78,13 @@
+     #    log.msg("managed -- got %s" % line)
+     #    relay.SMTPRelayer.lineReceived(self, line)
+ 
+-    def sentMail(self, addresses):
++    def sentMail(self, code, resp, numOk, addresses, log):
+         """called when e-mail has been sent
+ 
+         we will always get 0 or 1 addresses.
+         """
+         message = self.names[0]
+-        if addresses: 
++        if code in xrange(200,300):
+             self.manager.notifySuccess(self.factory, message)
+         else: 
+             self.manager.notifyFailure(self.factory, message)
+diff -urN -x CVS -x '*.pyc' -x '.#*' -x '#*' -x '*~' -x TAGS Twisted.orig/twisted/protocols/basic.py Twisted/twisted/protocols/basic.py
+--- Twisted.orig/twisted/protocols/basic.py	2003-01-12 00:40:41.000000000 +0100
++++ Twisted/twisted/protocols/basic.py	2003-01-23 11:40:02.000000000 +0100
+@@ -161,18 +161,16 @@
+             except ValueError:
+                 if len(self.__buffer) > self.MAX_LENGTH:
+                     line, self.__buffer = self.__buffer, ''
+-                    self.lineLengthExceeded(line)
+-                    return
++                    return self.lineLengthExceeded(line)
+                 break
+             else:
+                 linelength = len(line)
+                 if linelength > self.MAX_LENGTH:
+                     line, self.__buffer = self.__buffer, ''
+-                    self.lineLengthExceeded(line)
+-                    return
+-                self.lineReceived(line)
+-                if self.transport.disconnecting:
+-                    return
++                    return self.lineLengthExceeded(line)
++                why = self.lineReceived(line)
++                if why or self.transport.disconnecting:
++                    return why
+         else:
+             data, self.__buffer = self.__buffer, ''
+             if data:
+@@ -209,13 +207,13 @@
+     def sendLine(self, line):
+         """Sends a line to the other end of the connection.
+         """
+-        self.transport.write(line + self.delimiter)
++        return self.transport.write(line + self.delimiter)
+ 
+     def lineLengthExceeded(self, line):
+         """Called when the maximum line length has been reached.
+         Override if it needs to be dealt with in some special way.
+         """
+-        self.transport.loseConnection()
++        return self.transport.loseConnection()
+ 
+ 
+ class Int32StringReceiver(protocol.Protocol):
+diff -urN -x CVS -x '*.pyc' -x '.#*' -x '#*' -x '*~' -x TAGS Twisted.orig/twisted/protocols/smtp.py Twisted/twisted/protocols/smtp.py
+--- Twisted.orig/twisted/protocols/smtp.py	2003-02-06 20:57:24.000000000 +0100
++++ Twisted/twisted/protocols/smtp.py	2003-03-10 18:07:37.000000000 +0100
+@@ -20,16 +20,118 @@
+ # Twisted imports
+ from twisted.protocols import basic
+ from twisted.internet import protocol, defer, reactor
+-from twisted.python import log, components
++from twisted.python import log, components, linelog
+ 
+ # System imports
+-import time, string, re, base64, types
+-import MimeWriter, tempfile
++import time, string, re, base64, types, socket, os, random
++import MimeWriter, tempfile, rfc822
+ import warnings
++from cStringIO import StringIO
+ 
+ class SMTPError(Exception):
+     pass
+ 
++class SMTPClientError(SMTPError):
++    def __init__(self, code, resp, log=None):
++        self.code = code
++        self.resp = resp
++        self.log = log
++
++    def __str__(self):
++        if self.code > 0:
++            res = ["%.3d " % self.code + self.resp]
++        else:
++            res = [self.resp]
++        if self.log:
++            res.append('')
++            res.append(self.log)
++        return '\n'.join(res)
++
++class SMTPConnectError(SMTPClientError):
++    pass
++
++class SMTPProtocolError(SMTPClientError):
++    pass
++
++class SMTPDeliveryError(SMTPClientError):
++    pass
++
++DNSNAME = socket.getfqdn() # Cache the hostname
++
++def rfc822date(timeinfo=None,local=1):
++    """
++    Format an RFC-2822 compliant date string.
++
++    Arguments: timeinfo    (optional) A sequence as returned by
++                           time.localtime() or time.gmtime(). Default
++                           is now.
++               local       (optional) Indicates if the supplied time
++                           is local or universal time, or if no time
++                           is given, whether now should be local or
++                           universal time. Default is local, as
++                           suggested (SHOULD) by rfc-2822.
++
++    Returns: A string representing the time and date in RFC-2822 format.
++    """
++    if not timeinfo:
++        if local:
++            timeinfo = time.localtime()
++        else:
++            timeinfo = time.gmtime()
++    if local:
++        if timeinfo[8]:
++            # DST
++            tz = -time.altzone
++        else:
++            tz = -time.timezone
++            
++        (tzhr, tzmin) = divmod(abs(tz), 3600)
++        tzhr *= int(abs(tz)/tz)
++        (tzmin, tzsec) = divmod(tzmin, 60)
++    else:
++        (tzhr, tzmin) = (0,0)
++
++    return "%s, %02d %s %04d %02d:%02d:%02d %+03d%02d" % (
++        ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][timeinfo[6]],
++        timeinfo[2],
++        ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
++         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][timeinfo[1] - 1],
++        timeinfo[0], timeinfo[3], timeinfo[4], timeinfo[5],
++        tzhr, tzmin)
++
++def messageid(uniq=None):
++    """Return a globally unique random string in RFC 2822 Message-ID format
++
++    <datetime.pid.random@host.dom.ain>
++
++    Optional uniq string will be added to strenghten uniqueness if given.
++    """
++    datetime = time.strftime('%Y%m%d%H%M%S', time.gmtime())
++    pid = os.getpid()
++    rand = random.randrange(2**31L-1)
++    if uniq is None:
++        uniq = ''
++    else:
++        uniq = '.' + uniq
++
++    return '<%s.%s.%s%s@%s>' % (datetime, pid, rand, uniq, DNSNAME)
++
++def quoteaddr(addr):
++    """Turn an email address, possibly with realname part etc, into
++    a form suitable for and SMTP envelope.
++    """
++
++    if isinstance(addr, Address):
++        return '<%s>' % str(addr)
++    
++    res = rfc822.parseaddr(addr)
++
++    if res == (None, None):
++        # It didn't parse, use it as-is
++        return '<%s>' % str(addr)
++    else:
++        return '<%s>' % str(res[1])
++
+ COMMAND, DATA = range(2)
+ 
+ class NDeferred:
+@@ -56,7 +158,6 @@
+ class AddressError(SMTPError):
+     "Parse error in address"
+ 
+-
+ # Character classes for parsing addresses
+ atom = r"[-A-Za-z0-9!\#$%&'*+/=?^_`{|}~]"
+ 
+@@ -152,7 +253,11 @@
+         self.dest = Address(destination)
+         self.helo = helo
+         self.protocol = protocol
+-	if type(orig) in types.StringTypes:
++        if hasattr(types,'StringTypes'):
++            tp = types.StringTypes
++        else:
++            tp = (types.StringType, types.UnicodeType)        
++	if type(orig) in tp:
+ 	    self.orig = Address(orig)
+ 	else:
+             self.orig = orig
+@@ -273,6 +378,8 @@
+     def do_HELO(self, rest):
+         peer = self.transport.getPeer()[1]
+         self.__helo = (rest, peer)
++        self.__from = None
++        self.__to = []
+         self.sendCode(250, '%s Hello %s, nice to meet you' % (self.host, peer))
+ 
+     def do_QUIT(self, rest):
+@@ -355,8 +462,10 @@
+         self.__to = []
+         self.__messages = self.startMessage(recipients)
+         self.__inheader = self.__inbody = 0
+-        for message in self.__messages:
+-            message.lineReceived(self.receivedHeader(helo, origin, recipients))
++        rcvdhdr = self.receivedHeader(helo, origin, recipients)
++        if rcvdhdr:
++            for message in self.__messages:
++                message.lineReceived(rcvdhdr)
+         self.sendCode(354, 'Continue')
+ 
+     def connectionLost(self, reason):
+@@ -419,22 +528,10 @@
+     def _messageNotHandled(self, _):
+         self.sendCode(550, 'Could not send e-mail')
+ 
+-    def rfc822date(self):
+-        timeinfo = time.localtime()
+-        if timeinfo[8]:
+-            # DST
+-            tz = -time.altzone
+-        else:
+-            tz = -time.timezone
+-            
+-        return "%s %+2.2d%2.2d" % (
+-            time.strftime("%a, %d %b %Y %H:%M:%S", timeinfo),
+-            tz / 3600, (tz / 60) % 60)
+-
+     # overridable methods:
+     def receivedHeader(self, helo, origin, recipents):
+         return "Received: From %s ([%s]) by %s; %s" % (
+-            helo[0], helo[1], self.host, self.rfc822date())
++            helo[0], helo[1], self.host, rfc822date())
+     
+     def validateFrom(self, helo, origin, success, failure):
+         if not helo:
+@@ -453,85 +550,160 @@
+     """Factory for SMTP."""
+ 
+     # override in instances or subclasses
+-    domain = "localhost"
++    domain = DNSNAME
+     timeout = 600
+ 
+     protocol = SMTP
+ 
+-
+ class SMTPClient(basic.LineReceiver):
+     """SMTP client for sending emails."""
+ 
+-    def __init__(self, identity):
++    def __init__(self, identity, logsize=10):
+         self.identity = identity
++        self.toAddressesResult = []
++        self.successAddresses = []
++        self._from = None
++        self.resp = []
++        self.code = -1
++        self.lastfailed = 0
++        self.log = linelog.LineLog(logsize)
++
++    def sendLine(self, line):
++        "Logging sendLine"
++        self.log.append('>>> ' + line)
++        basic.LineReceiver.sendLine(self,line)
+ 
+     def connectionMade(self):
+-        self.state = 'helo'
++        self._expected = [ 220 ]
++        self._okresponse = self.smtpState_helo
++        self._failresponse = self.smtpConnectionFailed
+ 
+     def lineReceived(self, line):
+-        if len(line)<4 or (line[3] not in ' -'):
+-            raise ValueError("invalid line from SMTP server %s" % line)
+-        if line[3] == '-':
+-            return
+-        code = int(line[:3])
+-        method =  getattr(self, 'smtpCode_%d_%s' % (code, self.state), 
+-                                self.smtpCode_default)
+-        method(line[4:])
+-
+-    def smtpCode_220_helo(self, line):
+-        self.sendLine('HELO '+self.identity)
+-        self.state = 'from'
+-
+-    def smtpCode_250_from(self, line):
+-        from_ = self.getMailFrom()
+-        if from_ is not None:
+-            self.sendLine('MAIL FROM:<%s>' % from_)
+-            self.state = 'afterFrom'
+-        else:
+-            self.sendLine('QUIT')
+-            self.state = 'quit'
++        why = None
+ 
+-    def smtpCode_250_afterFrom(self, line):
+-        self.toAddresses = self.getMailTo()
+-        self.successAddresses = []
+-        self.state = 'to'
+-        self.sendToOrData()
++        self.log.append('<<< ' + line)
++        try:
++            self.code = int(line[:3])
++        except ValueError:
++            self.code = -1
++            self.resp = []
++            return self._failresponse(
++                -1, "Invalid response from SMTP server: %s" % line)
+ 
+-    def smtpCode_221_quit(self, line):
+-        self.transport.loseConnection()
+ 
+-    def smtpCode_default(self, line):
+-        log.msg("SMTPClient got unexpected message from server -- %s" % line)
++        if line[0] == '0':
++            # Verbose informational message, ignore it
++            return
++
++        self.resp.append(line[4:])
++        
++        if line[3:4] == '-':
++            # continuation
++            return
++
++        if self.code in self._expected:
++            why = self._okresponse(self.code,'\n'.join(self.resp))
++            self.lastfailed = 0
++        elif not self.lastfailed:
++            why = self._failresponse(self.code,'\n'.join(self.resp))
++            self.lastfailed += 1
++        else:
++            self.sendLine('QUIT')
++            self._expected = xrange(0,1000)
++            self._okresponse = self.smtpState_disconnect
++            self.lastfailed = 0
++
++        self.code = -1
++        self.resp = []
++        return why
++
++    def smtpConnectionFailed(self, code, resp):
++        return SMTPConnectError(code, resp, str(self.log))
++
++    def smtpTransferFailed(self, code, resp):
++        if code < 0:
++            # protocol error
++            return SMTPProtcolError(code, resp, str(self.log))
++        return self.smtpState_msgSent(code, resp)
++
++    def smtpState_helo(self, code, resp):
++        self.sendLine('HELO ' + self.identity)
++        self._expected = xrange(200,300)
++        self._okresponse = self.smtpState_from
++
++    def smtpState_from(self, code, resp):
++        self._from = self.getMailFrom()
++        self._failresponse = self.smtpTransferFailed
++        if self._from is not None:
++            self.sendLine('MAIL FROM:%s' % quoteaddr(self._from))
++            self._okresponse = self.smtpState_to
++        else:
++            self.sendLine('QUIT')
++            self._expected = xrange(0,1000)
++            self._okresponse = self.smtpState_disconnect
++
++    def smtpState_disconnect(self, code, resp):
+         self.transport.loseConnection()
+ 
+-    def sendToOrData(self):
++    def smtpState_to(self, code, resp):
++        self.toAddresses = self.getMailTo()
++        self.toAddressesResult = []
++        self.successAddresses = []
++        self._okresponse = self.smtpState_toOrData
++        self._expected = xrange(0,1000)
++        self.lastAddress = None
++        return self.smtpState_toOrData(0, '')
++
++    def smtpState_toOrData(self, code, resp):
++        if self.lastAddress is not None:
++            self.toAddressesResult.append((self.lastAddress, code, resp))
++            if 200 <= code <= 299:
++                self.successAddresses.append(self.lastAddress)
+         if not self.toAddresses:
+             if self.successAddresses:
+                 self.sendLine('DATA')
+-                self.state = 'data'
++                self._expected = [ 354 ]
++                self._okresponse = self.smtpState_data
+             else:
+-                self.sentMail([])
+-                self.smtpCode_250_from('')
++                return self.smtpState_msgSent(-1,'No recipients accepted')
+         else:
+             self.lastAddress = self.toAddresses.pop()
+-            self.sendLine('RCPT TO:<%s>' % self.lastAddress)
++            self.sendLine('RCPT TO:%s' % quoteaddr(self.lastAddress))
+ 
+-    def smtpCode_250_to(self, line):
+-        self.successAddresses.append(self.lastAddress)
+-        self.sendToOrData()
+-
+-    def smtpCode_550_to(self, line):
+-        self.sendToOrData()
+-        
+-    def smtpCode_354_data(self, line):
++    def smtpState_data(self, code, resp):
+         self.mailFile = self.getMailData()
+         self.lastsent = ''
+         self.transport.registerProducer(self, 0)
++        self._expected = xrange(200,300)
++        self._okresponse = self.smtpState_msgSent
+ 
+-    def smtpCode_250_afterData(self, line):
+-        self.sentMail(self.successAddresses)
+-        self.smtpCode_250_from('')
++    def smtpState_msgSent(self, code, resp):
++        if self._from:
++            # If there was a pending message
++            try:
++                self.sentMail(code, resp, len(self.successAddresses),
++                              self.toAddressesResult, self.log)
++            except TypeError:
++                if self.sentMail.func_code.co_argcount == 2:
++                    warnings.warn(
++                        'File "%s", line %d, in %s\n'
++                        '  %s.sentMail call syntax has changed!\n'
++                        '  Please update your code!' %
++                        (self.sentMail.func_code.co_filename,
++                         self.sentMail.func_code.co_firstlineno,
++                         self.sentMail.func_code.co_name,
++                         self.__class__.__name__),
++                        category=DeprecationWarning,stacklevel=2)
++                    self.sentMail(self.successAddresses)
++                else:
++                    raise
+ 
++        self.toAddressesResult = []
++        self._from = None
++        self.sendLine('RSET')
++        self._exected = xrange(200,300)
++        self._okresponse = self.smtpState_from
++        
+     # IProducer interface
+     def resumeProducing(self):
+         """Write another """
+@@ -543,7 +715,6 @@
+             else:
+                 line = '.'
+             self.sendLine(line)
+-            self.state = 'afterData'
+             return
+ 
+         chunk = string.replace(chunk, "\n", "\r\n")
+@@ -575,9 +746,19 @@
+         """
+         raise NotImplementedError
+ 
+-    def sentMail(self, addresses):
+-        """Called with list of emails to which we sent the message."""
+-        pass
++    def sentMail(self, code, resp, numOk, addresses, log):
++        """Called when an attempt to send an email is completed.
++
++        If some addresses were accepted, code and resp are the response
++        to the DATA command. If no addresses were accepted, code is -1
++        and resp is an informative message.
++
++        numOK is the number of addresses accepted by the remote host.
++        addresses is a list of tuples (address, code, resp) listing
++            the response to each RCPT command.
++        log is the SMTP session log
++        """
++        raise NotImplementedError
+ 
+ 
+ class SMTPSender(SMTPClient):
+@@ -585,27 +766,33 @@
+     
+     done = 0
+ 
+-    def smtpCode_default(self, line):
+-        """Deal with unexpected SMTP messages."""
+-        SMTPClient.smtpCode_default(self, line)
+-        self.sentMail([])
+-    
+     def getMailFrom(self):
+         if not self.done:
+             self.done = 1
+-            return self.factory.fromEmail
++            return str(self.factory.fromEmail)
+         else:
+             return None
+ 
+     def getMailTo(self):
+-        return [self.factory.toEmail]
++        return self.factory.toEmail
+ 
+     def getMailData(self):
+         return self.factory.file
+ 
+-    def sentMail(self, addresses):
++    def sentMail(self, code, resp, numOk, addresses, log):
+         self.factory.sendFinished = 1
+-        self.factory.result.callback(addresses == [self.factory.toEmail])
++        if code not in xrange(200,300):
++            # Failure
++            errlog = []
++            for addr, acode, aresp in addresses:
++                if code not in xrange(200,300):
++                    errlog.append("%s: %03d %s" % (addr, acode, aresp))
++            if numOk:
++                errlog.append(str(log))
++            self.factory.result.errback(SMTPDeliveryError(code, resp,
++                                                          '\n'.join(errlog)))
++        else:
++            self.factory.result.callback((numOk, addresses))
+ 
+ 
+ class SMTPSenderFactory(protocol.ClientFactory):
+@@ -615,27 +802,84 @@
+ 
+     protocol = SMTPSender
+     
+-    def __init__(self, fromEmail, toEmail, file, deferred):
+-        self.fromEmail = fromEmail
++    def __init__(self, fromEmail, toEmail, file, deferred, retries=5):
++        if hasattr(types,'StringTypes'):
++            tp = types.StringTypes
++        else:
++            tp = (types.StringType, types.UnicodeType)
++        if type(toEmail) in tp:
++            toEmail = [toEmail]
++        self.fromEmail = Address(fromEmail)
+         self.toEmail = toEmail
+         self.file = file
+         self.result = deferred
+         self.sendFinished = 0
++        self.retries = -retries
+     
+     def clientConnectionFailed(self, connector, error):
+         self.result.errback(error)
+ 
+     def clientConnectionLost(self, connector, error):
+         # if email wasn't sent, try again
+-        if not self.sendFinished:
++        if self.retries < self.sendFinished <= 0:
+             connector.connect() # reconnect to SMTP server
++        elif self.sendFinished <= 0:
++            self.result.errback(error)
++        self.sendFinished -= 1
+ 
+     def buildProtocol(self, addr):
+-        p = self.protocol(self.fromEmail.split('@')[-1])
++        p = self.protocol(DNSNAME, len(self.toEmail)*2+2)
+         p.factory = self
+         return p
+ 
++def sendmail(smtphost, from_addr, to_addrs, msg):
++    """Send an email
++
++    This interface is intended to be a direct replacement for
++    smtplib.SMTP.sendmail() (with the obvious change that
++    you specify the smtphost as well). Also, ESMTP options
++    are not accepted, as we don't do ESMTP yet. I reserve the
++    right to implement the ESMTP options differently.
++
++    Arguments:
++      smtphost   : The host the message should be sent to
++      from_addr  : The (envelope) address sending this mail.
++      to_addrs   : A list of addresses to send this mail to.
++                   A string will be treated as a list of one
++                   address
++      msg        : The message, including headers, either as
++                   a file or a string. File-like objects need
++                   to support read() and close(). Line endings
++                   must be local (i.e. '\\n'). If you pass
++                   something that doesn't look like a file,
++                   we try to convert it to a string (so you
++                   should be able to pass an email.Message
++                   directly, but doing the conversion using
++                   generator manually and passing the file
++                   object is probably more efficient).
++
++    Returns:
++      defered    : The callback will be called if a message is
++                   sent to ANY address, the errback if no message
++                   is sent.
++
++                   The callback will be called with a tuple
++                   (numOk, addresses) where numOk is the number
++                   of successful recipient addresses and
++                   addresses is a list of tuples
++                   (address, code, resp) giving the response
++                   to the RCPT command for each address.
++    """
++    if not hasattr(msg,'read'):
++        # It's not a file
++        msg = StringIO(str(msg))
++        
++    d = defer.Deferred()
++    factory = SMTPSenderFactory(from_addr, to_addrs, msg, d)
++    reactor.connectTCP(smtphost, 25, factory)
+ 
++    return d
++    
+ def sendEmail(smtphost, fromEmail, toEmail, content, headers = None, attachments = None, multipartbody = "mixed"):
+     """Send an email, optionally with attachments.
+ 
+@@ -668,6 +912,11 @@
+     @return: The returned Deferred has its callback or errback invoked when
+       the mail is successfully sent or when an error occurs, respectively.
+     """
++    warnings.warn("smtp.sendEmail may go away in the future.\n"
++                  "  Consider revising your code to use the email module\n"
++                  "  and smtp.sendmail.",
++                  category=DeprecationWarning, stacklevel=2)
++
+     f = tempfile.TemporaryFile()
+     writer = MimeWriter.MimeWriter(f)
+ 
+@@ -676,6 +925,20 @@
+         # Setup the mail headers
+         for (header, value) in headers.items():
+             writer.addheader(header, value)
++            
++        headkeys = [k.lower() for k in headers.keys()]
++    else:
++        headkeys = ()
++
++    # Add required headers if not present
++    if "message-id" not in headkeys:
++        writer.addheader("Message-ID", messageid())
++    if "date" not in headkeys:
++        writer.addheader("Date", rfc822date())
++    if "from" not in headkeys and "sender" not in headkeys:
++        writer.addheader("From", fromEmail)
++    if "to" not in headkeys and "cc" not in headkeys and "bcc" not in headkeys:
++        writer.addheader("To", toEmail)
+ 
+     writer.startmultipartbody(multipartbody)
+ 
+diff -urN -x CVS -x '*.pyc' -x '.#*' -x '#*' -x '*~' -x TAGS Twisted.orig/twisted/python/linelog.py Twisted/twisted/python/linelog.py
+--- Twisted.orig/twisted/python/linelog.py	1970-01-01 01:00:00.000000000 +0100
++++ Twisted/twisted/python/linelog.py	2003-02-24 21:07:26.000000000 +0100
+@@ -0,0 +1,50 @@
++# Twisted, the Framework of Your Internet
++# Copyright (C) 2001 Matthew W. Lefkowitz
++# 
++# This library is free software; you can redistribute it and/or
++# modify it under the terms of version 2.1 of the GNU Lesser General Public
++# License as published by the Free Software Foundation.
++# 
++# This library is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++# Lesser General Public License for more details.
++# 
++# You should have received a copy of the GNU Lesser General Public
++# License along with this library; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++class LineLog:
++    """
++    A limited-size line-based log, useful for logging line-based
++    protocols such as SMTP.
++    
++    When the log fills up, old entries drop off the end.
++    """
++    def __init__(self, size=10):
++        """
++        Create a new log, with size lines of storage (default 10).
++        A log size of 0 (or less) means an infinite log.
++        """
++        if size < 0:
++            size = 0
++        self.log = [None]*size
++        self.size = size
++
++    def append(self,line):
++        if self.size:
++            self.log[:-1] = self.log[1:]
++            self.log[-1] = line
++        else:
++            self.log.append(line)
++
++    def str(self):
++        return '\n'.join(filter(None,self.log))
++
++    def __getitem__(self, item):
++        return filter(None,self.log)[item]
++
++    def clear(self):
++        """Empty the log"""
++        self.log = [None]*self.size
++
+diff -urN -x CVS -x '*.pyc' -x '.#*' -x '#*' -x '*~' -x TAGS Twisted.orig/twisted/test/test_smtp.py Twisted/twisted/test/test_smtp.py
+--- Twisted.orig/twisted/test/test_smtp.py	2003-01-09 08:27:58.000000000 +0100
++++ Twisted/twisted/test/test_smtp.py	2003-02-06 14:18:48.000000000 +0100
+@@ -29,6 +29,9 @@
+ import string, re
+ from cStringIO import StringIO
+ 
++def spameater(*spam, **eggs):
++    return None
++
+ class DummyMessage:
+ 
+     def __init__(self, domain, user):
+@@ -87,6 +90,7 @@
+         protocol =  protocols.DomainSMTP()
+         protocol.service = self.factory
+         protocol.factory = self.factory
++        protocol.receivedHeader = spameater
+         protocol.makeConnection(self.transport)
+         protocol.lineReceived('HELO yyy.com')
+         for message in self.messages:
+@@ -125,7 +129,7 @@
+     def getMailData(self):
+         return StringIO(self.mail[2])
+ 
+-    def sentMail(self, addresses):
++    def sentMail(self, code, resp, numOk, addresses, log):
+         self.mail = None, None, None
+ 
+ 
+@@ -201,9 +205,7 @@
+         self.buffer = []
+ 
+     def lineReceived(self, line):
+-        # Throw away the generated Received: header
+-        if not re.match('Received: From foo.com \(\[.*\]\) by foo.com;', line):
+-            self.buffer.append(line)
++        self.buffer.append(line)
+ 
+     def eomReceived(self):
+         message = string.join(self.buffer, '\n')+'\n'
+@@ -225,6 +227,9 @@
+     def startMessage(self, users):
+         return [DummySMTPMessage(self, users)]
+ 
++    def receivedHeader(*spam):
++        return None
++
+ class AnotherSMTPTestCase(unittest.TestCase):
+ 
+     messages = [ ('foo.com', 'moshez@foo.com', ['moshez@bar.com'],

@@ -1,0 +1,437 @@
+From donal.mcmullan at gmail.com  Tue Jul  5 10:03:46 2016
+From: donal.mcmullan at gmail.com (Donal McMullan)
+Date: Tue, 5 Jul 2016 17:03:46 +0100
+Subject: [Twisted-web] getSession, componentized but not async?
+Message-ID: <CADf-aJHvCtosrO4M5gcO7VmZtJme8+VHjqn_zr0iOnFVvuaU7A@mail.gmail.com>
+
+I'm curious about request.getSession
+
+Per the docs:
+https://twistedmatrix.com/documents/current/web/howto/using-twistedweb.html
+
+It seems like it's tricky to use correctly. My code needs to:
+ - define an Interface
+ - define a class that implements my Interface
+ - call registerAdapter, passing in my class, server.Session and my
+Interface
+ - get a Session instance
+ - brace myself
+ - create an instance of my Interface class, passing in the Session instance
+ - update that Interface instance.... it will persisted, but only in-memory
+
+By default, that data doesn't go to database/memcached/whatever, so it's
+only accessible in-process
+
+On first blush, that seems like a lot of legwork. I'm not clear on what
+utility's provided by all this versus say maintaining a dict as a
+class-attribute on Site or something. It's also (for me) counter-intuitive
+to be creating an instance of an _Interface_ and poking data into it.
+
+Also I was a bit surprised that getSession doesn't return a deferred, since
+it seems like it'd be common to want to persist session data in an external
+store so that multiple twisted-web processes can access it in a
+clustered/load-balanced setup. How do other folks go about that?
+
+I hacked something together a while ago to run session data into Redis, but
+what I ended up with required so much surgery on twisted web's classes that
+I figured I must be doing it wrong. I think Site, SessionFactory and
+Request were all customised.
+
+I was thinking about this again in the context of Cory's "Implement
+server-side HTTP/2 server push" ticket:
+https://twistedmatrix.com/trac/ticket/8485
+
+In this context, I'd like to have access to my session data in multiple
+Resource objects without _necessarily_ having to round-trip to an external
+store each time to get/put the same data. In the case of http 1.1 requests,
+I guess there's no way around that round-trip, so it might be optimal if my
+Resource objects could be oblivious to the underlying protocol version and
+Session get/put mechanism.
+
+So it'd be great if the default Session mechanism could take care of me
+there, and I could just have my cake and eat it.
+
+Another wrinkle that surprised me when I was hacking on this was that there
+didn't seem to be a way to uniquely identify a request instance, so within
+the session code it was impossible to tell if two calls to getSession were
+coming from different points in the callback chain responding to a single
+Request, or if the second belonged to a different Request entirely.
+
+So my confusion is probably apparent at this stage :)
+
+I'm guessing others have been here before me. What approaches have you
+taken to storing your sessions? Are there good open source projects that I
+should look to for best practice?
+
+Thanks!
+
+DJM
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20160705/bdbe7717/attachment.html>
+
+From hawkowl at atleastfornow.net  Wed Jul  6 06:41:37 2016
+From: hawkowl at atleastfornow.net (Amber Hawkie Brown)
+Date: Wed, 6 Jul 2016 20:41:37 +0800
+Subject: [Twisted-web] Twisted 16.3.0 Release Announcement
+Message-ID: <1E7576CB-F343-4B87-B464-30530D9D8718@atleastfornow.net>
+
+On behalf of Twisted Matrix Laboratories, I am honoured to announce the release of Twisted 16.3.0.
+
+The highlights of this release are:
+
+- The Git migration has happened, so we've updated our development documentation to match. We're now trialling accepting pull requests at github.com/twisted/twisted, so if you've ever wanted an excuse to contribute, now's the chance!
+- In our steady shedding of baggage, twisted.spread.ui, twisted.manhole (not to be confused with twisted.conch.manhole!), and a bunch of old and deprecated stuff from twisted.python.reflect and twisted.protocols.sip have been removed.
+- twisted.web's HTTP server now handles pipelined requests better -- it used to try and process them in parallel, but this was fraught with problems and now it processes them in series, which is less surprising to code that expects the Request's transport to not be buffered (e.g. WebSockets). There is also a bugfix for HTTP timeouts not working in 16.2.
+- Twisted now has HTTP/2 support in its web server! This is currently not available by default -- you will need to install hyper-h2, which is available in the [h2] setuptools extras. If you want to play around with it "pip install twisted[h2]" (on Python 2, a bugfix release will make it available on Python 3) and add "h2" to your Site's acceptableProtocols.
+- 53 tickets closed overall, including cleanups that move us closer to a total Python 3 port.
+
+For more information, check the NEWS file (link provided below).
+
+You can find the downloads at <https://pypi.python.org/pypi/Twisted> (or alternatively <http://twistedmatrix.com/trac/wiki/Downloads>). The NEWS file is also available at <https://github.com/twisted/twisted/blob/twisted-16.3.0/NEWS>.
+
+Many thanks to everyone who had a part in this release - the supporters of the Twisted Software Foundation, the developers who contributed code as well as documentation, and all the people building great things with Twisted!
+
+Twisted Regards,
+Amber Brown (HawkOwl)
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 455 bytes
+Desc: Message signed with OpenPGP using GPGMail
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20160706/c527332c/attachment.pgp>
+
+From cwaldbieser at gmail.com  Thu Jul  7 06:14:23 2016
+From: cwaldbieser at gmail.com (Carl Waldbieser)
+Date: Thu, 7 Jul 2016 08:14:23 -0400
+Subject: [Twisted-web] getSession, componentized but not async?
+In-Reply-To: <CADf-aJHvCtosrO4M5gcO7VmZtJme8+VHjqn_zr0iOnFVvuaU7A@mail.gmail.com>
+References: <CADf-aJHvCtosrO4M5gcO7VmZtJme8+VHjqn_zr0iOnFVvuaU7A@mail.gmail.com>
+Message-ID: <CAHPVzqan=+DFi0FdQwPCpNLKQQt9bXmp3+Pz_T8MuWD=yiuo3Q@mail.gmail.com>
+
+Creating the session follows the normal Twisted modus operandi-- create a
+factory that returns the actual thing you want and attach the session to
+your site.  I wrote an authenticating web proxy[1] that does just that.  If
+you skim down to the `sessionFactory()` function, you can see it is not
+overly complicated.
+
+The docs on storing objects in a session[2] are a bit complex.  They are
+basically taking the approach where the idea is when you can
+`request.getSession()`, you can pass in an interface and get back an object
+that corresponds to that interface.  This can actually be useful in larger
+systems where you are making use of heavily componentized code, but in some
+cases it does seem like overkill.
+
+Since the main thing that the stock `Session` buys you is expiration, you
+can use the `Session.notifyOnExpire()` method to update other data
+structures.  My authenticating proxy took that approach for keeping track
+of authenticated users (see the "txcasproxy.py" file around the `_expired`
+function).
+
+As for persisting session data-- I guess the idea is that storing or
+retrieving the session object doesn't need to be async because it is just
+an object in memory corresponding to a cookie in the request.  However,
+writing to or reading from the session could definitely require async
+methods that talk to a back end store.  This could potentially be one area
+where implementing a component with an interface like
+`IRedisSessionStorage` might be useful (get session synchonously from
+request passing in IRedisStorage,  then call `storeThingInSession()` which
+returns a deferred).
+
+Thanks,
+Carl
+
+
+[1]
+https://github.com/cwaldbieser/txcasproxy/blob/master/txcasproxy/service.py
+
+[2]
+https://twistedmatrix.com/documents/current/web/howto/web-in-60/session-store.html
+
+
+On Tue, Jul 5, 2016 at 12:03 PM, Donal McMullan <donal.mcmullan at gmail.com>
+wrote:
+
+> I'm curious about request.getSession
+>
+> Per the docs:
+> https://twistedmatrix.com/documents/current/web/howto/using-twistedweb.html
+>
+> It seems like it's tricky to use correctly. My code needs to:
+>  - define an Interface
+>  - define a class that implements my Interface
+>  - call registerAdapter, passing in my class, server.Session and my
+> Interface
+>  - get a Session instance
+>  - brace myself
+>  - create an instance of my Interface class, passing in the Session
+> instance
+>  - update that Interface instance.... it will persisted, but only in-memory
+>
+> By default, that data doesn't go to database/memcached/whatever, so it's
+> only accessible in-process
+>
+> On first blush, that seems like a lot of legwork. I'm not clear on what
+> utility's provided by all this versus say maintaining a dict as a
+> class-attribute on Site or something. It's also (for me) counter-intuitive
+> to be creating an instance of an _Interface_ and poking data into it.
+>
+> Also I was a bit surprised that getSession doesn't return a deferred,
+> since it seems like it'd be common to want to persist session data in an
+> external store so that multiple twisted-web processes can access it in a
+> clustered/load-balanced setup. How do other folks go about that?
+>
+> I hacked something together a while ago to run session data into Redis,
+> but what I ended up with required so much surgery on twisted web's classes
+> that I figured I must be doing it wrong. I think Site, SessionFactory and
+> Request were all customised.
+>
+> I was thinking about this again in the context of Cory's "Implement
+> server-side HTTP/2 server push" ticket:
+> https://twistedmatrix.com/trac/ticket/8485
+>
+> In this context, I'd like to have access to my session data in multiple
+> Resource objects without _necessarily_ having to round-trip to an external
+> store each time to get/put the same data. In the case of http 1.1 requests,
+> I guess there's no way around that round-trip, so it might be optimal if my
+> Resource objects could be oblivious to the underlying protocol version and
+> Session get/put mechanism.
+>
+> So it'd be great if the default Session mechanism could take care of me
+> there, and I could just have my cake and eat it.
+>
+> Another wrinkle that surprised me when I was hacking on this was that
+> there didn't seem to be a way to uniquely identify a request instance, so
+> within the session code it was impossible to tell if two calls to
+> getSession were coming from different points in the callback chain
+> responding to a single Request, or if the second belonged to a different
+> Request entirely.
+>
+> So my confusion is probably apparent at this stage :)
+>
+> I'm guessing others have been here before me. What approaches have you
+> taken to storing your sessions? Are there good open source projects that I
+> should look to for best practice?
+>
+> Thanks!
+>
+> DJM
+>
+>
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20160707/7930b957/attachment.html>
+
+From donal.mcmullan at gmail.com  Thu Jul  7 08:50:57 2016
+From: donal.mcmullan at gmail.com (Donal McMullan)
+Date: Thu, 7 Jul 2016 15:50:57 +0100
+Subject: [Twisted-web] getSession, componentized but not async?
+In-Reply-To: <CAHPVzqan=+DFi0FdQwPCpNLKQQt9bXmp3+Pz_T8MuWD=yiuo3Q@mail.gmail.com>
+References: <CADf-aJHvCtosrO4M5gcO7VmZtJme8+VHjqn_zr0iOnFVvuaU7A@mail.gmail.com>
+ <CAHPVzqan=+DFi0FdQwPCpNLKQQt9bXmp3+Pz_T8MuWD=yiuo3Q@mail.gmail.com>
+Message-ID: <CADf-aJE2u4+U-p=KNd2zFGp_Ut3vEebRnyw-UUwpwYrS+=H2WQ@mail.gmail.com>
+
+>
+> This can actually be useful in larger systems where you are making use of
+> heavily componentized code, but in some cases it does seem like overkill.
+
+That's close to the heart of the question. In larger systems, what is
+useful about the componentized session objects in particular (as opposed to
+components/adapters/interfaces in general)? It's a very particular API, so
+I guess there's a reason for that.
+
+
+> As for persisting session data-- I guess the idea is that storing or
+> retrieving the session object doesn't need to be async because it is just
+> an object in memory corresponding to a cookie in the request.
+
+
+But doesn't that mean it's impossible to restart the process without
+destroying user session data? That doesn't seem ok. Isn't that a problem
+for your cas proxy?
+
+Thanks Carl
+
+DJM
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20160707/21a9db81/attachment.html>
+
+From glyph at twistedmatrix.com  Thu Jul  7 16:20:45 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Thu, 7 Jul 2016 15:20:45 -0700
+Subject: [Twisted-web] getSession, componentized but not async?
+In-Reply-To: <CAHPVzqan=+DFi0FdQwPCpNLKQQt9bXmp3+Pz_T8MuWD=yiuo3Q@mail.gmail.com>
+References: <CADf-aJHvCtosrO4M5gcO7VmZtJme8+VHjqn_zr0iOnFVvuaU7A@mail.gmail.com>
+ <CAHPVzqan=+DFi0FdQwPCpNLKQQt9bXmp3+Pz_T8MuWD=yiuo3Q@mail.gmail.com>
+Message-ID: <40F167FD-D964-4940-A495-66FF3AE866DA@twistedmatrix.com>
+
+
+> On Jul 7, 2016, at 5:14 AM, Carl Waldbieser <cwaldbieser at gmail.com> wrote:
+> 
+> As for persisting session data-- I guess the idea is that storing or retrieving the session object doesn't need to be async because it is just an object in memory corresponding to a cookie in the request.  However, writing to or reading from the session could definitely require async methods that talk to a back end store.  This could potentially be one area where implementing a component with an interface like `IRedisSessionStorage` might be useful (get session synchonously from request passing in IRedisStorage,  then call `storeThingInSession()` which returns a deferred).
+
+This is an extremely subtle point so I am very happy that it seems to have somehow gotten across :).  Thanks for writing up this answer; it's close to exactly what I would have written.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20160707/ce4f36cc/attachment.html>
+
+From glyph at twistedmatrix.com  Thu Jul  7 16:24:34 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Thu, 7 Jul 2016 15:24:34 -0700
+Subject: [Twisted-web] getSession, componentized but not async?
+In-Reply-To: <CADf-aJE2u4+U-p=KNd2zFGp_Ut3vEebRnyw-UUwpwYrS+=H2WQ@mail.gmail.com>
+References: <CADf-aJHvCtosrO4M5gcO7VmZtJme8+VHjqn_zr0iOnFVvuaU7A@mail.gmail.com>
+ <CAHPVzqan=+DFi0FdQwPCpNLKQQt9bXmp3+Pz_T8MuWD=yiuo3Q@mail.gmail.com>
+ <CADf-aJE2u4+U-p=KNd2zFGp_Ut3vEebRnyw-UUwpwYrS+=H2WQ@mail.gmail.com>
+Message-ID: <FC22A8C8-3E71-4425-8819-DCD29F41D61F@twistedmatrix.com>
+
+
+> On Jul 7, 2016, at 7:50 AM, Donal McMullan <donal.mcmullan at gmail.com> wrote:
+> 
+> This can actually be useful in larger systems where you are making use of heavily componentized code, but in some cases it does seem like overkill.
+> That's close to the heart of the question. In larger systems, what is useful about the componentized session objects in particular (as opposed to components/adapters/interfaces in general)? It's a very particular API, so I guess there's a reason for that.
+
+The issue is that larger systems may be integrating several components, each of which may have its own requirements of session data.  Each stipulates those requirements in terms of an interface, and then the session is a mapping of {interface_describing_required_behavior: application_specific_behavior}.
+
+The reason this works better in "larger" systems is that if you have only a single codebase with only a single set of requirements on its session, you'll only ever need a single key in that mapping, and a single interface.
+
+> As for persisting session data-- I guess the idea is that storing or retrieving the session object doesn't need to be async because it is just an object in memory corresponding to a cookie in the request.
+> 
+> But doesn't that mean it's impossible to restart the process without destroying user session data? That doesn't seem ok. Isn't that a problem for your cas proxy?
+
+No; the idea is that you have an object in the session with Deferred-returning methods to retrieve data from your data store.  What the session store is doing synchronously is simply converting the cookie data into a token that can be used to access a back-end; the actual data lives in the back-end.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20160707/5d87a8cc/attachment.html>
+
+From donal.mcmullan at gmail.com  Thu Jul  7 20:54:35 2016
+From: donal.mcmullan at gmail.com (Donal McMullan)
+Date: Fri, 8 Jul 2016 03:54:35 +0100
+Subject: [Twisted-web] getSession, componentized but not async?
+In-Reply-To: <FC22A8C8-3E71-4425-8819-DCD29F41D61F@twistedmatrix.com>
+References: <CADf-aJHvCtosrO4M5gcO7VmZtJme8+VHjqn_zr0iOnFVvuaU7A@mail.gmail.com>
+ <CAHPVzqan=+DFi0FdQwPCpNLKQQt9bXmp3+Pz_T8MuWD=yiuo3Q@mail.gmail.com>
+ <CADf-aJE2u4+U-p=KNd2zFGp_Ut3vEebRnyw-UUwpwYrS+=H2WQ@mail.gmail.com>
+ <FC22A8C8-3E71-4425-8819-DCD29F41D61F@twistedmatrix.com>
+Message-ID: <CADf-aJG_ka=q0tUJM7F-L974idO2uc_TzWvFdLxdOiWip-zypw@mail.gmail.com>
+
+>
+> No; the idea is that you have an object in the session with
+> Deferred-returning methods to retrieve data from your data store.
+
+
+Ahhhh - Carl was trying to explain that. Sorry guys. I get it finally.
+
+The issue is that larger systems may be integrating several components,
+> each of which may have its own requirements of session data.
+
+
+Hmm.
+
+Thanks glyph
+
+DJM
+
+
+On 7 July 2016 at 23:24, Glyph Lefkowitz <glyph at twistedmatrix.com> wrote:
+
+>
+> On Jul 7, 2016, at 7:50 AM, Donal McMullan <donal.mcmullan at gmail.com>
+> wrote:
+>
+> This can actually be useful in larger systems where you are making use of
+>> heavily componentized code, but in some cases it does seem like overkill.
+>
+> That's close to the heart of the question. In larger systems, what is
+> useful about the componentized session objects in particular (as opposed to
+> components/adapters/interfaces in general)? It's a very particular API, so
+> I guess there's a reason for that.
+>
+>
+> The issue is that larger systems may be integrating several components,
+> each of which may have its own requirements of session data.  Each
+> stipulates those requirements in terms of an interface, and then the
+> session is a mapping of {interface_describing_required_behavior:
+> application_specific_behavior}.
+>
+> The reason this works better in "larger" systems is that if you have only
+> a single codebase with only a single set of requirements on its session,
+> you'll only ever need a single key in that mapping, and a single interface.
+>
+> As for persisting session data-- I guess the idea is that storing or
+>> retrieving the session object doesn't need to be async because it is just
+>> an object in memory corresponding to a cookie in the request.
+>
+>
+> But doesn't that mean it's impossible to restart the process without
+> destroying user session data? That doesn't seem ok. Isn't that a problem
+> for your cas proxy?
+>
+>
+> No; the idea is that you have an object in the session with
+> Deferred-returning methods to retrieve data from your data store.  What the
+> session store is doing synchronously is simply converting the cookie data
+> into a token that can be used to access a back-end; the actual data lives
+> in the back-end.
+>
+> -glyph
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20160708/b5acf93a/attachment.html>
+
+From glyph at twistedmatrix.com  Thu Jul  7 22:47:05 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Thu, 7 Jul 2016 21:47:05 -0700
+Subject: [Twisted-web] getSession, componentized but not async?
+In-Reply-To: <CADf-aJG_ka=q0tUJM7F-L974idO2uc_TzWvFdLxdOiWip-zypw@mail.gmail.com>
+References: <CADf-aJHvCtosrO4M5gcO7VmZtJme8+VHjqn_zr0iOnFVvuaU7A@mail.gmail.com>
+ <CAHPVzqan=+DFi0FdQwPCpNLKQQt9bXmp3+Pz_T8MuWD=yiuo3Q@mail.gmail.com>
+ <CADf-aJE2u4+U-p=KNd2zFGp_Ut3vEebRnyw-UUwpwYrS+=H2WQ@mail.gmail.com>
+ <FC22A8C8-3E71-4425-8819-DCD29F41D61F@twistedmatrix.com>
+ <CADf-aJG_ka=q0tUJM7F-L974idO2uc_TzWvFdLxdOiWip-zypw@mail.gmail.com>
+Message-ID: <9AF9036A-B493-4792-B075-8A1CDB44C4CB@twistedmatrix.com>
+
+
+
+> On Jul 7, 2016, at 7:54 PM, Donal McMullan <donal.mcmullan at gmail.com> wrote:
+> 
+> No; the idea is that you have an object in the session with Deferred-returning methods to retrieve data from your data store. 
+> 
+> Ahhhh - Carl was trying to explain that. Sorry guys. I get it finally.
+> 
+> The issue is that larger systems may be integrating several components, each of which may have its own requirements of session data. 
+> 
+> Hmm.
+> 
+> Thanks glyph
+
+Happy to help - thanks for using Twisted :).
+
+-glyph
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20160707/f6197f78/attachment.html>
+

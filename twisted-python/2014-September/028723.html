@@ -1,0 +1,160 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] High throughput database logger
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20High%20throughput%20database%20logger&In-Reply-To=%3C20140904132015.20413.679407771.divmod.xquotient.1912%40top%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="028721.html">
+   <LINK REL="Next"  HREF="028731.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] High throughput database logger</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20High%20throughput%20database%20logger&In-Reply-To=%3C20140904132015.20413.679407771.divmod.xquotient.1912%40top%3E"
+       TITLE="[Twisted-Python] High throughput database logger">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Thu Sep  4 07:20:15 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="028721.html">[Twisted-Python] High throughput database logger
+</A></li>
+        <LI>Next message: <A HREF="028731.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28723">[ date ]</a>
+              <a href="thread.html#28723">[ thread ]</a>
+              <a href="subject.html#28723">[ subject ]</a>
+              <a href="author.html#28723">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 12:51 pm, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">adi.libotean at proatria.com</A> wrote:
+&gt;<i>Hi,
+</I>&gt;<i>
+</I>&gt;<i>I'm looking at various options for implementing a high throughput 
+</I>&gt;<i>database logger that will work with Twisted.
+</I>&gt;<i>
+</I>&gt;<i>My requirements, listed by importance:
+</I>&gt;<i>
+</I>&gt;<i>1) small memory footprint
+</I>&gt;<i>2) high speed
+</I>&gt;<i>3) low garbage generation
+</I>&gt;<i>
+</I>&gt;<i>The application I'm working on runs continuously (24/7). I've 
+</I>&gt;<i>experimented a bit with pysqlite and Twisted to see which approach is 
+</I>&gt;<i>better suited (see attached example).
+</I>&gt;<i>
+</I>&gt;<i>----
+</I>&gt;<i>
+</I>&gt;<i>Question 1: I noticed that all of the Twisted based versions are very 
+</I>&gt;<i>slow compared to the plain sqlite3 test. This seems to be caused by 
+</I>&gt;<i>atomic transaction management, namely a commit after each insert.
+</I>
+Not only this but in some of the Twisted versions you've introduced a 
+round-trip communication from the reactor thread to a worker thread 
+between each operation.  This will greatly impact throughput by adding 
+lots of latency to each insert.
+&gt;<i>Would be interested to know if there is a simple way to avoid this and 
+</I>&gt;<i>do my own transaction management (aka batch commit).
+</I>
+Using twisted.enterprise.adbapi?  You could probably hack something 
+horrible together but it would definitely be a hack.  I suggest you take 
+a look at adbapi2 instead - &lt;<A HREF="http://trac.calendarserver.org/wiki/twext">http://trac.calendarserver.org/wiki/twext</A>&gt;.
+&gt;<i>One other thing is the greatly varying amounts of garbage generated 
+</I>&gt;<i>(peak memory) and memory usage between the Twisted variants.
+</I>
+&quot;Garbage&quot; and &quot;peak memory&quot; are different things.  The Twisted-using 
+version does a lot more - and some of your Twisted-using versions put 
+the *entire* data set into memory (in a vastly expanded form, where each 
+insert is represented by multiple large objects including Deferreds). 
+So it's not too surprising the memory usage is greater.
+&gt;<i>----
+</I>&gt;<i>
+</I>&gt;<i>Question 2: I would have expected B (Twisted ADBAPI) to behave very 
+</I>&gt;<i>similar to C/E since I'm using a connection pool of size 1 and all 
+</I>&gt;<i>requests are queued and handled sequentially.
+</I>&gt;<i>
+</I>&gt;<i>Could any of you please give me some pointers as to why this is 
+</I>&gt;<i>happening?
+</I>
+You didn't actually label the code with these letters. :)  I'm guessing 
+B is the `adbapi` function, C is `inline_callbacks`, and E is 
+`cooperator`.
+
+Also you didn't say in what respect you expected them to behavior 
+similarly.  You expected their memory usage to be the same?  You 
+expected their runtime to be the same?  You expected them to put the 
+same data into the database?
+
+As far as memory usage goes, B uses lots of memory for the same reason 
+`semaphore` (D?) uses lots of memory.  You queue up the entire dataset 
+in memory as piles of tuples, lists, Deferreds, etc.
+
+adbapi might be executing the operations one at a time, but the *loop* 
+inside `adbapi` runs all the way to the end all in one go.  It starts 
+every one of those `runOperation`s before any of them (probably) has a 
+chance to execute.
+&gt;<i>----
+</I>&gt;<i>
+</I>&gt;<i>Question 3: Even though objgraph lists the exact same reference count 
+</I>&gt;<i>once the code is ran, the amount of used memory greatly differs. Any 
+</I>&gt;<i>ideas what might be causing this?
+</I>
+Hopefully the above helps explain this.
+
+Something else you might consider is batching up your inserts (not just 
+only committing after a batch of inserts).  Since SQLite3 can only write 
+from a single thread at a time, you're effectively limited to serialized 
+inserts - so it doesn't make sense to try to start a second insert 
+before the first has finished.
+
+When the first finishes, if 50 more data points have arrived, you should 
+do one insert for all 50 of those - not 50 inserts each for one piece of 
+data.  This cuts off a bunch of your overhead - Python objects, round- 
+trip latency for inter-thread communication, function calls, etc.
+
+Jean-Paul
+&gt;<i>Any suggestions and/or pointers on how to improve/do this are more than 
+</I>&gt;<i>welcome.
+</I>&gt;<i>
+</I>&gt;<i>Thank you for your time,
+</I>&gt;<i>Adrian
+</I>
+</PRE>
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="028721.html">[Twisted-Python] High throughput database logger
+</A></li>
+	<LI>Next message: <A HREF="028731.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28723">[ date ]</a>
+              <a href="thread.html#28723">[ thread ]</a>
+              <a href="subject.html#28723">[ subject ]</a>
+              <a href="author.html#28723">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,162 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Streaming HTTP
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Streaming%20HTTP&In-Reply-To=%3CA528F31A-5FDA-4C3C-B5A7-3324616F9AFE%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="062467.html">
+   <LINK REL="Next"  HREF="062493.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Streaming HTTP</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Streaming%20HTTP&In-Reply-To=%3CA528F31A-5FDA-4C3C-B5A7-3324616F9AFE%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Streaming HTTP">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Wed Dec  2 15:39:08 MST 2015</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="062467.html">[Twisted-Python] Notification when SSHConnectForwardingChannel is ready for traffic?
+</A></li>
+        <LI>Next message (by thread): <A HREF="062493.html">[Twisted-Python] Streaming HTTP
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#30009">[ date ]</a>
+              <a href="thread.html#30009">[ thread ]</a>
+              <a href="subject.html#30009">[ subject ]</a>
+              <a href="author.html#30009">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Nov 19, 2015, at 3:50 AM, Cory Benfield &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">cory at lukasa.co.uk</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;&gt;<i> On 18 Nov 2015, at 12:18, Glyph Lefkowitz &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; wrote:
+</I>&gt;&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> Sorry about the delay in responding to this, but I wanted to make sure I knew at least a bit about what I was talking about before I responded!
+</I>
+Clearly this is a challenging topic that requires lots of thought on the part of each interlocutor, and may require long rounds of consideration before each reply.  No need to apologize.
+
+&gt;&gt;&gt;<i> What do people think of this approach?
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> So I think you're roughly on the right track but there are probably some Twisted-level gaps to fill in.
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> I've already gestured in the direction of Tubes (as have others) and it's something to think about.  But before we get to that, let's talk about a much more basic deficiency in the API: although there's an &quot;IRequest&quot;, and an &quot;IResource&quot;, there's no such thing as an &quot;IResponse&quot;.  Instead, &quot;IRequest&quot; stands in for both the request and the response, because you write directly to a request (implicitly filling out its response as you do so).
+</I>&gt;<i> 
+</I>&gt;<i> So, I think in general this is interesting. One of the big difficulties I&#8217;m having right now is that I&#8217;m trying to combine this &#8220;streaming HTTP&#8221; work with the implementation of HTTP/2, which means that I need to keep the HTTP/2 work in mind whenever I talk about this *and* update the HTTP/2 design in response to decisions we make here. This means I&#8217;ve got quite a lot of balls in the air right now, and I am confident I&#8217;ll drop quite a few. One thing I&#8217;m deliberately not doing here is considering Tubes, in part because I&#8217;m extremely concerned about backward compatibility, and want the HTTP/2 work to function in the same environment.
+</I>&gt;<i> 
+</I>&gt;<i> Unfortunately, this means this conversation is blending into the HTTP/2 one, so I&#8217;m going to hijack this thread and bring in some concrete discussion of what I&#8217;m working on with the HTTP/2 stuff.
+</I>
+Hijack away.  I think we should be primarily concerned with getting HTTP/2 integrated for the moment.  The reason this raises so many concerns related to the streaming stuff is that the internal implementation of HTTP/2 ought to be more amenable to pulling apart to fit into an actually good interface to the HTTP protocol.
+
+I think that twisted._threads points in a promising direction for this sort of work: let's make the old, crappy HTTP APIs work as-is, but with a new, private implementation that is better-factored but not fully documented.  We have the old interface as a proof-of-concept, so the new stuff needs to at least be good enough to be an internal implementation detail for that; we don't have to commit to a new public API to land it, and hopefully with some minor edits we can just make it public as the &quot;good&quot; interface (and then backport HTTP/1.1 over it, since we will probably be dealing with legacy HTTP/1.1 clients and servers until we're all dead).
+
+&gt;<i> I was having a conversation about the HTTP/2 architecture on #twisted-dev yesterday, which has led towards my current working approach for HTTP/2, which will be to have two underlying objects. We&#8217;ll have H2Connection, which implements IProtocol, and H2Stream, which implements ITransport. These two objects will be *extremely* tightly coupled: H2Stream cannot meaningfully run over an arbitrary transport mechanism, and knows a great deal about how H2Connections work.
+</I>
+This seems good, except for the &quot;extreme&quot; tight coupling.  IProtocol and ITransport aren't that tightly coupled.  Why do H2Stream and H2Connection need to be?
+
+&gt;<i> The reason we need to take this approach is because IConsumer doesn&#8217;t allow for us to have correlators, so even if we only had H2Connection it wouldn&#8217;t be able to identify a given producer with the stream it holds. By extension, IConsumer cannot consume multiple producers at once. For this reason, we need an interface between H2Connection and H2Stream that is similar to ITransport and IConsumer, but more featureful. Basically, H2Stream is a thin shim between a producer and H2Connection that adds a stream ID to a few function calls.
+</I>
+This is basically a good pattern.  It exposes a hard-to-screw-up interface to the next layer up, because you can't forget to include a (mandatory) stream ID.  I've implemented several multiplexing things that work more or less like this.
+
+&gt;&gt;<i> Luckily we have an existing interface that might point the way to a better solution, both for requests and responses: specifically, the client IResponse: <A HREF="https://twistedmatrix.com/documents/15.4.0/api/twisted.web.iweb.IResponse.html.">https://twistedmatrix.com/documents/15.4.0/api/twisted.web.iweb.IResponse.html.</A>
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> This interface is actually pretty close to what we want for a server IResponse as well.  Perhaps even identical.  Its static data is all exposed as attributes which can be relatively simply inspected, and the way it delivers a streaming response is that it delivers its body to an IProtocol implementation (via .deliverBody(aProtocol)).  This is not quite as graceful as having a .bodyFount() method that returns an IFount from the tubes package; however, the tubes package is still not exactly mature software, so we may not want to block on depending on it.  Importantly though, this delivers all the events you need as a primitive for interfacing with such a high-level interface; it would definitely be better to add this sort of interface Real Soon Now, because then the tubes package could simply have a method, responseToFount (which it will need anyway to work with Agent) that calls deliverBody internally.
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> This works as a primitive because you have all the hooks you need for flow-control.  This protocol receives, to its 'makeConnection' method, an ITransport which can provide the IProducer <A HREF="https://twistedmatrix.com/documents/15.4.0/api/twisted.internet.interfaces.IProducer.html">https://twistedmatrix.com/documents/15.4.0/api/twisted.internet.interfaces.IProducer.html</A> and IConsumer <A HREF="https://twistedmatrix.com/documents/15.4.0/api/twisted.internet.interfaces.IConsumer.html">https://twistedmatrix.com/documents/15.4.0/api/twisted.internet.interfaces.IConsumer.html</A> interfaces for flow-control.  It receives dataReceived to tell it a chunk has arrived and connectionLost to tell it the stream has terminated.
+</I>&gt;<i> 
+</I>&gt;<i> Just let me clarify how this is expected to work. Somewhere we have a t.w.s.Site, which builds some kind of HTTP protocol (currently HTTPChannel, in future some object that can transparently swap between HTTPChannel and H2Connection) when connections are received.
+</I>
+Another option could also be having a t.w.s.NewSite (with that name hopefully obviously being a straw man) so that Site can simply be deprecated in favor of the new thing.  Making Site itself be able to accommodate the new stuff would be nice but is definitely not mandatory.
+
+&gt;<i> These two protocols each build an IGoodRequest, which is very similar to IRequest but has a deliverBody method. The consumer of this (whether IResource or some other thing). These objects, if they want to consume a stream, register a protocol via deliverBody. At this point, H2Connection (via H2Stream) provides itself as the transport to that protocol, and calls deliverBody when chunks of data are received.
+</I>
+This sounds great.  One thing to maybe watch out for: what if nobody calls deliverBody?  This can sometimes be a little annoying in client code, to debug why a channel is never closed.  Having a nice error in this case would be a cherry on top.
+
+&gt;<i> When the object receiving the request is ready to send a response, it calls&#8230;something (sendResponse?) and provides an object implementing a server IResponse. The code in the H2Stream/H2Connection sends the headers, then calls deliverBody on the IResponse, passing H2Connection (again via H2Stream) as the protocol that gets called. In this world, H2Stream actually would need to implement IProtocol as well as ITransport.
+</I>
+A minor bit of critique here: the Single Responsibility Principle &lt;<A HREF="https://en.wikipedia.org/wiki/Single_responsibility_principle">https://en.wikipedia.org/wiki/Single_responsibility_principle</A>&gt; dictates that we ought not to have H2Stream literally implement both IProtocol and ITransport; rather, we should have an _H2StreamProtocol and an _H2StreamTransport, since the thing talking to the IProtocol implementation really ought to be wholly distinct from the thing talking to the ITransport implementation, and this kind of duality makes it very easy for users - especially programmers new to Twisted - to get confused.  As Nathaniel Manista and Augie Fackler put it in The Talk &lt;<A HREF="https://www.youtube.com/watch?v=3MNVP9-hglc">https://www.youtube.com/watch?v=3MNVP9-hglc</A>&gt;, we want to express ourselves &quot;structurally&quot;, if you only want application code to talk to the transport implementation and it's an error to talk to the protocol implementation, pass only the transport implementation.
+
+&gt;<i> Is my understand of that correct? If so, I think this design can work: essentially, H2Stream becomes the weird intermediary layer that appears as both a transport and a protocol to the request/response layer. Underneath the covers it mostly delegates to H2Connection, which implements a slightly weirdo version of IConsumer (and in fact IProducer) that can only be consumed by H2Stream.
+</I>
+I don't quite get why it needs to be slightly weirdo (hopefully IPushProducer is sufficient?) but yes, this all sounds right to me.
+
+&gt;<i> 
+</I>&gt;&gt;<i> Unfortunately the client IRequest <A HREF="https://twistedmatrix.com/documents/15.4.0/api/twisted.web.iweb.IClientRequest.html">https://twistedmatrix.com/documents/15.4.0/api/twisted.web.iweb.IClientRequest.html</A> isn't quite as useful (although its relative minimalism should be an inspiration to anyone designing a next-generation IRequest more than the current IRequest's sprawling kitchen-sink aesthetic).  However, IResponse.deliverBody could be applied to IGoodRequest as well.  If we have a very similar-to-IResponse shaped IRequest object, say with 'method', 'uri' and 'headers', and then a 'deliverBody' that delivers the request body in much the same way, we could get a gracefully structured streaming request with works with a lot of existing code within Twisted.
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> Then the question is: what to do with IResource?
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> Right now the flow of processing a request is, roughly:
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> -&gt; wait for full request to arrive
+</I>&gt;&gt;<i>  -&gt; have HTTPChannel fill out IRequest object
+</I>&gt;&gt;<i> -&gt; look at request.site.resource for the root
+</I>&gt;&gt;<i> *-&gt; call getChildWithDefault repeatedly, mutating &quot;cursor&quot; state on the IRequest as you move (specifically: &quot;prepath&quot; and &quot;postpath&quot; attributes)
+</I>&gt;&gt;<i>  -&gt; eventually reach the leaf Resource, or one with 'isLeaf' set on it, and delegate producing the response to that resource
+</I>&gt;&gt;<i> *-&gt; call resource.render(request)
+</I>&gt;&gt;<i> -&gt; examine the return value; if it's bytes, deliver them and close the connection; NOT_DONE_YET, just leave the connection open,
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> Instead, I think a good flow would be:
+</I>&gt;<i> 
+</I>&gt;<i> [snip long discussion of how to write locateChild]
+</I>&gt;<i> 
+</I>&gt;<i> Agreed that these proposed approaches would work well. I have no concrete feedback on them, they seem good to me.
+</I>&gt;<i> 
+</I>&gt;&gt;<i> -&gt; finally, call .responseForRequest(request) -&gt; IResponse on the final Resource and deliver the IResponse to the network.
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> The way compatibility could be achieved here is to write a wrapper that would implement .responseForRequest to first collect the entire body, then synthesize a gross old-style-IRequest-like object out of the combination of that body and the other information about the resource, then call .getChildWithDefault on it a few times, then call the old-style .render_GET, et. al.  The IResponse returned from this compatibility .responseForRequest would wrap up calls like request.write and turn them into write() calls.
+</I>&gt;<i> 
+</I>&gt;<i> This seems super-gross but vaguely do-able, and we&#8217;ll need to write it in order to get the new H2Connection/H2Stream objects working with the old paradigm anyway.
+</I>
+&quot;super-gross but vaguely do-able&quot; is what we're shooting for in the compatibility layer :).
+
+&gt;<i> All of this approach sounds reasonable modulo some careful thinking about how exactly we tie this in with the old paradigm. I&#8217;m particularly concerned about H2Channel, which I suspect many applications may know a great deal about. Changing its interface is likely to be slightly tricky, but we&#8217;ll see how it goes.
+</I>
+It might be useful to think about a parent interface, IHTTPChannel with all the least-common-denominator stuff on it, and sub-interfaces IHTTP1_1Channel and IHTTP2_0Channel which each derive from that and provide additional version-specific stuff.  I don't have enough protocol-specific knowledge to hand in short-term memory to comment on what that functionality might be though.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20151202/8cbc1551/attachment-0001.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20151202/8cbc1551/attachment-0001.html</A>&gt;
+</PRE>
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="062467.html">[Twisted-Python] Notification when SSHConnectForwardingChannel is ready for traffic?
+</A></li>
+	<LI>Next message (by thread): <A HREF="062493.html">[Twisted-Python] Streaming HTTP
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#30009">[ date ]</a>
+              <a href="thread.html#30009">[ thread ]</a>
+              <a href="subject.html#30009">[ subject ]</a>
+              <a href="author.html#30009">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

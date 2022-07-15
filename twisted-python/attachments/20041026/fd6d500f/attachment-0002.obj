@@ -1,0 +1,83 @@
+Index: twisted/internet/cfreactor.py
+===================================================================
+--- twisted/internet/cfreactor.py	(revision 12138)
++++ twisted/internet/cfreactor.py	(working copy)
+@@ -33,12 +33,6 @@
+ from twisted.internet import main, default, error
+ from weakref import WeakKeyDictionary
+ 
+-# cache two extremely common "failures" without traceback info
+-_faildict = {
+-    error.ConnectionDone: failure.Failure(error.ConnectionDone()),
+-    error.ConnectionLost: failure.Failure(error.ConnectionLost()),
+-}
+-
+ class SelectableSocketWrapper(object):
+     _objCache = WeakKeyDictionary()
+ 
+@@ -56,8 +50,6 @@
+             raise ValueError, "This socket wrapper is already initialized"
+         self.reactor = reactor
+         self.obj = obj
+-        obj._orig_ssw_connectionLost = obj.connectionLost
+-        obj.connectionLost = self.objConnectionLost
+         self.fd = obj.fileno()
+         self.writing = False
+         self.reading = False
+@@ -70,19 +62,6 @@
+     def __repr__(self):
+         return 'SSW(fd=%r r=%r w=%r x=%08x o=%08x)' % (self.fd, int(self.reading), int(self.writing), id(self), id(self.obj))
+ 
+-    def objConnectionLost(self, *args, **kwargs):
+-        obj = self.obj
+-        self.reactor.removeReader(obj)
+-        self.reactor.removeWriter(obj)
+-        obj.connectionLost = obj._orig_ssw_connectionLost
+-        obj.connectionLost(*args, **kwargs)
+-        try:
+-            del self._objCache[obj]
+-        except:
+-            pass
+-        self.obj = None
+-        self.cf = None
+-
+     def doConnect(self, why):
+         pass
+ 
+@@ -119,7 +98,7 @@
+         self.writing = False
+         self.wouldWrite = False
+     
+-    def _finishReadOrWrite(self, fn, faildict=_faildict):
++    def _finishReadOrWrite(self, fn, isRead):
+         try:
+             why = fn()
+         except:
+@@ -127,8 +106,7 @@
+             log.err()
+         if why:
+             try:
+-                f = faildict.get(why.__class__) or failure.Failure(why)
+-                self.objConnectionLost(f)
++                self.reactor._disconnectSelectable(self.obj, why, isRead)
+             except:
+                 log.err()
+         if self.reactor.running:
+@@ -143,7 +121,7 @@
+             if self.reactor.running:
+                 self.reactor.simulate()
+             return
+-        self._finishReadOrWrite(obj.doRead)
++        self._finishReadOrWrite(obj.doRead, True)
+ 
+     def doWrite(self):
+         obj = self.obj
+@@ -154,7 +132,7 @@
+             if self.reactor.running:
+                 self.reactor.simulate()
+             return
+-        self._finishReadOrWrite(obj.doWrite)
++        self._finishReadOrWrite(obj.doWrite, False)
+  
+     def __hash__(self):
+         return hash(self.fd)

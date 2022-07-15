@@ -1,0 +1,269 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] html cache with timeout
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20html%20cache%20with%20timeout&In-Reply-To=20050201160540.7026.1085493566.divmod.quotient.16656%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001132.html">
+   <LINK REL="Next"  HREF="001134.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] html cache with timeout</H1>
+    <B>Matt Goodall</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20html%20cache%20with%20timeout&In-Reply-To=20050201160540.7026.1085493566.divmod.quotient.16656%40ohm"
+       TITLE="[Twisted-web] html cache with timeout">matt at pollenation.net
+       </A><BR>
+    <I>Tue Feb  1 10:15:01 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001132.html">[Twisted-web] html cache with timeout
+</A></li>
+        <LI>Next message: <A HREF="001134.html">[Twisted-web] html cache with timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1133">[ date ]</a>
+              <a href="thread.html#1133">[ thread ]</a>
+              <a href="subject.html#1133">[ subject ]</a>
+              <a href="author.html#1133">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Tue, 2005-02-01 at 16:05 +0000, Valentino Volonghi aka Dialtone
+wrote:
+&gt;<i> On Tue, 01 Feb 2005 12:58:49 GMT, Valentino Volonghi aka Dialtone &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">dialtone at divmod.com</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> The first version of the patch didn't actually work. But I wrote a new version, also thanks to fzZzy and this time it works although it has a flaw since in weever caching the content slot (which is filled with a Fragment) results in 2 big red Nones and the rendered fragment.
+</I>&gt;<i> 
+</I>&gt;<i> As I said in the first mail you can use caching with:
+</I>&gt;<i> 
+</I>&gt;<i> t.cached(name=some_sensible_name, lifetime=MAX_LIFE)[cached_content]
+</I>&gt;<i> 
+</I>&gt;<i> This patch provides, probably, the finest granularity in caching the rendering.
+</I>&gt;<i> 
+</I>&gt;<i> Anyway the patch is below:
+</I>
+I think it would be much better if the _CACHE module-scope dict was
+replaced with an object remembered in the context. There are a couple of
+reasons for this:
+
+      * We can have persistence to the file system when necessary.
+      * We can remember a cache manager on a resource to allow drop-in
+        components (and their child resources) to manage their own
+        caching. This also allows some root resource class to have
+        multiple instances, where the interface names used as the cache
+        keys will likely be the same, to be deployed under a single
+        site.
+      * The cache manager API can be extended in the future to allow
+        manual clearing of cache items, i.e. some public web UI can
+        cache parts of the page indefintely and an admin UI (that shares
+        the same cache manager) can clear cached data as objects are
+        modified.
+
+There are also a couple of features that I can see stan.cached &quot;growing&quot;
+later on. I've mentioned some of these on IRC.
+
+      * Cache scope, i.e. application vs session. As I've said on IRC, I
+        can see a real use case for session-scoped caching, i.e. I get
+        my cached version; you get yours.
+      * It might be nice to allow timeouts to be defined as &quot;every
+        hour&quot;, &quot;every fifteen minutes&quot;, &quot;at 12am&quot;. Yeah, I'm talking
+        cron-like ;-).
+
+Hmm, one last idea is cache groups. I think this is especially
+applicable to the above idea of having an API to clear cache objects.
+
+Say some part of the page includes content from two objects: a Foo with
+id 3 and a Bar with id 8. The fragment could be cached against the key
+((Foo,3),(Bar,8)). If some user then changed the Foo,3 object it would
+clear (Foo,3) cached objects; if Bar,8 was changed it would clear
+(Bar,8) cached objects. Either one would remove the ((Foo,3),(Bar,8))
+cached content.
+
+Obviously, it would be up to the application to choose its keys carefull
+but, basically, if the equivalent of &quot;(Foo,3) in ((Foo,3),(Bar,8))&quot;
+succeeds then the object would be cleared.
+
+I don't think we have to add all these features right now as long as the
+initial API takes these sorts of use cases into consideration.
+
+Cheers, Matt
+
+
+&gt;<i> 
+</I>&gt;<i> Index: nevow/tags.py
+</I>&gt;<i> ===================================================================
+</I>&gt;<i> --- nevow/tags.py       (revision 1136)
+</I>&gt;<i> +++ nevow/tags.py       (working copy)
+</I>&gt;<i> @@ -25,7 +25,7 @@
+</I>&gt;<i>  &quot;&quot;&quot;
+</I>&gt;<i>  
+</I>&gt;<i> 
+</I>&gt;<i> -from nevow.stan import Proto, Tag, directive, raw, xml, CommentProto, invisible, slot, cdata
+</I>&gt;<i> +from nevow.stan import Proto, Tag, directive, raw, xml, CommentProto, invisible, slot, cdata, cached
+</I>&gt;<i>  
+</I>&gt;<i> 
+</I>&gt;<i>  comment = CommentProto()
+</I>&gt;<i> @@ -62,7 +62,9 @@
+</I>&gt;<i>  def inlineJS(s):
+</I>&gt;<i>      return script(type=&quot;text/javascript&quot;, language=&quot;JavaScript&quot;)[xml('\n//&lt;![CDATA[\n%s\n//]]&gt;\n' % s)]
+</I>&gt;<i>  
+</I>&gt;<i> -__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object', '_map', 'drange', 'Tag', 'directive', 'xml', 'raw', 'slot', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
+</I>&gt;<i> +__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object',
+</I>&gt;<i> +                  '_map', 'drange', 'Tag', 'directive', 'xml', 'raw',
+</I>&gt;<i> +                  'slot', 'cached', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
+</I>&gt;<i>  
+</I>&gt;<i> 
+</I>&gt;<i>  ########################
+</I>&gt;<i> Index: nevow/flat/flatstan.py
+</I>&gt;<i> ===================================================================
+</I>&gt;<i> --- nevow/flat/flatstan.py      (revision 1136)
+</I>&gt;<i> +++ nevow/flat/flatstan.py      (working copy)
+</I>&gt;<i> @@ -9,7 +9,7 @@
+</I>&gt;<i>  from nevow import util
+</I>&gt;<i>  from nevow.stan import Proto, Tag, xml, directive, Unset, invisible
+</I>&gt;<i>  from nevow.inevow import IRenderer, IRendererFactory, IGettable, IData
+</I>&gt;<i> -from nevow.flat import precompile, serialize
+</I>&gt;<i> +from nevow.flat import precompile, serialize, iterflatten
+</I>&gt;<i>  from nevow.accessors import convertToData
+</I>&gt;<i>  from nevow.context import WovenContext
+</I>&gt;<i>  
+</I>&gt;<i> @@ -226,6 +226,56 @@
+</I>&gt;<i>          return serialize(original.default, context)
+</I>&gt;<i>      return serialize(data, context)
+</I>&gt;<i>  
+</I>&gt;<i> +_CACHE = {}
+</I>&gt;<i> +from time import time as now
+</I>&gt;<i> +from cStringIO import StringIO
+</I>&gt;<i> +from twisted.internet import defer
+</I>&gt;<i> +def CachedSerializer(original, context):
+</I>&gt;<i> +    cached = _CACHE.get(original.name, None)
+</I>&gt;<i> +    life = now()-original.lifetime
+</I>&gt;<i> +    if cached and cached[0] &gt; life:
+</I>&gt;<i> +##         print &quot;=&quot;*20
+</I>&gt;<i> +##         print cached[0]
+</I>&gt;<i> +##         print life
+</I>&gt;<i> +##         print &quot;=&quot;*20        
+</I>&gt;<i> +        yield cached[1]
+</I>&gt;<i> +        return
+</I>&gt;<i> +##     if cached:
+</I>&gt;<i> +##         print &quot;=&quot;*20
+</I>&gt;<i> +##         print cached[0]
+</I>&gt;<i> +##         print life
+</I>&gt;<i> +##         print &quot;=&quot;*20
+</I>&gt;<i> +    io = StringIO()
+</I>&gt;<i> +    for child in iterflatten(original.children, context, io.write,
+</I>&gt;<i> +                             lambda item: True):
+</I>&gt;<i> +        if isinstance(child, tuple):
+</I>&gt;<i> +            childDeferred, childReturner = child
+</I>&gt;<i> + 
+</I>&gt;<i> +            d = defer.Deferred() ## A new deferred for the outer loop, whose result
+</I>&gt;<i> +            ## we don't care about, because we don't want the outer loop to write
+</I>&gt;<i> +            ## anything when this deferred fires -- only when the entire for loop
+</I>&gt;<i> +            ## has completed and we have all the &quot;children&quot; flattened
+</I>&gt;<i> + 
+</I>&gt;<i> +            def innerDeferredResultAvailable(result):
+</I>&gt;<i> +                childReturner(result) ## Cause the inner iterflatten to continue
+</I>&gt;<i> +                d.callback('') ## Cause the outer iterflatten to continue
+</I>&gt;<i> +                return ''
+</I>&gt;<i> + 
+</I>&gt;<i> +            childDeferred.addCallback(innerDeferredResultAvailable)
+</I>&gt;<i> + 
+</I>&gt;<i> +            ## Make the outer loop wait on our new deferred.
+</I>&gt;<i> +            ## We call the new deferred back with ''
+</I>&gt;<i> +            ## Which will cause the outer loop to write '' to the request,
+</I>&gt;<i> +            ## which doesn't matter. It will then call our &quot;returner&quot;,
+</I>&gt;<i> +            ## which is just the noop lambda below, because we don't care
+</I>&gt;<i> +            ## about the return result of the new deferred, which is just
+</I>&gt;<i> +            ## ''
+</I>&gt;<i> + 
+</I>&gt;<i> +            yield d, lambda result: None    
+</I>&gt;<i> +    result = io.getvalue()
+</I>&gt;<i> +    _CACHE[original.name] = (now(), result)
+</I>&gt;<i> +    yield result
+</I>&gt;<i> +
+</I>&gt;<i>  def ContextSerializer(original, context):
+</I>&gt;<i>      originalContext = original.clone(deep=False)
+</I>&gt;<i>      originalContext.precompile = context and context.precompile or False
+</I>&gt;<i> Index: nevow/__init__.py
+</I>&gt;<i> ===================================================================
+</I>&gt;<i> --- nevow/__init__.py   (revision 1136)
+</I>&gt;<i> +++ nevow/__init__.py   (working copy)
+</I>&gt;<i> @@ -182,6 +182,7 @@
+</I>&gt;<i>  nevow.flat.flatstan.RendererSerializer            nevow.inevow.IRenderer
+</I>&gt;<i>  nevow.flat.flatstan.DirectiveSerializer           nevow.stan.directive
+</I>&gt;<i>  nevow.flat.flatstan.SlotSerializer                nevow.stan.slot
+</I>&gt;<i> +nevow.flat.flatstan.CachedSerializer              nevow.stan.cached 
+</I>&gt;<i>  nevow.flat.flatstan.ContextSerializer             nevow.context.WovenContext
+</I>&gt;<i>  nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.Deferred
+</I>&gt;<i>  nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.DeferredList
+</I>&gt;<i> Index: nevow/stan.py
+</I>&gt;<i> ===================================================================
+</I>&gt;<i> --- nevow/stan.py       (revision 1136)
+</I>&gt;<i> +++ nevow/stan.py       (working copy)
+</I>&gt;<i> @@ -119,8 +119,33 @@
+</I>&gt;<i>          &quot;&quot;&quot;
+</I>&gt;<i>          raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
+</I>&gt;<i>  
+</I>&gt;<i> +class cached(object):
+</I>&gt;<i> +    &quot;&quot;&quot;Marker for cached content
+</I>&gt;<i> +    &quot;&quot;&quot;
+</I>&gt;<i> +    __slots__ = ['name', 'children', 'lifetime']
+</I>&gt;<i>  
+</I>&gt;<i> +    def __init__(self, name, lifetime=0):
+</I>&gt;<i> +        self.name = name
+</I>&gt;<i> +        self.children = []
+</I>&gt;<i> +        self.lifetime = lifetime
+</I>&gt;<i>  
+</I>&gt;<i> +    def __repr__(self):
+</I>&gt;<i> +        return &quot;cached('%s','%s')&quot; % self.name, self.lifetime
+</I>&gt;<i> +
+</I>&gt;<i> +    def __getitem__(self, children):
+</I>&gt;<i> +        &quot;&quot;&quot;cached content is what is being cached
+</I>&gt;<i> +        &quot;&quot;&quot;
+</I>&gt;<i> +        if not isinstance(children, (list, tuple)):
+</I>&gt;<i> +            children = [children]
+</I>&gt;<i> +        self.children.extend(children)
+</I>&gt;<i> +        return self
+</I>&gt;<i> +
+</I>&gt;<i> +    def __iter__(self):
+</I>&gt;<i> +        &quot;&quot;&quot;Prevent an infinite loop if someone tries to do
+</I>&gt;<i> +            for x in cached('foo'):
+</I>&gt;<i> +        &quot;&quot;&quot;
+</I>&gt;<i> +        raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
+</I>&gt;<i> +
+</I>&gt;<i>  class Tag(object):
+</I>&gt;<i>      &quot;&quot;&quot;Tag instances represent XML tags with a tag name, attributes,
+</I>&gt;<i>      and children. Tag instances can be constructed using the Prototype
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-web mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">Twisted-web at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web</A>
+</I>
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001132.html">[Twisted-web] html cache with timeout
+</A></li>
+	<LI>Next message: <A HREF="001134.html">[Twisted-web] html cache with timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1133">[ date ]</a>
+              <a href="thread.html#1133">[ thread ]</a>
+              <a href="subject.html#1133">[ subject ]</a>
+              <a href="author.html#1133">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

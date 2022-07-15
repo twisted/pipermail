@@ -1,0 +1,206 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Server with several outgoing connections
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Server%20with%20several%20outgoing%20connections&In-Reply-To=E1CPe45-00074k-01%40pyramid.twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="008983.html">
+   <LINK REL="Next"  HREF="008992.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Server with several outgoing connections</H1>
+    <B>Paul Campbell</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Server%20with%20several%20outgoing%20connections&In-Reply-To=E1CPe45-00074k-01%40pyramid.twistedmatrix.com"
+       TITLE="[Twisted-Python] Re: Server with several outgoing connections">paul at ref.nmedia.net
+       </A><BR>
+    <I>Fri Nov  5 09:51:09 EST 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="008983.html">[Twisted-Python] etag and last-modified
+</A></li>
+        <LI>Next message: <A HREF="008992.html">[Twisted-Python] Re: Hi
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8981">[ date ]</a>
+              <a href="thread.html#8981">[ thread ]</a>
+              <a href="subject.html#8981">[ subject ]</a>
+              <a href="author.html#8981">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Thu, Nov 04, 2004 at 02:37:57AM -0700, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-request at twistedmatrix.com</A> wrote:
+&gt;<i> I'm new to Twisted and I have tried to read and understand the 
+</I>&gt;<i> intricate sides of it.
+</I>&gt;<i> And have found as so many other that the learning curve pretty steep, 
+</I>&gt;<i> especially I guess if one comes from being a C programmer :-)
+</I>
+I've been there myself recently. It also doesn't help that the standard
+idioms (design patterns?) in Python are significantly different in some
+ways from C.
+
+&gt;<i> Writing the 'client' side is not so easy and here I guess my C legacy 
+</I>&gt;<i> is hampering me.
+</I>&gt;<i> 
+</I>&gt;<i> So I'd like someone to give me, or point me, to an example on how to 
+</I>&gt;<i> dynamically create new connections to receivers. I first though these 
+</I>&gt;<i> connections should be shortlived that is 'open the connection, send the 
+</I>&gt;<i> message, receive the ACK and close the connection' but now I think it 
+</I>&gt;<i> might be wiser to keep the connections as long as possible. That is, 
+</I>&gt;<i> until that receiver disappears.
+</I>
+Not really. You just have to do a lot of tracking by creating the protocols
+in the protocol factory. But there's an easier way for your particular
+case since essentially you are doing RPC's.
+
+&gt;<i> Another side of this is that the influx of messages might be higher 
+</I>&gt;<i> than the possible output, that is each node has to keep queues for 
+</I>&gt;<i> messages not yet sent and messages sent but not ack'ed.
+</I>&gt;<i> It might also happen that recivers of messages are not accessible in 
+</I>&gt;<i> which case the message has to be queue until the receiver pops up 
+</I>&gt;<i> again. The system is not allowed to drop messages.
+</I>&gt;<i> Note, that each incomming message might have several receivers, so one 
+</I>&gt;<i> incomming message might end up in the sendqueue of several receivers.
+</I>&gt;<i> 
+</I>&gt;<i> And here in lies one of the problems, I guess I have to keep a 
+</I>&gt;<i> 'centrally' managed queue, that should then be notified on the change 
+</I>&gt;<i> of status of a message on route to a recevier. How should I implement 
+</I>&gt;<i> this ?
+</I>
+All of this is a lot easier to do at a higher level. Implement your code
+in the perspective broker. Then all the ACK's and such are automatically
+handled. In PB, the code is &quot;almost symmetric&quot; so there's no real difference
+between implementing a &quot;server&quot; and a &quot;client&quot;. The server/client code
+ends up looking almost identical. Plus, PB semi-automatically handles
+packet formatting so that you can just pass around high level messages,
+and it does active cache updating for you semi-automatically. You can also
+implement a login protocol fairly easily if you have a need for that type
+of function.
+
+Otherwise, RPC's are already implemented in the XML code. Simply steal the
+XML/HTTP stuff and use it for &quot;non-web&quot; related functions. This is a common
+technique and issues about client/server management go away (handled
+automatically in the HTTP code). In your case, there's no &quot;return&quot; since
+you are simply passing messages. A &quot;return&quot; is just an ACK for you.
+
+Otherwise, if you want something more primitive but you can forgo using TCP,
+it's a lot easier to implement in UDP. For your protocol, what you described
+sounds very un-TCP-like. It doesn't really fit the mold of a bidirectional
+stream of bytes in a client/server framework. 
+
+In the datagram protocol, keep your messages within the limits of a packet
+or else you have to deal with packet fragmenting and reassembly issues.
+
+Here's how I got around it:
+
+class queueNode:
+ &quot;Placeholder for holding data&quot;
+ pass
+
+class MyMesgProtocol(DatagramProtocol):
+ sendTimeout = 30 # Seconds to retry
+ def __init__(self):
+  sendQueue = dict()
+ def sendMessage(self, data, (host,port)):
+  &quot;Sends outgoing messages&quot;
+  self.transport.write(&quot;W&quot;+data, (host, port))
+  q=queueNode
+  q.message = data
+  q.retries = 3
+  q.address = (host,port)
+  m = mangle(host, port)
+  q.call = reactor.callLater(sendTimeout, retryMesg, m)
+  sendQueue[m] = q
+  return
+ def datagramReceived(self, data, (host,port)):
+  &quot;Handles incoming packets&quot;
+  if data[0] == &quot;W&quot;:
+   self.transport.write(&quot;A&quot;, (host,port))
+   self.handleMessage(data[1:], (host,port))
+  elif data[0] == &quot;A&quot;:
+   m = mangle(host,port)
+   if m in sendQueue:
+    q = sendQueue[m]
+    q.call.cancel()
+    del sendQueue[m]
+   else:
+    pass # Hmmm...got an acknowledgement but we didn't have a message queued
+  else:
+   pass # Hmmm...not a valid packet type
+  return
+ def handleMessage(self, data, (host,port)):
+  &quot;User-level handler. Subclass your message system here.&quot;
+  pass
+ def retryMesg(self, index):
+  &quot;Handles retry timeouts&quot;
+  q = sendQueue[m]
+  q.retries -=1
+  if not retries:
+   self.nodeFailure(q.address)
+   del sendQueue[m]
+   return
+  self.transport.write(&quot;W&quot;+data,q.address)
+  q.call = reactor.callLater(sendTimeout, retryMesg, m)
+  return
+ def nodeFailure(self, (address, port)):
+  &quot;User-level node failure handler. Subclass your code here.&quot;
+  pass
+
+To use the code, simply subclass it and define the two functions
+handleMessage and nodeFailure. Send messages via sendMessage. Note that
+right now, the code will NOT properly handle multiple messages queued to
+the same destination address for brevity. To fix this, you'll need to
+insert nonces on the messages so that the ACK's can be paired up with the
+corresponding entries in the message queue.
+
+I made several references to a &quot;mangle&quot; function. This function takes an
+(address, port) call and returns a string or a long integer or whatever
+you feel appropriate to use for indexing the dictionary structure. It's
+a simple function to write so I left it for the reader. Plus, it is a simple
+matter to extend the same code to add a few bytes for a nonce to the
+message &quot;header&quot; (currently a single ASCII letter). Then add the nonce to
+your address mangling code for the queue, and then the same queue is now
+extended to handle multiple messages in flight to the same destination
+as well.
+
+In a similar fashion, the ACK's are about 15 bytes right now (just a single
+byte attached to the UDP header). There's nothing to say that you can't extend
+the code to a full blown RPC code. Simply edit the code that calls the
+message handler to accept a return string and then send that string on the
+write message. The send message code has to be changed to return a
+deferred (q.deferred=defer.Deferred()). Then later on, the ACK code uses
+callBack to return data to the original message calling function.
+
+
+I noticed that you had a lot of things referencing buffer sizes and such.
+This version doesn't pay any attention to buffers at all. If you want to
+control buffer sizes, then not only will you need the above extra code to
+insert and delete nonces, but you'll also need to use the HTB code in Twisted
+or roll your own similar function. Just subclass/wrap the above code as
+appropriate in the HTB libraries.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="008983.html">[Twisted-Python] etag and last-modified
+</A></li>
+	<LI>Next message: <A HREF="008992.html">[Twisted-Python] Re: Hi
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8981">[ date ]</a>
+              <a href="thread.html#8981">[ thread ]</a>
+              <a href="subject.html#8981">[ subject ]</a>
+              <a href="author.html#8981">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

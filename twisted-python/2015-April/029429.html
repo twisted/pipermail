@@ -1,0 +1,114 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Looking for some advice debugging issue with	transport.write calls
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Looking%20for%20some%20advice%20debugging%20issue%20with%0A%09transport.write%20calls&In-Reply-To=%3C86A5549E-BA4A-4AA8-A1F3-B3C829DA2622%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="029425.html">
+   <LINK REL="Next"  HREF="029415.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Looking for some advice debugging issue with	transport.write calls</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Looking%20for%20some%20advice%20debugging%20issue%20with%0A%09transport.write%20calls&In-Reply-To=%3C86A5549E-BA4A-4AA8-A1F3-B3C829DA2622%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Looking for some advice debugging issue with	transport.write calls">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue Apr 28 14:45:23 MDT 2015</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="029425.html">[Twisted-Python] Looking for some advice debugging issue with transport.write calls
+</A></li>
+        <LI>Next message: <A HREF="029415.html">[Twisted-Python] Looking for some advice debugging issue with transport.write calls
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29429">[ date ]</a>
+              <a href="thread.html#29429">[ thread ]</a>
+              <a href="subject.html#29429">[ subject ]</a>
+              <a href="author.html#29429">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Apr 28, 2015, at 10:55 AM, Brian Costlow &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">brian.costlow at gmail.com</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Okay, figured this out.
+</I>
+Glad to hear it!
+
+&gt;<i> Abstract of the issue: I am a dumbass.
+</I>
+We all make mistakes.  And a lot of people make this specific one :-).
+
+&gt;<i> First, Itamar gets to thrash me soundly,
+</I>
+No need for violence!
+
+&gt;<i> as there was a bug in some code (not shown in my example) that is not properly tested. That code was responsible for &quot;turning off&quot; the protocol instance if  connectionLost method was called, by doing some cleanup then redefining check_for_send in the instance as a no-op to stop it from pushing itself back on the reactor loop.
+</I>
+Ain't it always the way.
+
+We always say &quot;please simplify the test case&quot; and then the asker always says &quot;but it only happens when it's super complex&quot;.  The act of simplifying the test case itself often pinpoints the problem (as it appears to have done in your case).  Honestly this was a pretty quick turnaround and I appreciate the 
+
+&gt;<i> Question: I'm assuming there's a good reason transport.write is written so it doesn't error and fails silently even though its underlying connection is not connected anymore. As part of grokking the guts of this thing I've been using for a decade...I'm curious to know why.
+</I>
+The main reason is &quot;predictability&quot;.
+
+First, consider this function:
+
+def sendSomeCommand(self):
+    self.transport.write(b&quot;DO-SOMETHING\r\n&quot;)
+    self.transport.write(b&quot;DO-SOMETHING-ELSE\r\n&quot;)
+
+Simple enough, right?  Sends two commands?
+
+We could easily find out between the first call to write() and the second one that the connection has dropped.  Twisted optimistically invokes the send() syscall when it can (if the write buffer is empty when write() is called).  This means that if the buffer happens to be empty when this method is called and if the underlying OS already knows that the connection is closed, we might be able to invoke connectionLost between the first and second write() invocation.  Since you can never really know whether those invocations are happening in isolation or together, this apparently simple function needs to turn into
+
+def sendSomeCommand(self):
+    if not self.transport.disconnected:
+        self.transport.write(b&quot;DO-SOMETHING\r\n&quot;)
+    if not self.transport.disconnected:
+        self.transport.write(b&quot;DO-SOMETHING-ELSE\r\n&quot;)
+
+Also, if we were to aggressively report errors like this, users of Twisted might get the impression that a successful return from write() means that the bytes were actually sent.  What does &quot;actually sent&quot; mean?  This is a surprisingly complicated question with a correspondingly complicated answer.  Sent to the ethernet card? To the local network? Acknowledged by the router on the other side? By the kernel of the OS on the other side? By the application container on the other side? And so on and so forth.  Since you already have no idea exactly where in your stream of write() calls the other side's idea of the stream has terminated unless you have application-level acknowledgement, forcing users to handle exceptions for the case where it definitely wasn't received, while still not giving them any indication that it might not have been received, is a misleading and inconvenient API.
+
+So if you want to stop sending data to a transport that you have been notified about in connectionLost, just stop calling write() :).
+
+Hopefully this sheds some light onto transport.write's design.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20150428/bfacfb70/attachment.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20150428/bfacfb70/attachment.html</A>&gt;
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="029425.html">[Twisted-Python] Looking for some advice debugging issue with transport.write calls
+</A></li>
+	<LI>Next message: <A HREF="029415.html">[Twisted-Python] Looking for some advice debugging issue with transport.write calls
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29429">[ date ]</a>
+              <a href="thread.html#29429">[ thread ]</a>
+              <a href="subject.html#29429">[ subject ]</a>
+              <a href="author.html#29429">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,165 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] XML-RPC, LineReceiver and defer
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20XML-RPC%2C%20LineReceiver%20and%20defer&In-Reply-To=BD4BB620-3DF2-11D9-85D0-000D932F504E%40adm.umu.se">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009113.html">
+   <LINK REL="Next"  HREF="009114.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] XML-RPC, LineReceiver and defer</H1>
+    <B>Jp Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20XML-RPC%2C%20LineReceiver%20and%20defer&In-Reply-To=BD4BB620-3DF2-11D9-85D0-000D932F504E%40adm.umu.se"
+       TITLE="[Twisted-Python] XML-RPC, LineReceiver and defer">exarkun at divmod.com
+       </A><BR>
+    <I>Wed Nov 24 09:28:07 EST 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009113.html">[Twisted-Python] XML-RPC, LineReceiver and defer
+</A></li>
+        <LI>Next message: <A HREF="009114.html">[Twisted-Python] pollreactor 1sec timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9116">[ date ]</a>
+              <a href="thread.html#9116">[ thread ]</a>
+              <a href="subject.html#9116">[ subject ]</a>
+              <a href="author.html#9116">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, 24 Nov 2004 09:27:55 +0100, Roland Hedberg &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">roland.hedberg at adm.umu.se</A>&gt; wrote:
+&gt;<i>Hi!
+</I>&gt;<i> 
+</I>&gt;<i> I'm having problems with defer again :-(
+</I>&gt;<i> There is something about defer's that I just don't get, obviously.
+</I>&gt;<i> 
+</I>&gt;<i> Anyway, I'd like to get tips on how to solve this problem:
+</I>&gt;<i> 
+</I>&gt;<i> I have a module who on one side listens on XML-RPC and on the other 
+</I>&gt;<i> uses the LineReceiver protocol to find some information it needs, to 
+</I>&gt;<i> service the XML-RFC function.
+</I>&gt;<i> 
+</I>&gt;<i> If I have understood it correctly xmlrpc.XMLRFC can return a defer and 
+</I>&gt;<i> have the XMLRPC layer hold the reply until some event has happend.
+</I>
+  Yep.
+
+&gt;<i> 
+</I>&gt;<i> Now, the LineReceiver protocol has one function for sending a lines and
+</I>&gt;<i> another function for receiving them.
+</I>&gt;<i> 
+</I>&gt;<i> So how do I make XMLRPC wait for the right line.
+</I>&gt;<i> 
+</I>&gt;<i> The XML-RPC server should of course be able to handle serveral requests 
+</I>&gt;<i> at the same time, so there might be more than one outstanding reply on 
+</I>&gt;<i> the lineReceiver side.
+</I>&gt;<i> 
+</I>&gt;<i> Knowing which reply that is connected to which sent line is doable by 
+</I>&gt;<i> keeping a queue and using IDs ( the protocol on the LineReceiver side, 
+</I>&gt;<i> which is no standard protocol, allows for having tags on queries and 
+</I>&gt;<i> replies).
+</I>&gt;<i> 
+</I>&gt;<i> But how do I keep the connection between the XML-RPC request and the 
+</I>&gt;<i> line received ?
+</I>&gt;<i> 
+</I>&gt;<i> I though about having defer checking for the change of a value in a 
+</I>&gt;<i> dictonary, but I don't know if that is doable, is it ?
+</I>
+  Hopefully you already have something like this:
+
+    from twisted.protocols import basic
+
+    class SimpleRequestProtocol(basic.LineReciever):
+        def connectionMade(self):
+            self.outstanding = {}
+            self.counter = 0
+
+        def request(self, query):
+            d = self.outstanding[self.counter] = defer.Deferred()
+            self.sendLine('%d %s' % (self.counter, query))
+            self.counter += 1
+            return d
+
+        def lineReceived(self, response):
+            tag, rest = response.split(None, 1)
+            self.outstanding.pop(int(tag)).callback(rest)
+
+  Letting the XML-RPC side just call `request' and get back a Deferred that fires whenever the response arrives.
+
+&gt;<i> 
+</I>&gt;<i> And finally I don't want to use callLater if I can avoid it. I'd like 
+</I>&gt;<i> the performance to be as high as possible. That is, the XMLRPC reply 
+</I>&gt;<i> should be sent as soon as the LineReceiver has gotten the reply.
+</I>&gt;<i> I also don't want to setup and tear down a connection on the 
+</I>&gt;<i> LineReceiver side for every request that comes in on the XMLRPC side. 
+</I>&gt;<i> There is one server on the LineReceiver side that gets all the 
+</I>&gt;<i> questions, so I liked to be able to have one connection going.
+</I>&gt;<i> 
+</I>
+  So, first, you want to be able to get a connected instance:
+
+    from twisted.internet import reactor, protocol
+
+    def getConnectedProto(host, port):
+        f = protocol.ClientCreator(reactor, SimpleRequestProtocol)
+        return f.connectTCP(host, port)
+
+  This returns a Deferred that fires with the instance once the connection is made.  You can call it from your XML-RPC code, add a callback to the result, and in the callback invoke .request() with whatever args is appropriate.
+
+  But you also don't want a connection per request.  So you want to cache the connection:
+
+    from twisted.internet import defer
+
+    class ConnCache:
+        def __init__(self):
+            self._cache = {}
+
+        def getConnectedProto(self, host, port)
+            try:
+                return defer.succeed(self._cache[host, port])
+            except KeyError:
+                d = self._makeConn(host, port)
+                d.addCallback(self._cacheConn, host, port)
+                return d
+
+        def _makeConn(self, host, port):
+            f = protocol.ClientCreator(reactor, SimpleRequestProtocol)
+            return f.connectTCP(host, port)
+
+        def _cacheConn(self, protoInstance, host, port):
+            self._cache[host, port] = protoInstance
+            return protoInstance
+
+  So from your XML-RPC server, you can instantiate ConnCache and store the instance.  When you need to do something with your SimpleRequestProtocol, you can just call .getConnectedProto() on it.  If there's a connection, it'll be quick; if there's not, it'll go make one and save it for next time, too.
+
+  Hope this helps,
+
+  Jp
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009113.html">[Twisted-Python] XML-RPC, LineReceiver and defer
+</A></li>
+	<LI>Next message: <A HREF="009114.html">[Twisted-Python] pollreactor 1sec timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9116">[ date ]</a>
+              <a href="thread.html#9116">[ thread ]</a>
+              <a href="subject.html#9116">[ subject ]</a>
+              <a href="author.html#9116">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.0 (GNU/Linux)
+
+iD8DBQA9pHNPvVGR4uSOE2wRAvbnAJ9uClDmRQtkqD2fBtsMZ7oz74IZ0gCcCsWr
+3s5ap3Od22oVsqjdxYxpR8U=
+=umnk
+-----END PGP SIGNATURE-----

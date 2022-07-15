@@ -1,0 +1,180 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Configuration: The Never Ending Story.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Configuration%3A%20The%20Never%20Ending%20Story.&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000069.html">
+   <LINK REL="Next"  HREF="000071.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Configuration: The Never Ending Story.</H1>
+    <B>Moshe Zadka</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Configuration%3A%20The%20Never%20Ending%20Story.&In-Reply-To="
+       TITLE="[Twisted-Python] Configuration: The Never Ending Story.">moshez at zadka.site.co.il
+       </A><BR>
+    <I>Fri May 11 09:53:15 EDT 2001</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000069.html">[Twisted-Python] neverending connection
+</A></li>
+        <LI>Next message: <A HREF="000071.html">[Twisted-Python] Configuration: The Never Ending Story.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#70">[ date ]</a>
+              <a href="thread.html#70">[ thread ]</a>
+              <a href="subject.html#70">[ subject ]</a>
+              <a href="author.html#70">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>OK, let me first state some axioms:
+
+1. Everything should be configurable the same way, from within twisted.
+
+Glyph has mentioned that he's not familiar with what's in bin/ anymore: 
+he just mktelnetserver, and configures from within the telnet server
+everything. This is what should happen, except not limited to the telnet
+server.
+
+2. The configuration interface must not be ui specific.
+
+This is obvious, right? Command line and web based aren't the only option.
+No reason why we can't implement a special purpose client/server for configuring
+twisted.
+
+3. It should be easy to optimize the configuration for a ui
+
+This is like the last one -- since we might deal with very good UIs, we
+need to give them enough information for using all their abilities to
+help us.
+
+4. It should be very easy to make an object configurable.
+
+This is very important -- the harder it is, the less it will be easy
+to add *good* code to twisted. This is what may be the single most idiotic
+thing in Zope (and DC is aware of it! and thinking of how to fix it!). Let's
+learn from their mistakes: the less methods, the better. The more the
+learning curve is gradual (not needing to learn a class/method/interface
+before you need the functionality), the better.
+
+OK, so what do we need to do about it?
+Here's a rough proposition:
+
+the configurable *interface*, which will be a class, but not a class
+people should inherit from, will contain the following methods:
+
+.getQuestions() --&gt; return a dictionary: name of question, Question object
+.getAnswer(name, answer) --&gt; notify the application that an answer has been
+                             given to a particular question
+                             It can throw an InvalidAnswer exception with
+                             a string for a reason. This is for 
+                             application-level verification, and is discouraged.
+.endAnswer() --&gt; the &quot;application&quot; promises that no methods of the object
+                 will be called between a series of .getAnswer()s and 
+                 .endAnswer(). So, this means that if the UI got a bunch 
+                 of answers, it will call .getAnswer() several times, and
+                 then .endAnswer(). The UI will *check* for this method's
+                 existance, and will not call it if it doesn't exist.
+
+Question objects are meant to be open ended. 
+They can contain a default.
+
+Here is the general interface of the Question, that all objects conform
+too:
+
+.hasAnswer() --&gt; boolean, whether the Question already contains an 
+                 answer/default
+.getValue() --&gt; will only work if .hasAnswer() is true, returns the answer
+.setValue(val) --&gt; make .hasAnswer() true
+
+Objects which can be created by the UI should have an __init__ which
+can be called without arguments. If there is any initialization which
+requires arguments, it should be done in endAnswer(). The UI also promises
+not to call .endAnswer() for an object if there any questions which have
+not been answered and do not have a default (.hasAnswer is false.)
+
+Well, my proposal would not be complete if I didn't say what questions are
+available. Keep in mind, though, that the set of questions is *open ended*.
+That does not violate the light-and-lean guidelines, since a specific
+Question class will only be used if the functionality is needed.
+
+Without further ado:
+
+class BooleanQuestion:
+class IntQuestion: (can have .min and .max)
+class FloatQuestion:
+class StringQuestion: (can have .maxlength)
+class LongStringQuestion: (same as above -- it's a hint to the ui)
+class InterfaceQuestion: (specify interface, valid answers are objects)
+class ArrayQuestion: (an array of the same kind of question)
+class DictQuestion: (a dictionary mapping strings -&gt; same kind of question)
+
+example:
+
+class Server: # note -- not inheriting from anything
+
+    name = port = None
+
+    def getQuestions(self):
+        name = StringQuestion()
+        if self.name is not None:
+            name.setValue(self.name)
+        port = IntQuestion()
+        if self.port is not None:
+            port.setValue(self.port)
+        return {'port': port, 'name': name}
+
+    def getAnswer(self, name, answer):
+        # note: no need to use int(answer)
+        # for port: an IntQuestion has an integer as a .getValue()
+        setattr(self, name, answer)
+
+Open questions:
+* How do we connect classes to interfaces?
+  Suggestion: each class has an attribute __implements__ containig a list
+  of interfaces. Alternatively, an interface is really a list of 
+  (callable, Questions) tuples, which are answered and passed to the callable.
+  Modules with relevant classes register with the correct interface.
+* How do we let objects created inside another object who their parent are?
+  Suggestion: if an object from on Interface question has a method .setParent,
+  call it with the parent as argument. This should be done by the Question
+  object, so it knows how to call it for each object in a ListQuestion
+* How do we let objects &quot;title&quot; a question?
+  Suggestion: a question has a string argument on __init__ titling it.
+* How do we allow the object to signify groupings of questions?
+  Suggestion: this means the design is bad -- break down the object
+  into smaller objects
+-- 
+&quot;I'll be ex-DPL soon anyway so I'm        |LUKE: Is Perl better than Python?
+looking for someplace else to grab power.&quot;|YODA: No...no... no. Quicker,
+   -- Wichert Akkerman (on debian-private)|      easier, more seductive.
+For public key, finger <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">moshez at debian.org</A>  |<A HREF="http://www.{python,debian,gnu}.org">http://www.{python,debian,gnu}.org</A>
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000069.html">[Twisted-Python] neverending connection
+</A></li>
+	<LI>Next message: <A HREF="000071.html">[Twisted-Python] Configuration: The Never Ending Story.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#70">[ date ]</a>
+              <a href="thread.html#70">[ thread ]</a>
+              <a href="subject.html#70">[ subject ]</a>
+              <a href="author.html#70">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

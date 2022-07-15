@@ -1,0 +1,114 @@
+"""
+On the server we have an instance of ViewableWithCachedState called Obj. When
+we want to "give" Obj to a client we send it Obj.state. Obj.state is a
+Cacheable, so when the client receives it a RemoteCache is created that will
+try to get state from the server. The state information comes as a dict with
+one special element 'view' which is a viewpoint onto Obj. Therefore, once the
+client has finished setCopyableState it can make requests on the server side
+object by calling self.view.callRemote(...). For convenience StateRemoteCache
+provides a .callRemote method wrapping self.view.callRemote.
+
+If the client requests for an action whose consequence has wider scope than Obj
+knows about, then Obj's handler method should pass responsibility to it's
+managing object via self.parent.<some method>.
+
+Now we have to think about how to deal with objects that may appear differently
+for different clients. For example, suppose a specific client lacks  permission
+to change the oscilloscope vertical scale. We'd like his GUI to be able to
+indicate this. We deal with this by simply not brokering information that
+certain clients shouldn't have. To do this we need a way for the brokered state
+to depend on the perspective invoking requests on the ViewableWithCachedState.
+Fortunately getStateToCacheAndObserveFor gets the perspective as an argument,
+so any object that needs to keep track of ownership can use that to link
+perspectives to observers.
+
+Note that using this sort of .isOwner flag does not screw up the security
+model. If a client cheats by hacking his code to make requests he shouldn't be
+able to make, it's still up to the server side logic to decide what to do with
+the request.
+"""
+
+import twisted.spread.pb as pb
+from twisted.internet.defer import inlineCallbacks, returnValue
+
+class ViewableWithCachedState(pb.Viewable):
+    """A Cacheable that can react to a client's intent to change our state
+    
+    stateClass should be a subclass of State
+    """
+    
+    stateClass = None
+    
+    def __init__(self, parent, *arg, **kw):
+        """Create a new ViewableWithCachedState
+        
+        parent is an object to whom we give responsibility for handling client
+        requests if we don't have enough context to do it ourself.
+        """
+        self.parent = parent
+        self.state = self.stateClass(self, *arg, **kw)
+    
+    def __getattr__(self, name):
+        """Delegate failed access attempts to self.state"""
+        return self.state.name
+    
+
+class State(pb.Cacheable):
+    """I am the cached state of a ViewableWithCachedState"""
+    def __init__(self, stateOf, *arg, **kw):
+        self.stateOf = stateOf
+        self.observers = {} #perspective -> observer
+    
+    def getStateToCacheAndObserveFor(self, perspective, observer):
+        # May need to change this or override in subclass to make logical
+        # connection between perspectives and observers.
+        self.observers[perspective] = observer
+        state = {}
+        state['view'] = self.stateOf
+        self.populateStateDict(state, perspective)
+        return state
+    
+    def populateStateDict(self, state, perspective):
+        """Override in subclass"""
+        raise NotImplementedError
+    
+
+class StateRemoteCache(pb.RemoteCache):
+    
+    @inlineCallbacks
+    def callRemote(self, *arg, **kw):
+        result = yield self.view.callRemote(*arg, **kw)
+        returnValue(result)
+    
+
+# Examples
+class ExampleState(State):
+    
+    def populateStateDict(state, perspective):
+        pass
+    
+    def echoToAll(self, arg):
+        for o in self.observers.values():
+            o.callRemote("echoed", arg)
+    
+
+class ExampleViewableWithCachedState(ViewableWithCachedState):
+    
+    stateClass = ExampleState
+    
+    def view_echoToAll(self, perspective, arg):
+        print("Echo from %s with argument %s"%(perspective, arg))
+        self.state.echoToAll(arg)
+    
+
+class ExampleRemoteCache(StateRemoteCache):
+    """An example RemoteCache of a State"""
+
+    def setCopyableState(self, state):
+        for k,v in state.items():
+            self.k = v
+    
+    def observe_echoed(self, arg):
+        print("echoed: %s"%arg)
+    
+pb.setUnjellyableForClass(ExampleState, ExampleRemoteCache)

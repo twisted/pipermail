@@ -1,0 +1,165 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] help with refcounts and memleaks
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20help%20with%20refcounts%20and%20memleaks&In-Reply-To=20051226172129.1217.36853620.divmod.quotient.8236%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="012220.html">
+   <LINK REL="Next"  HREF="012224.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] help with refcounts and memleaks</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20help%20with%20refcounts%20and%20memleaks&In-Reply-To=20051226172129.1217.36853620.divmod.quotient.8236%40ohm"
+       TITLE="[Twisted-Python] help with refcounts and memleaks">andrea at cpushare.com
+       </A><BR>
+    <I>Mon Dec 26 19:18:33 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="012220.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+        <LI>Next message: <A HREF="012224.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12222">[ date ]</a>
+              <a href="thread.html#12222">[ thread ]</a>
+              <a href="subject.html#12222">[ subject ]</a>
+              <a href="author.html#12222">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, Dec 26, 2005 at 12:21:29PM -0500, Jean-Paul Calderone wrote:
+&gt;<i> Of course, in creating a cycle which contains an object with an 
+</I>&gt;<i> implementation of __del__, you have created a leak, since Python's 
+</I>&gt;<i> GC cannot collect that kind of graph.
+</I>
+Ah this explains many things. I didn't realize that having a __del__
+callback made any difference from a garbage collection point of view, so
+while trying to fix memleaks I probably added them ;).
+
+Sorry for posting it here and not a python list, but my basic problem is
+to make sure the &quot;protocol&quot; object is being collected away, and the
+protocol object is a very twisted thing, so I thought it would be at
+on topic here since everyone of us needs the protocol object garbage
+collected properly. Now it turned out more a language thing than I
+thought originally...
+
+Ok, going back to how this thing started. I happened to allocate 50M of
+ram somehow attached to a protocol object, and then I noticed that the
+reconnectingclientfactory was leaking memory after a
+disconnect/reconnect event. Every time I restarted the server, 50M were
+added to the RSS of the task. That was definitely a memleak, and I never
+had a __del__ method. Then I started adding debugging aid to figure out
+what was going wrong. By removing the self and cross references the
+memleak was fixed in the client. So then I figured out the same
+self-references were in the server as well, and I added more debugging
+in the server as well. That lead me in the current situation.  So
+something was definitely going wrong w.r.t. memleaks even before I
+started messing with the __del__ methods.
+
+But I'm very relieived to know that python gets it right if __del__
+isn't implemented.
+
+&gt;<i> Hopefully the __del__ implementation is only included as an aid to 
+</I>&gt;<i> understanding what is going on, and you don't actually need it in 
+</I>&gt;<i> any of your actual applications.  Once removed, the cycle will be 
+</I>&gt;<i> collectable by Python.
+</I>
+Correct, it was only an aid, it didn't exist until today.
+
+&gt;<i> When you have &quot;two cross referenced objects&quot;, that's a cycle, and 
+</I>&gt;<i> Python will indeed clean it up.  The only exception is if there is a 
+</I>
+Well, I never cared about cyclic references until today, because I
+thought python would understand it automatically like I think it's
+possible infact.
+
+But then while trying to debug the 50M leak in the client at every
+server restart (so very visible), I quickly into this:
+
+	<A HREF="http://www.nightmare.com/medusa/memory-leaks.html">http://www.nightmare.com/medusa/memory-leaks.html</A>
+
+class thing:
+    pass
+
+a = thing()
+b = thing()
+a.other = b
+b.other = a
+
+del a
+del b    
+
+Code like above is very common in my twisted based server. Note that
+there's no __del__ method in the class &quot;thing&quot;. So what you say seems in
+disagreement with the above url. Perhaps I got bitten by the common
+mistake &quot;I found it on the internet so it must be true&quot;... I really
+hope you're the one being right, my code was all written with your ideas
+in mind but that seems to collide strong with the above url. I guess I
+should have checked the date, it's from 99, perhaps it has been true a
+long time ago?
+
+&gt;<i> __del__ implementation, as I mentioned above.  This is a general problem 
+</I>&gt;<i> with garbage collection.  If you have two objects which refer to each 
+</I>&gt;<i> other and which each wish to perform some finalization, which finalizer 
+</I>&gt;<i> do you call first?
+</I>
+Why would it matter which one you call first? Random no? Better to call
+it random than to leak memory, no? At least python should spawn a
+gigantic warning that there's a cross reference leaking, instead of
+silenty not calling __del__.
+
+&gt;<i> You might be surprised :)  These things tend to build up, if your process 
+</I>&gt;<i> is long-running.
+</I>
+I think you're right there was no memleak generated by self/cross
+cyclic references, but then the load is pretty low at the moment so I
+could have overlooked it. I periodically monitor the rss of all tasks.
+I never had problems before noticing the reconnectingclientfactory
+memleak (which btw I can't reproduce anymore after removing the cross
+references).
+
+&gt;<i> (You can probably guess what I'm going to say here. ;)  In general, I 
+</I>&gt;<i> avoid implementing __del__.  My programs may end up with cycles, but 
+</I>&gt;<i> as long as I don't have __del__, Python can figure out how to free the 
+</I>&gt;<i> objects.  Note that it does sometimes take it a while (and this has 
+</I>&gt;<i> implications for peak memory usage which may be important to you), but 
+</I>&gt;<i> if you find a case that it doesn't handle, then you've probably found 
+</I>&gt;<i> a bug in the GC that python-dev will fix.
+</I>&gt;<i> 
+</I>&gt;<i> Hope this helps, and happy holidays,
+</I>
+Thanks a lot, things looks much better now, I'm relieved that python can
+figure out how to free objects, I always thought it was able to do so
+infact ;). Happy holidays to you too.
+
+So, I'll backout all my latest changes, and I'll try to find the real
+cause of the reconnectingclientfactory memleak which definitely happened
+even though there was no __del__ method implemented.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="012220.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+	<LI>Next message: <A HREF="012224.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12222">[ date ]</a>
+              <a href="thread.html#12222">[ thread ]</a>
+              <a href="subject.html#12222">[ subject ]</a>
+              <a href="author.html#12222">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

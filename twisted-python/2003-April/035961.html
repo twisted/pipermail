@@ -1,0 +1,301 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twistctl - start/stop/restart revisited
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twistctl%20-%20start/stop/restart%20revisited&In-Reply-To=%3C20030405231416.GA97462%40doublegemini.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035985.html">
+   <LINK REL="Next"  HREF="035962.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twistctl - start/stop/restart revisited</H1>
+    <B>Clark C. Evans</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twistctl%20-%20start/stop/restart%20revisited&In-Reply-To=%3C20030405231416.GA97462%40doublegemini.com%3E"
+       TITLE="[Twisted-Python] twistctl - start/stop/restart revisited">cce at clarkevans.com
+       </A><BR>
+    <I>Sat Apr  5 16:14:16 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035985.html">[Twisted-Python] enterprise.row
+</A></li>
+        <LI>Next message (by thread): <A HREF="035962.html">[Twisted-Python] twistctl - start/stop/restart revisited
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35961">[ date ]</a>
+              <a href="thread.html#35961">[ thread ]</a>
+              <a href="subject.html#35961">[ subject ]</a>
+              <a href="author.html#35961">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Toward the end of the discussion this past morning, we seemed
+to have come to the agreement that start/stop/restart behavior
+does not belong in twistd.  So, I've taken my original submit
+and rephrased it as 'twistctl' which is a wrapper on twistd
+providing those features.   
+
+To get twistctl to work nicely with twistd, a few refactors
+in twistd were needed:
+
+  1.  refactor runApp to factor out the signal code into
+      'signalApp' so that killApp in twistctl could use it.
+      In general, runApp is quite huge and could use 
+      a few breakdowns anyway
+
+  2.  refactor the code to get the passphrase (if the
+      application is encrypted) and the code which 
+      parses options in run() into a 'parseOptions'
+      method so that it can be called from twistctl
+
+  Neither of these changes affect behavior, they only
+  expose chunks of reusable code for twistctl
+
+This is a first pass of this, and I'd like to do two
+things in the repository: (a) commit the twistd.py.diff
+changes, and (b) to put twistctl into the sandbox so
+that people can play with it over the next month or
+so and after we have a better idea of how it should
+behave, we can then add it to the scripts directory.
+
+The twistctl script needs help in many areas: 
+
+  1. Moshez objected to the killApp implementation,
+     when I get time I'll look at it.  But right now
+     it works on my platform just wonderfully.
+     The beauty of open source projects is that people
+     can hack at it till it works for everyone...
+
+  2. The restartApp and startApp behavior are not 
+     exactly clear as to how they should use -shutdown.tap
+     and a bit more research and experimenting is
+     needed before this should be formalized.  Really,
+     I'm still too new to taps to grok this fully.
+
+In particular, Moshez said that he thinks this script
+should *call* the twistd script via OS methods and
+thus the refactor above is not needed.  I respectfully
+disagree with his assertion.   Calling python from python
+via python call mechanism is far superior as it allows
+for better error handling, is less platform dependent,
+and numerous other factors; such as being able to 
+send a passphrase between the two modules easily.
+
+Anyway, please comment.  And Glyph, I'd like permission
+to commit the twistd.py.diff as specified below.
+
+Clark
+-------------- next part --------------
+--- twistd.py.orig	Sat Apr  5 17:37:59 2003
++++ twistd.py	Sat Apr  5 17:36:14 2003
+@@ -1,4 +1,3 @@
+-
+ # Copyright (C) 2001 Matthew W. Lefkowitz
+ #
+ # This library is free software; you can redistribute it and/or
+@@ -190,11 +189,11 @@
+     return filename, decode, mode
+ 
+ 
+-def loadApplication(config, passphrase):
++def loadApplication(config):
+     filename, decode, mode = createApplicationDecoder(config)
+     if config['encrypted']:
+         data = open(filename, 'rb').read()
+-        data = decrypt(passphrase, data)
++        data = decrypt(config['passphrase'], data)
+         try:
+             return decode(filename, data)
+         except:
+@@ -211,6 +210,33 @@
+     import pdb
+     pdb.set_trace()
+ 
++def signalApp(config, signal = 0):
++    if os.path.exists(config['pidfile']):
++        try:
++            pid = int(open(config['pidfile']).read())
++        except ValueError:
++            msg = 'Pidfile %s contains non numeric value'
++            sys.exit(msg % config['pidfile'])
++
++        try:
++            os.kill(pid, signal)
++        except OSError, why:
++            if why[0] == errno.ESRCH:
++                # The pid doesnt exists.
++                if not config['quiet']:
++                    print 'Removing stale pidfile %s' % config['pidfile']
++                    os.remove(config['pidfile'])
++            else:
++                msg = 'Can\'t check status of PID %s from pidfile %s: %s'
++                sys.exit(msg % (pid, config['pidfile'], why[1]))
++        else:
++            if not(signal):
++                sys.exit(&quot;&quot;&quot;\
++Another twistd server is running, PID %s\n
++This could either be a previously started instance of your application or a
++different application entirely. To start a new one, either run it in some other
++directory, or use my --pidfile and --logfile parameters to avoid clashes.
++&quot;&quot;&quot; %  pid)
+ 
+ def runApp(config):
+     global initRun
+@@ -238,39 +264,11 @@
+         # only posix can fork, and debugging requires nodaemon
+         config['nodaemon'] = 1
+ 
+-    if config['encrypted']:
+-        import getpass
+-        passphrase = getpass.getpass('Passphrase: ')
+-    else:
+-        passphrase = None
+-
+     # Load the servers.
+     # This will fix up accidental function definitions in evaluation spaces
+     # and the like.
+     initRun = 0
+-    if os.path.exists(config['pidfile']):
+-        try:
+-            pid = int(open(config['pidfile']).read())
+-        except ValueError:
+-            sys.exit('Pidfile %s contains non numeric value' % config['pidfile'])
+-
+-        try:
+-            os.kill(pid, 0)
+-        except OSError, why:
+-            if why[0] == errno.ESRCH:
+-                # The pid doesnt exists.
+-                if not config['quiet']:
+-                    print 'Removing stale pidfile %s' % config['pidfile']
+-                    os.remove(config['pidfile'])
+-            else:
+-                sys.exit('Can\'t check status of PID %s from pidfile %s: %s' % (pid, config['pidfile'], why[1]))
+-        else:
+-            sys.exit(&quot;&quot;&quot;\
+-Another twistd server is running, PID %s\n
+-This could either be a previously started instance of your application or a
+-different application entirely. To start a new one, either run it in some other
+-directory, or use my --pidfile and --logfile parameters to avoid clashes.
+-&quot;&quot;&quot; %  pid)
++    signalApp(config)
+ 
+     if config['logfile'] == '-':
+         if not config['nodaemon']:
+@@ -316,7 +314,7 @@
+     log.msg('reactor class: %s' % reactor.__class__)
+ 
+     try:
+-        application = loadApplication(config, passphrase)
++        application = loadApplication(config)
+     except Exception, e:
+         s = &quot;Failed to load application: %s&quot; % (e,)
+         traceback.print_exc(file=log.logfile)
+@@ -457,18 +455,22 @@
+             log.err(&quot;--report-profile specified but application has no name (--appname unspecified)&quot;)
+     log.msg(&quot;Server Shut Down.&quot;)
+ 
+-
+-def run():
++def parseOptions(config):
+     # make default be &quot;--help&quot;
+     if len(sys.argv) == 1:
+         sys.argv.append(&quot;--help&quot;)
+-
+-    config = ServerOptions()
+     try:
+         config.parseOptions()
+     except usage.error, ue:
+         config.opt_help()
+         print &quot;%s: %s&quot; % (sys.argv[0], ue)
+         os._exit(1)
++    if config['encrypted']:
++        import getpass
++        config['passphrase'] = getpass.getpass('Passphrase: ')
++    else:
++        config['passphaase'] = None
++    return config
+ 
+-    runApp(config)
++def run():
++    runApp(parseOptions(ServerOptions()))
+-------------- next part --------------
+# Copyright (C) 2001 Matthew W. Lefkowitz
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of version 2.1 of the GNU Lesser General Public
+# License as published by the Free Software Foundation.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+from __future__ import nested_scopes
+
+from twisted.scripts import twistd
+from twisted.python import usage
+
+class ServerOptions(twistd.ServerOptions):
+    synopsis = &quot;Usage: twistctl [options] [start|stop|restart]&quot;
+
+    subCommands = [['start', None, usage.Options, 
+                    'starts the application requested (default)'],
+                   ['stop', None, usage.Options,
+                    'shuts the given application down if it is running'],
+                   ['restart',None, usage.Options,
+                    'restarts the application']] 
+
+def stopApp(config):
+    from signal import SIGTERM
+    from os.path import exists
+    from time import sleep
+    twistd.signalApp(config, SIGTERM)
+    nWait = 0  # processes do not die instantly
+    while exists(config['pidfile']) and nWait &lt; 20:
+        sleep(.1)
+        nWait += 1
+
+def restartApp(config):
+    stopApp(config)
+    runApp(config)
+
+def run():
+    config = twistd.parseOptions(ServerOptions())
+    cmd = getattr(config,'subCommand','start')
+    if 'stop'    == cmd: return stopApp(config)
+    if 'restart' == cmd: return restartApp(config)
+    twistd.runApp(config)
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035985.html">[Twisted-Python] enterprise.row
+</A></li>
+	<LI>Next message (by thread): <A HREF="035962.html">[Twisted-Python] twistctl - start/stop/restart revisited
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35961">[ date ]</a>
+              <a href="thread.html#35961">[ thread ]</a>
+              <a href="subject.html#35961">[ subject ]</a>
+              <a href="author.html#35961">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

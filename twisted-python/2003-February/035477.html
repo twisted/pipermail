@@ -1,0 +1,201 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] patch: win32serialport.py implementation
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20patch%3A%20win32serialport.py%20implementation&In-Reply-To=%3CNL31HEROJH94QL1W00893C4YOK43QM.3e501ead%40rock%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035470.html">
+   <LINK REL="Next"  HREF="035475.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] patch: win32serialport.py implementation</H1>
+    <B>Chris Liechti</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20patch%3A%20win32serialport.py%20implementation&In-Reply-To=%3CNL31HEROJH94QL1W00893C4YOK43QM.3e501ead%40rock%3E"
+       TITLE="[Twisted-Python] patch: win32serialport.py implementation">cliechti at gmx.net
+       </A><BR>
+    <I>Sun Feb 16 16:28:45 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035470.html">[Twisted-Python] a qtManhole
+</A></li>
+        <LI>Next message (by thread): <A HREF="035475.html">[Twisted-Python] twisted rooming scholarships for PyCon
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35477">[ date ]</a>
+              <a href="thread.html#35477">[ thread ]</a>
+              <a href="subject.html#35477">[ subject ]</a>
+              <a href="author.html#35477">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>here is an implementation for the serial port module for win32.
+
+it uses a overlapped read of one character and when the event occours, it reads as much as possible from the buffer.
+writes are overlapped too, meaning that if the send buffer of the os is full, that a python queue is used to save the output for later.
+i hope that this gives a good performance, low latencies and short function calls.
+
+note that i was not sucessful with the WaitCommEvent function that would allow event based programming not only for the data but 
+also for the data lines. but this function is broken for overlapped IO in older win32all releases (fixed in newer ones) but i experienced 
+crashes nontheless.
+(setting up an overlapped wait, then using a WaitForSingleObject worked, but it did crash when using the win32 reactor of twisted. 
+the crash was after the exit of the event handler, but before the control was back in the event loop of twisted. i guess there is some c-
+stack corruption involved)
+
+however, i think that the implementation below is a solid solution.
+
+also note that i removed the timeout parameter from the twisted SerialPort class. i think it does not make sense as its event based.. 
+even worse, a wrong timeout could cause malfunction. i sugest that the timeout parameter is removed in posixserial.py and 
+javaserial.py too and inserting the default value in the instantiation of the internal Serial object (like i've done it below).
+
+please cc me for comments, im not on the list, tnx.
+
+chris
+
+------------------ begin: Twisted/twisted/internet/serialport/win32serialport.py -----------------
+# Twisted, the Framework of Your Internet
+# Copyright (C) 2001-2002 Matthew W. Lefkowitz
+# this module: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">cliechti at gmx.net</A>
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of version 2.1 of the GNU Lesser General Public
+# License as published by the Free Software Foundation.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+&quot;&quot;&quot;
+Serial Port Protocol
+&quot;&quot;&quot;
+
+# system imports
+import os, Queue
+
+# dependent on pyserial ( <A HREF="http://pyserial.sf.net/">http://pyserial.sf.net/</A> )
+import serial
+from serial import PARITY_NONE, PARITY_EVEN, PARITY_ODD
+from serial import STOPBITS_ONE, STOPBITS_TWO
+from serial import FIVEBITS, SIXBITS, SEVENBITS, EIGHTBITS
+from serialport import BaseSerialPort
+import win32file, win32event
+
+# twisted imports
+from twisted.protocols import basic
+from twisted.internet import abstract
+from twisted.python import log
+
+class SerialPort(BaseSerialPort, abstract.FileDescriptor):
+    &quot;&quot;&quot;A select()able serial device, acting as a transport.&quot;&quot;&quot;
+    connected = 1
+
+    def __init__(self, protocol, deviceNameOrPortNumber, reactor, 
+        baudrate = 9600, bytesize = EIGHTBITS, parity = PARITY_NONE,
+        stopbits = STOPBITS_ONE, xonxoff = 0, rtscts = 0):
+        self._serial = serial.Serial(deviceNameOrPortNumber, baudrate = baudrate, bytesize = bytesize, parity = parity, stopbits = 
+stopbits, timeout = None, xonxoff = xonxoff, rtscts = rtscts)
+        self.flushInput()
+        self.flushOutput()
+        self.reactor = reactor
+        self.protocol = protocol
+        self.outQueue = Queue.Queue()
+        self.closed = 0
+        self.closedNotifies = 0
+        self.write_in_progress = 0
+        
+        self.protocol = protocol
+        self.protocol.makeConnection(self)
+        self._overlapped_read = win32file.OVERLAPPED()
+        self._overlapped_read.hEvent = win32event.CreateEvent(None, 0, 0, None)
+        self._overlapped_write = win32file.OVERLAPPED()
+        self._overlapped_write.hEvent = win32event.CreateEvent(None, 0, 0, None)
+        
+        self.reactor.addEvent(self._overlapped_read.hEvent, self, self.serialReadEvent)
+        self.reactor.addEvent(self._overlapped_write.hEvent, self, self.serialWriteEvent)
+
+        flags, comstat = win32file.ClearCommError(self._serial.hComPort)
+        rc, self.read_buf = win32file.ReadFile(self._serial.hComPort, win32file.AllocateReadBuffer(1), self._overlapped_read)
+
+    def serialReadEvent(self):
+        #get that character we set up
+        n = win32file.GetOverlappedResult(self._serial.hComPort, self._overlapped_read, 0)
+        if n:
+            first = str(self.read_buf[:n])
+            #now we should get everything that is already in the buffer
+            flags, comstat = win32file.ClearCommError(self._serial.hComPort)
+            rc, buf = win32file.ReadFile(self._serial.hComPort, win32file.AllocateReadBuffer(comstat.cbInQue), self._overlapped_read)
+            n = win32file.GetOverlappedResult(self._serial.hComPort, self._overlapped_read, 1)
+            #handle all the received data:
+            self.protocol.dataReceived(first + str(buf[:n]))
+
+        #set up next one
+        rc, self.read_buf = win32file.ReadFile(self._serial.hComPort, win32file.AllocateReadBuffer(1), self._overlapped_read)
+
+    def write(self, data):
+        #~ self._serial.write(data)
+        if self.write_in_progress:
+            #~ log.msg('adding to write queue')
+            self.outQueue.put(data)
+        else:
+            #~ log.msg('write')
+            self.write_in_progress = 1
+            win32file.WriteFile(self._serial.hComPort, data, self._overlapped_write)
+
+    def serialWriteEvent(self):
+        try:
+            dataToWrite = self.outQueue.get_nowait()
+        except:
+            self.write_in_progress = 0
+            #~ log.msg('outQueue empty')
+            return
+        else:
+            win32file.WriteFile(self._serial.hComPort, dataToWrite, self._overlapped_write)
+    
+    def connectionLost(self, reason):
+        #~ log.msg('connectionLost')
+        self.reactor.removeEvent(self._overlapped_read.hEvent)
+        self.reactor.removeEvent(self._overlapped_write.hEvent)
+        abstract.FileDescriptor.connectionLost(self, reason)
+        self._serial.close()
+
+------------------ end: Twisted/twisted/internet/serialport/win32serialport.py -----------------
+
+
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035470.html">[Twisted-Python] a qtManhole
+</A></li>
+	<LI>Next message (by thread): <A HREF="035475.html">[Twisted-Python] twisted rooming scholarships for PyCon
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35477">[ date ]</a>
+              <a href="thread.html#35477">[ thread ]</a>
+              <a href="subject.html#35477">[ subject ]</a>
+              <a href="author.html#35477">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

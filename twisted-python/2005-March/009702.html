@@ -1,0 +1,180 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: clients of perspective brokers
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20clients%20of%20perspective%20brokers&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009698.html">
+   <LINK REL="Next"  HREF="009935.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: clients of perspective brokers</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20clients%20of%20perspective%20brokers&In-Reply-To="
+       TITLE="[Twisted-Python] Re: clients of perspective brokers">db3l at fitlinxx.com
+       </A><BR>
+    <I>Mon Mar  7 19:37:10 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009698.html">[Twisted-Python] clients of perspective brokers
+</A></li>
+        <LI>Next message: <A HREF="009935.html">[Twisted-Python] Re: clients of perspective brokers
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9702">[ date ]</a>
+              <a href="thread.html#9702">[ thread ]</a>
+              <a href="subject.html#9702">[ subject ]</a>
+              <a href="author.html#9702">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Joachim Boomberschloss &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">boomberschloss at yahoo.com</A>&gt; writes:
+
+&gt;<i> Also, it is unclear to me how reconnection works for
+</I>&gt;<i> perspective broker clients. If a connection is dropped
+</I>&gt;<i> by the server, and then a clients tries to make a
+</I>&gt;<i> method call on a remote object, will the client
+</I>&gt;<i> factory try to reconnect before making the request, or
+</I>&gt;<i> will the request fail, and re-connection be attempted
+</I>&gt;<i> the next time, etc.?
+</I>
+There are no automatic reconnects by default.  Additionally once you
+have lost a connection, all existing references held by the client to
+objects on the server will be invalid from that point on.
+
+There is a general purpose ReconnectingClientFactory in the
+twisted.internet.protocols module, but it only handles making the
+basic socket reconnection, and not any higher level re-establishment
+of protocol communication.  There was also some work on a more
+persistent remote reference scheme (in the sturdy module).
+
+The problem with handling reconnects is that PB object references are
+only good for a particular session (since they match up with broker
+object dictionaries that are part of the remote protocol instance and
+go away when the session drops).  So even if you re-establish the raw
+PB connection, none of the object references previously held by the
+client will be valid any longer.  Even the sturdy module only seemed
+to work for the root object and not other random references held by
+the application.  Back when I was looking to solve the same issue, I
+didn't really find anything suitable in the twisted code base itself.
+
+So it's mostly up to your application to handle these sorts of
+scenarios.  To be honest though, since your application knows the most
+about how it is using references and objects, it can often have the
+simplest implementation.
+
+For example, in our application we make use of a registry of
+components, and when distributing the application, the client starts
+with a remote registry (a Referenceable), and then retrieves remote
+component references (also Referenceables) for any component they
+interact with.  Pretty much everything else is a normal remote copy (a
+Copyable rather than Referenceable).  So the registry and components
+provided a great control point to handle network outages.  Also, the
+components whose references are long lived in the client (and who we
+care about maintaining across an outage) are independent of the remote
+session - that is they exist independently on the server.  So recovery
+from loss of a network connection is simply re-accessing the prior
+remote component.  That makes handling such outages in a transparent
+manner fairly straight forward since we can use the original
+connection information to perform a reconnect without re-involving
+high level application code.
+
+We ended up with  three main parts to the recovery system:
+
+* A remote registry wrapper that works just like a local registry but
+  automatically wraps references to remote components in a component wrapper.
+* A remote component wrapper that handles wrapping a remote reference both
+  to control method access (so we can specially handle some methods locally)
+  but also to isolate the application from directly holding onto a PB
+  reference for the remote component object.
+* Our own PBClientFactory subclass that handles connectivity issues, and
+  automatically wraps a reference to a remote registry (which is obtained
+  through our Root object) in the remote registry wrapper.
+
+In addition, we tie them together with various signals (currently
+using the pyDispatcher package).
+
+A client app starts with the client factory, which knows how to
+connect, reconnect after a failure (with a prescribed retry timing
+mechanism), periodically ping the remote root object for a live
+session, and emit signals when the connection goes up or down.  The
+application asks the client factory for the remote registry, and gets
+back a remote registry wrapper.  Since the wrapper operates as a local
+registry, the application code can work locally or remotely.  If the
+client factory sees the connection drop, once it reconnects, it emits
+a connection signal which includes the new registry wrapper.
+
+The client factory also gives us a good place to perform a series of
+steps we need to do with the remote root object in order to get access
+to the remote registry, providing for those operations to complete
+before giving the registry back to the application either during
+initial connection (through a waiting deferred) or on a reconnect (via
+the connection signal).
+
+The remote component wrappers (which also include the remote registry
+wrapper) handle the low level potential for failures.  The wrapper
+handles failures during any PB request (both DeadReferenceError and
+PBConnectionLost) and in addition to passing up the error, it emits
+its own signal for a failed request.  The client factory listens for
+such signals, which it uses to initiate an immediate ping test - which
+in turn can lead to notifying the entire system that the connection is
+down.
+
+We did patch our Twisted so the DeadReferenceError was returned as a
+deferred rather than raised inline.  But once everything centralized
+around the remote wrappers, technically that became unnecessary
+because that's the only place (aside from the client factory) that
+issues the callRemote call, so it's not that hard to handle both the
+local exception or the deferred error.
+
+In the other direction, the wrappers all listen for the client
+factory's connected signal, and upon receipt, they use the supplied
+remote registry to re-query the component they wrap (information on
+which they saved when created) in order to get a new remote reference.
+Because all of the higher level application code is holding a
+reference (Python-wise) to the wrapper object and not the PB
+reference, we can adjust to a new reference inside the wrapper without
+anything in the application being the wiser or needing to change.
+
+Having the network connect/disconnect signals from the client factory
+also permits any other part of the application to perform certain
+operations during an outage (so sometimes at our top level UI we'll
+put up a &quot;temporary outage&quot; message during downtime).
+
+While this is fairly specific to our environment, it lets us take an
+application that is running locally, and with a single change to get
+its registry from our client factory instead of locally, everything
+works remotely, including automatic reconnects and re-establishment of
+all remote object references.  Hopefully detailing some of the steps
+might help you envision how to do something similar for your
+application.
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009698.html">[Twisted-Python] clients of perspective brokers
+</A></li>
+	<LI>Next message: <A HREF="009935.html">[Twisted-Python] Re: clients of perspective brokers
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9702">[ date ]</a>
+              <a href="thread.html#9702">[ thread ]</a>
+              <a href="subject.html#9702">[ subject ]</a>
+              <a href="author.html#9702">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

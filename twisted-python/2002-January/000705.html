@@ -1,0 +1,186 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Per-connection and per-protocol stats
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Per-connection%20and%20per-protocol%20stats&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000704.html">
+   <LINK REL="Next"  HREF="000706.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Per-connection and per-protocol stats</H1>
+    <B>Itamar Shtull-Trauring</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Per-connection%20and%20per-protocol%20stats&In-Reply-To="
+       TITLE="[Twisted-Python] Per-connection and per-protocol stats">twisted at itamarst.org
+       </A><BR>
+    <I>Sun Jan 13 04:40:37 EST 2002</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000704.html">[Twisted-Python] Use asyncore dispatchers with Twisted
+</A></li>
+        <LI>Next message: <A HREF="000706.html">[Twisted-Python] Changelog
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#705">[ date ]</a>
+              <a href="thread.html#705">[ thread ]</a>
+              <a href="subject.html#705">[ subject ]</a>
+              <a href="author.html#705">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>As I mentioned before in the metrics message, I want to have for each 
+protocol events stats, per server and per server connection. This is the 
+code I currently use (comments on the hits per second algorithm and in 
+general are welcome.) I also have a web Resource for this so I can view 
+stats with a nice interface.
+
+
+======================================
+&quot;&quot;&quot;Event monitoring support&quot;&quot;&quot;
+
+import operator
+
+from twisted.python import threadable, delay
+
+
+class ProtocolMonitor:
+     &quot;&quot;&quot;Monitor a server that serves connections.
+
+     Accepts a list of event names which the protocol can then log with
+     log_event.
+     &quot;&quot;&quot;
+
+     def __init__(self, name, eventNames):
+         self.name = name
+         self.eventNames = eventNames
+         self.connections = {}
+         self.eventcounters = EventCounters(eventNames)
+
+     def install(self):
+         &quot;&quot;&quot;Make sure reset() is run every 0.1 seconds.&quot;&quot;&quot;
+         from twisted.internet import main
+         self.looper = delay.Delayed()
+         self.looper.ticktime = 0.1
+         self.looper.loop(self.reset, 1)
+         main.addDelayed(self.looper)
+
+     def uninstall(self):
+         &quot;&quot;&quot;Uninstall Delayed.&quot;&quot;&quot;
+         from twisted.internet import main
+         main.removeDelayed(self.looper)
+         del self.looper
+
+     def reset(self):
+         &quot;&quot;&quot;Runs once a second, resets all EventCounters.&quot;&quot;&quot;
+         for e in self.connections.values():
+             e.reset()
+         self.eventcounters.reset()
+
+     def log_connectionOpened(self, conn):
+         self.connections[conn] = EventCounters(self.eventNames)
+
+     def log_connectionClosed(self, conn):
+         del self.connections[conn]
+
+     def log_event(self, conn, name):
+         &quot;&quot;&quot;First parameter should be a Protocol, second an event&quot;&quot;&quot;
+         assert name in self.eventNames
+         self.eventcounters.increment(name)
+         if self.connections.has_key(conn):
+             self.connections[conn].increment(name)
+
+     synchronized = [&quot;log_connectionOpened&quot;, &quot;log_connectionClosed&quot;, 
+&quot;log_event&quot;, &quot;reset&quot;]
+
+
+class EventCounters:
+     &quot;&quot;&quot;Stores a number of event counters, and how many a second.
+
+     Algorithm for determining how many events a second:
+
+     Divide each second into 10 (N) equal parts. Make an 11 (N+1) items long
+     list L containing how many events in each part of the second, plus the
+     last part of the previous second.
+
+         L = [0] * 11
+
+     When a new event is added, increment last item in list:
+
+         L[-1] += 1
+
+     Every 0.1 (1.0/N) seconds, remove first item in L and append 0:
+
+         del L[0]; L.append(0)
+
+     To calculate how many events in the past second, sum up last 10 (N)
+     parts of L and 0.5 of the first item in L. This gives us how many hits
+     in the past 0.95 to 1.05 seconds (1-1.0/2N to 1+1.0/2N seconds),
+     depending on when we run this function:
+
+         (0.5 * L[0]) + reduce(operator.add, L[1:])
+
+     &quot;&quot;&quot;
+
+     def __init__(self, eventNames, ):
+         self.eventNames = eventNames
+         self.counters = {}
+         self.secondCounters = {}
+         for name in eventNames:
+             self.counters[name] = 0
+             self.secondCounters[name] = [0] * 10
+
+     def increment(self, name):
+         self.counters[name] += 1
+         self.secondCounters[name][-1] += 1
+
+     def reset(self):
+         &quot;&quot;&quot;Should be called every 0.1 seconds.&quot;&quot;&quot;
+         for name in self.eventNames:
+             del self.secondCounters[name][0]
+             self.secondCounters[name].append(0)
+
+     def getInfo(self):
+         &quot;&quot;&quot;Return a dictionary.
+
+         The key is an event name and the value a tuple:
+         (counters, counters per second).&quot;&quot;&quot;
+         result = {}
+         for name in self.eventNames:
+             l = self.secondCounters[name]
+             perSecond = (0.5 * l[0]) + reduce(operator.add, l[1:])
+             result[name] = (self.counters[name], perSecond)
+         return result
+
+     synchronized = [&quot;increment&quot;, &quot;reset&quot;, &quot;getInfo&quot;]
+
+
+threadable.synchronize(ProtocolMonitor)
+threadable.synchronize(EventCounters)
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000704.html">[Twisted-Python] Use asyncore dispatchers with Twisted
+</A></li>
+	<LI>Next message: <A HREF="000706.html">[Twisted-Python] Changelog
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#705">[ date ]</a>
+              <a href="thread.html#705">[ thread ]</a>
+              <a href="subject.html#705">[ subject ]</a>
+              <a href="author.html#705">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

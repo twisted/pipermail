@@ -1,0 +1,172 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] xmlrpc resource file descriptor leak
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20xmlrpc%20resource%20file%20descriptor%20leak&In-Reply-To=4868C2B8.4010109%40imperial.ac.uk">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003826.html">
+   <LINK REL="Next"  HREF="003828.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] xmlrpc resource file descriptor leak</H1>
+    <B>Werner Thie</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20xmlrpc%20resource%20file%20descriptor%20leak&In-Reply-To=4868C2B8.4010109%40imperial.ac.uk"
+       TITLE="[Twisted-web] xmlrpc resource file descriptor leak">wthie at thiengineering.ch
+       </A><BR>
+    <I>Thu Jul  3 02:59:48 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003826.html">[Twisted-web] Re: xmlrpc resource file descriptor leak
+</A></li>
+        <LI>Next message: <A HREF="003828.html">[Twisted-web] nevow's loaders.xmlfile returning XML
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3827">[ date ]</a>
+              <a href="thread.html#3827">[ thread ]</a>
+              <a href="subject.html#3827">[ subject ]</a>
+              <a href="author.html#3827">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi
+
+suffering form the same problem a year ago or so, I dug into this by 
+following the call chain and cgi.py is the source of the 'too many fd' 
+problem.
+
+For an explanation read the comment starting at line 417 in cgi.py which 
+reads:
+
+     The class is subclassable, mostly for the purpose of overriding
+     the make_file() method, which is called internally to come up with
+     a file open for reading and writing.  This makes it possible to
+     override the default choice of storing all files in a temporary
+     directory and unlinking them as soon as they have been opened.
+
+The trick which is used here is the fact, that an fd hangs around for 
+some time even if the fd in question was unlinked. It takes some time 
+for the OS to collect all those unlinked fds, but they will be collected 
+  eventually. The number of fds allowed per process when using cgi.py 
+(used by twisted) depends on the burst rate of requests, because every 
+request has per default a FieldStorage and therefore an fd.
+
+The only solution is to up the number of allowed fds per process/per 
+machine and depends on the OS:
+
+MS Windows: if CRT is used, hardcoded to 2048 else limited by mem
+
+On **ixes use ''ulimit -a' or 'sysctl -a | grep files' to get a printout 
+the system value, usually something along kern.maxfiles=10000
+
+Per machine:
+/etc/sysctl.conf contains the values for the kernel preset when booting.
+
+Per process:
+/etc/login.conf contains usually a variable called openfiles-max
+
+On my OpenBSD production system (avg load 30 req/sec) values are
+
+kern.maxfiles=10000
+
+openfiles-max=8192
+openfiles-cur=8192
+
+which allows smooth operation of two twisted processes on a dual core 
+machine.
+
+HTH, Werner
+
+FYI the output of top:
+
+load averages:  0.34,  0.31,  0.31 
+                                            08:55:01
+31 processes:  1 running, 29 idle, 1 on processor
+CPU0 states: 10.8% user,  0.0% nice,  2.6% system,  0.0% interrupt, 
+86.6% idle
+CPU1 states:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt, 
+100% idle
+Memory: Real: 325M/608M act/tot  Free: 2913M  Swap: 0K/4096M used/tot
+
+PID  UNAME PRI NICE  SIZE   RES STATE    WAIT  TIME   CPU    COMMAND
+4562 www   2   0     125M   97M sleep/0  poll  242:39 11.82% python2.5
+6506 www   2   0     205M  181M run/0    -     34:20   2.00% python2.5
+
+
+Phil Mayers wrote:
+&gt;<i> This is a bit vague, and I wanted to get some feedback before I submit a 
+</I>&gt;<i> ticket.
+</I>&gt;<i> 
+</I>&gt;<i> We have a long-running twisted / nevow process that basically has:
+</I>&gt;<i> 
+</I>&gt;<i>  root
+</I>&gt;<i>   \- RPC2 - a twisted.web.xmlrpc.XMLRPC sub-class
+</I>&gt;<i>   \- ui   - nevow pages
+</I>&gt;<i> 
+</I>&gt;<i> The thing hung up over the weekend with &quot;too many open file descriptors&quot; 
+</I>&gt;<i> and before I killed it I did an &quot;lsof&quot;; lots of the files were:
+</I>&gt;<i> 
+</I>&gt;<i> python25 20163  nsg   31u   REG              253,0      370   3276854 
+</I>&gt;<i> /tmp/tmp5QJivu (deleted)
+</I>&gt;<i> 
+</I>&gt;<i> ...and &quot;cat /proc/20163/fd/31&quot; shows:
+</I>&gt;<i> 
+</I>&gt;<i> &lt;?xml version='1.0'?&gt;
+</I>&gt;<i> &lt;methodCall&gt;
+</I>&gt;<i> &lt;methodName&gt;classify_maclist&lt;/methodName&gt;
+</I>&gt;<i> &lt;params&gt;
+</I>&gt;<i> &lt;param&gt;
+</I>&gt;<i> &lt;value&gt;&lt;string&gt;HORPROD&lt;/string&gt;&lt;/value&gt;
+</I>&gt;<i> &lt;/param&gt;
+</I>&gt;<i> &lt;param&gt;
+</I>&gt;<i> &lt;value&gt;&lt;array&gt;&lt;data&gt;
+</I>&gt;<i> &lt;value&gt;&lt;string&gt;xxxx&lt;/string&gt;&lt;/value&gt;
+</I>&gt;<i> &lt;/data&gt;&lt;/array&gt;&lt;/value&gt;
+</I>&gt;<i> &lt;/param&gt;
+</I>&gt;<i> &lt;param&gt;
+</I>&gt;<i> &lt;value&gt;&lt;int&gt;-1&lt;/int&gt;&lt;/value&gt;
+</I>&gt;<i> &lt;/param&gt;
+</I>&gt;<i> &lt;param&gt;
+</I>&gt;<i> &lt;value&gt;&lt;int&gt;5&lt;/int&gt;&lt;/value&gt;
+</I>&gt;<i> &lt;/param&gt;
+</I>&gt;<i> &lt;/params&gt;
+</I>&gt;<i> &lt;/methodCall&gt;
+</I>&gt;<i> 
+</I>&gt;<i> ...which is an XMLRPC call from a Zope server on another machine to this 
+</I>&gt;<i> process. I presume the t.w.http.Request content is getting written to a 
+</I>&gt;<i> tempfile, but I can't understand why - the Content-Length is tiny (&lt;400 
+</I>&gt;<i> bytes).
+</I>&gt;<i> 
+</I>&gt;<i> I can't seem to reproduce this in a sample application though; does 
+</I>&gt;<i> anyone have any ideas how I can narrow down the problem?
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-web mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">Twisted-web at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web</A>
+</I>
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003826.html">[Twisted-web] Re: xmlrpc resource file descriptor leak
+</A></li>
+	<LI>Next message: <A HREF="003828.html">[Twisted-web] nevow's loaders.xmlfile returning XML
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3827">[ date ]</a>
+              <a href="thread.html#3827">[ thread ]</a>
+              <a href="subject.html#3827">[ subject ]</a>
+              <a href="author.html#3827">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

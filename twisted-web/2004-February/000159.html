@@ -1,0 +1,258 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Guard and flatsax patches
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   
+   <LINK REL="Previous"  HREF="000164.html">
+   <LINK REL="Next"  HREF="000160.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Guard and flatsax patches
+   </H1>
+    <B>James Y Knight
+    </B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com"
+       TITLE="[Twisted-web] Guard and flatsax patches">twisted-web@twistedmatrix.com
+       </A><BR>
+    <I>Tue, 3 Feb 2004 16:59:04 -0500</I>
+    <P><UL>
+        <LI> Previous message: <A HREF="000164.html">[Twisted-web] Revamped ContextSerializer/TagSerializer and other contextish stuff
+</A></li>
+        <LI> Next message: <A HREF="000160.html">[Twisted-web] Guard and flatsax patches
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#159">[ date ]</a>
+              <a href="thread.html#159">[ thread ]</a>
+              <a href="subject.html#159">[ subject ]</a>
+              <a href="author.html#159">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>--Apple-Mail-6-901580296
+Content-Transfer-Encoding: 7bit
+Content-Type: text/plain;
+	charset=US-ASCII;
+	format=flowed
+
+Guard patch:
+- Reinstates the request.setupSession attribute from the old guard, 
+which I use in order to force a new session if the user changes their 
+authentication data.
+
+Flatsax patch:
+- Require pyxml &gt;= 0.8
+- Handle entities correctly.
+
+James
+
+
+--Apple-Mail-6-901580296
+Content-Transfer-Encoding: 7bit
+Content-Type: application/octet-stream;
+	x-unix-mode=0644;
+	name=&quot;flatsax.patch&quot;
+Content-Disposition: attachment;
+	filename=flatsax.patch
+
+Index: serial/flatsax.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatsax.py,v
+retrieving revision 1.2
+diff -u -r1.2 flatsax.py
+--- serial/flatsax.py	21 Jan 2004 05:12:12 -0000	1.2
++++ serial/flatsax.py	3 Feb 2004 21:37:20 -0000
+@@ -1,14 +1,11 @@
+-
+-
+-from xml.sax import ContentHandler
+-from xml.sax import make_parser
+-#from xml.sax.handler import feature_namespaces
+-
++from xml.sax import make_parser, handler
++import xml as pyxml
+ 
+ from nevow.stan import xml, Tag, directive
+ 
++bad_version = pyxml.version_info[0] == 0 and pyxml.version_info[1] &lt; 8
+ 
+-class ToStan(ContentHandler):
++class ToStan(handler.ContentHandler, handler.EntityResolver):
+     directiveMapping = {
+         'render': 'renderer',
+         'data': 'data',
+@@ -17,9 +14,17 @@
+     attributeList = [
+         'pattern', 'slot', 'macro', 'fill-slot', 'key',
+     ]
+-
++    
++    def resolveEntity(self, publicId, systemId):
++        ## This doesn't seem to get called, which is good.
++        raise Exception(&quot;resolveEntity should not be called. We don't use external DTDs.&quot;)
++
++    def skippedEntity(self, name):
++        self.current.append(xml(&quot;&amp;%s;&quot;%name))
++        
+     def startDocument(self):
+-        self.document = [xml('&lt;?xml version=&quot;1.0&quot;?&gt;\n')]
++        self.document = []
++#        self.document = [xml('&lt;?xml version=&quot;1.0&quot;?&gt;\n')]
+         self.current = self.document
+         self.stack = []
+ 
+@@ -51,7 +56,7 @@
+         self.current = el.children
+ 
+     def characters(self, ch):
+-        self.current.append(xml(ch))
++        self.current.append(ch)
+ 
+     def endElement(self, name):
+         me = self.stack.pop()
+@@ -62,12 +67,23 @@
+ 
+ 
+ def parse(fl):
++    ## Earlier PyXMLs don't handle non-standard entities (e.g. &amp;copy;) 
++    ## correctly. They will either give an error or simply ignore the
++    ## entity producing bad output.
++    
++    if bad_version:
++        raise Exception(&quot;Please use PyXML later than 0.8. Earlier ones are too buggy.&quot;)
++    
+     parser = make_parser()
+-#    parser.setFeature(feature_namespaces, 0)
++    parser.setFeature(handler.feature_validation, 0)
++    parser.setFeature(handler.feature_namespaces, 0)
++    parser.setFeature(handler.feature_external_ges, 0)
++    parser.setFeature(handler.feature_external_pes, 0)
++    
+     s = ToStan()
+     parser.setContentHandler(s)
+-
+-#    setEntityResolver()
++    parser.setEntityResolver(s)
++    
+     parser.parse(fl)
+ 
+     return s.document
+
+--Apple-Mail-6-901580296
+Content-Transfer-Encoding: 7bit
+Content-Type: text/plain;
+	charset=US-ASCII;
+	format=flowed
+
+
+
+--Apple-Mail-6-901580296
+Content-Transfer-Encoding: 7bit
+Content-Type: application/octet-stream;
+	x-unix-mode=0644;
+	name=&quot;guard.patch&quot;
+Content-Disposition: attachment;
+	filename=guard.patch
+
+Index: guard.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/guard.py,v
+retrieving revision 1.13
+diff -u -r1.13 guard.py
+--- guard.py	27 Jan 2004 16:41:22 -0000	1.13
++++ guard.py	3 Feb 2004 21:50:32 -0000
+@@ -135,8 +135,7 @@
+         self.checkExpired()
+ 
+ 
+-def urlToChild(request, *ar, **kw):
+-    orig = request.prePathURL()
++def urlToChild(request, orig, *ar, **kw):
+     c = '/'.join(ar)
+     if orig[-1] == '/':
+         # this SHOULD only happen in the case where the URL is just the hostname
+@@ -187,10 +186,13 @@
+     def locateChild(self, request, segments):
+         path = segments[0]
+         cookie = request.getCookie(self.cookieKey)
++        prepath = request.prePathURL()
++        request.setupSession = lambda : self.createSession(request, prepath, segments)
++        
+         if path.startswith(SESSION_KEY):
+             key = path[len(SESSION_KEY):]
+             if key not in self.sessions:
+-                return Redirect(urlToChild(request, *segments[1:], **{'__start_session__':1})), ()
++                return Redirect(urlToChild(request, prepath, *segments[1:], **{'__start_session__':1})), ()
+             self.sessions[key].setLifetime(self.sessionLifetime)
+             if cookie == key:
+                 # /sessionized-url/${SESSION_KEY}aef9c34aecc3d9148/foo
+@@ -198,7 +200,7 @@
+                 #                  we are this getChild
+                 # with a matching cookie
+                 self.sessions[key].sessionJustStarted = True
+-                return Redirect(urlToChild(request, *segments[1:], **{'__session_just_started__':1})), ()
++                return Redirect(urlToChild(request, prepath, *segments[1:], **{'__session_just_started__':1})), ()
+             else:
+                 # We attempted to negotiate the session but failed (the user
+                 # probably has cookies disabled): now we're going to return the
+@@ -239,18 +241,24 @@
+                         afterLogin).addErrback(errorLogin)
+ 
+             # no, really, without a session
+-            newCookie = _sessionCookie()
+-            request.addCookie(self.cookieKey, newCookie, path=&quot;/&quot;)
+-            sz = self.sessions[newCookie] = GuardSession(self, newCookie)
+-            sz.args = request.args
+-            sz.content = request.content
+-            sz.method = request.method
+-            sz.received_headers = request.received_headers
+-            sz.checkExpired()
+             ## Redirect to the URL with the session key in it, plus the segments of the url
+-            rd = Redirect(urlToChild(request, SESSION_KEY+newCookie, *segments))
++            rd = self.createSession(request, prepath, segments)
+             return rd, ()
+-
++    
++    def createSession(self, request, prepath, segments):
++        &quot;&quot;&quot;Create a new session for this request, and redirect back to the path
++        given by segments.&quot;&quot;&quot;
++        
++        newCookie = _sessionCookie()
++        request.addCookie(self.cookieKey, newCookie, path=&quot;/&quot;)
++        sz = self.sessions[newCookie] = GuardSession(self, newCookie)
++        sz.args = request.args
++        sz.content = request.content
++        sz.method = request.method
++        sz.received_headers = request.received_headers
++        sz.checkExpired()
++        return Redirect(urlToChild(request, prepath, SESSION_KEY+newCookie, *segments))
++        
+     def checkLogin(self, request, segments):
+         path = segments[0]
+         s = request.getSession()
+
+--Apple-Mail-6-901580296--
+
+
+
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI> Previous message: <A HREF="000164.html">[Twisted-web] Revamped ContextSerializer/TagSerializer and other contextish stuff
+</A></li>
+	<LI> Next message: <A HREF="000160.html">[Twisted-web] Guard and flatsax patches
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#159">[ date ]</a>
+              <a href="thread.html#159">[ thread ]</a>
+              <a href="subject.html#159">[ subject ]</a>
+              <a href="author.html#159">[ author ]</a>
+         </LI>
+       </UL>
+</body></html>

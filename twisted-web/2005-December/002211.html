@@ -1,0 +1,198 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Nevow PageCache
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Nevow%20PageCache&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002210.html">
+   <LINK REL="Next"  HREF="002214.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Nevow PageCache</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Nevow%20PageCache&In-Reply-To="
+       TITLE="[Twisted-web] Nevow PageCache">andrea at cpushare.com
+       </A><BR>
+    <I>Tue Dec 13 15:43:02 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002210.html">[Twisted-web] twisted-web file upload processing on the server
+</A></li>
+        <LI>Next message: <A HREF="002214.html">[Twisted-web] Nevow PageCache
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2211">[ date ]</a>
+              <a href="thread.html#2211">[ thread ]</a>
+              <a href="subject.html#2211">[ subject ]</a>
+              <a href="author.html#2211">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I wanted to push into the tracker but I'm a bit confused on how to do
+that with trac, so I resend with the mailing list.
+
+This patch implements html caching at the page level with a optional max
+cache size per page and with optional timeout.
+
+Even when the timeout is very small, this makes sure that all blocked
+waiting clients gets the same copy of the html allowing the server to
+scale.
+
+This only works for dynamic data that is the same for all users, so it's
+good for the homepage etc...
+
+I use it online for months and I had no problems at all.
+
+Index: Nevow/nevow/util.py
+===================================================================
+--- Nevow/nevow/util.py	(revision 3434)
++++ Nevow/nevow/util.py	(working copy)
+@@ -133,6 +133,7 @@
+     from twisted.python.failure import Failure
+     from twisted.trial.unittest import deferredError
+     from twisted.python import log
++    from twisted.internet import reactor
+ 
+     try:
+         # work with twisted before retrial
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 3434)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -491,6 +491,56 @@
+         self.children[name] = child
+ 
+ 
++class PageCache(object):
++    def __init__(self):
++        self.__db = {}
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def __storeCache(self, cacheIDX, c):
++        self.__db[cacheIDX] = c
++    def __deleteCache(self, cacheIDX):
++        del self.__db[cacheIDX]
++    def __deleteCacheData(self, cacheIDX, page):
++        size = self.__db[cacheIDX][1]
++        assert len(self.__db[cacheIDX][0]) == size
++        page.subCacheSize(size)
++        self.__deleteCache(cacheIDX)
++    def __lookupCache(self, cacheIDX):
++        return self.__db.get(cacheIDX)
++    def getCache(self, ctx):
++        cacheIDX = self.cacheIDX(ctx)
++        c = self.__lookupCache(cacheIDX)
++
++        if c is None:
++            self.__storeCache(cacheIDX, [util.Deferred()])
++            return
++
++        if isinstance(c[0], util.Deferred):
++            d = util.Deferred()
++            c.append(d)
++            return d
++
++        return c[0]
++    def cacheRendered(self, ctx, data, page):
++        cacheIDX = self.cacheIDX(ctx)
++        defer_list = self.__lookupCache(cacheIDX)
++        assert(isinstance(defer_list[0], util.Deferred))
++        size = len(data)
++        if page.canCache(size):
++            # overwrite the deferred with the data
++            timer = None
++            if page.lifetime &gt; 0:
++                timer = util.reactor.callLater(page.lifetime,
++                                               self.__deleteCacheData, cacheIDX, page)
++            page.addCacheSize(size)
++            self.__storeCache(cacheIDX, (data, size, timer, ))
++        else:
++            self.__deleteCache(cacheIDX)
++        for d in defer_list:
++            d.callback(data)
++
++_CACHE = PageCache()
++
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+     via the document factory (docFactory).
+@@ -504,8 +554,27 @@
+     afterRender = None
+     addSlash = None
+ 
++    cache = False
++    lifetime = 0
++    max_cache_size = None
++    __cache_size = 0
++
+     flattenFactory = lambda self, *args: flat.flattenFactory(*args)
+ 
++    def hasCache(self, ctx):
++        if not self.cache:
++            return
++        return _CACHE.getCache(ctx)
++    def addCacheSize(self, size):
++        assert self.canCache(size)
++        self.__cache_size += size
++    def subCacheSize(self, size):
++        self.__cache_size -= size
++        assert self.__cache_size &gt;= 0
++    def canCache(self, size):
++        return self.max_cache_size is None or \
++               self.__cache_size + size &lt;= self.max_cache_size
++
+     def renderHTTP(self, ctx):
+         if self.beforeRender is not None:
+             return util.maybeDeferred(self.beforeRender,ctx).addCallback(
+@@ -530,11 +599,20 @@
+             if self.afterRender is not None:
+                 return util.maybeDeferred(self.afterRender,ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c is not None:
++            assert self.afterRender is None
++            finishRequest()
++            return c
++
++        if self.buffered or self.cache:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = io.getvalue()
++                if self.cache:
++                    _CACHE.cacheRendered(ctx, c, self)
++                request.write(c)
+                 return util.maybeDeferred(finishRequest).addCallback(lambda r: result)
+         else:
+             writer = request.write
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002210.html">[Twisted-web] twisted-web file upload processing on the server
+</A></li>
+	<LI>Next message: <A HREF="002214.html">[Twisted-web] Nevow PageCache
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2211">[ date ]</a>
+              <a href="thread.html#2211">[ thread ]</a>
+              <a href="subject.html#2211">[ subject ]</a>
+              <a href="author.html#2211">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

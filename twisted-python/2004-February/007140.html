@@ -1,0 +1,157 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: DeferredList.addDeferred behaviour
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20DeferredList.addDeferred%20behaviour&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="007096.html">
+   <LINK REL="Next"  HREF="007181.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: DeferredList.addDeferred behaviour</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20DeferredList.addDeferred%20behaviour&In-Reply-To="
+       TITLE="[Twisted-Python] Re: DeferredList.addDeferred behaviour">db3l at fitlinxx.com
+       </A><BR>
+    <I>Thu Feb 26 10:48:12 EST 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="007096.html">[Twisted-Python] DeferredList.addDeferred behaviour
+</A></li>
+        <LI>Next message: <A HREF="007181.html">[Twisted-Python] Re: DeferredList.addDeferred behaviour
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#7140">[ date ]</a>
+              <a href="thread.html#7140">[ thread ]</a>
+              <a href="subject.html#7140">[ subject ]</a>
+              <a href="author.html#7140">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Andrew Bennetts &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">andrew-twisted at puzzling.org</A>&gt; writes:
+
+&gt;<i> It's not clear to me what the right behaviour here is -- if a DeferredList
+</I>&gt;<i> has some number of Deferreds that have all been called, then of course the
+</I>&gt;<i> DeferredList should be marked as called, too.  But if you then add an
+</I>&gt;<i> uncalled Deferred to it, that sounds like a bug.  I'd be inclined to make
+</I>&gt;<i> DeferredList.addDeferred raise an exception in this case -- &quot;In the face of
+</I>&gt;<i> ambiguity, refuse the temptation to guess.&quot; (although perhaps a warning
+</I>&gt;<i> would be better for a release or two, for backwards compatibility)
+</I>
+Well, it's not clear to me that having a mixture of called and
+uncalled in a DeferredList is necessarily inconsistent - at least not
+until after the DeferredList has actually has had its first callback
+assigned.  After all, even if you insert just uncalled Deferreds
+initially, during the course of normal events you'll end up with a
+mixture as some of the Deferreds fire and others haven't yet.
+
+I do agree that adding an uncalled Deferred to a DeferredList after
+that DeferredList has really fired (called actual callbacks) is a
+problem.  I think the HowTo warns against this case though, but it
+says to check via the called attribute, which of course this thread
+seems to point out as potentially a problem.
+
+&gt;<i> Can anyone offer reasons why addDeferred should stay?  Donovan -- CVS says
+</I>&gt;<i> you added it, can you remember why?  Is anyone using it?
+</I>
+I was until I saw this thread and figured out it probably wasn't going
+to hold up the way I expected.  It was working for me now but that's
+because the existing deferrable objects were returning Deferreds
+already called (mostly through defer.succeed and defer.fail) as
+placeholders for eventual remote versions, and thus when I was finally
+adding the callbacks/errbacks to the DeferredList they were running
+synchronously just fine.  But it looks like the problem that started
+this thread would break that code when I started having uncalled
+results as part of the DeferredList since the callbacks would still
+get called as soon as they were added.
+
+As a use case, my scenario is an upper level package function (that
+itself returns a deferrable interface) that performs a function across
+several target objects as part of its operation - sort of a deferrable
+version of map.  I want to use the DeferredList to aggregate/process
+the results into a single result, so I want to completely absorb the
+individual deferreds.  It seemed to me that this should have been a good
+fit for DeferredList.
+
+Because DeferredList itself is just a callback and won't terminate the
+original deferred chain (in particular, it doesn't stop the errback),
+I also need to add a specific errback to each individual Deferred to
+absorb any errors.  Without addDeferred I can't do this in a single loop.
+
+For example, assuming that &quot;func&quot; is a deferrable method on a number
+of objects held in an iterable &quot;objs&quot;:
+
+With addDeferred (the code I used to have):
+
+    dl = defer.DeferredList([])
+    for obj in objs:
+        d = obj.func()
+        dl.addDeferred(d)
+        d.addErrback(lambda _:None)
+    dl.addCallback(processResults)
+    return dl
+
+without addDeferred (the code I have now):
+
+    deferreds = []
+    for obj in objs:
+        d = obj.func()
+        deferreds.append(d)
+    dl = defer.DeferredList([])
+
+    for d in deferreds:
+        d.addErrback(lambda _:None)
+
+    dl.addCallback(processResults)
+    return dl
+
+Without addDeferred I need to aggregate the underlying deferreds
+separately, but more importantly, I need a completely separate loop to
+install the suppression errbacks, because that has to be done _after_
+the Deferreds are stuck into the DeferredList or else that suppression
+will stop the DeferredList from seeing the error.
+
+Maybe not an extreme case, but at the time of writing it I thought
+that this was specifically the sort of case that addDeferred was
+perfect for.
+
+Although if DeferredList were to grow a way to specify that it should
+suppress errors once it has gathered them, I'd probably be just as
+happy as having addDeferred fixed, since the separate loop for error
+suppression bugs me more than the need to separately aggregate the
+Deferreds together before creating the DeferredList.  Actually
+suppressing errors might make me even happier, since needing to
+suppress the errors separately (noted in the API documentation, but
+not the HowTo), while making perfect sense to me now, took a while to
+catch on to initially.
+
+-- David
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="007096.html">[Twisted-Python] DeferredList.addDeferred behaviour
+</A></li>
+	<LI>Next message: <A HREF="007181.html">[Twisted-Python] Re: DeferredList.addDeferred behaviour
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#7140">[ date ]</a>
+              <a href="thread.html#7140">[ thread ]</a>
+              <a href="subject.html#7140">[ subject ]</a>
+              <a href="author.html#7140">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

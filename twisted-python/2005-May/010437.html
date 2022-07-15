@@ -1,0 +1,198 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] pending twisted fixes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20pending%20twisted%20fixes&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="010428.html">
+   <LINK REL="Next"  HREF="010438.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] pending twisted fixes</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20pending%20twisted%20fixes&In-Reply-To="
+       TITLE="[Twisted-Python] pending twisted fixes">andrea at cpushare.com
+       </A><BR>
+    <I>Wed May 11 20:16:25 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="010428.html">[Twisted-Python] Re: [Twisted-commits] r13763 - fix broken link to	divmod.org.
+</A></li>
+        <LI>Next message: <A HREF="010438.html">[Twisted-Python] pending twisted fixes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10437">[ date ]</a>
+              <a href="thread.html#10437">[ thread ]</a>
+              <a href="subject.html#10437">[ subject ]</a>
+              <a href="author.html#10437">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+
+These are the pending fixes for twisted that I'm maintaining on my tree.
+
+On the client side to still allow 1.3.0 I've a file called
+twisted_bugs.py and I import from there instead of twisted.* depending
+on twisted.copyright.version. I've found very easy to fix a single bug
+locally by cut-and-pasting a twisted function and by fixing it locally
+while still not altering the 2.0 behaviour, it's pratically a local 2.0
+backport which lives in its own file. Perhaps this would have been a
+better approach than an upgrade to 2.0 in the rogers.com incident.
+Hotfixes seems quite easy this way and sure less invasive than a full
+upgrade (i.e. no risk of API breakage and no annoyance to the sysadm).
+This is just a reminder just in case other incident happens that seems
+to require 2.0 upgrade.
+
+from twisted.copyright import version
+twisted_bug_workaround = False
+if '1.3.0' in version:
+	twisted_bug_workaround = True
+
+from twisted.internet import reactor # to stop it
+if not twisted_bug_workaround:
+	from twisted.protocols.basic import Int32StringReceiver
+	from twisted.internet.protocol import ReconnectingClientFactory
+else:
+	from cpushare.twisted_bugs import Int32StringReceiver
+	from cpushare.twisted_bugs import ReconnectingClientFactory
+
+Full working example of the 1.3.0 hotfixes is available in the download
+section of my site.
+
+The transport.disconnecting was said not to be available for all
+twisted transports, but then it should be added to the others instead of
+my rejecting my patch with that argument (those basic.py protocols are
+broken without this fix, so it's better that they fail with a visible
+exception than subtly at runtime), or another method should be
+implemented to know if the transport has disconnected already.
+
+Keep up the great work, thanks!
+
+Index: Twisted/twisted/protocols/basic.py
+===================================================================
+--- Twisted/twisted/protocols/basic.py	(revision 13717)
++++ Twisted/twisted/protocols/basic.py	(working copy)
+@@ -166,9 +166,23 @@
+         &quot;&quot;&quot;
+         return error.ConnectionLost('Line length exceeded')
+     
++class PauseProducer(object):
++    paused = False
+ 
++    def pauseProducing(self):
++        self.paused = True
++        self.transport.pauseProducing()
+ 
+-class LineReceiver(protocol.Protocol):
++    def resumeProducing(self):
++        self.paused = False
++        self.transport.resumeProducing()
++        self.dataReceived('')
++
++    def stopProducing(self):
++        self.paused = True
++        self.transport.stopProducing()
++
++class LineReceiver(protocol.Protocol, PauseProducer):
+     &quot;&quot;&quot;A protocol that receives lines and/or raw data, depending on mode.
+     
+     In line mode, each line that's received becomes a callback to
+@@ -188,7 +202,6 @@
+     __buffer = ''
+     delimiter = '\r\n'
+     MAX_LENGTH = 16384
+-    paused = False
+     
+     def clearLineBuffer(self):
+         &quot;&quot;&quot;Clear buffered data.&quot;&quot;&quot;
+@@ -279,21 +292,8 @@
+         &quot;&quot;&quot;
+         return self.transport.loseConnection()
+ 
+-    def pauseProducing(self):
+-        self.paused = True
+-        self.transport.pauseProducing()
+ 
+-    def resumeProducing(self):
+-        self.paused = False
+-        self.dataReceived('')
+-        self.transport.resumeProducing()
+-
+-    def stopProducing(self):
+-        self.paused = True
+-        self.transport.stopProducing()
+-
+-
+-class Int32StringReceiver(protocol.Protocol):
++class Int32StringReceiver(protocol.Protocol, PauseProducer):
+     &quot;&quot;&quot;A receiver for int32-prefixed strings.
+ 
+     An int32 string is a string prefixed by 4 bytes, the 32-bit length of
+@@ -314,7 +314,7 @@
+         &quot;&quot;&quot;Convert int32 prefixed strings into calls to stringReceived.
+         &quot;&quot;&quot;
+         self.recvd = self.recvd + recd
+-        while len(self.recvd) &gt; 3:
++        while len(self.recvd) &gt; 3 and not self.paused and not self.transport.disconnecting:
+             length ,= struct.unpack(&quot;!i&quot;,self.recvd[:4])
+             if length &gt; self.MAX_LENGTH:
+                 self.transport.loseConnection()
+@@ -331,7 +331,7 @@
+         self.transport.write(struct.pack(&quot;!i&quot;,len(data))+data)
+ 
+ 
+-class Int16StringReceiver(protocol.Protocol):
++class Int16StringReceiver(protocol.Protocol, PauseProducer):
+     &quot;&quot;&quot;A receiver for int16-prefixed strings.
+ 
+     An int16 string is a string prefixed by 2 bytes, the 16-bit length of
+@@ -351,7 +351,7 @@
+         &quot;&quot;&quot;Convert int16 prefixed strings into calls to stringReceived.
+         &quot;&quot;&quot;
+         self.recvd = self.recvd + recd
+-        while len(self.recvd) &gt; 1:
++        while len(self.recvd) &gt; 1 and not self.paused and not self.transport.disconnecting:
+             length = (ord(self.recvd[0]) * 256) + ord(self.recvd[1])
+             if len(self.recvd) &lt; length+2:
+                 break
+Index: Twisted/twisted/lore/latex.py
+===================================================================
+--- Twisted/twisted/lore/latex.py	(revision 13717)
++++ Twisted/twisted/lore/latex.py	(working copy)
+@@ -104,7 +104,7 @@
+ 
+     baseLevel = 0
+     try:
+-        diaHack = not not os.popen('which dia').read()
++        diaHack = not not os.popen('which dia 2&gt;/dev/null').read()
+     except:
+         # That's a no, then.
+         diaHack = 0
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="010428.html">[Twisted-Python] Re: [Twisted-commits] r13763 - fix broken link to	divmod.org.
+</A></li>
+	<LI>Next message: <A HREF="010438.html">[Twisted-Python] pending twisted fixes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10437">[ date ]</a>
+              <a href="thread.html#10437">[ thread ]</a>
+              <a href="subject.html#10437">[ subject ]</a>
+              <a href="author.html#10437">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

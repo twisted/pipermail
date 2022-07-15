@@ -1,0 +1,162 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Stackless Python Examples Revisited Re:	InlineCallbacks
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Stackless%20Python%20Examples%20Revisited%20Re%3A%0A%09InlineCallbacks&In-Reply-To=%3C224209.23031.qm%40web34202.mail.mud.yahoo.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="050618.html">
+   <LINK REL="Next"  HREF="050622.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Stackless Python Examples Revisited Re:	InlineCallbacks</H1>
+    <B>Andrew Francis</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Stackless%20Python%20Examples%20Revisited%20Re%3A%0A%09InlineCallbacks&In-Reply-To=%3C224209.23031.qm%40web34202.mail.mud.yahoo.com%3E"
+       TITLE="[Twisted-Python] Stackless Python Examples Revisited Re:	InlineCallbacks">andrewfr_ice at yahoo.com
+       </A><BR>
+    <I>Fri Jul 18 11:34:34 MDT 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="050618.html">[Twisted-Python] Async file access
+</A></li>
+        <LI>Next message (by thread): <A HREF="050622.html">[Twisted-Python] check if user is in channel (twisted.words irc)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#50619">[ date ]</a>
+              <a href="thread.html#50619">[ thread ]</a>
+              <a href="subject.html#50619">[ subject ]</a>
+              <a href="author.html#50619">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi Folks:
+
+&gt;<i>Message: 4
+</I>&gt;<i>Date: Sat, 19 Apr 2008 11:47:38 -0700 (PDT)
+</I>&gt;<i>From: Andrew Francis &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">andrewfr_ice at yahoo.com</A>&gt;
+</I>&gt;<i>Subject: [Twisted-Python] Stackless Python Examples Re: InlineCallback
+</I>&gt;<i>    Friendly ?
+</I>&gt;<i>To: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python at twistedmatrix.com</A>
+</I>&gt;<i>Message-ID: &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">882470.36243.qm at web34201.mail.mud.yahoo.com</A>&gt;
+</I>&gt;<i>Content-Type: text/plain; charset=iso-8859-1
+</I>
+--- Andrew Francis &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">andrewfr_ice at yahoo.com</A>&gt; wrote:
+
+&gt;<i>Based on Jean-Paul's explanation, here are some code
+</I>&gt;<i>snippets showing how to handle other protocols with
+</I>&gt;<i>Stackless Python and Twisted. This is a continuation
+</I>&gt;<i>of the technique I used in &quot;Adventures&quot; to prevent the
+</I>&gt;<i>reactor from deadlocking.
+</I>
+&gt;<i>Currently I am rethinking the techniques - I believe
+</I>&gt;<i>there is a way to reduce spawning tasklets - not that
+</I>&gt;<i>tasklets are all that expensive....
+</I>
+
+I have been experimenting with a new technique for tasklets to interact with Twisted protocol instances (the following is essentially what I was pestering the Twisted Team about at PyCon 2008. Sorry guys)
+
+I have been exploring situations where a tasklet rendezvoused with Twisted (as opposed to a Twisted spawning a tasklet to fulfill a request). A lot of WS-BPEL constructs take this form....
+
+In the old system, I ran the server protocol instance in its own tasklet. This was to prevent the reactor from blocking and preventing other tasklets from issuing Twisted calls. In turn, the tasklet and protocol instance/tasklet communicated via a channel. 
+
+With this technique, I do not create an additional tasklet. Rather I pass back a deferred whose callback points to the reminder of the protocol instance's code. 
+
+Although I have not finished testing, this technique seems to be about 20% faster. Again, implementing this is fairly straightforward. Here is a sketch.
+
+
+class MyRequestHandler(http.Request):
+
+    def __httpWrite__(self, status, message):
+        self.setResponseCode(status)
+        self.write(message.encode(&quot;utf-8&quot;))
+        self.finish()
+        return
+
+
+    def process(self):
+
+        &quot;&quot;&quot;
+        create a deferred
+        &quot;&quot;&quot;
+        myDeferred = defer.Deferred()
+        myDeferred.addCallback(self.processReply)
+
+        
+        &quot;&quot;&quot;
+        we need a way for the protocol instance to tell tasklets that a
+        connect has been made. Easiest way, just hand the protocol 
+        instance a reference
+        &quot;&quot;&quot;
+        status, message = \
+        MyRequestHandler.someReferenceToProgramme(self.path, \
+                                                  self.content.read(), \
+                                                  myDeferred)
+        if status != http.OK:
+           print &quot;ERROR!&quot;
+           self.__httpWrite__(status, message)
+           myDeferred = None
+
+        &quot;&quot;&quot;
+        if things went well, return a deferred 
+        This is a Twisted way to circumvent blocking and waiting 
+        for information
+        &quot;&quot;&quot;
+        return myDeferred
+
+
+    &quot;&quot;&quot;
+    the continuation 
+    &quot;&quot;&quot;
+    def processReply(self, reply):
+        self.__httpWrite__(200, reply[0])
+        return
+
+
+meanwhile, in the tasklet
+
+def tasklet(...):
+    .
+    .
+    .
+    deferred = someFunction(somePath)
+    # send a message 
+    deferred.callback(message)
+       
+Although PyCon 2008 is over, I still plan to submit a paper that will better explain the various techniques in the &quot;Adventures&quot; talk. I am also writing simpler code to better illustrate the techniques and combine them with other tried-and-true techniques (i.e., Armstrong's blockOn). 
+
+Cheers,
+Andrew
+
+
+      
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="050618.html">[Twisted-Python] Async file access
+</A></li>
+	<LI>Next message (by thread): <A HREF="050622.html">[Twisted-Python] check if user is in channel (twisted.words irc)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#50619">[ date ]</a>
+              <a href="thread.html#50619">[ thread ]</a>
+              <a href="subject.html#50619">[ subject ]</a>
+              <a href="author.html#50619">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

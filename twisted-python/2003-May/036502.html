@@ -1,0 +1,213 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Large Transfers
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Large%20Transfers&In-Reply-To=%3C8512E32F-82FA-11D7-AD87-000393C9700E%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="036516.html">
+   <LINK REL="Next"  HREF="036511.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Large Transfers</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Large%20Transfers&In-Reply-To=%3C8512E32F-82FA-11D7-AD87-000393C9700E%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Large Transfers">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Sat May 10 09:17:31 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="036516.html">[Twisted-Python] Large Transfers
+</A></li>
+        <LI>Next message (by thread): <A HREF="036511.html">[Twisted-Python] Large Transfers
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36502">[ date ]</a>
+              <a href="thread.html#36502">[ thread ]</a>
+              <a href="subject.html#36502">[ subject ]</a>
+              <a href="author.html#36502">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+
+On Saturday, May 10, 2003, at 08:59 AM, Uwe C. Schroeder wrote:
+
+&gt;<i> Is this really a good thing to do ? Shouldn't pb see that the  
+</I>&gt;<i> arguments are
+</I>&gt;<i> larger than 640k and start paging ?
+</I>
+No, because this would violate lots of order-of-execution guarantees  
+that PB normally provides.
+
+Let's say that you did
+
+	foo.callRemote(&quot;call1&quot;, &quot;x&quot; * 1024 * 1024)
+	foo.callRemote(&quot;call2&quot;, &quot;x&quot;)
+
+You would expect 'call1' to execute before 'call2', right?  but no -  
+because call1 began paging its arguments, call2 will be sent  
+interleaved (the desired result for paged calls) and would execute  
+first.
+
+The same thing would be true of sending return values.
+
+&gt;<i> What I'm doing is to hand down XML data which is database-generated on  
+</I>&gt;<i> the
+</I>&gt;<i> server side. Whenever a user requests a too large resultset the  
+</I>&gt;<i> network layer
+</I>&gt;<i> fails. On the other hand the resultset already is in memory, so why  
+</I>&gt;<i> not jut
+</I>&gt;<i> transfer it ?
+</I>&gt;<i> I realize that his is probably bad design
+</I>
+If your goal is to facilitate bad design with huge gobs of XML, PB is  
+probably not for you.  There are a number of other protocols which are  
+designed for exactly this kind of application - HTTP, XML/RPC, SOAP,  
+depending on your level of complexity.  Twisted provides native support  
+for the first 2, and SOAP could probably be added without too much  
+trouble.
+
+&gt;<i> , but it's the easiest way to
+</I>&gt;<i> transfer this information. Sure I can write the stuff to a temporary  
+</I>&gt;<i> file and
+</I>&gt;<i> page it over, however this defies the purpose, since then the original  
+</I>&gt;<i> call
+</I>&gt;<i> results in a message to go get the file. This means I need at least 4
+</I>&gt;<i> callbacks for any given call (the original ok callback, then another  
+</I>&gt;<i> one for
+</I>&gt;<i> the possible paging as well as 2 error callbacks, one for each call)
+</I>
+The error-handling needs to be improved, but this is what  
+'twisted.spread.util.getAllPages' is for.  You only need one callback.
+
+&gt;<i> I can extend the problem by compressing the parameters with zlib (  
+</I>&gt;<i> which I'm
+</I>&gt;<i> doing anyways), but at some point I will hit the limit.
+</I>
+Hard limits like this one should never be pushed so closely.  If your  
+data is more than, say, 60k, you should probably be looking at paging  
+it.  More than 500k and you are definitely abusing the protocol.
+
+&gt;<i> The other problem this creates is a timing issue. Since I have to make  
+</I>&gt;<i> several
+</I>&gt;<i> calls in order to transfer the resultset, I have to delay database  
+</I>&gt;<i> calls
+</I>&gt;<i> until the whole resultset is valid.
+</I>&gt;<i> To put it more technically:
+</I>&gt;<i>
+</I>&gt;<i> self.perspective.transfer_large_result(small_int,label,large_result_arr 
+</I>&gt;<i> ay)
+</I>&gt;<i>
+</I>&gt;<i> will fail if large_result_array exceeds 640k. However small_int and  
+</I>&gt;<i> label can
+</I>&gt;<i> be transferred. The only way to do this is
+</I>
+&gt;<i> if numberofbytes(large_result_set) &gt;= 640k:
+</I>
+Wrong.  If numberofbytes(large_result_set) + banana_epsilon(()) +  
+pb_call_overhead ...
+
+This is not a number that you can calculate reliably.  640k is a hard  
+high limit.
+
+&gt;<i> self.perspective.transfer_first_part(small_int,label).callback(self.sma 
+</I>&gt;<i> llpart_ok)
+</I>
+I don't understand.  Do you want to get the whole result at once?  Or  
+do you want to send it only when necessary?  If you want to send it  
+only when necessary then aren't these two steps required anyway?  If  
+not, then can't you use the methods in twisted.spread.util to retrieve  
+the pager when you would normally be retrieving a string, in the same  
+step?
+
+It would be helpful for my understanding if you would use real method  
+names like &quot;addCallback&quot; and &quot;callRemote&quot; here.  I don't have any idea  
+what 'self.perspective' is, or whether 'transfer_first_part' is  
+supposed to be remote or local.
+
+&gt;<i> and in smallpart_ok
+</I>&gt;<i>
+</I>&gt;<i> self.page_the_rest(large_result_array).callback(self.whole_stuff_transf 
+</I>&gt;<i> ered)
+</I>
+Again, not really sure what you're saying.  Why not -
+
+	from twisted.spread import util
+	util.getAllPages(serverThingy, &quot;getStuff&quot;, small_int,  
+label).addCallback(lambda l: ''.join(l)).addCallback(gotABigString)
+
+&gt;<i> This is an enormous overhead.
+</I>
+as far as I understand it, the only overhead you require is that line  
+above.  But I admit I do not understand it terribly well.
+
+&gt;<i> What even strikes me more is that this size limit not even prevents  
+</I>&gt;<i> large
+</I>&gt;<i> memory consumption - since the object is already there and in cBanana  
+</I>&gt;<i> the
+</I>&gt;<i> object is already stored in the buffer.
+</I>
+Where is 'there'?
+
+On the side of the connection that wishes to send the data, it's in  
+memory.  If you modify the sending side locally, the whole string may  
+even be in your outgoing buffer there, but on the receiving side only  
+the beginning will be, since upon receiving the length it will  
+terminate the connection.  (At least, I don't think TCP normally sends  
+multi-megabyte packets.)
+
+&gt;<i> I think I'll just remove all size limits and go thru the (unwanted)  
+</I>&gt;<i> way to create a own package.
+</I>
+Please, don't do this.  If PB is not working with your application, use  
+something else.  This kind of a brute-force solution will undoubtedly  
+cause problems down the road, and the people most suited to help you  
+with them will not be interested in doing so.
+
+There's nothing wrong with a hybrid approach, either.  You could  
+transfer the file over HTTP rather than in the PB connection, but still  
+use PB as your control protocol.  You could implement an even simpler  
+file-transfer protocol reminiscent of HTTP/0.9 rather than use  
+Twisted's full HTTP layer.
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.1 (Darwin)
+
+iD8DBQE+vRgQvVGR4uSOE2wRAv60AJ46qvOBQAjiliEBKIAuGqP1vtibuwCff6DM
+099lnO4JoOM0PphdHPK3+Ec=
+=O9xE
+-----END PGP SIGNATURE-----
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="036516.html">[Twisted-Python] Large Transfers
+</A></li>
+	<LI>Next message (by thread): <A HREF="036511.html">[Twisted-Python] Large Transfers
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36502">[ date ]</a>
+              <a href="thread.html#36502">[ thread ]</a>
+              <a href="subject.html#36502">[ subject ]</a>
+              <a href="author.html#36502">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

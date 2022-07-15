@@ -1,0 +1,156 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Deferred Network requests
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Deferred%20Network%20requests&In-Reply-To=BAY114-DAV83550CBF049159CE316ADBEF80%40phx.gbl">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="017235.html">
+   <LINK REL="Next"  HREF="017256.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Deferred Network requests</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Deferred%20Network%20requests&In-Reply-To=BAY114-DAV83550CBF049159CE316ADBEF80%40phx.gbl"
+       TITLE="[Twisted-Python] Deferred Network requests">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Mon Mar 31 07:31:27 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="017235.html">[Twisted-Python] Deferred Network requests
+</A></li>
+        <LI>Next message: <A HREF="017256.html">[Twisted-Python] Re: Deferred Network requests
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#17246">[ date ]</a>
+              <a href="thread.html#17246">[ thread ]</a>
+              <a href="subject.html#17246">[ subject ]</a>
+              <a href="author.html#17246">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Simon Pickles wrote:
+&gt;<i> Hi,
+</I>&gt;<i> 
+</I>&gt;<i> I've been using twisted in a low-level way for some time and am now 
+</I>&gt;<i> interested in the higher level aspects.
+</I>&gt;<i> 
+</I>&gt;<i> Particularly I hope to be able to make deferred requests across a 
+</I>&gt;<i> network. I'd like to have a hub server, with many small apps (modules) 
+</I>&gt;<i> which are all clients of the hub server.
+</I>&gt;<i> 
+</I>&gt;<i> I'd like the modules to be able to request information from each other, 
+</I>&gt;<i> via the hub, in a deferred way, so the callback will be triggered when 
+</I>&gt;<i> the requested information arrives.
+</I>&gt;<i> 
+</I>&gt;<i> So I need a chain like this:
+</I>&gt;<i> 
+</I>&gt;<i> ModuleA.RequestName(id).addCallback(modACallback) -&gt; Hub
+</I>&gt;<i> Hub.RequestName(id).addCallback(hubCallback)-&gt; ModuleB
+</I>&gt;<i> ModuleB.SendNameToHub() -&gt; Hub
+</I>&gt;<i> Hub.hubCallback triggered: SendNameToModA() -&gt; ModuleA
+</I>&gt;<i> ModuleA.modACallback triggered - request is complete.
+</I>&gt;<i> 
+</I>&gt;<i> Perhaps one issue is that I have a client-&gt;server-&gt;client sequence.
+</I>&gt;<i> 
+</I>&gt;<i> Although it looks slow, I am designing my system to be as concurrent as 
+</I>&gt;<i> possible. Also, the hub can make decisions about sharing requests with 
+</I>&gt;<i> several modules on a round-robin, or sending requests (and events, 
+</I>&gt;<i> particularly) to more than one module.
+</I>&gt;<i> 
+</I>&gt;<i> I know I can do this through TCP or similar, but hoped someone might 
+</I>&gt;<i> suggest which elements of twisted (a very large framework) I should look 
+</I>&gt;<i> at more closely.
+</I>
+Perspective broker (pb) would work, provided the values you are passing 
+round are plain python types e.g. int, str, list, dict, tuple.
+
+You'd have something like:
+
+from twisted.spread import pb
+from twisted.internet import reactor
+
+class Module(pb.Referenceable):
+   def __init__(self, name, server, port=1234):
+     self.f = pb.PBClientFactory()
+     reactor.connectTCP(server, port, f)
+     self.f.getRootObject().addCallback(self.signon, name)
+
+   def signon(self, root, name):
+     self.root = root
+     self.root.callRemote('signon', name, self)
+
+   # methods for use by remote
+   def remote_doThing(self):
+     return aDeferredThing()
+
+   # methods for use by local process
+   def requestName(self, id):
+     return self.root.addCallback(requestName2, id)
+   def requestName2(self, root, id):
+     return root.callRemote('requestName', id)
+
+ModuleA = Module('ModuleA', server)
+reactor.run()
+
+...and on the server site:
+
+from twisted.spread import pb
+
+class Server(pb.Root):
+   modules = {}
+
+   # function a module registers with
+   def remote_signon(self, name, module):
+     if name in self.modules:
+         self.modules[name].append(module)
+     else:
+         self.modules[name] = [module]
+
+   # proxy to a copy of ModuleA, with load-balancing
+   def remote_modulea_doThing(self, arg):
+     modulea_list = self.modules['ModuleA']
+     mod = random.choice(modulea_list)
+     return mod.callRemote('doThing', arg)
+
+   # proxy wherever...
+   def remote_requestName(self, id):
+     mod = ...
+     return mod.requestName(id)
+
+The above is very hacky - the class-global dict() is wrong, and there is 
+no handling of PB disconnection errors and so forth, but the basic idea 
+is sound.
+
+&gt;<i> 
+</I>&gt;<i> Many thanks!
+</I>&gt;<i> 
+</I>&gt;<i> Simon
+</I>&gt;<i> 
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="017235.html">[Twisted-Python] Deferred Network requests
+</A></li>
+	<LI>Next message: <A HREF="017256.html">[Twisted-Python] Re: Deferred Network requests
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#17246">[ date ]</a>
+              <a href="thread.html#17246">[ thread ]</a>
+              <a href="subject.html#17246">[ subject ]</a>
+              <a href="author.html#17246">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

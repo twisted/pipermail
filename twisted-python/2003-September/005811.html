@@ -1,0 +1,219 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted.proxy, cvs access and further patches to strport parsers
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20twisted.proxy%2C%20cvs%20access%20and%20further%20patches%20to%20strport%20parsers&In-Reply-To=20030927225804.GA1671%40soniq.net">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005809.html">
+   <LINK REL="Next"  HREF="005814.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted.proxy, cvs access and further patches to strport parsers</H1>
+    <B>Paul Boehm</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20twisted.proxy%2C%20cvs%20access%20and%20further%20patches%20to%20strport%20parsers&In-Reply-To=20030927225804.GA1671%40soniq.net"
+       TITLE="[Twisted-Python] twisted.proxy, cvs access and further patches to strport parsers">paul at soniq.net
+       </A><BR>
+    <I>Sat Sep 27 22:58:00 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005809.html">modularize strport parsers Re: [Twisted-Python] clean up app.getApplication
+</A></li>
+        <LI>Next message: <A HREF="005814.html">[Twisted-Python] twisted.proxy, cvs access and further patches to strport parsers
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5811">[ date ]</a>
+              <a href="thread.html#5811">[ thread ]</a>
+              <a href="subject.html#5811">[ subject ]</a>
+              <a href="author.html#5811">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sun, Sep 28, 2003 at 12:58:04AM +0200, Paul Boehm wrote:
+&gt;<i> ugh.. using webinterfaces without a mouse is horror.. so i'll do it
+</I>&gt;<i> again and submit another patch here:
+</I>
+i've updated the patch (see end of mail)
+all trial tests pass
+sample code why i need the patch included
+
+also, i want to ask the list if everyone is okay with me getting cvs access
+to create and maintain twisted.proxy, a generic proxy, currently capable of
+transparent proxying using netfilter, pseudotransparent proxying using a
+shared lib (seperate c code required), and web.proxy, which i'll update or
+rewrite soon.
+
+and a rfc:
+in the sample code below, i find the way i handle listening in a service
+instead of the application, a lot more natural. 
+
+if i stopService() at runtime, i expect the ports of that service to go down
+at the same time. 
+
+anything speaking against implementing the neccesary code in application.Service?
+my expectation is that after the app refactor, noone will want to listen
+directly in application anymore, so we could even start deprecating the old
+interface.
+
+sample code / usecase:
+-----------------------------------
+# twisted imports
+from twisted.application import strports
+from twisted.application.service import Service
+
+# sibling imports
+from proxy.interfaces import *
+from proxy import adapters
+
+flavors = {
+         'any': IProxyFactory, # a proxy, any proxy!
+         'transparent': ITransProxyFactory, # a transparent proxy
+         'http': IHTTPProxyFactory, # a proxy speaking HTTP
+        }
+
+def parsePROXY(type, service, port, subproto=&quot;any&quot;, transport=&quot;tcp&quot;):
+    adapter = flavors[subproto]
+    return(transport.upper(), (int(port), adapter(service)), {})
+
+strports.registerTransport(&quot;proxy&quot;, parsePROXY)
+
+class ProxyService(Service):
+    &quot;&quot;&quot;I am a service that starts proxies, and stores shared policy for them.&quot;&quot;&quot;
+
+    __implements__ = IProxyService
+
+    def __init__(self, name, parent, *portspecs):
+        self.portstrs = []
+        self.listeners = []
+
+        self.setName(name)
+        self.setServiceParent(parent)
+
+        for pspec in portspecs:
+            self.listen(pspec)
+
+    def listen(self, description):
+        self.portstrs.append(description)
+
+    def doListen(self, description):
+        transport = strports.listen(description, self)
+        self.listeners.append(transport)
+
+    def startService(self):
+        Service.startService(self)
+        for description in self.portstrs:
+            self.doListen(description)
+
+    def stopService(self):
+        Service.stopService(self)
+        for port in self.listeners:
+            port.loseConnection()
+            self.listeners.remove(port)
+-----------------------------------
+patch:
+
+Index: strports.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/application/strports.py,v
+retrieving revision 1.1
+diff -u -r1.1 strports.py
+--- strports.py 26 Sep 2003 22:44:48 -0000  1.1
++++ strports.py 28 Sep 2003 02:50:51 -0000
+@@ -46,14 +46,22 @@
+ &quot;&quot;&quot;
+ from __future__ import generators
+ 
+-def _parseTCP(factory, port, interface=&quot;&quot;, backlog=5):
+-    return (int(port), factory), {'interface': interface,
++_transportHelpers = {}
++
++def registerTransport(name, helper):
++    global _transportHelpers
++    _transportHelpers[name] = helper
++
++def _parseTCP(type, factory, port, interface=&quot;&quot;, backlog=5):
++    return type, (int(port), factory), {'interface': interface,
+                                   'backlog': int(backlog)}
++registerTransport(&quot;tcp&quot;, _parseTCP)
+ 
+-def _parseUNIX(factory, address, mode='666', backlog=5):
+-    return (address, factory), {'mode': int(mode, 8), 'backlog': int(backlog)}
++def _parseUNIX(type, factory, address, mode='666', backlog=5):
++    return type, (address, factory), {'mode': int(mode, 8), 'backlog': int(backlog)}
++registerTransport(&quot;unix&quot;, _parseUNIX)
+ 
+-def _parseSSL(factory, port, privateKey=&quot;server.pem&quot;, certKey=None,
++def _parseSSL(type, factory, port, privateKey=&quot;server.pem&quot;, certKey=None,
+               sslmethod=None, interface='', backlog=5):
+     from twisted.internet import ssl
+     if certKey is None:
+@@ -62,12 +70,9 @@
+     if sslmethod is not None:
+         kw['sslmethod'] = getattr(ssl.SSL, sslmethod)
+     cf = ssl.DefaultOpenSSLContextFactory(privateKey, certKey, **kw)
+-    return ((int(port), factory, cf),
++    return (type, (int(port), factory, cf),
+             {'interface': interface, 'backlog': int(backlog)})
+-
+-_funcs = {&quot;tcp&quot;: _parseTCP,
+-          &quot;unix&quot;: _parseUNIX,
+-          &quot;ssl&quot;: _parseSSL}
++registerTransport(&quot;ssl&quot;, _parseSSL)
+ 
+ _OP, _STRING = range(2)
+ def _tokenize(description):
+@@ -104,7 +109,7 @@
+     add(sofar)
+     return args, kw 
+ 
+-def parse(description, factory, default=None):
++def parse(description, factory, default='tcp'):
+     &quot;&quot;&quot;Parse a description of a reliable virtual circuit server
+ 
+     @type description: C{str}
+@@ -148,8 +153,10 @@
+     &quot;&quot;&quot;
+     args, kw = _parse(description)
+     if not args or (len(args)==1 and not kw):
+-        args[0:0] = [default or 'tcp']
+-    return (args[0].upper(),)+_funcs[args[0]](factory, *args[1:], **kw)
++        type = default
++    else:
++        type = args.pop(0)
++    return _transportHelpers[type](type.upper(), factory, *args, **kw)
+ 
+ def service(description, factory, default=None):
+     &quot;&quot;&quot;Return the service corresponding to a description
+@@ -185,4 +192,4 @@
+     name, args, kw = parse(description, factory, default)
+     return getattr(reactor, 'listen'+name)(*args, **kw)
+ 
+-__all__ = ['parse', 'service', 'listen']
++__all__ = ['registerTransport', 'parse', 'service', 'listen']
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005809.html">modularize strport parsers Re: [Twisted-Python] clean up app.getApplication
+</A></li>
+	<LI>Next message: <A HREF="005814.html">[Twisted-Python] twisted.proxy, cvs access and further patches to strport parsers
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5811">[ date ]</a>
+              <a href="thread.html#5811">[ thread ]</a>
+              <a href="subject.html#5811">[ subject ]</a>
+              <a href="author.html#5811">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

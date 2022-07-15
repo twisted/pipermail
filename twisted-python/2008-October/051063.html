@@ -1,0 +1,171 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Deferred in C++
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Deferred%20in%20C%2B%2B&In-Reply-To=%3Ce27efe130810210914p6c64f7ccs129493a565ee4743%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051056.html">
+   <LINK REL="Next"  HREF="051064.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Deferred in C++</H1>
+    <B>Amaury Forgeot d'Arc</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Deferred%20in%20C%2B%2B&In-Reply-To=%3Ce27efe130810210914p6c64f7ccs129493a565ee4743%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Deferred in C++">amauryfa at gmail.com
+       </A><BR>
+    <I>Tue Oct 21 10:14:43 MDT 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051056.html">[Twisted-Python] Deferred in C++
+</A></li>
+        <LI>Next message (by thread): <A HREF="051064.html">[Twisted-Python] Deferred in C++
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51063">[ date ]</a>
+              <a href="thread.html#51063">[ thread ]</a>
+              <a href="subject.html#51063">[ subject ]</a>
+              <a href="author.html#51063">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+
+On Sat, Oct 18, 2008 at 22:34, Jamu Kakar &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">jkakar at kakar.ca</A>&gt; wrote:
+&gt;<i> Hi,
+</I>&gt;<i>
+</I>&gt;<i> I've implemented Deferred in C++.  There is room for improvement and
+</I>&gt;<i> optimization, but the basic core works.
+</I>
+Wonderful! Awesome!
+So I am not the only one who tries to use Twisted concepts in C++.
+
+I did write some kind of a Deferred class in C++ myself, together with
+a re-implementation of a Twisted framework (two reactors featuring TCP
+client &amp; server, callLater, callInThread...; a selectReactor and a
+native MFC reactor that merges nicely in a Windows application, yes,
+there are some; Protocols, LineReceiver, HttpClient &amp; server...)
+and I already have a running business application that uses all of it
+on Windows.
+
+The Deferred part was really hard to implement, and may be the reason
+why it was never done before. It really pushed me out of my C++
+knowledge.
+I tried to convert my code to use your class, which seems easier to
+use than mine. Great job!
+
+&gt;<i> I'm not sure how practical this component would be in a non-trivial
+</I>&gt;<i> application.
+</I>
+Here are random comments about the changes I had to make, when
+confronted to a real application using nested deferreds, DeferredList,
+various error handling...
+
+- First, good news, your code almost compiles on Windows (VS 2005). I
+had to typedef int32_t (why don't you simply use int?), comment out
+the StackFrameFactory, and declare some functions/classes with
+__declspec(dllexport) (with the help of a macro) so we can build a
+DLL.
+
+- In my eyes, the notation &quot;addCallback&quot; is more readable than
+&quot;add_callback&quot; (and it's the one used by twisted python), but that's a
+matter of taste. On the other hand I found disturbing at first to fire
+deferreds with the methods &quot;succeed()&quot; and &quot;fail()&quot; (instead of
+callback() and errback()
+
+- I found that my callbacks often have a void result, and deferred are
+sometimes fired without a value. For example, a twisted DeferredList
+often just waits for its children to finish. The results may be
+gathered somewhere, but the callbacks return None.
+I took the liberty to change your code and add *a lot* of template
+specializations for the &quot;void&quot; ReturnType or ResultType.
+I suggest that when a callback takes no parameter, it can be added to
+any Deferred, whatever its current state (and the current value is
+simply discarded).
+
+- In some cases my callbacks take additional arguments (the twisted
+&quot;callbackArgs&quot;). To make it possible I used the
+boost::bind functions, and a wrapper class that converts any
+boost::function to a ion::ICallback.
+
+- Several times I had a &quot;Can't add invalid callback&quot; error, and I
+found it difficult to figure which type was in the deferred state (the
+previous callback returned a Deferred, and so on...) So I extended
+ITypeInfo with a &quot;const char* typename&quot; member, that I fill with
+&quot;typeid(Object).name()&quot;. Much easier to see with the debugger...
+
+- I tried to implement a DeferredList. I almost succeeded, except that
+it simply inherit from Deferred and it seems a bad idea: when the
+DeferredList is returned as a plain Deferred, all state is lost... and
+the application crashes.
+Maybe Deferred should be a kind of &quot;shared pointer&quot; to the real
+object: DeferredState or DeferredListState
+
+- Errr... I'm not sure I understood the &quot;trule&quot; concept. When do you
+use it? What are its semantics regarding ownership? is it similar to
+std::auto_ptr?
+
+- How is one supposed to get the content of a Failure? I use code like
+this, but it seems too long for this simple task:
+  void MyProcess::displayError(ion::trule&lt;ion::Failure&gt; failure)
+  {
+    std::string message = ion::ptr&lt;ion::Failure&gt;(failure)-&gt;get_message();
+    [...]
+    throw ion::UnhandledFailureError(failure);
+  }
+
+- likewise, it should be possible to simply
+    throw Failure(&quot;Some error message&quot;);
+
+&gt;<i> The reliance on templates would negatively affect
+</I>&gt;<i> compile time, for one thing.  More importantly, I've found
+</I>&gt;<i> deciphering the error messages produced by simple mistakes can be
+</I>&gt;<i> tricky.
+</I>
+I confirm: it is.
+
+&gt;<i> Nonetheless, my main motivation was to see if it was
+</I>&gt;<i> possible at all and so I'm pleased that it works in the end.
+</I>
+I think my program can be considered as a non-trivial application (I
+cannot show its code, though, except for the non-business framework)
+It is definitely possible to implement a Twisted framework in C++. The
+hard part is to make it nice for the developer. Programming with
+callbacks already twists your mind, it becomes very difficult if the
+language syntax hides the important part of the code.
+
+The &quot;ion&quot; project seems promising! What extend do you intend to give it?
+
+-- 
+Amaury Forgeot d'Arc
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051056.html">[Twisted-Python] Deferred in C++
+</A></li>
+	<LI>Next message (by thread): <A HREF="051064.html">[Twisted-Python] Deferred in C++
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51063">[ date ]</a>
+              <a href="thread.html#51063">[ thread ]</a>
+              <a href="subject.html#51063">[ subject ]</a>
+              <a href="author.html#51063">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

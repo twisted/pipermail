@@ -1,0 +1,179 @@
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# recallcli.py
+
+import logging
+from twisted.internet.defer import inlineCallbacks, returnValue
+from twisted.internet.error import ConnectionDone
+from twisted.spread.pb import PBConnectionLost
+
+log = logging.getLogger("recallcli")
+
+class NetworkError(Exception): pass
+
+TIMEOUT = 60
+RETRY_LIMIT = 20
+
+
+class RecallClient(object):
+	"""Reconnecting remote method client"""
+
+	def __init__(self, host, port, factory, timeout=TIMEOUT, retryLimit=RETRY_LIMIT):
+		self.host = host
+		self.port = port
+		self.factory = factory
+		self.timeout = timeout
+		self.retryLimit = retryLimit
+
+	@inlineCallbacks
+	def getRemote(self, method, *args, **kw):
+		from twisted.internet import reactor
+		for x in xrange(self.retryLimit):
+			cn = reactor.connectTCP(self.host, self.port, self.factory, timeout=self.timeout)
+			try:
+				root = yield self.factory.getRootObject()
+				result = yield root.callRemote(method, *args, **kw)
+			except (PBConnectionLost, ConnectionDone):
+				log.warn("connection lost in getRemote: %s", method)
+			else:
+				returnValue(result)
+			finally:
+				cn.disconnect()
+		raise NetworkError("cannot communicate with server: too many retries")
+
+	@inlineCallbacks
+	def postRemote(self, method, *args, **kw):
+		from twisted.internet import reactor
+		callid = None
+		for x in xrange(self.retryLimit):
+			cn = reactor.connectTCP(self.host, self.port, self.factory, timeout=self.timeout)
+			try:
+				root = yield self.factory.getRootObject()
+				if callid is None:
+					callid = yield root.callRemote("callid", method, self.timeout)
+				result = yield root.callRemote(method, callid, args, kw)
+			except (PBConnectionLost, ConnectionDone):
+				log.warn("connection lost in postRemote: %s (%s)", method, callid)
+			else:
+				returnValue(result)
+			finally:
+				cn.disconnect()
+		raise NetworkError("cannot communicate with server: too many retries")
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# recallsrv.py
+
+import logging
+from twisted.internet.defer import Deferred, DeferredLock
+from twisted.internet.defer import inlineCallbacks, returnValue
+from twisted.python.failure import Failure
+
+log = logging.getLogger("recallsrv")
+
+class Error(Exception): pass
+
+class RecallServer(object):
+	"""Reconnecting remote method server"""
+
+	def __init__(self):
+		self.cache = {}
+	
+	@inlineCallbacks
+	def _post(self, callid, method, args, kw):
+		assert method.__name__.startswith("remote_"), "unsupported remote method: %s" % method.__name__
+		methname = method.__name__[7:]
+		data = self.cache.get((methname, callid))
+		if data is None:
+			raise Error("Cannot find call data: (%r, %r)" % (methname, callid))
+		yield data.acquireLock()
+		try:
+			if not data.hasResult():
+				try:
+					result = method(*args, **kw)
+					while isinstance(result, Deferred):
+						result = yield result
+				except:
+					result = Failure()
+				data.result = result
+		finally:
+			data.releaseLock()
+		returnValue(data.result)
+
+	def post(self_, method):
+		def _method(self, callid, args, kw):
+			return self_._post(callid, method, (self,) + args, kw)
+		_method.__name__ = method.__name__
+		return _method
+	
+	def callid(self, methodName, timeout):
+		data = CallData(methodName, timeout, self)
+		self.cache[data.key] = data
+		return id(data)
+
+	def discard(self, key):
+		data = self.cache.pop(key, None)
+		if data is not None:
+			data.cancel() # cancel delayed call to discard
+
+
+class CallData(object):
+
+	def __init__(self, methodName, timeout, recall):
+		from twisted.internet import reactor
+		self.key = (methodName, id(self))
+		self.lock = DeferredLock()
+		self.delay = reactor.callLater(timeout, recall.discard, self.key)
+		self.timeout = timeout
+	
+	def hasResult(self):
+		return hasattr(self, "result")
+	
+	def acquireLock(self):
+		self.delay.delay(self.timeout)
+		return self.lock.acquire()
+	
+	def releaseLock(self):
+		self.lock.release()
+	
+	def cancel(self):
+		if self.delay.active():
+			self.delay.cancel()
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# client.py (RecallClient usage example)
+
+from recallcli import RecallClient
+from twisted.spread import pb
+
+class Client(RecallClient):
+
+	def __init__(self, host, port):
+		super(Client, self).__init__(host, port, pb.PBClientFactory())
+	
+	def getSomething(self, key):
+		# returns a deferred
+		return self.getRemote("getSomething", key)
+
+	def postSomething(self, key, value):
+		# returns a deferred
+		return self.postRemote("postSomething", key, value)
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# server.py (RecallServer usage example)
+
+from recallsrv import RecallServer
+from collections import defaultdict
+from twisted.spread import pb
+
+recall = RecallServer()
+
+class Server(pb.Root):
+
+	def __init__(self, **kw):
+		self.data = defaultdict(list, kw)
+
+	def remote_getSomething(self, key):
+		return self.data.get(key)
+
+	@recall.post	
+	def remote_postSomething(self, key, value):
+		self.data[key].append(value)

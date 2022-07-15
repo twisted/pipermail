@@ -1,0 +1,238 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: can pb.Copyable objects be compared for	equality after a round trip?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20can%20pb.Copyable%20objects%20be%20compared%20for%0A%09equality%20after%20a%20round%20trip%3F&In-Reply-To=%3Cuk671gfse.fsf%40fitlinxx.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="046024.html">
+   <LINK REL="Next"  HREF="046003.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: can pb.Copyable objects be compared for	equality after a round trip?</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20can%20pb.Copyable%20objects%20be%20compared%20for%0A%09equality%20after%20a%20round%20trip%3F&In-Reply-To=%3Cuk671gfse.fsf%40fitlinxx.com%3E"
+       TITLE="[Twisted-Python] Re: can pb.Copyable objects be compared for	equality after a round trip?">db3l at fitlinxx.com
+       </A><BR>
+    <I>Wed Jun 28 14:56:49 MDT 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="046024.html">[Twisted-Python] Re: can pb.Copyable objects be compared for	equality after a round trip?
+</A></li>
+        <LI>Next message (by thread): <A HREF="046003.html">[Twisted-Python] Any Twisted tutorial?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#46055">[ date ]</a>
+              <a href="thread.html#46055">[ thread ]</a>
+              <a href="subject.html#46055">[ subject ]</a>
+              <a href="author.html#46055">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Robert Gravina &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert at gravina.com</A>&gt; writes:
+
+&gt;<i> Thanks, that is exactly what I am trying to do (return object
+</I>&gt;<i> remotely, edit it, re-use it in a subsequent call back to the
+</I>&gt;<i> server). What kind of comparison do you do then? Do you compare all
+</I>&gt;<i> attributes? By the way, what is an id() comparison? As far as I know
+</I>&gt;<i> Python compares to see if the instances (i.e. memory locations) are
+</I>&gt;<i> equal.
+</I>
+Precisely what comparison we do depends on the object in question.
+Yes, in many cases it's more or less a straight __dict__ comparison
+(sans the &quot;_id&quot; attribute), but in others there are only a few
+&quot;identity&quot; attributes that we consider important for comparison
+purposes, or that need special processing.  Such as a username object
+equality test ignoring case of the username, or an object with date
+fields that might round trip through a database so we round to a
+precision that we consider equal.
+
+So for example, our Password object contains, for equality testing:
+
+    def __hash__(self):
+        return hash(self._lvalue)
+
+    def __eq__(self,other):
+        if isinstance(other,Password):
+            return self._lvalue == other._lvalue
+        elif isinstance(other,types.StringTypes):
+            return self._lvalue == other.lower()
+        else:
+            return False
+    def __ne__(self,other):
+        return not self.__eq__(other)
+
+(_lvalue is an internally lowercased version of the current value)
+
+Note that we also chose to permit a direct string comparison with a
+password object, due to how it is often used to validate input, but most
+other objects can only compare equally to others of their type.
+
+A more blind __dict__ comparison (here for a FanClub object of ours)
+might go like:
+
+    def __eq__(self,other):
+        if isinstance(other,FanClub):
+            d1 = self.__dict__.copy()
+            d2 = other.__dict__.copy()
+            try:
+                del d1['_id']
+            except:
+                pass
+            try:
+                del d2['_id']
+            except:
+                pass
+            return d1 == d2
+        else:
+            raise NotImplementedError
+    def __ne__(self,other):
+        return not self.__eq__(other)
+
+In general, just implement the rules as appropriate for your object.
+Don't forget that if you are imposing rules on the equality - such as
+our case insensitive username object above - you want to match that
+with an appropriate __hash__ too, unless the object will never be used
+as a dictionary key.
+
+&gt;<i> &gt; As it turns out, we do also embed an &quot;_id&quot; attribute within the
+</I>&gt;<i> &gt; objects (an auto-generated UUID) so we can detect collisions
+</I>&gt;<i> &gt; (two clients attempting to modify the same object), but for general
+</I>&gt;<i> &gt; comparison purposes outside of that collision check, we exclude the
+</I>&gt;<i> &gt; _id attribute.
+</I>&gt;<i> &gt;
+</I>&gt;<i> 
+</I>&gt;<i> I've been looking around trying to find some good code for generating
+</I>&gt;<i> IDs, but most snippets I can find are accompanied by post after post
+</I>&gt;<i> on how that generation technique may fail under certain conditions.
+</I>
+I ran into a similar issue, and we ended up pretty much rolling our
+own that at least had our own acceptable conditions.  It uses ctypes
+to wrap either the native Win32 call on Windows or libuuid on *nix
+(we've used it under FreeBSD and Linux).  So it needs ctypes, and
+libuuid available for *nix.  Note that the Win32 call pre-Win2K
+generates an address based UUID, while 2K+ defaults to random.  We've
+used it for Python 2.2+.  It falls back to an ASPN-based recipe worst
+case, but that generates UUIDs that aren't DCE conforming, so we warn
+to stderr in that scenario.  I'll attach the generator class below if
+it helps.
+
+Since we wrote ours, there have been some other recent UUID generation
+efforts in Python (e.g., <A HREF="http://zesty.ca/python/uuid.py">http://zesty.ca/python/uuid.py</A>) that seem
+quite functional, but we didn't have incentive to move.
+
+In terms of synchronizing the re-transmitted copyable with an existing
+ZODB reference though, that still sounds like it may require some
+extra work or index keeping, unless you already have a way to locate
+the current internal copy of the object on the server side based on
+the copy supplied in the client request.  Once you've got the server
+copy then the above discussion can be used to determine if a change
+has been made.
+
+-- David
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+class _UUIDGenerator(object):
+    &quot;&quot;&quot;Internal class used to contain state for UUID generation.  Selects
+    the appropriate platform specific approach to UUID generation, preferring
+    to use appropriate external UUID routines if available, otherwise falling
+    back to a non-standard internal mechanism.
+
+    An instance of this class generates UUIDs by being called - returning
+    the 16-byte buffer containing the UUID as raw data.&quot;&quot;&quot;
+
+    def __init__(self):
+
+        # We attempt to reference an appropriate platform routine for
+        # UUID generation, and create a generation function to use it,
+        # referencing that function as the &quot;_generator&quot; attribute of this
+        # instance.  If anything goes wrong during the process, we fall
+        # back to a pure Python implementation
+        try:
+            import ctypes, struct
+
+            if sys.platform == 'win32':
+                uuidgen = ctypes.windll.rpcrt4.UuidCreate
+            else:
+                uuidgen = ctypes.cdll.LoadLibrary('libuuid.so').uuid_generate
+
+            # Both of these platform functions fill in a 16-byte block, so
+            # we create a single buffer to be used on each generation.  Keep
+            # in the instance so it will be available when accessed by the
+            # generator function later.
+            self.buffer = ctypes.c_buffer(16)
+
+            # The generation function calls the platform routine to fill in
+            # the buffer.  In the Windows case, the buffer is structured as
+            # separate fields (the UUID struct) in native byte order, so we
+            # use struct to unpack/repack the fields into network order to
+            # conform to the opaque buffer UUID will be expecting.
+            def _generator():
+                uuidgen(self.buffer)
+                if sys.platform == 'win32':
+                    return struct.pack('&gt;LHH8s',
+                                       *struct.unpack('LHH8s',self.buffer))
+                else:
+                    return self.buffer.raw
+
+        except:
+            # If we fallback to this method, generate a warning for now 
+            # (which will occur at import time) just as a head's up.
+            sys.stderr.write('Warning: '
+                             'Falling back to internal UUID generation\n')
+            
+            def _generator():
+                # The following code was borrowed from ASPN, adjusted to not
+                # use any additional option arguments.  Note that this does
+                # not generate UUIDs conforming to the DCE 1.1 specification.
+                import time, random, md5
+
+                t = long( time.time() * 1000 )
+                r = long( random.random()*100000000000000000L )
+                try:
+                    a = socket.gethostbyname( socket.gethostname() )
+                except:
+                    # if we can't get a network address, just imagine one
+                    a = random.random()*100000000000000000L
+                data = str(t)+' '+str(r)+' '+str(a)
+                return md5.md5(data).digest()
+
+        self._generator = _generator
+
+    def __call__(self):
+        &quot;&quot;&quot;Return a buffer containing a newly generated UUID&quot;&quot;&quot;
+        return self._generator()
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="046024.html">[Twisted-Python] Re: can pb.Copyable objects be compared for	equality after a round trip?
+</A></li>
+	<LI>Next message (by thread): <A HREF="046003.html">[Twisted-Python] Any Twisted tutorial?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#46055">[ date ]</a>
+              <a href="thread.html#46055">[ thread ]</a>
+              <a href="subject.html#46055">[ subject ]</a>
+              <a href="author.html#46055">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

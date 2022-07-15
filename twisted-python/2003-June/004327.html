@@ -1,0 +1,229 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] HTTP versions
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20HTTP%20versions&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004326.html">
+   <LINK REL="Next"  HREF="004328.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] HTTP versions</H1>
+    <B>Andrew Dalke</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20HTTP%20versions&In-Reply-To="
+       TITLE="[Twisted-Python] HTTP versions">dalke at dalkescientific.com
+       </A><BR>
+    <I>Sun Jun  1 18:27:38 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004326.html">[Twisted-Python] Twiested.Web supports HTTP-compression and Resume/Rest on HTTP-Requests??
+</A></li>
+        <LI>Next message: <A HREF="004328.html">[Twisted-Python] HTTP versions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4327">[ date ]</a>
+              <a href="thread.html#4327">[ thread ]</a>
+              <a href="subject.html#4327">[ subject ]</a>
+              <a href="author.html#4327">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Speaking of HTTP, I'm starting to look at WebDAV support for
+Twisted.  Still evaluating if that's what I need.  Pointers
+on how I should start?
+
+Right now I'm just reviewing the existing http code and I've found
+various problems.  I've previously reviewed the Python 2.3 code for
+similar reasons, so I have a reasonable idea of how the two compare.
+
+
+I see that protocols/http.py regards the version as a string,
+as in
+
+                 if ((version == &quot;HTTP/1.1&quot;) and
+
+
+The HTTP 1.1 spec (RFC 2616) says
+
+    The version of an HTTP message is indicated by an HTTP-Version field
+    in the first line of the message.
+
+        HTTP-Version   = &quot;HTTP&quot; &quot;/&quot; 1*DIGIT &quot;.&quot; 1*DIGIT
+
+    Note that the major and minor numbers MUST be treated as separate
+    integers ... Leading zeros MUST be ignored by recipients and
+    MUST NOT be sent.
+
+A fix is to use the 2-ple of (major, minor) version numbers,
+as integers, rather than a string.  This is what Python 2.3 does
+
+         if len(words) == 3:
+             [command, path, version] = words
+             if version[:5] != 'HTTP/':
+                 self.send_error(400, &quot;Bad request version (%s)&quot; % 
+`version`)
+                 return False
+             try:
+                 base_version_number = version.split('/', 1)[1]
+                 version_number = base_version_number.split(&quot;.&quot;)
+                 # RFC 2145 section 3.1 says there can be only one &quot;.&quot; 
+and
+                 #   - major and minor numbers MUST be treated as
+                 #      separate integers;
+                 #   - HTTP/2.4 is a lower version than HTTP/2.13, which 
+in
+                 #      turn is lower than HTTP/12.3;
+                 #   - Leading zeros MUST be ignored by recipients.
+                 if len(version_number) != 2:
+                     raise ValueError
+                 version_number = int(version_number[0]), 
+int(version_number[1]
+)
+             except (ValueError, IndexError):
+                 self.send_error(400, &quot;Bad request version (%s)&quot; % 
+`version`)
+                 return False
+             if version_number &gt;= (1, 1) and self.protocol_version &gt;= 
+&quot;HTTP/1.1
+&quot;:
+                 self.close_connection = 0
+             if version_number &gt;= (2, 0):
+                 self.send_error(505,
+                           &quot;Invalid HTTP Version (%s)&quot; % 
+base_version_number)
+                 return False
+
+While the Twisted code will work for more real-life cases, it isn't
+RFC compliant.  Also, the server accepts any sort of version string, 
+including
+&quot;QWE/1.2&quot;.  It should send an error 400, &quot;Bad request version&quot;.
+
+
+I noticed that the headers parsing assumes unique names, with
+
+         self.requests[-1].received_headers[header] = data
+
+the RFC says
+
+    Multiple message-header fields with the same field-name MAY be
+    present in a message if and only if the entire field-value for that
+    header field is defined as a comma-separated list [i.e., #(values)].
+    It MUST be possible to combine the multiple header fields into one
+    &quot;field-name: field-value&quot; pair, without changing the semantics of the
+    message, by appending each subsequent field-value to the first, each
+    separated by a comma. The order in which header fields with the same
+
+
+Python's code solves this with an rfc822.Header which is dict-like,
+but has a way to get all headers which match a given name.
+
+The header code also has some small problems, like suppose that a
+header line doesn't have a &quot;:&quot;.  Then headerReceived fails in the
+
+         header, data = line.split(':', 1)
+
+and no error code is sent back to the client.  Eg, I started up
+the server just now and did
+
+% telnet localhost 8080
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+GET / HTTP/1.1
+Spam
+
+Connection closed by foreign host.
+%
+
+and the log says
+
+2003/06/01 16:16 MDT [HTTPChannel,0,127.0.0.1] Traceback (most recent 
+call last):
+           File &quot;./twisted/internet/default.py&quot;, line 475, in doSelect
+             _logrun(selectable, _drdw, selectable, method, dict)
+           File &quot;./twisted/python/log.py&quot;, line 65, in callWithLogger
+             callWithContext({&quot;system&quot;: lp}, func, *args, **kw)
+           File &quot;./twisted/python/log.py&quot;, line 52, in callWithContext
+             return context.call({ILogContext: newCtx}, func, *args, 
+**kw)
+           File &quot;./twisted/python/context.py&quot;, line 32, in 
+callWithContext
+             return func(*args,**kw)
+         --- &lt;exception caught here&gt; ---
+           File &quot;./twisted/internet/default.py&quot;, line 484, in 
+_doReadOrWrite
+             why = getattr(selectable, method)()
+           File &quot;./twisted/internet/tcp.py&quot;, line 222, in doRead
+             return self.protocol.dataReceived(data)
+           File &quot;./twisted/protocols/basic.py&quot;, line 175, in dataReceived
+             why = self.lineReceived(line)
+           File &quot;./twisted/protocols/http.py&quot;, line 910, in lineReceived
+             self.headerReceived(self.__header)
+           File &quot;./twisted/protocols/http.py&quot;, line 927, in 
+headerReceived
+             header, data = line.split(':', 1)
+         exceptions.ValueError: unpack list of wrong size
+
+
+
+The cookie parsing code is
+
+     def parseCookies(self):
+         &quot;&quot;&quot;Parse cookie headers.
+
+         This method is not intended for users.&quot;&quot;&quot;
+         cookietxt = self.getHeader(&quot;cookie&quot;)
+         if cookietxt:
+             for cook in cookietxt.split('; '):
+                 try:
+                     k, v = cook.split('=')
+                     self.received_cookies[k] = v
+                 except ValueError:
+                     pass
+
+This doesn't handle quoting, which the standard Cookie.py module does
+support.  (Ditto for writing cookies out.)  While I realize that
+the cookie code has been there for a while (from 2nd 1/2 of 2001), the
+Python code was added to CVS a year previous, and was based on a
+older, publically available package.
+
+Overall, I like the code in standard Python better.  Given
+my interests though, it seems appropriate that I use Twisted as
+the basis for what I'm working on.
+
+Therefore, suppose I were to work on a replacement module for the
+http server parsing code, one which assumes 2.3 code (eg, for
+datetime parsing).  What else needs to be done to update that
+module?
+
+
+					Andrew
+					<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">dalke at dalkescientific.com</A>
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004326.html">[Twisted-Python] Twiested.Web supports HTTP-compression and Resume/Rest on HTTP-Requests??
+</A></li>
+	<LI>Next message: <A HREF="004328.html">[Twisted-Python] HTTP versions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4327">[ date ]</a>
+              <a href="thread.html#4327">[ thread ]</a>
+              <a href="subject.html#4327">[ subject ]</a>
+              <a href="author.html#4327">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

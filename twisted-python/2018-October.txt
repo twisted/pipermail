@@ -1,0 +1,2524 @@
+From barry.scott at forcepoint.com  Tue Oct  2 04:42:11 2018
+From: barry.scott at forcepoint.com (Scott, Barry)
+Date: Tue, 2 Oct 2018 10:42:11 +0000
+Subject: [Twisted-Python] doPoll timeout problems
+Message-ID: <3532952.vhGpKmxsgq@barry-scott-desktop>
+
+We are seeing a problem with poll being called very often and think that the 
+problem is in the timeout calculation.
+
+The code look like this:
+
+    def doPoll(self, timeout):
+        """Poll the poller for new events."""
+        if timeout is not None:
+            timeout = int(timeout * 1000) # convert seconds to milliseconds
+
+What this does is round down the timeout.
+
+We are experimenting with this:
+
+    def doPoll(self, timeout):
+        """Poll the poller for new events."""
+        if timeout is not None:
+            timeout = int(math.ceil(timeout * 1000)) # convert seconds to 
+milliseconds
+
+This rounds up the timeout.
+
+With this we see that the poll() is called far less often.
+
+The reason being that if the timeout is 0.0009 the code uses 0ms timeout.
+And if your CPU is fast enough it will do many 0ms timeout calls to poll 
+before the timer is removed from the _pendingTimedCalls list.
+
+And if the timeout is 0.0019 the time is 1ms and when the _pendingTimedCalls
+is check its first element has not expired yet. So keep doing calls with 1ms.
+
+Typically we see that the first element in the _pendingTimedCalls is a call to 
+_updateLogDateTime in HTTPFactory. We use a HTTPFactory many times and also 
+NevowSite. That causes a callLater for _updateLogDateTime for each factory.
+
+These _updateLogDateTime call seems to be a lot of complexity for no benefit. 
+After all time.time() is very fast on Linux, why cache the log time strings? 
+Especially when in our app we never write an access log file. 
+
+We are working on stubbing out all that code for our app to bring our 
+performance back up compared to old twisted 2.0.
+
+Barry
+
+
+
+
+From glyph at twistedmatrix.com  Tue Oct  2 23:54:32 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 2 Oct 2018 22:54:32 -0700
+Subject: [Twisted-Python] Twisted 18.9.0rc1 Release Candidate
+ Announcement
+In-Reply-To: <2cb01d85-3ca4-9c9b-9366-0eebb1e58a0c@atleastfornow.net>
+References: <2cb01d85-3ca4-9c9b-9366-0eebb1e58a0c@atleastfornow.net>
+Message-ID: <CEEDB18F-B207-4833-8DFF-F50052C19ACF@twistedmatrix.com>
+
+On Sep 28, 2018, at 3:43 AM, Amber Brown <hawkowl at atleastfornow.net> wrote:
+> 
+> Hello everyone! It's time again for a Twisted release. It's not a huge one, but it does have some important changes!
+
+Yay!
+
+> Twisted 18.9rc1 features:
+> 
+> - Support for Python 3.7!
+
+Woohoo!
+
+> - Better support for Unicode handling in logging tracebacks in Python 2
+> - trial -j now reports tracebacks on test failures on Python 3.
+> - twisted.internet._sslverify.ClientTLSOptions no longer raises IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+
+Note for future release notes; we should really use the public names impacted, which in this case is `twisted.internet.ssl.optionsForClientTLS` :-).
+
+> - HTTP/2 server connections will no longer time out active downloads that take too long.
+> 
+> You can get the tarball and the NEWS file at https://twistedmatrix.com/Releases/rc/18.9.0rc1/ , or you can try it out from PyPI:
+> 
+>     python -m pip install Twisted==18.9.0rc1
+> 
+> Please test it, and let me know how your applications fare, good or bad! If nothing comes up, I will release next week.
+
+Thanks again Amber!
+
+-g
+
+
+From meejah at meejah.ca  Thu Oct  4 18:19:11 2018
+From: meejah at meejah.ca (meejah)
+Date: Fri, 05 Oct 2018 04:19:11 +0400
+Subject: [Twisted-Python] txtorcon 18.2.0
+Message-ID: <86woqxxn28.fsf@atlantis.meejah.ca>
+
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+I'm glad to announce txtorcon 18.2.0. This adds or fixes the
+following:
+
+ * add `privateKeyFile=` option to endpoint parser (ticket 313)
+ * use `privateKey=` option properly in endpoint parser
+ * support `NonAnonymous` mode for `ADD_ONION` via `single_hop=` kwarg
+
+You can download the release from PyPI or GitHub (or of
+course "pip install txtorcon"):
+
+   https://pypi.python.org/pypi/txtorcon/18.2.0
+   https://github.com/meejah/txtorcon/releases/tag/v18.2.0
+
+Releases are also available from the hidden service:
+
+   http://timaq4ygg2iegci7.onion/txtorcon-18.2.0.tar.gz
+   http://timaq4ygg2iegci7.onion/txtorcon-18.2.0.tar.gz.asc
+
+Or via a "version 3" service:
+
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-18.2.0.tar.gz
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-18.2.0.tar.gz.asc
+
+You can verify the sha256sum of both by running the following 4 lines
+in a shell wherever you have the files downloaded:
+
+cat <<EOF | sha256sum --check
+b1714dfa633cb4097c9ea649c8c49657d9d22a990cc465bb904620428c5e684e  dist/txtorcon-18.2.0.tar.gz
+9d05f2b1144dfbc63844e78fbc51a195e3b39a79f280db50a81b346476c47e7b  dist/txtorcon-18.2.0-py2.py3-none-any.whl
+EOF
+
+thanks,
+meejah
+-----BEGIN PGP SIGNATURE-----
+
+iQFFBAEBCAAvFiEEnVor1WiOy4id680/wmAoAxKAaacFAlu2qS0RHG1lZWphaEBt
+ZWVqYWguY2EACgkQwmAoAxKAaafvxAgAxsqlJ7LcnX2SxU89NHXJZ/og9ZkcKF89
+RCAdYm/G1R4cJpqX9wjd0Kt38NJJyt/SuT95wGtYInLjrrTs3lzg7ToLoRxIodaF
+rXdlnUKaNJBStpIW62oJ1WRq8AFsjtjnxFv9iuIyUCA7BMh/nkKwCMoEOqtQ/KbO
+V43DjZpTr9cQmn62c1b6H+x+TVXhyZxiTK0d7WTHrrKbMOIpSKIJTezZvOfDV7MC
+dQdmLlhE1qxW8X5UjlNeWApuGWtY6U9aSVJcglN6Ecp8bZcvvS9LSWxn+KHkbzFX
+uLOgTyfp9/mQsAeVosp9HQ7iB+6BD27blJlMIBFPNLoBaFNjX91H7A==
+=v2ac
+-----END PGP SIGNATURE-----
+
+
+From meejah at meejah.ca  Fri Oct  5 17:14:58 2018
+From: meejah at meejah.ca (meejah)
+Date: Sat, 06 Oct 2018 03:14:58 +0400
+Subject: [Twisted-Python] txtorcon 18.3.0
+Message-ID: <86sh1kx9xp.fsf@atlantis.meejah.ca>
+
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Hot on the heels of 18.2.0 comes 18.3.0 because I forgot to add the
+"single_hop=" feature to endpoint-strings:
+
+ * add `singleHop={true,false}` for endpoint-strings as well
+
+You can download the release from PyPI or GitHub (or of
+course "pip install txtorcon"):
+
+   https://pypi.python.org/pypi/txtorcon/18.3.0
+   https://github.com/meejah/txtorcon/releases/tag/v18.3.0
+
+Releases are also available from the hidden service:
+
+   http://timaq4ygg2iegci7.onion/txtorcon-18.3.0.tar.gz
+   http://timaq4ygg2iegci7.onion/txtorcon-18.3.0.tar.gz.asc
+
+Or via a "version 3" service:
+
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-18.3.0.tar.gz
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-18.3.0.tar.gz.asc
+
+You can verify the sha256sum of both by running the following 4 lines
+in a shell wherever you have the files downloaded:
+
+cat <<EOF | sha256sum --check
+5601956b3a2452526cd1ea31662696a51ddbf8ed6452633ee464fc1ff275f8b0  dist/txtorcon-18.3.0.tar.gz
+8edac3b6d9c633b9182b4e5a2ed3ac86953ed44b9ea230aac3e0708c30b73861  dist/txtorcon-18.3.0-py2.py3-none-any.whl
+EOF
+
+thanks,
+meejah
+-----BEGIN PGP SIGNATURE-----
+
+iQFFBAEBCAAvFiEEnVor1WiOy4id680/wmAoAxKAaacFAlu37ycRHG1lZWphaEBt
+ZWVqYWguY2EACgkQwmAoAxKAaafaFAf/e4pVR7bL+gDMq2sJVaFVFzsQqPTV2RLi
+9e5A7RRfCPfDSPMyJg71I5qnXXY7aXMP5kBOmK1WF7hN06NRrYGuVifWzijogosP
+l/2KIGp1I6nK77JTNdjPqnSfQ9N+/ZXaXK3ILzlmSiyI3PMaLgPjB0x2JM6NhcfQ
+pPPKuL9K0bw94slGSTJa29py4yBV4VhAG0qwHEigw3Zwie2iAejk1GwSW9UEhJnp
+GBDECiaBdgDZZozn43Q9WXoVIcTnsjTBIN9Km3gNgIcn+ZbwH461HKDXvW7yDfsV
+oZ7thGr5xD9ENErOzWgU52kMOOuo/pM50vAlzJC518iV39deCD1GQA==
+=6d14
+-----END PGP SIGNATURE-----
+
+
+From trac at twistedmatrix.com  Sun Oct  7 00:05:18 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 07 Oct 2018 06:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1538892318.81.3605034277429961906@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181007/94209eec/attachment.html>
+
+From contact at evilham.com  Fri Oct 12 13:18:01 2018
+From: contact at evilham.com (Evilham)
+Date: Fri, 12 Oct 2018 21:18:01 +0200
+Subject: [Twisted-Python] State of Names / DNS server
+Message-ID: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+
+Dear Twisted people,
+
+I've been taking a good look at twisted.names as a sever after checking
+twisted-infra/braid/services/names and how the zones are saved.
+
+Basically, I wonder what the state-of-afairs of running DNS with twisted is.
+
+By checking the code I see a couple things like:
+* That zone transfers are enabled by default and open to any host and
+only subclassing would help override that (it is the case on
+twistedmatrix.com btw).
+* Comments saying how some things are not RFC-compliant, but not how.
+* That DNSSEC is not implemented
+
+Besides the 1st point which could be a ticket (should I open it?), the
+other points appear to be somewhat documented in the open tickets:
+https://twistedmatrix.com/trac/query?status=assigned&status=new&status=reopened&component=names&group=priority&max=200&col=id&col=summary&col=status&col=owner&col=type&col=priority&col=milestone&order=priority
+
+But I wonder if there is something like a roadmap that I haven't seen or
+a very specific way to start helping on this front.
+
+Basically, I'd hate to start working on sth and it overlapping with
+someone else's work ;).
+
+
+I checked a couple tickets, and see that there is definitely a need for
+some cleanup, e.g. this one appears to be ready for closing
+https://twistedmatrix.com/trac/ticket/5048
+as it is marked as duplicate of a closed ticket.
+
+Also, I recall this PR from early summer, which appears to have been
+OK'd but is blocked by some failure in appveyor + buildbot:
+https://github.com/twisted/twisted/pull/954
+
+Thank you for any pointers, and thank you for Twisted!
+-- 
+Evilham
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: </pipermail/twisted-python/attachments/20181012/4ded9cb5/attachment.sig>
+
+From trac at twistedmatrix.com  Sun Oct 14 00:05:19 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 14 Oct 2018 06:05:19 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1539497119.6.7715335669165845629@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181014/ad41e506/attachment.html>
+
+From glyph at twistedmatrix.com  Sun Oct 14 18:00:23 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Sun, 14 Oct 2018 17:00:23 -0700
+Subject: [Twisted-Python] State of Names / DNS server
+In-Reply-To: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+References: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+Message-ID: <1197D6EA-DF7A-4206-BAEF-E92F638513CC@twistedmatrix.com>
+
+
+
+> On Oct 12, 2018, at 12:18 PM, Evilham <contact at evilham.com> wrote:
+> 
+> Dear Twisted people,
+> 
+> I've been taking a good look at twisted.names as a sever after checking
+> twisted-infra/braid/services/names and how the zones are saved.
+
+The way the zones are saved there is fairly primitive.  It would be nice if we had a more robust backend; in particular I'd love it if we had a DNS API so that e.g. https://github.com/glyph/lancer could talk to something on twistedmatrix.com to provision HTTPS certificates via the LE DNS-01 challenge.
+
+> Basically, I wonder what the state-of-afairs of running DNS with twisted is.
+
+We run it on production on twistedmatrix.com and that site sees plenty of DNS traffic :-).
+
+> By checking the code I see a couple things like:
+> * That zone transfers are enabled by default and open to any host and
+> only subclassing would help override that (it is the case on
+> twistedmatrix.com btw).
+
+It would certainly be nice if this were controllable via a flag.  As you notice, this should be a ticket.
+
+> * Comments saying how some things are not RFC-compliant, but not how.
+
+Some investigation into these comments to make them more specific would be good.
+
+> * That DNSSEC is not implemented
+
+On the one hand, it would be great if someone would take the DNSSEC support already in various branches and get it over the finish line.  On the other, DNSSEC is bad (see <https://sockpuppet.org/blog/2015/01/15/against-dnssec/> for example), and is really not necessary to run a real-life DNS server or client, so it's a little difficult for various DNS-interested parties to get excited about it.  Nonetheless if people are going to do DNSSEC I'd rather they do it with Twisted than BIND, so if you could help integrate DNSSEC work that is a definite goal for the project!  So I hope somebody who disagrees with me about the utility of DNSSEC contributes to it.
+
+> Besides the 1st point which could be a ticket (should I open it?),
+
+Yup :).
+
+> the
+> other points appear to be somewhat documented in the open tickets:
+> https://twistedmatrix.com/trac/query?status=assigned&status=new&status=reopened&component=names&group=priority&max=200&col=id&col=summary&col=status&col=owner&col=type&col=priority&col=milestone&order=priority
+> 
+> But I wonder if there is something like a roadmap that I haven't seen or
+> a very specific way to start helping on this front.
+
+Right now the main thing we need is a motivated, interested maintainer to advance these goals.  This email sounds suspiciously like volunteering to be that :).
+
+> Basically, I'd hate to start working on sth and it overlapping with
+> someone else's work ;).
+
+There's lots of other work in progress, but as you can see from most of them, most of this work is stalled.  I'm 100% sure that if you started working on some of these tickets, the people whose work you might duplicate would be overjoyed that someone had done that, so I don't think you need to worry about stepping on anyone's toes.
+
+> I checked a couple tickets, and see that there is definitely a need for
+> some cleanup, e.g. this one appears to be ready for closing
+> https://twistedmatrix.com/trac/ticket/5048
+> as it is marked as duplicate of a closed ticket.
+
+Please go ahead and close it if you are reasonably sure of that!
+
+> Also, I recall this PR from early summer, which appears to have been
+> OK'd but is blocked by some failure in appveyor + buildbot:
+> https://github.com/twisted/twisted/pull/954
+
+Sadly we don't have a queue of "already approved" tickets (that I know of and check, anyway) so if this is stuck, it would be best to put it back into review so it shows up on https://twisted.reviews/ and gets attention.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181014/90698967/attachment.html>
+
+From contact at evilham.com  Mon Oct 15 14:22:47 2018
+From: contact at evilham.com (Evilham)
+Date: Mon, 15 Oct 2018 22:22:47 +0200
+Subject: [Twisted-Python] State of Names / DNS server
+In-Reply-To: <1197D6EA-DF7A-4206-BAEF-E92F638513CC@twistedmatrix.com>
+References: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+ <1197D6EA-DF7A-4206-BAEF-E92F638513CC@twistedmatrix.com>
+Message-ID: <ec546ad3-df93-af4c-795b-8c2caf6801ad@evilham.com>
+
+Always a pleasure to read you Glyph,
+
+
+Am 15/10/2018 um 2:00 schrieb Glyph:
+>> On Oct 12, 2018, at 12:18 PM, Evilham <contact at evilham.com
+>> <mailto:contact at evilham.com>> wrote:
+>>
+>> Dear Twisted people,
+>>
+>> I've been taking a good look at twisted.names as a sever after checking
+>> twisted-infra/braid/services/names and how the zones are saved.
+> 
+> The way the zones are saved there is fairly primitive.  It would be nice
+> if we had a more robust backend; in particular I'd love it if we had a
+> DNS API so that e.g. https://github.com/glyph/lancer could talk to
+> something on twistedmatrix.com <http://twistedmatrix.com> to provision
+> HTTPS certificates via the LE DNS-01 challenge.
+
+
+indeed, this is pretty much one of the main reasons why I am looking
+into Twisted as a my DNS server :-).
+Twisted DNS + Klein --> (große) Awesomeness (reading Twisted's source
+code, makes you prone to bad jokes, that should be an official warning
+somewhere)
+
+
+>> Basically, I wonder what the state-of-afairs of running DNS with
+>> twisted is.
+> 
+> We run it on production on twistedmatrix.com <http://twistedmatrix.com>
+> and that site sees plenty of DNS traffic :-).
+> 
+>> By checking the code I see a couple things like:
+>> * That zone transfers are enabled by default and open to any host and
+>> only subclassing would help override that (it is the case on
+>> twistedmatrix.com <http://twistedmatrix.com> btw).
+> 
+> It would certainly be nice if this were controllable via a flag.  As you
+> notice, this should be a ticket.
+
+Done, ticket #9551.
+(Trac always thinks I am Spam with probability 90%, wonders!)
+https://twistedmatrix.com/trac/ticket/9551
+
+>> * Comments saying how some things are not RFC-compliant, but not how.
+> 
+> Some investigation into these comments to make them more specific would
+> be good.
+
+Also documented in ticket #9552; mostly to use trac as a quick overview.
+https://twistedmatrix.com/trac/ticket/9552
+
+>> * That DNSSEC is not implemented
+> 
+> On the one hand, it would be great if someone would take the DNSSEC
+> support already in various branches and get it over the finish line.  On
+> the other, DNSSEC is bad (see
+> <https://sockpuppet.org/blog/2015/01/15/against-dnssec/> for example),
+> and is really not necessary to run a real-life DNS server or client, so
+> it's a little difficult for various DNS-interested parties to get
+> excited about it.  Nonetheless if people are going to do DNSSEC I'd
+> rather they do it with Twisted than BIND, so if you could help integrate
+> DNSSEC work that is a definite goal for the project!  So I hope somebody
+> who disagrees with me about the utility of DNSSEC contributes to it.
+
+
+:-D I am also not fond of DNSSEC being *the* thing; but apparently email
+servers complain otherwise in certain environments.
+Twisted supporting DNSSEC would indeed make things easier.
+
+
+>> the
+>> other points appear to be somewhat documented in the open tickets:
+>> https://twistedmatrix.com/trac/query?status=assigned&status=new&status=reopened&component=names&group=priority&max=200&col=id&col=summary&col=status&col=owner&col=type&col=priority&col=milestone&order=priority
+>>
+>> But I wonder if there is something like a roadmap that I haven't seen or
+>> a very specific way to start helping on this front.
+> 
+> Right now the main thing we need is a motivated, interested maintainer
+> to advance these goals.  This email sounds suspiciously like
+> volunteering to be that :).
+
+Ouch, I guess I'll have to invent a time-dilution bubble first :-D. I'll
+see what I can do about this (DNS, not time-dilution bubble).
+
+>> Basically, I'd hate to start working on sth and it overlapping with
+>> someone else's work ;).
+> 
+> There's lots of other work in progress, but as you can see from most of
+> them, most of this work is stalled.  I'm 100% sure that if you started
+> working on some of these tickets, the people whose work you might
+> duplicate would be /overjoyed/ that someone had done that, so I don't
+> think you need to worry about stepping on anyone's toes.
+> 
+>> I checked a couple tickets, and see that there is definitely a need for
+>> some cleanup, e.g. this one appears to be ready for closing
+>> https://twistedmatrix.com/trac/ticket/5048
+>> as it is marked as duplicate of a closed ticket.
+> 
+> Please go ahead and close it if you are reasonably sure of that!
+
+I was hoping for one of the involved parties remembering and saying "oh
+yeah, that should be closed" otherwise it requires actual analysis, so
+I'll leave that for some-time-soon.
+
+>> Also, I recall this PR from early summer, which appears to have been
+>> OK'd but is blocked by some failure in appveyor + buildbot:
+>> https://github.com/twisted/twisted/pull/954
+> 
+> Sadly we don't have a queue of "already approved" tickets (that I know
+> of and check, anyway) so if this is stuck, it would be best to put it
+> back into review so it shows up on https://twisted.reviews/ and gets
+> attention.
+
+Added the review keyword again and removed the owner as per the
+developer documentation.
+
+
+Thank you for the helpful reply,
+-- 
+Evilham
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: </pipermail/twisted-python/attachments/20181015/21a5648a/attachment.sig>
+
+From wiml at hhhh.org  Tue Oct 16 12:07:13 2018
+From: wiml at hhhh.org (Wim Lewis)
+Date: Tue, 16 Oct 2018 11:07:13 -0700 (PDT)
+Subject: [Twisted-Python] State of Names / DNS server
+In-Reply-To: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+Message-ID: <Pine.NEB.4.64.1810161008260.26215@photomat.hhhh.org>
+
+Evilham writes:
+> Also, I recall this PR from early summer, which appears to have been
+> OK'd but is blocked by some failure in appveyor + buildbot:
+> https://github.com/twisted/twisted/pull/954
+
+That one's mine. I've finally figured out the Twisted CI infrastructure 
+well enough to get things marked green (and I have commit access now as 
+well, thanks Glyph!), so that PR is really only waiting for me to read & 
+consider some of the review feedback on public attribute names.
+
+Trac 9373 was my attempt to upstream work I did last year on secure 
+dynamic dns updates (NSUPDATE + transaction signatures). 9373 has narrowed 
+in scope to just the two RR types in PR 954, since there are older tickets 
+for the other records. I plan to combine my work with some of the existing 
+abandoned PRs for KEY, DNSKEY, and SIG and try to sheperd those through 
+the process but that's on the back burner for now.
+
+Russ Nelson is/was also doing some work with Names and these RR types. I 
+think he's interested in the server side of secure dyn-dns, but I'm not 
+sure. (I was only working on a client implementation.) Both he and I have 
+github forks with some of our work in branches, if you'd like to see the 
+direction we've been going.
+
+As for DNSSEC, I've seen those arguments against it and I find them pretty 
+unconvincing, but I suppose that's a topic for a different thread.
+
+
+From wiml at hhhh.org  Tue Oct 16 20:28:11 2018
+From: wiml at hhhh.org (Wim Lewis)
+Date: Tue, 16 Oct 2018 19:28:11 -0700 (PDT)
+Subject: [Twisted-Python] doPoll timeout problems
+In-Reply-To: <3532952.vhGpKmxsgq@barry-scott-desktop>
+Message-ID: <Pine.NEB.4.64.1810161909350.21602@photomat.hhhh.org>
+
+Scott, Barry wrote:
+> We are seeing a problem with poll being called very often and think that the 
+> problem is in the timeout calculation.
+
+I think you're right and that changing that line to use ceil() is a good 
+fix. It does mean that some timeouts might happen up to a millisecond 
+later than they would otherwise, but I think that's better than having the 
+reactor spin-wait to consume time.
+
+This probably only happens with the poll() reactor, because all the other 
+APIs seem to have higher resolution timeouts --- select, epoll, kqueue, 
+ppoll all have microsecond or even nanosecond timeout parameters.
+
+If there is code that actually needs sub-millisecond timeout resolution it 
+might be possible for Twisted to implement that using setitimer() or 
+similar, but that seems like a lot of work to support an exotic use case 
+that could be handled more efficiently by switching to epoll etc.
+
+I checked the history of that line of code and it dates back all the way to 
+the first poll()-based event loop implementation in 2001. Perhaps computers 
+were slow enough back then that a call to poll() would take most of a 
+millisecond :) but in any case the rounding-down behavior doesn't seem to have
+been explicitly chosen.
+
+> These _updateLogDateTime call seems to be a lot of complexity for no 
+> benefit. After all time.time() is very fast on Linux, why cache the log 
+> time strings?
+
+Perhaps it is not the time() call but the cost of converting a time value 
+to a string that is being avoided here? Sometimes the calendar/date 
+calculations are expensive.
+
+It seems to me that HTTPFactory could be implemented more efficiently by 
+only caching the string on demand, and then setting a timer to clear the 
+cache (reset _logDateTime to None) at the next 1-second mark. On a 
+heavily-loaded server, that would have the same properties as the current 
+code; but on a lightly-loaded server it would avoid running that callback 
+unneccessarily. And overall I don't think it's any more complicated than 
+the current implementation.
+
+Wim.
+
+
+From glyph at twistedmatrix.com  Tue Oct 16 23:25:05 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 16 Oct 2018 22:25:05 -0700
+Subject: [Twisted-Python] State of Names / DNS server
+In-Reply-To: <Pine.NEB.4.64.1810161008260.26215@photomat.hhhh.org>
+References: <Pine.NEB.4.64.1810161008260.26215@photomat.hhhh.org>
+Message-ID: <8DA6457E-BF8A-430B-BAFF-550774C5C133@twistedmatrix.com>
+
+
+
+> On Oct 16, 2018, at 11:07 AM, Wim Lewis <wiml at hhhh.org> wrote:
+> 
+> Evilham writes:
+>> Also, I recall this PR from early summer, which appears to have been
+>> OK'd but is blocked by some failure in appveyor + buildbot:
+>> https://github.com/twisted/twisted/pull/954
+> 
+> That one's mine. I've finally figured out the Twisted CI infrastructure well enough to get things marked green (and I have commit access now as well, thanks Glyph!), so that PR is really only waiting for me to read & consider some of the review feedback on public attribute names.
+> 
+> Trac 9373 was my attempt to upstream work I did last year on secure dynamic dns updates (NSUPDATE + transaction signatures). 9373 has narrowed in scope to just the two RR types in PR 954, since there are older tickets for the other records. I plan to combine my work with some of the existing abandoned PRs for KEY, DNSKEY, and SIG and try to sheperd those through the process but that's on the back burner for now.
+> 
+> Russ Nelson is/was also doing some work with Names and these RR types. I think he's interested in the server side of secure dyn-dns, but I'm not sure. (I was only working on a client implementation.) Both he and I have github forks with some of our work in branches, if you'd like to see the direction we've been going.
+
+Thanks very much for sending out this summary; sounds like we may have an actual twisted.names team soon!
+
+> As for DNSSEC, I've seen those arguments against it and I find them pretty unconvincing, but I suppose that's a topic for a different thread.
+
+You don't need to convince me!  Someone should work on DNSSEC for twisted.names, and that person should probably think DNSSEC is a good idea, so I don't want to convince you :-).
+
+-g
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181016/d88cd786/attachment.html>
+
+From glyph at twistedmatrix.com  Tue Oct 16 23:59:07 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 16 Oct 2018 22:59:07 -0700
+Subject: [Twisted-Python] doPoll timeout problems
+In-Reply-To: <Pine.NEB.4.64.1810161909350.21602@photomat.hhhh.org>
+References: <Pine.NEB.4.64.1810161909350.21602@photomat.hhhh.org>
+Message-ID: <C9095A0D-265D-4BDB-9D86-0FA7556F9597@twistedmatrix.com>
+
+
+
+> On Oct 16, 2018, at 7:28 PM, Wim Lewis <wiml at hhhh.org> wrote:
+> 
+> Scott, Barry wrote:
+>> We are seeing a problem with poll being called very often and think that the problem is in the timeout calculation.
+> 
+> I think you're right and that changing that line to use ceil() is a good fix. It does mean that some timeouts might happen up to a millisecond later than they would otherwise, but I think that's better than having the reactor spin-wait to consume time.
+> 
+> This probably only happens with the poll() reactor, because all the other APIs seem to have higher resolution timeouts --- select, epoll, kqueue, ppoll all have microsecond or even nanosecond timeout parameters.
+> 
+> If there is code that actually needs sub-millisecond timeout resolution it might be possible for Twisted to implement that using setitimer() or similar, but that seems like a lot of work to support an exotic use case that could be handled more efficiently by switching to epoll etc.
+> 
+> I checked the history of that line of code and it dates back all the way to the first poll()-based event loop implementation in 2001. Perhaps computers were slow enough back then that a call to poll() would take most of a millisecond :) but in any case the rounding-down behavior doesn't seem to have
+> been explicitly chosen.
+> 
+>> These _updateLogDateTime call seems to be a lot of complexity for no benefit. After all time.time() is very fast on Linux, why cache the log time strings?
+> 
+> Perhaps it is not the time() call but the cost of converting a time value to a string that is being avoided here? Sometimes the calendar/date calculations are expensive.
+
+I believe it dates back to a time when syscalls were surprisingly expensive, and gettimeofday() or equivalent was still a syscall.  I remember looking at profiles Back In The Day where getting the current time dominated. It certainly predates the zero-overhead VDSO method available today.
+
+> It seems to me that HTTPFactory could be implemented more efficiently by only caching the string on demand, and then setting a timer to clear the cache (reset _logDateTime to None) at the next 1-second mark. On a heavily-loaded server, that would have the same properties as the current code; but on a lightly-loaded server it would avoid running that callback unneccessarily. And overall I don't think it's any more complicated than the current implementation.
+
+The current algorithm is really just silly.  In the absence of a compelling benchmark where it can be shown to hurt performance (we should check with the ones on speed.twistedmatrix.com), I think we could forego the caching entirely, and just do the simple thing where the string is computed as needed.
+
+-glyph
+
+From barry.scott at forcepoint.com  Wed Oct 17 08:56:46 2018
+From: barry.scott at forcepoint.com (Barry Scott)
+Date: Wed, 17 Oct 2018 15:56:46 +0100
+Subject: [Twisted-Python] doPoll timeout problems
+In-Reply-To: <C9095A0D-265D-4BDB-9D86-0FA7556F9597@twistedmatrix.com>
+References: <Pine.NEB.4.64.1810161909350.21602@photomat.hhhh.org>
+ <C9095A0D-265D-4BDB-9D86-0FA7556F9597@twistedmatrix.com>
+Message-ID: <2301360.ufX4KIxzzZ@barry-scott-desktop>
+
+On Wednesday, 17 October 2018 06:59:07 BST Glyph wrote:
+> > On Oct 16, 2018, at 7:28 PM, Wim Lewis <wiml at hhhh.org> wrote:
+> > 
+> > Scott, Barry wrote:
+> >> We are seeing a problem with poll being called very often and think that
+> >> the problem is in the timeout calculation.> 
+> > I think you're right and that changing that line to use ceil() is a good
+> > fix. It does mean that some timeouts might happen up to a millisecond
+> > later than they would otherwise, but I think that's better than having
+> > the reactor spin-wait to consume time.
+
+Do you want a pull request for this fix or will you make this small change?
+
+> > 
+> > This probably only happens with the poll() reactor, because all the other
+> > APIs seem to have higher resolution timeouts --- select, epoll, kqueue,
+> > ppoll all have microsecond or even nanosecond timeout parameters.
+> > 
+> > If there is code that actually needs sub-millisecond timeout resolution it
+> > might be possible for Twisted to implement that using setitimer() or
+> > similar, but that seems like a lot of work to support an exotic use case
+> > that could be handled more efficiently by switching to epoll etc.
+> > 
+> > I checked the history of that line of code and it dates back all the way
+> > to the first poll()-based event loop implementation in 2001. Perhaps
+> > computers were slow enough back then that a call to poll() would take
+> > most of a millisecond :) but in any case the rounding-down behavior
+> > doesn't seem to have been explicitly chosen.
+> > 
+> >> These _updateLogDateTime call seems to be a lot of complexity for no
+> >> benefit. After all time.time() is very fast on Linux, why cache the log
+> >> time strings?> 
+> > Perhaps it is not the time() call but the cost of converting a time value
+> > to a string that is being avoided here? Sometimes the calendar/date
+> > calculations are expensive.
+> I believe it dates back to a time when syscalls were surprisingly expensive,
+> and gettimeofday() or equivalent was still a syscall.  I remember looking
+> at profiles Back In The Day where getting the current time dominated. It
+> certainly predates the zero-overhead VDSO method available today.
+> > It seems to me that HTTPFactory could be implemented more efficiently by
+> > only caching the string on demand, and then setting a timer to clear the
+> > cache (reset _logDateTime to None) at the next 1-second mark. On a
+> > heavily-loaded server, that would have the same properties as the current
+> > code; but on a lightly-loaded server it would avoid running that callback
+> > unneccessarily. And overall I don't think it's any more complicated than
+> > the current implementation.
+> The current algorithm is really just silly.  In the absence of a compelling
+> benchmark where it can be shown to hurt performance (we should check with
+> the ones on speed.twistedmatrix.com), I think we could forego the caching
+> entirely, and just do the simple thing where the string is computed as
+> needed.
+
+I'll find time to put up a pull request to simplify and allow for on/off 
+config of the logging for you to consider.
+
+Barry
+
+
+> 
+> -glyph
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+
+
+
+
+From wiml at hhhh.org  Thu Oct 18 23:51:13 2018
+From: wiml at hhhh.org (Wim Lewis)
+Date: Thu, 18 Oct 2018 22:51:13 -0700
+Subject: [Twisted-Python] doPoll timeout problems
+In-Reply-To: <2301360.ufX4KIxzzZ@barry-scott-desktop>
+Message-ID: <20181018225113.1f27de88@kosmos>
+
+On Wed Oct 17 08:56:46 MDT 2018, Barry Scott wrote:
+> Do you want a pull request for this fix or will you make this small
+> change?
+
+Twisted's contribution process is kind of rigid: every PR needs an
+accompanying Trac ticket. If you file Trac tickets for these two issues
+I'll make the PRs (or you can if you like — I think Github even has a
+way to make small PRs entirely through the web interface now).
+
+ https://twistedmatrix.com/trac/wiki/TwistedDevelopment#SubmittingaPatch
+
+I'd like to hear other users of the poll reactor weigh in on the "ceil"
+change, though. It seems straightforwardly correct to me, but it also
+seems like the kind of small change that could have a subtle unexpected
+downside.
+
+
+From hawkowl at atleastfornow.net  Fri Oct 19 05:56:02 2018
+From: hawkowl at atleastfornow.net (Amber Brown)
+Date: Fri, 19 Oct 2018 22:56:02 +1100
+Subject: [Twisted-Python] Twisted 18.9.0 Release Announcement
+Message-ID: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+
+On behalf of Twisted Matrix Laboratories, I am honoured to announce the 
+release of Twisted 18.9!
+
+The highlights of this release are:
+
+- Support for Python 3.7!
+- Better support for Unicode handling in logging tracebacks in Python 2
+- trial -j now reports tracebacks on test failures on Python 3.
+- twisted.internet._sslverify.ClientTLSOptions no longer raises 
+IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+- HTTP/2 server connections will no longer time out active downloads 
+that take too long.
+For more information, check the NEWS file (link provided below).
+
+You can find the downloads at <https://pypi.python.org/pypi/Twisted> (or 
+alternatively <http://twistedmatrix.com/trac/wiki/Downloads>). The NEWS 
+file is also available at 
+<https://github.com/twisted/twisted/blob/twisted-18.9.0/NEWS>.
+
+Many thanks to everyone who had a part in this release - the supporters 
+of the Twisted Software Foundation, the developers who contributed code 
+as well as documentation, and all the people building great things with 
+Twisted!
+
+Twisted Regards,
+Amber Brown (HawkOwl)
+
+
+From hawkowl at atleastfornow.net  Fri Oct 19 07:33:03 2018
+From: hawkowl at atleastfornow.net (Amber Brown)
+Date: Sat, 20 Oct 2018 00:33:03 +1100
+Subject: [Twisted-Python] Twisted 18.9.0 Release Announcement
+In-Reply-To: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+References: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+Message-ID: <5a321138-4d66-8a10-9430-a86dbfc73c8d@atleastfornow.net>
+
+That NEWS link should be 
+https://github.com/twisted/twisted/blob/twisted-18.9.0/NEWS.rst -- one 
+day I'll remember to check my links before sending ;)
+
+-Amber
+
+On 19/10/18 10:56 pm, Amber Brown wrote:
+> On behalf of Twisted Matrix Laboratories, I am honoured to announce 
+> the release of Twisted 18.9!
+>
+> The highlights of this release are:
+>
+> - Support for Python 3.7!
+> - Better support for Unicode handling in logging tracebacks in Python 2
+> - trial -j now reports tracebacks on test failures on Python 3.
+> - twisted.internet._sslverify.ClientTLSOptions no longer raises 
+> IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+> - HTTP/2 server connections will no longer time out active downloads 
+> that take too long.
+> For more information, check the NEWS file (link provided below).
+>
+> You can find the downloads at <https://pypi.python.org/pypi/Twisted> 
+> (or alternatively <http://twistedmatrix.com/trac/wiki/Downloads>). The 
+> NEWS file is also available at 
+> <https://github.com/twisted/twisted/blob/twisted-18.9.0/NEWS>.
+>
+> Many thanks to everyone who had a part in this release - the 
+> supporters of the Twisted Software Foundation, the developers who 
+> contributed code as well as documentation, and all the people building 
+> great things with Twisted!
+>
+> Twisted Regards,
+> Amber Brown (HawkOwl)
+>
+
+
+From trac at twistedmatrix.com  Sun Oct 21 00:05:17 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 21 Oct 2018 06:05:17 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1540101917.63.6455672788630774371@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181021/be0eabf6/attachment.html>
+
+From glyph at twistedmatrix.com  Mon Oct 22 02:33:12 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Mon, 22 Oct 2018 01:33:12 -0700
+Subject: [Twisted-Python] Twisted 18.9.0 Release Announcement
+In-Reply-To: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+References: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+Message-ID: <589FF47B-9EB0-4DC8-96AB-E43B2A9CE2BF@twistedmatrix.com>
+
+
+
+> On Oct 19, 2018, at 4:56 AM, Amber Brown <hawkowl at atleastfornow.net> wrote:
+> 
+> On behalf of Twisted Matrix Laboratories, I am honoured to announce the release of Twisted 18.9!
+> 
+> The highlights of this release are:
+> 
+> - Support for Python 3.7!
+
+Hooray!
+
+> - Better support for Unicode handling in logging tracebacks in Python 2
+> - trial -j now reports tracebacks on test failures on Python 3.
+
+This is huge news.  (It used to silently exit!)  And it's nice that error reporting is steadily improving.
+
+We should start trying to run Twisted's tests under `trial -j` - in aggregate, this could save a *lot* of time between development environments and our extensive CI system.
+
+> - twisted.internet._sslverify.ClientTLSOptions no longer raises IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+
+This is twisted.internet.ssl.optionsForClientTLS for those of you who are not maintaining Twisted's innards :-).
+
+> - HTTP/2 server connections will no longer time out active downloads that take too long.
+
+
+
+> Many thanks to everyone who had a part in this release - the supporters of the Twisted Software Foundation, the developers who contributed code as well as documentation, and all the people building great things with Twisted!
+
+Thanks for another great release everyone!
+
+-glyph
+
+From contact at evilham.com  Tue Oct 23 03:25:47 2018
+From: contact at evilham.com (Evilham)
+Date: Tue, 23 Oct 2018 11:25:47 +0200
+Subject: [Twisted-Python] Twisted 18.9.0 Release Announcement
+In-Reply-To: <589FF47B-9EB0-4DC8-96AB-E43B2A9CE2BF@twistedmatrix.com>
+References: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+ <589FF47B-9EB0-4DC8-96AB-E43B2A9CE2BF@twistedmatrix.com>
+Message-ID: <efc9c58e-348b-8c7b-fba4-a9e12879ce54@evilham.com>
+
+Am 22/10/2018 um 10:33 schrieb Glyph:
+>> - twisted.internet._sslverify.ClientTLSOptions no longer raises IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+> This is twisted.internet.ssl.optionsForClientTLS for those of you who are not maintaining Twisted's innards :-).
+> 
+
+Ahà!
+
+I think I was hit by this last week while using treq and decided to pass
+bytes directly :-D didn't have time to research it more / make it
+reproducible, but this was likely it!
+
+Thanks everyone.
+-- 
+Evilham
+
+
+From wiml at hhhh.org  Tue Oct 23 23:21:20 2018
+From: wiml at hhhh.org (Wim Lewis)
+Date: Tue, 23 Oct 2018 22:21:20 -0700
+Subject: [Twisted-Python] Etiquette of tagging people for reviews?
+Message-ID: <20181024052120.GB24971@kosmos.hhhh.org>
+
+Every project seems to have its own norms around this. When I have some code in a 
+reviewable state, I will sometimes look for someone who has recently worked on 
+that piece of code or similar features and request a review from them, just to get 
+the ball rolling. Is this a reasonable thing to do with Twisted? Or should I just 
+let people check the review queue when they have time for reviewing?
+
+
+From glyph at twistedmatrix.com  Wed Oct 24 00:36:20 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 23 Oct 2018 23:36:20 -0700
+Subject: [Twisted-Python] Etiquette of tagging people for reviews?
+In-Reply-To: <20181024052120.GB24971@kosmos.hhhh.org>
+References: <20181024052120.GB24971@kosmos.hhhh.org>
+Message-ID: <13CC0AB4-DADE-40E3-B0BF-2790B0C16BA3@twistedmatrix.com>
+
+
+
+> On Oct 23, 2018, at 10:21 PM, Wim Lewis <wiml at hhhh.org> wrote:
+> 
+> Every project seems to have its own norms around this. When I have some code in a 
+> reviewable state, I will sometimes look for someone who has recently worked on 
+> that piece of code or similar features and request a review from them, just to get 
+> the ball rolling. Is this a reasonable thing to do with Twisted? Or should I just 
+> let people check the review queue when they have time for reviewing?
+
+Thanks for asking :-).
+
+My feeling on this is that the official mechanism here is the review queue, i.e. https://twisted.reviews/ <https://twisted.reviews/>.  Regular contributors to the project should scan this periodically and try to do whatever reviews they can.
+
+However, everybody requires some prompting sometimes, and it can often motivate some progress on an issue.  As long as you're not aggressively spamming anyone, I'm always a fan of reaching out via IRC, this mailing list, a mention on a PR, or whatever channel is appropriate to ping a potential reviewer.  A tried and true strategy is trading reviews - offering to review one of the reviewer's choice in exchange :).
+
+Personally my github notifications are a smoking crater and I will pretty much never notice a "requested review" via that interface right now; however, I do hope that we can eventually make twisted.reviews actually point at the queue of "review requested" tickets on the Twisted project on github rather than being a trac report.  (One part of that workflow would be making @twisted/twisted-contributors automatically have a review requested for every open PR...)
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181023/51cd0bca/attachment.html>
+
+From trac at twistedmatrix.com  Sun Oct 28 00:05:18 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 28 Oct 2018 06:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1540706718.58.7027207722183783456@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181028/4e82c5f8/attachment.html>
+
+From grimmtooth at gmail.com  Tue Oct 30 15:31:27 2018
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Tue, 30 Oct 2018 17:31:27 -0400
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+Message-ID: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+
+I'm sure I'm overlooking something obvious here but I just can't get my
+head around it.
+
+Here's the setup: twisted.web server that generates dynamic content. Child
+that serves up static content, e.g. css and favoicon.  However, the static
+content isn't making it. Instead, any hit to localhost/static actually
+yields up a copy of / again.
+
+Here's the server code
+
+import sys
+
+from twisted.internet import reactor, endpoints
+from twisted.web import server
+from twisted.web.resource import Resource
+from twisted.web.static import File
+
+sys.path.append('lib')
+
+content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="/static/test.css" type="text/css" />
+</head>
+<body>
+    <span class='twistedTest'>This</span> is a test
+</body>
+</html>
+"""
+
+
+class tServer(Resource):
+    isLeaf = True
+
+    def render_GET(self, request):
+        return bytes(content, "utf-8")
+
+
+if __name__ == "__main__":
+    root = tServer()
+    root.putChild(b"static", File("static"))
+
+    site = server.Site(root)
+    endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+    endpoint.listen(site)
+
+    reactor.run()
+    print("Shutting down!")
+
+It's run with the command 'python tserver.py'.  The expectation is that
+what is inside the custom <span> will be red.
+
+In the same dir as the script is a subdir 'static' with the css file inside
+it.
+
+If I replace 'root' with     root = Resource() then / doesn't serve up
+anything, but /static is a directory listing of the static directory.
+
+The dynamic server is basically a copy of several tutorials cooked down to
+something that I could use to demonstrate the problem.
+
+What am I missing here? /headscratch
+
+Regards,
+
+Jeff
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181030/a3935856/attachment.html>
+
+From donal.mcmullan at gmail.com  Tue Oct 30 16:41:27 2018
+From: donal.mcmullan at gmail.com (Donal McMullan)
+Date: Tue, 30 Oct 2018 22:41:27 +0000
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+Message-ID: <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+
+Try replacing:
+isLeaf = True
+with
+isLeaf = False
+
+
+On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+
+> I'm sure I'm overlooking something obvious here but I just can't get my
+> head around it.
+>
+> Here's the setup: twisted.web server that generates dynamic content. Child
+> that serves up static content, e.g. css and favoicon.  However, the static
+> content isn't making it. Instead, any hit to localhost/static actually
+> yields up a copy of / again.
+>
+> Here's the server code
+>
+> import sys
+>
+> from twisted.internet import reactor, endpoints
+> from twisted.web import server
+> from twisted.web.resource import Resource
+> from twisted.web.static import File
+>
+> sys.path.append('lib')
+>
+> content = """
+> <!DOCTYPE html>
+> <html lang="en">
+> <head>
+>     <meta charset="UTF-8">
+>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+> </head>
+> <body>
+>     <span class='twistedTest'>This</span> is a test
+> </body>
+> </html>
+> """
+>
+>
+> class tServer(Resource):
+>     isLeaf = True
+>
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+>
+>
+> if __name__ == "__main__":
+>     root = tServer()
+>     root.putChild(b"static", File("static"))
+>
+>     site = server.Site(root)
+>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>     endpoint.listen(site)
+>
+>     reactor.run()
+>     print("Shutting down!")
+>
+> It's run with the command 'python tserver.py'.  The expectation is that
+> what is inside the custom <span> will be red.
+>
+> In the same dir as the script is a subdir 'static' with the css file
+> inside it.
+>
+> If I replace 'root' with     root = Resource() then / doesn't serve up
+> anything, but /static is a directory listing of the static directory.
+>
+> The dynamic server is basically a copy of several tutorials cooked down to
+> something that I could use to demonstrate the problem.
+>
+> What am I missing here? /headscratch
+>
+> Regards,
+>
+> Jeff
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181030/d557aa76/attachment.html>
+
+From grimmtooth at gmail.com  Wed Oct 31 15:15:33 2018
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Wed, 31 Oct 2018 17:15:33 -0400
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+Message-ID: <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+
+Tried that, I get a big
+
+No Such Resource
+
+No such child resource.
+back.  Watching it in FF's development panel, I see a 404 come back for /.
+/static doesn't get served at all, of course.
+
+This, however, DID work.
+
+class tServer(Resource):
+    isLeaf = False
+
+    def getChild(self, path, request):
+        print('You know what you doing.')
+
+        if path == b'':
+            print("Rendering /")
+            return self
+
+        return Resource.getChild(self, path, request)
+
+    def render_GET(self, request):
+        return bytes(content, "utf-8")
+
+(ignore my printf debugging plz)
+
+So, Thanks! :)
+
+Regards,
+
+Jeff
+
+
+On Tue, Oct 30, 2018 at 6:42 PM Donal McMullan <donal.mcmullan at gmail.com>
+wrote:
+
+> Try replacing:
+> isLeaf = True
+> with
+> isLeaf = False
+>
+>
+> On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+>
+>> I'm sure I'm overlooking something obvious here but I just can't get my
+>> head around it.
+>>
+>> Here's the setup: twisted.web server that generates dynamic content.
+>> Child that serves up static content, e.g. css and favoicon.  However, the
+>> static content isn't making it. Instead, any hit to localhost/static
+>> actually yields up a copy of / again.
+>>
+>> Here's the server code
+>>
+>> import sys
+>>
+>> from twisted.internet import reactor, endpoints
+>> from twisted.web import server
+>> from twisted.web.resource import Resource
+>> from twisted.web.static import File
+>>
+>> sys.path.append('lib')
+>>
+>> content = """
+>> <!DOCTYPE html>
+>> <html lang="en">
+>> <head>
+>>     <meta charset="UTF-8">
+>>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+>> </head>
+>> <body>
+>>     <span class='twistedTest'>This</span> is a test
+>> </body>
+>> </html>
+>> """
+>>
+>>
+>> class tServer(Resource):
+>>     isLeaf = True
+>>
+>>     def render_GET(self, request):
+>>         return bytes(content, "utf-8")
+>>
+>>
+>> if __name__ == "__main__":
+>>     root = tServer()
+>>     root.putChild(b"static", File("static"))
+>>
+>>     site = server.Site(root)
+>>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>>     endpoint.listen(site)
+>>
+>>     reactor.run()
+>>     print("Shutting down!")
+>>
+>> It's run with the command 'python tserver.py'.  The expectation is that
+>> what is inside the custom <span> will be red.
+>>
+>> In the same dir as the script is a subdir 'static' with the css file
+>> inside it.
+>>
+>> If I replace 'root' with     root = Resource() then / doesn't serve up
+>> anything, but /static is a directory listing of the static directory.
+>>
+>> The dynamic server is basically a copy of several tutorials cooked down
+>> to something that I could use to demonstrate the problem.
+>>
+>> What am I missing here? /headscratch
+>>
+>> Regards,
+>>
+>> Jeff
+>> _______________________________________________
+>> Twisted-Python mailing list
+>> Twisted-Python at twistedmatrix.com
+>> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181031/5c543cad/attachment.html>
+
+From barry.scott at forcepoint.com  Tue Oct  2 04:42:11 2018
+From: barry.scott at forcepoint.com (Scott, Barry)
+Date: Tue, 2 Oct 2018 10:42:11 +0000
+Subject: [Twisted-Python] doPoll timeout problems
+Message-ID: <3532952.vhGpKmxsgq@barry-scott-desktop>
+
+We are seeing a problem with poll being called very often and think that the 
+problem is in the timeout calculation.
+
+The code look like this:
+
+    def doPoll(self, timeout):
+        """Poll the poller for new events."""
+        if timeout is not None:
+            timeout = int(timeout * 1000) # convert seconds to milliseconds
+
+What this does is round down the timeout.
+
+We are experimenting with this:
+
+    def doPoll(self, timeout):
+        """Poll the poller for new events."""
+        if timeout is not None:
+            timeout = int(math.ceil(timeout * 1000)) # convert seconds to 
+milliseconds
+
+This rounds up the timeout.
+
+With this we see that the poll() is called far less often.
+
+The reason being that if the timeout is 0.0009 the code uses 0ms timeout.
+And if your CPU is fast enough it will do many 0ms timeout calls to poll 
+before the timer is removed from the _pendingTimedCalls list.
+
+And if the timeout is 0.0019 the time is 1ms and when the _pendingTimedCalls
+is check its first element has not expired yet. So keep doing calls with 1ms.
+
+Typically we see that the first element in the _pendingTimedCalls is a call to 
+_updateLogDateTime in HTTPFactory. We use a HTTPFactory many times and also 
+NevowSite. That causes a callLater for _updateLogDateTime for each factory.
+
+These _updateLogDateTime call seems to be a lot of complexity for no benefit. 
+After all time.time() is very fast on Linux, why cache the log time strings? 
+Especially when in our app we never write an access log file. 
+
+We are working on stubbing out all that code for our app to bring our 
+performance back up compared to old twisted 2.0.
+
+Barry
+
+
+
+
+
+From glyph at twistedmatrix.com  Tue Oct  2 23:54:32 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 2 Oct 2018 22:54:32 -0700
+Subject: [Twisted-Python] Twisted 18.9.0rc1 Release Candidate
+ Announcement
+In-Reply-To: <2cb01d85-3ca4-9c9b-9366-0eebb1e58a0c@atleastfornow.net>
+References: <2cb01d85-3ca4-9c9b-9366-0eebb1e58a0c@atleastfornow.net>
+Message-ID: <CEEDB18F-B207-4833-8DFF-F50052C19ACF@twistedmatrix.com>
+
+On Sep 28, 2018, at 3:43 AM, Amber Brown <hawkowl at atleastfornow.net> wrote:
+> 
+> Hello everyone! It's time again for a Twisted release. It's not a huge one, but it does have some important changes!
+
+Yay!
+
+> Twisted 18.9rc1 features:
+> 
+> - Support for Python 3.7!
+
+Woohoo!
+
+> - Better support for Unicode handling in logging tracebacks in Python 2
+> - trial -j now reports tracebacks on test failures on Python 3.
+> - twisted.internet._sslverify.ClientTLSOptions no longer raises IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+
+Note for future release notes; we should really use the public names impacted, which in this case is `twisted.internet.ssl.optionsForClientTLS` :-).
+
+> - HTTP/2 server connections will no longer time out active downloads that take too long.
+> 
+> You can get the tarball and the NEWS file at https://twistedmatrix.com/Releases/rc/18.9.0rc1/ , or you can try it out from PyPI:
+> 
+>     python -m pip install Twisted==18.9.0rc1
+> 
+> Please test it, and let me know how your applications fare, good or bad! If nothing comes up, I will release next week.
+
+Thanks again Amber!
+
+-g
+
+
+
+From meejah at meejah.ca  Thu Oct  4 18:19:11 2018
+From: meejah at meejah.ca (meejah)
+Date: Fri, 05 Oct 2018 04:19:11 +0400
+Subject: [Twisted-Python] txtorcon 18.2.0
+Message-ID: <86woqxxn28.fsf@atlantis.meejah.ca>
+
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+I'm glad to announce txtorcon 18.2.0. This adds or fixes the
+following:
+
+ * add `privateKeyFile=` option to endpoint parser (ticket 313)
+ * use `privateKey=` option properly in endpoint parser
+ * support `NonAnonymous` mode for `ADD_ONION` via `single_hop=` kwarg
+
+You can download the release from PyPI or GitHub (or of
+course "pip install txtorcon"):
+
+   https://pypi.python.org/pypi/txtorcon/18.2.0
+   https://github.com/meejah/txtorcon/releases/tag/v18.2.0
+
+Releases are also available from the hidden service:
+
+   http://timaq4ygg2iegci7.onion/txtorcon-18.2.0.tar.gz
+   http://timaq4ygg2iegci7.onion/txtorcon-18.2.0.tar.gz.asc
+
+Or via a "version 3" service:
+
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-18.2.0.tar.gz
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-18.2.0.tar.gz.asc
+
+You can verify the sha256sum of both by running the following 4 lines
+in a shell wherever you have the files downloaded:
+
+cat <<EOF | sha256sum --check
+b1714dfa633cb4097c9ea649c8c49657d9d22a990cc465bb904620428c5e684e  dist/txtorcon-18.2.0.tar.gz
+9d05f2b1144dfbc63844e78fbc51a195e3b39a79f280db50a81b346476c47e7b  dist/txtorcon-18.2.0-py2.py3-none-any.whl
+EOF
+
+thanks,
+meejah
+-----BEGIN PGP SIGNATURE-----
+
+iQFFBAEBCAAvFiEEnVor1WiOy4id680/wmAoAxKAaacFAlu2qS0RHG1lZWphaEBt
+ZWVqYWguY2EACgkQwmAoAxKAaafvxAgAxsqlJ7LcnX2SxU89NHXJZ/og9ZkcKF89
+RCAdYm/G1R4cJpqX9wjd0Kt38NJJyt/SuT95wGtYInLjrrTs3lzg7ToLoRxIodaF
+rXdlnUKaNJBStpIW62oJ1WRq8AFsjtjnxFv9iuIyUCA7BMh/nkKwCMoEOqtQ/KbO
+V43DjZpTr9cQmn62c1b6H+x+TVXhyZxiTK0d7WTHrrKbMOIpSKIJTezZvOfDV7MC
+dQdmLlhE1qxW8X5UjlNeWApuGWtY6U9aSVJcglN6Ecp8bZcvvS9LSWxn+KHkbzFX
+uLOgTyfp9/mQsAeVosp9HQ7iB+6BD27blJlMIBFPNLoBaFNjX91H7A==
+=v2ac
+-----END PGP SIGNATURE-----
+
+
+
+From meejah at meejah.ca  Fri Oct  5 17:14:58 2018
+From: meejah at meejah.ca (meejah)
+Date: Sat, 06 Oct 2018 03:14:58 +0400
+Subject: [Twisted-Python] txtorcon 18.3.0
+Message-ID: <86sh1kx9xp.fsf@atlantis.meejah.ca>
+
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Hot on the heels of 18.2.0 comes 18.3.0 because I forgot to add the
+"single_hop=" feature to endpoint-strings:
+
+ * add `singleHop={true,false}` for endpoint-strings as well
+
+You can download the release from PyPI or GitHub (or of
+course "pip install txtorcon"):
+
+   https://pypi.python.org/pypi/txtorcon/18.3.0
+   https://github.com/meejah/txtorcon/releases/tag/v18.3.0
+
+Releases are also available from the hidden service:
+
+   http://timaq4ygg2iegci7.onion/txtorcon-18.3.0.tar.gz
+   http://timaq4ygg2iegci7.onion/txtorcon-18.3.0.tar.gz.asc
+
+Or via a "version 3" service:
+
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-18.3.0.tar.gz
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-18.3.0.tar.gz.asc
+
+You can verify the sha256sum of both by running the following 4 lines
+in a shell wherever you have the files downloaded:
+
+cat <<EOF | sha256sum --check
+5601956b3a2452526cd1ea31662696a51ddbf8ed6452633ee464fc1ff275f8b0  dist/txtorcon-18.3.0.tar.gz
+8edac3b6d9c633b9182b4e5a2ed3ac86953ed44b9ea230aac3e0708c30b73861  dist/txtorcon-18.3.0-py2.py3-none-any.whl
+EOF
+
+thanks,
+meejah
+-----BEGIN PGP SIGNATURE-----
+
+iQFFBAEBCAAvFiEEnVor1WiOy4id680/wmAoAxKAaacFAlu37ycRHG1lZWphaEBt
+ZWVqYWguY2EACgkQwmAoAxKAaafaFAf/e4pVR7bL+gDMq2sJVaFVFzsQqPTV2RLi
+9e5A7RRfCPfDSPMyJg71I5qnXXY7aXMP5kBOmK1WF7hN06NRrYGuVifWzijogosP
+l/2KIGp1I6nK77JTNdjPqnSfQ9N+/ZXaXK3ILzlmSiyI3PMaLgPjB0x2JM6NhcfQ
+pPPKuL9K0bw94slGSTJa29py4yBV4VhAG0qwHEigw3Zwie2iAejk1GwSW9UEhJnp
+GBDECiaBdgDZZozn43Q9WXoVIcTnsjTBIN9Km3gNgIcn+ZbwH461HKDXvW7yDfsV
+oZ7thGr5xD9ENErOzWgU52kMOOuo/pM50vAlzJC518iV39deCD1GQA==
+=6d14
+-----END PGP SIGNATURE-----
+
+
+
+From trac at twistedmatrix.com  Sun Oct  7 00:05:18 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 07 Oct 2018 06:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1538892318.81.3605034277429961906@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181007/94209eec/attachment-0002.html>
+
+From contact at evilham.com  Fri Oct 12 13:18:01 2018
+From: contact at evilham.com (Evilham)
+Date: Fri, 12 Oct 2018 21:18:01 +0200
+Subject: [Twisted-Python] State of Names / DNS server
+Message-ID: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+
+Dear Twisted people,
+
+I've been taking a good look at twisted.names as a sever after checking
+twisted-infra/braid/services/names and how the zones are saved.
+
+Basically, I wonder what the state-of-afairs of running DNS with twisted is.
+
+By checking the code I see a couple things like:
+* That zone transfers are enabled by default and open to any host and
+only subclassing would help override that (it is the case on
+twistedmatrix.com btw).
+* Comments saying how some things are not RFC-compliant, but not how.
+* That DNSSEC is not implemented
+
+Besides the 1st point which could be a ticket (should I open it?), the
+other points appear to be somewhat documented in the open tickets:
+https://twistedmatrix.com/trac/query?status=assigned&status=new&status=reopened&component=names&group=priority&max=200&col=id&col=summary&col=status&col=owner&col=type&col=priority&col=milestone&order=priority
+
+But I wonder if there is something like a roadmap that I haven't seen or
+a very specific way to start helping on this front.
+
+Basically, I'd hate to start working on sth and it overlapping with
+someone else's work ;).
+
+
+I checked a couple tickets, and see that there is definitely a need for
+some cleanup, e.g. this one appears to be ready for closing
+https://twistedmatrix.com/trac/ticket/5048
+as it is marked as duplicate of a closed ticket.
+
+Also, I recall this PR from early summer, which appears to have been
+OK'd but is blocked by some failure in appveyor + buildbot:
+https://github.com/twisted/twisted/pull/954
+
+Thank you for any pointers, and thank you for Twisted!
+-- 
+Evilham
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: </pipermail/twisted-python/attachments/20181012/4ded9cb5/attachment-0002.sig>
+
+From trac at twistedmatrix.com  Sun Oct 14 00:05:19 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 14 Oct 2018 06:05:19 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1539497119.6.7715335669165845629@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181014/ad41e506/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Sun Oct 14 18:00:23 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Sun, 14 Oct 2018 17:00:23 -0700
+Subject: [Twisted-Python] State of Names / DNS server
+In-Reply-To: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+References: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+Message-ID: <1197D6EA-DF7A-4206-BAEF-E92F638513CC@twistedmatrix.com>
+
+
+
+> On Oct 12, 2018, at 12:18 PM, Evilham <contact at evilham.com> wrote:
+> 
+> Dear Twisted people,
+> 
+> I've been taking a good look at twisted.names as a sever after checking
+> twisted-infra/braid/services/names and how the zones are saved.
+
+The way the zones are saved there is fairly primitive.  It would be nice if we had a more robust backend; in particular I'd love it if we had a DNS API so that e.g. https://github.com/glyph/lancer could talk to something on twistedmatrix.com to provision HTTPS certificates via the LE DNS-01 challenge.
+
+> Basically, I wonder what the state-of-afairs of running DNS with twisted is.
+
+We run it on production on twistedmatrix.com and that site sees plenty of DNS traffic :-).
+
+> By checking the code I see a couple things like:
+> * That zone transfers are enabled by default and open to any host and
+> only subclassing would help override that (it is the case on
+> twistedmatrix.com btw).
+
+It would certainly be nice if this were controllable via a flag.  As you notice, this should be a ticket.
+
+> * Comments saying how some things are not RFC-compliant, but not how.
+
+Some investigation into these comments to make them more specific would be good.
+
+> * That DNSSEC is not implemented
+
+On the one hand, it would be great if someone would take the DNSSEC support already in various branches and get it over the finish line.  On the other, DNSSEC is bad (see <https://sockpuppet.org/blog/2015/01/15/against-dnssec/> for example), and is really not necessary to run a real-life DNS server or client, so it's a little difficult for various DNS-interested parties to get excited about it.  Nonetheless if people are going to do DNSSEC I'd rather they do it with Twisted than BIND, so if you could help integrate DNSSEC work that is a definite goal for the project!  So I hope somebody who disagrees with me about the utility of DNSSEC contributes to it.
+
+> Besides the 1st point which could be a ticket (should I open it?),
+
+Yup :).
+
+> the
+> other points appear to be somewhat documented in the open tickets:
+> https://twistedmatrix.com/trac/query?status=assigned&status=new&status=reopened&component=names&group=priority&max=200&col=id&col=summary&col=status&col=owner&col=type&col=priority&col=milestone&order=priority
+> 
+> But I wonder if there is something like a roadmap that I haven't seen or
+> a very specific way to start helping on this front.
+
+Right now the main thing we need is a motivated, interested maintainer to advance these goals.  This email sounds suspiciously like volunteering to be that :).
+
+> Basically, I'd hate to start working on sth and it overlapping with
+> someone else's work ;).
+
+There's lots of other work in progress, but as you can see from most of them, most of this work is stalled.  I'm 100% sure that if you started working on some of these tickets, the people whose work you might duplicate would be overjoyed that someone had done that, so I don't think you need to worry about stepping on anyone's toes.
+
+> I checked a couple tickets, and see that there is definitely a need for
+> some cleanup, e.g. this one appears to be ready for closing
+> https://twistedmatrix.com/trac/ticket/5048
+> as it is marked as duplicate of a closed ticket.
+
+Please go ahead and close it if you are reasonably sure of that!
+
+> Also, I recall this PR from early summer, which appears to have been
+> OK'd but is blocked by some failure in appveyor + buildbot:
+> https://github.com/twisted/twisted/pull/954
+
+Sadly we don't have a queue of "already approved" tickets (that I know of and check, anyway) so if this is stuck, it would be best to put it back into review so it shows up on https://twisted.reviews/ and gets attention.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181014/90698967/attachment-0002.html>
+
+From contact at evilham.com  Mon Oct 15 14:22:47 2018
+From: contact at evilham.com (Evilham)
+Date: Mon, 15 Oct 2018 22:22:47 +0200
+Subject: [Twisted-Python] State of Names / DNS server
+In-Reply-To: <1197D6EA-DF7A-4206-BAEF-E92F638513CC@twistedmatrix.com>
+References: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+ <1197D6EA-DF7A-4206-BAEF-E92F638513CC@twistedmatrix.com>
+Message-ID: <ec546ad3-df93-af4c-795b-8c2caf6801ad@evilham.com>
+
+Always a pleasure to read you Glyph,
+
+
+Am 15/10/2018 um 2:00 schrieb Glyph:
+>> On Oct 12, 2018, at 12:18 PM, Evilham <contact at evilham.com
+>> <mailto:contact at evilham.com>> wrote:
+>>
+>> Dear Twisted people,
+>>
+>> I've been taking a good look at twisted.names as a sever after checking
+>> twisted-infra/braid/services/names and how the zones are saved.
+> 
+> The way the zones are saved there is fairly primitive.  It would be nice
+> if we had a more robust backend; in particular I'd love it if we had a
+> DNS API so that e.g. https://github.com/glyph/lancer could talk to
+> something on twistedmatrix.com <http://twistedmatrix.com> to provision
+> HTTPS certificates via the LE DNS-01 challenge.
+
+
+indeed, this is pretty much one of the main reasons why I am looking
+into Twisted as a my DNS server :-).
+Twisted DNS + Klein --> (große) Awesomeness (reading Twisted's source
+code, makes you prone to bad jokes, that should be an official warning
+somewhere)
+
+
+>> Basically, I wonder what the state-of-afairs of running DNS with
+>> twisted is.
+> 
+> We run it on production on twistedmatrix.com <http://twistedmatrix.com>
+> and that site sees plenty of DNS traffic :-).
+> 
+>> By checking the code I see a couple things like:
+>> * That zone transfers are enabled by default and open to any host and
+>> only subclassing would help override that (it is the case on
+>> twistedmatrix.com <http://twistedmatrix.com> btw).
+> 
+> It would certainly be nice if this were controllable via a flag.  As you
+> notice, this should be a ticket.
+
+Done, ticket #9551.
+(Trac always thinks I am Spam with probability 90%, wonders!)
+https://twistedmatrix.com/trac/ticket/9551
+
+>> * Comments saying how some things are not RFC-compliant, but not how.
+> 
+> Some investigation into these comments to make them more specific would
+> be good.
+
+Also documented in ticket #9552; mostly to use trac as a quick overview.
+https://twistedmatrix.com/trac/ticket/9552
+
+>> * That DNSSEC is not implemented
+> 
+> On the one hand, it would be great if someone would take the DNSSEC
+> support already in various branches and get it over the finish line.  On
+> the other, DNSSEC is bad (see
+> <https://sockpuppet.org/blog/2015/01/15/against-dnssec/> for example),
+> and is really not necessary to run a real-life DNS server or client, so
+> it's a little difficult for various DNS-interested parties to get
+> excited about it.  Nonetheless if people are going to do DNSSEC I'd
+> rather they do it with Twisted than BIND, so if you could help integrate
+> DNSSEC work that is a definite goal for the project!  So I hope somebody
+> who disagrees with me about the utility of DNSSEC contributes to it.
+
+
+:-D I am also not fond of DNSSEC being *the* thing; but apparently email
+servers complain otherwise in certain environments.
+Twisted supporting DNSSEC would indeed make things easier.
+
+
+>> the
+>> other points appear to be somewhat documented in the open tickets:
+>> https://twistedmatrix.com/trac/query?status=assigned&status=new&status=reopened&component=names&group=priority&max=200&col=id&col=summary&col=status&col=owner&col=type&col=priority&col=milestone&order=priority
+>>
+>> But I wonder if there is something like a roadmap that I haven't seen or
+>> a very specific way to start helping on this front.
+> 
+> Right now the main thing we need is a motivated, interested maintainer
+> to advance these goals.  This email sounds suspiciously like
+> volunteering to be that :).
+
+Ouch, I guess I'll have to invent a time-dilution bubble first :-D. I'll
+see what I can do about this (DNS, not time-dilution bubble).
+
+>> Basically, I'd hate to start working on sth and it overlapping with
+>> someone else's work ;).
+> 
+> There's lots of other work in progress, but as you can see from most of
+> them, most of this work is stalled.  I'm 100% sure that if you started
+> working on some of these tickets, the people whose work you might
+> duplicate would be /overjoyed/ that someone had done that, so I don't
+> think you need to worry about stepping on anyone's toes.
+> 
+>> I checked a couple tickets, and see that there is definitely a need for
+>> some cleanup, e.g. this one appears to be ready for closing
+>> https://twistedmatrix.com/trac/ticket/5048
+>> as it is marked as duplicate of a closed ticket.
+> 
+> Please go ahead and close it if you are reasonably sure of that!
+
+I was hoping for one of the involved parties remembering and saying "oh
+yeah, that should be closed" otherwise it requires actual analysis, so
+I'll leave that for some-time-soon.
+
+>> Also, I recall this PR from early summer, which appears to have been
+>> OK'd but is blocked by some failure in appveyor + buildbot:
+>> https://github.com/twisted/twisted/pull/954
+> 
+> Sadly we don't have a queue of "already approved" tickets (that I know
+> of and check, anyway) so if this is stuck, it would be best to put it
+> back into review so it shows up on https://twisted.reviews/ and gets
+> attention.
+
+Added the review keyword again and removed the owner as per the
+developer documentation.
+
+
+Thank you for the helpful reply,
+-- 
+Evilham
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: </pipermail/twisted-python/attachments/20181015/21a5648a/attachment-0002.sig>
+
+From wiml at hhhh.org  Tue Oct 16 12:07:13 2018
+From: wiml at hhhh.org (Wim Lewis)
+Date: Tue, 16 Oct 2018 11:07:13 -0700 (PDT)
+Subject: [Twisted-Python] State of Names / DNS server
+In-Reply-To: <e42b92a5-0b96-686e-6219-dc41371b7b36@evilham.com>
+Message-ID: <Pine.NEB.4.64.1810161008260.26215@photomat.hhhh.org>
+
+Evilham writes:
+> Also, I recall this PR from early summer, which appears to have been
+> OK'd but is blocked by some failure in appveyor + buildbot:
+> https://github.com/twisted/twisted/pull/954
+
+That one's mine. I've finally figured out the Twisted CI infrastructure 
+well enough to get things marked green (and I have commit access now as 
+well, thanks Glyph!), so that PR is really only waiting for me to read & 
+consider some of the review feedback on public attribute names.
+
+Trac 9373 was my attempt to upstream work I did last year on secure 
+dynamic dns updates (NSUPDATE + transaction signatures). 9373 has narrowed 
+in scope to just the two RR types in PR 954, since there are older tickets 
+for the other records. I plan to combine my work with some of the existing 
+abandoned PRs for KEY, DNSKEY, and SIG and try to sheperd those through 
+the process but that's on the back burner for now.
+
+Russ Nelson is/was also doing some work with Names and these RR types. I 
+think he's interested in the server side of secure dyn-dns, but I'm not 
+sure. (I was only working on a client implementation.) Both he and I have 
+github forks with some of our work in branches, if you'd like to see the 
+direction we've been going.
+
+As for DNSSEC, I've seen those arguments against it and I find them pretty 
+unconvincing, but I suppose that's a topic for a different thread.
+
+
+
+From wiml at hhhh.org  Tue Oct 16 20:28:11 2018
+From: wiml at hhhh.org (Wim Lewis)
+Date: Tue, 16 Oct 2018 19:28:11 -0700 (PDT)
+Subject: [Twisted-Python] doPoll timeout problems
+In-Reply-To: <3532952.vhGpKmxsgq@barry-scott-desktop>
+Message-ID: <Pine.NEB.4.64.1810161909350.21602@photomat.hhhh.org>
+
+Scott, Barry wrote:
+> We are seeing a problem with poll being called very often and think that the 
+> problem is in the timeout calculation.
+
+I think you're right and that changing that line to use ceil() is a good 
+fix. It does mean that some timeouts might happen up to a millisecond 
+later than they would otherwise, but I think that's better than having the 
+reactor spin-wait to consume time.
+
+This probably only happens with the poll() reactor, because all the other 
+APIs seem to have higher resolution timeouts --- select, epoll, kqueue, 
+ppoll all have microsecond or even nanosecond timeout parameters.
+
+If there is code that actually needs sub-millisecond timeout resolution it 
+might be possible for Twisted to implement that using setitimer() or 
+similar, but that seems like a lot of work to support an exotic use case 
+that could be handled more efficiently by switching to epoll etc.
+
+I checked the history of that line of code and it dates back all the way to 
+the first poll()-based event loop implementation in 2001. Perhaps computers 
+were slow enough back then that a call to poll() would take most of a 
+millisecond :) but in any case the rounding-down behavior doesn't seem to have
+been explicitly chosen.
+
+> These _updateLogDateTime call seems to be a lot of complexity for no 
+> benefit. After all time.time() is very fast on Linux, why cache the log 
+> time strings?
+
+Perhaps it is not the time() call but the cost of converting a time value 
+to a string that is being avoided here? Sometimes the calendar/date 
+calculations are expensive.
+
+It seems to me that HTTPFactory could be implemented more efficiently by 
+only caching the string on demand, and then setting a timer to clear the 
+cache (reset _logDateTime to None) at the next 1-second mark. On a 
+heavily-loaded server, that would have the same properties as the current 
+code; but on a lightly-loaded server it would avoid running that callback 
+unneccessarily. And overall I don't think it's any more complicated than 
+the current implementation.
+
+Wim.
+
+
+
+From glyph at twistedmatrix.com  Tue Oct 16 23:25:05 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 16 Oct 2018 22:25:05 -0700
+Subject: [Twisted-Python] State of Names / DNS server
+In-Reply-To: <Pine.NEB.4.64.1810161008260.26215@photomat.hhhh.org>
+References: <Pine.NEB.4.64.1810161008260.26215@photomat.hhhh.org>
+Message-ID: <8DA6457E-BF8A-430B-BAFF-550774C5C133@twistedmatrix.com>
+
+
+
+> On Oct 16, 2018, at 11:07 AM, Wim Lewis <wiml at hhhh.org> wrote:
+> 
+> Evilham writes:
+>> Also, I recall this PR from early summer, which appears to have been
+>> OK'd but is blocked by some failure in appveyor + buildbot:
+>> https://github.com/twisted/twisted/pull/954
+> 
+> That one's mine. I've finally figured out the Twisted CI infrastructure well enough to get things marked green (and I have commit access now as well, thanks Glyph!), so that PR is really only waiting for me to read & consider some of the review feedback on public attribute names.
+> 
+> Trac 9373 was my attempt to upstream work I did last year on secure dynamic dns updates (NSUPDATE + transaction signatures). 9373 has narrowed in scope to just the two RR types in PR 954, since there are older tickets for the other records. I plan to combine my work with some of the existing abandoned PRs for KEY, DNSKEY, and SIG and try to sheperd those through the process but that's on the back burner for now.
+> 
+> Russ Nelson is/was also doing some work with Names and these RR types. I think he's interested in the server side of secure dyn-dns, but I'm not sure. (I was only working on a client implementation.) Both he and I have github forks with some of our work in branches, if you'd like to see the direction we've been going.
+
+Thanks very much for sending out this summary; sounds like we may have an actual twisted.names team soon!
+
+> As for DNSSEC, I've seen those arguments against it and I find them pretty unconvincing, but I suppose that's a topic for a different thread.
+
+You don't need to convince me!  Someone should work on DNSSEC for twisted.names, and that person should probably think DNSSEC is a good idea, so I don't want to convince you :-).
+
+-g
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181016/d88cd786/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Tue Oct 16 23:59:07 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 16 Oct 2018 22:59:07 -0700
+Subject: [Twisted-Python] doPoll timeout problems
+In-Reply-To: <Pine.NEB.4.64.1810161909350.21602@photomat.hhhh.org>
+References: <Pine.NEB.4.64.1810161909350.21602@photomat.hhhh.org>
+Message-ID: <C9095A0D-265D-4BDB-9D86-0FA7556F9597@twistedmatrix.com>
+
+
+
+> On Oct 16, 2018, at 7:28 PM, Wim Lewis <wiml at hhhh.org> wrote:
+> 
+> Scott, Barry wrote:
+>> We are seeing a problem with poll being called very often and think that the problem is in the timeout calculation.
+> 
+> I think you're right and that changing that line to use ceil() is a good fix. It does mean that some timeouts might happen up to a millisecond later than they would otherwise, but I think that's better than having the reactor spin-wait to consume time.
+> 
+> This probably only happens with the poll() reactor, because all the other APIs seem to have higher resolution timeouts --- select, epoll, kqueue, ppoll all have microsecond or even nanosecond timeout parameters.
+> 
+> If there is code that actually needs sub-millisecond timeout resolution it might be possible for Twisted to implement that using setitimer() or similar, but that seems like a lot of work to support an exotic use case that could be handled more efficiently by switching to epoll etc.
+> 
+> I checked the history of that line of code and it dates back all the way to the first poll()-based event loop implementation in 2001. Perhaps computers were slow enough back then that a call to poll() would take most of a millisecond :) but in any case the rounding-down behavior doesn't seem to have
+> been explicitly chosen.
+> 
+>> These _updateLogDateTime call seems to be a lot of complexity for no benefit. After all time.time() is very fast on Linux, why cache the log time strings?
+> 
+> Perhaps it is not the time() call but the cost of converting a time value to a string that is being avoided here? Sometimes the calendar/date calculations are expensive.
+
+I believe it dates back to a time when syscalls were surprisingly expensive, and gettimeofday() or equivalent was still a syscall.  I remember looking at profiles Back In The Day where getting the current time dominated. It certainly predates the zero-overhead VDSO method available today.
+
+> It seems to me that HTTPFactory could be implemented more efficiently by only caching the string on demand, and then setting a timer to clear the cache (reset _logDateTime to None) at the next 1-second mark. On a heavily-loaded server, that would have the same properties as the current code; but on a lightly-loaded server it would avoid running that callback unneccessarily. And overall I don't think it's any more complicated than the current implementation.
+
+The current algorithm is really just silly.  In the absence of a compelling benchmark where it can be shown to hurt performance (we should check with the ones on speed.twistedmatrix.com), I think we could forego the caching entirely, and just do the simple thing where the string is computed as needed.
+
+-glyph
+
+
+From barry.scott at forcepoint.com  Wed Oct 17 08:56:46 2018
+From: barry.scott at forcepoint.com (Barry Scott)
+Date: Wed, 17 Oct 2018 15:56:46 +0100
+Subject: [Twisted-Python] doPoll timeout problems
+In-Reply-To: <C9095A0D-265D-4BDB-9D86-0FA7556F9597@twistedmatrix.com>
+References: <Pine.NEB.4.64.1810161909350.21602@photomat.hhhh.org>
+ <C9095A0D-265D-4BDB-9D86-0FA7556F9597@twistedmatrix.com>
+Message-ID: <2301360.ufX4KIxzzZ@barry-scott-desktop>
+
+On Wednesday, 17 October 2018 06:59:07 BST Glyph wrote:
+> > On Oct 16, 2018, at 7:28 PM, Wim Lewis <wiml at hhhh.org> wrote:
+> > 
+> > Scott, Barry wrote:
+> >> We are seeing a problem with poll being called very often and think that
+> >> the problem is in the timeout calculation.> 
+> > I think you're right and that changing that line to use ceil() is a good
+> > fix. It does mean that some timeouts might happen up to a millisecond
+> > later than they would otherwise, but I think that's better than having
+> > the reactor spin-wait to consume time.
+
+Do you want a pull request for this fix or will you make this small change?
+
+> > 
+> > This probably only happens with the poll() reactor, because all the other
+> > APIs seem to have higher resolution timeouts --- select, epoll, kqueue,
+> > ppoll all have microsecond or even nanosecond timeout parameters.
+> > 
+> > If there is code that actually needs sub-millisecond timeout resolution it
+> > might be possible for Twisted to implement that using setitimer() or
+> > similar, but that seems like a lot of work to support an exotic use case
+> > that could be handled more efficiently by switching to epoll etc.
+> > 
+> > I checked the history of that line of code and it dates back all the way
+> > to the first poll()-based event loop implementation in 2001. Perhaps
+> > computers were slow enough back then that a call to poll() would take
+> > most of a millisecond :) but in any case the rounding-down behavior
+> > doesn't seem to have been explicitly chosen.
+> > 
+> >> These _updateLogDateTime call seems to be a lot of complexity for no
+> >> benefit. After all time.time() is very fast on Linux, why cache the log
+> >> time strings?> 
+> > Perhaps it is not the time() call but the cost of converting a time value
+> > to a string that is being avoided here? Sometimes the calendar/date
+> > calculations are expensive.
+> I believe it dates back to a time when syscalls were surprisingly expensive,
+> and gettimeofday() or equivalent was still a syscall.  I remember looking
+> at profiles Back In The Day where getting the current time dominated. It
+> certainly predates the zero-overhead VDSO method available today.
+> > It seems to me that HTTPFactory could be implemented more efficiently by
+> > only caching the string on demand, and then setting a timer to clear the
+> > cache (reset _logDateTime to None) at the next 1-second mark. On a
+> > heavily-loaded server, that would have the same properties as the current
+> > code; but on a lightly-loaded server it would avoid running that callback
+> > unneccessarily. And overall I don't think it's any more complicated than
+> > the current implementation.
+> The current algorithm is really just silly.  In the absence of a compelling
+> benchmark where it can be shown to hurt performance (we should check with
+> the ones on speed.twistedmatrix.com), I think we could forego the caching
+> entirely, and just do the simple thing where the string is computed as
+> needed.
+
+I'll find time to put up a pull request to simplify and allow for on/off 
+config of the logging for you to consider.
+
+Barry
+
+
+> 
+> -glyph
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+
+
+
+
+
+From wiml at hhhh.org  Thu Oct 18 23:51:13 2018
+From: wiml at hhhh.org (Wim Lewis)
+Date: Thu, 18 Oct 2018 22:51:13 -0700
+Subject: [Twisted-Python] doPoll timeout problems
+In-Reply-To: <2301360.ufX4KIxzzZ@barry-scott-desktop>
+Message-ID: <20181018225113.1f27de88@kosmos>
+
+On Wed Oct 17 08:56:46 MDT 2018, Barry Scott wrote:
+> Do you want a pull request for this fix or will you make this small
+> change?
+
+Twisted's contribution process is kind of rigid: every PR needs an
+accompanying Trac ticket. If you file Trac tickets for these two issues
+I'll make the PRs (or you can if you like — I think Github even has a
+way to make small PRs entirely through the web interface now).
+
+ https://twistedmatrix.com/trac/wiki/TwistedDevelopment#SubmittingaPatch
+
+I'd like to hear other users of the poll reactor weigh in on the "ceil"
+change, though. It seems straightforwardly correct to me, but it also
+seems like the kind of small change that could have a subtle unexpected
+downside.
+
+
+
+From hawkowl at atleastfornow.net  Fri Oct 19 05:56:02 2018
+From: hawkowl at atleastfornow.net (Amber Brown)
+Date: Fri, 19 Oct 2018 22:56:02 +1100
+Subject: [Twisted-Python] Twisted 18.9.0 Release Announcement
+Message-ID: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+
+On behalf of Twisted Matrix Laboratories, I am honoured to announce the 
+release of Twisted 18.9!
+
+The highlights of this release are:
+
+- Support for Python 3.7!
+- Better support for Unicode handling in logging tracebacks in Python 2
+- trial -j now reports tracebacks on test failures on Python 3.
+- twisted.internet._sslverify.ClientTLSOptions no longer raises 
+IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+- HTTP/2 server connections will no longer time out active downloads 
+that take too long.
+For more information, check the NEWS file (link provided below).
+
+You can find the downloads at <https://pypi.python.org/pypi/Twisted> (or 
+alternatively <http://twistedmatrix.com/trac/wiki/Downloads>). The NEWS 
+file is also available at 
+<https://github.com/twisted/twisted/blob/twisted-18.9.0/NEWS>.
+
+Many thanks to everyone who had a part in this release - the supporters 
+of the Twisted Software Foundation, the developers who contributed code 
+as well as documentation, and all the people building great things with 
+Twisted!
+
+Twisted Regards,
+Amber Brown (HawkOwl)
+
+
+
+From hawkowl at atleastfornow.net  Fri Oct 19 07:33:03 2018
+From: hawkowl at atleastfornow.net (Amber Brown)
+Date: Sat, 20 Oct 2018 00:33:03 +1100
+Subject: [Twisted-Python] Twisted 18.9.0 Release Announcement
+In-Reply-To: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+References: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+Message-ID: <5a321138-4d66-8a10-9430-a86dbfc73c8d@atleastfornow.net>
+
+That NEWS link should be 
+https://github.com/twisted/twisted/blob/twisted-18.9.0/NEWS.rst -- one 
+day I'll remember to check my links before sending ;)
+
+-Amber
+
+On 19/10/18 10:56 pm, Amber Brown wrote:
+> On behalf of Twisted Matrix Laboratories, I am honoured to announce 
+> the release of Twisted 18.9!
+>
+> The highlights of this release are:
+>
+> - Support for Python 3.7!
+> - Better support for Unicode handling in logging tracebacks in Python 2
+> - trial -j now reports tracebacks on test failures on Python 3.
+> - twisted.internet._sslverify.ClientTLSOptions no longer raises 
+> IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+> - HTTP/2 server connections will no longer time out active downloads 
+> that take too long.
+> For more information, check the NEWS file (link provided below).
+>
+> You can find the downloads at <https://pypi.python.org/pypi/Twisted> 
+> (or alternatively <http://twistedmatrix.com/trac/wiki/Downloads>). The 
+> NEWS file is also available at 
+> <https://github.com/twisted/twisted/blob/twisted-18.9.0/NEWS>.
+>
+> Many thanks to everyone who had a part in this release - the 
+> supporters of the Twisted Software Foundation, the developers who 
+> contributed code as well as documentation, and all the people building 
+> great things with Twisted!
+>
+> Twisted Regards,
+> Amber Brown (HawkOwl)
+>
+
+
+
+From trac at twistedmatrix.com  Sun Oct 21 00:05:17 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 21 Oct 2018 06:05:17 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1540101917.63.6455672788630774371@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181021/be0eabf6/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Mon Oct 22 02:33:12 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Mon, 22 Oct 2018 01:33:12 -0700
+Subject: [Twisted-Python] Twisted 18.9.0 Release Announcement
+In-Reply-To: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+References: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+Message-ID: <589FF47B-9EB0-4DC8-96AB-E43B2A9CE2BF@twistedmatrix.com>
+
+
+
+> On Oct 19, 2018, at 4:56 AM, Amber Brown <hawkowl at atleastfornow.net> wrote:
+> 
+> On behalf of Twisted Matrix Laboratories, I am honoured to announce the release of Twisted 18.9!
+> 
+> The highlights of this release are:
+> 
+> - Support for Python 3.7!
+
+Hooray!
+
+> - Better support for Unicode handling in logging tracebacks in Python 2
+> - trial -j now reports tracebacks on test failures on Python 3.
+
+This is huge news.  (It used to silently exit!)  And it's nice that error reporting is steadily improving.
+
+We should start trying to run Twisted's tests under `trial -j` - in aggregate, this could save a *lot* of time between development environments and our extensive CI system.
+
+> - twisted.internet._sslverify.ClientTLSOptions no longer raises IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+
+This is twisted.internet.ssl.optionsForClientTLS for those of you who are not maintaining Twisted's innards :-).
+
+> - HTTP/2 server connections will no longer time out active downloads that take too long.
+
+
+
+> Many thanks to everyone who had a part in this release - the supporters of the Twisted Software Foundation, the developers who contributed code as well as documentation, and all the people building great things with Twisted!
+
+Thanks for another great release everyone!
+
+-glyph
+
+
+From contact at evilham.com  Tue Oct 23 03:25:47 2018
+From: contact at evilham.com (Evilham)
+Date: Tue, 23 Oct 2018 11:25:47 +0200
+Subject: [Twisted-Python] Twisted 18.9.0 Release Announcement
+In-Reply-To: <589FF47B-9EB0-4DC8-96AB-E43B2A9CE2BF@twistedmatrix.com>
+References: <99b64560-e304-2ccb-c517-3ee77895075b@atleastfornow.net>
+ <589FF47B-9EB0-4DC8-96AB-E43B2A9CE2BF@twistedmatrix.com>
+Message-ID: <efc9c58e-348b-8c7b-fba4-a9e12879ce54@evilham.com>
+
+Am 22/10/2018 um 10:33 schrieb Glyph:
+>> - twisted.internet._sslverify.ClientTLSOptions no longer raises IDNAError when given an IPv6 address as a hostname in a HTTPS URL.
+> This is twisted.internet.ssl.optionsForClientTLS for those of you who are not maintaining Twisted's innards :-).
+> 
+
+Ahà!
+
+I think I was hit by this last week while using treq and decided to pass
+bytes directly :-D didn't have time to research it more / make it
+reproducible, but this was likely it!
+
+Thanks everyone.
+-- 
+Evilham
+
+
+
+From wiml at hhhh.org  Tue Oct 23 23:21:20 2018
+From: wiml at hhhh.org (Wim Lewis)
+Date: Tue, 23 Oct 2018 22:21:20 -0700
+Subject: [Twisted-Python] Etiquette of tagging people for reviews?
+Message-ID: <20181024052120.GB24971@kosmos.hhhh.org>
+
+Every project seems to have its own norms around this. When I have some code in a 
+reviewable state, I will sometimes look for someone who has recently worked on 
+that piece of code or similar features and request a review from them, just to get 
+the ball rolling. Is this a reasonable thing to do with Twisted? Or should I just 
+let people check the review queue when they have time for reviewing?
+
+
+
+From glyph at twistedmatrix.com  Wed Oct 24 00:36:20 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 23 Oct 2018 23:36:20 -0700
+Subject: [Twisted-Python] Etiquette of tagging people for reviews?
+In-Reply-To: <20181024052120.GB24971@kosmos.hhhh.org>
+References: <20181024052120.GB24971@kosmos.hhhh.org>
+Message-ID: <13CC0AB4-DADE-40E3-B0BF-2790B0C16BA3@twistedmatrix.com>
+
+
+
+> On Oct 23, 2018, at 10:21 PM, Wim Lewis <wiml at hhhh.org> wrote:
+> 
+> Every project seems to have its own norms around this. When I have some code in a 
+> reviewable state, I will sometimes look for someone who has recently worked on 
+> that piece of code or similar features and request a review from them, just to get 
+> the ball rolling. Is this a reasonable thing to do with Twisted? Or should I just 
+> let people check the review queue when they have time for reviewing?
+
+Thanks for asking :-).
+
+My feeling on this is that the official mechanism here is the review queue, i.e. https://twisted.reviews/ <https://twisted.reviews/>.  Regular contributors to the project should scan this periodically and try to do whatever reviews they can.
+
+However, everybody requires some prompting sometimes, and it can often motivate some progress on an issue.  As long as you're not aggressively spamming anyone, I'm always a fan of reaching out via IRC, this mailing list, a mention on a PR, or whatever channel is appropriate to ping a potential reviewer.  A tried and true strategy is trading reviews - offering to review one of the reviewer's choice in exchange :).
+
+Personally my github notifications are a smoking crater and I will pretty much never notice a "requested review" via that interface right now; however, I do hope that we can eventually make twisted.reviews actually point at the queue of "review requested" tickets on the Twisted project on github rather than being a trac report.  (One part of that workflow would be making @twisted/twisted-contributors automatically have a review requested for every open PR...)
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181023/51cd0bca/attachment-0002.html>
+
+From trac at twistedmatrix.com  Sun Oct 28 00:05:18 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 28 Oct 2018 06:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1540706718.58.7027207722183783456@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181028/4e82c5f8/attachment-0002.html>
+
+From grimmtooth at gmail.com  Tue Oct 30 15:31:27 2018
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Tue, 30 Oct 2018 17:31:27 -0400
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+Message-ID: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+
+I'm sure I'm overlooking something obvious here but I just can't get my
+head around it.
+
+Here's the setup: twisted.web server that generates dynamic content. Child
+that serves up static content, e.g. css and favoicon.  However, the static
+content isn't making it. Instead, any hit to localhost/static actually
+yields up a copy of / again.
+
+Here's the server code
+
+import sys
+
+from twisted.internet import reactor, endpoints
+from twisted.web import server
+from twisted.web.resource import Resource
+from twisted.web.static import File
+
+sys.path.append('lib')
+
+content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="/static/test.css" type="text/css" />
+</head>
+<body>
+    <span class='twistedTest'>This</span> is a test
+</body>
+</html>
+"""
+
+
+class tServer(Resource):
+    isLeaf = True
+
+    def render_GET(self, request):
+        return bytes(content, "utf-8")
+
+
+if __name__ == "__main__":
+    root = tServer()
+    root.putChild(b"static", File("static"))
+
+    site = server.Site(root)
+    endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+    endpoint.listen(site)
+
+    reactor.run()
+    print("Shutting down!")
+
+It's run with the command 'python tserver.py'.  The expectation is that
+what is inside the custom <span> will be red.
+
+In the same dir as the script is a subdir 'static' with the css file inside
+it.
+
+If I replace 'root' with     root = Resource() then / doesn't serve up
+anything, but /static is a directory listing of the static directory.
+
+The dynamic server is basically a copy of several tutorials cooked down to
+something that I could use to demonstrate the problem.
+
+What am I missing here? /headscratch
+
+Regards,
+
+Jeff
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181030/a3935856/attachment-0002.html>
+
+From donal.mcmullan at gmail.com  Tue Oct 30 16:41:27 2018
+From: donal.mcmullan at gmail.com (Donal McMullan)
+Date: Tue, 30 Oct 2018 22:41:27 +0000
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+Message-ID: <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+
+Try replacing:
+isLeaf = True
+with
+isLeaf = False
+
+
+On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+
+> I'm sure I'm overlooking something obvious here but I just can't get my
+> head around it.
+>
+> Here's the setup: twisted.web server that generates dynamic content. Child
+> that serves up static content, e.g. css and favoicon.  However, the static
+> content isn't making it. Instead, any hit to localhost/static actually
+> yields up a copy of / again.
+>
+> Here's the server code
+>
+> import sys
+>
+> from twisted.internet import reactor, endpoints
+> from twisted.web import server
+> from twisted.web.resource import Resource
+> from twisted.web.static import File
+>
+> sys.path.append('lib')
+>
+> content = """
+> <!DOCTYPE html>
+> <html lang="en">
+> <head>
+>     <meta charset="UTF-8">
+>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+> </head>
+> <body>
+>     <span class='twistedTest'>This</span> is a test
+> </body>
+> </html>
+> """
+>
+>
+> class tServer(Resource):
+>     isLeaf = True
+>
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+>
+>
+> if __name__ == "__main__":
+>     root = tServer()
+>     root.putChild(b"static", File("static"))
+>
+>     site = server.Site(root)
+>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>     endpoint.listen(site)
+>
+>     reactor.run()
+>     print("Shutting down!")
+>
+> It's run with the command 'python tserver.py'.  The expectation is that
+> what is inside the custom <span> will be red.
+>
+> In the same dir as the script is a subdir 'static' with the css file
+> inside it.
+>
+> If I replace 'root' with     root = Resource() then / doesn't serve up
+> anything, but /static is a directory listing of the static directory.
+>
+> The dynamic server is basically a copy of several tutorials cooked down to
+> something that I could use to demonstrate the problem.
+>
+> What am I missing here? /headscratch
+>
+> Regards,
+>
+> Jeff
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181030/d557aa76/attachment-0002.html>
+
+From grimmtooth at gmail.com  Wed Oct 31 15:15:33 2018
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Wed, 31 Oct 2018 17:15:33 -0400
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+Message-ID: <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+
+Tried that, I get a big
+
+No Such Resource
+
+No such child resource.
+back.  Watching it in FF's development panel, I see a 404 come back for /.
+/static doesn't get served at all, of course.
+
+This, however, DID work.
+
+class tServer(Resource):
+    isLeaf = False
+
+    def getChild(self, path, request):
+        print('You know what you doing.')
+
+        if path == b'':
+            print("Rendering /")
+            return self
+
+        return Resource.getChild(self, path, request)
+
+    def render_GET(self, request):
+        return bytes(content, "utf-8")
+
+(ignore my printf debugging plz)
+
+So, Thanks! :)
+
+Regards,
+
+Jeff
+
+
+On Tue, Oct 30, 2018 at 6:42 PM Donal McMullan <donal.mcmullan at gmail.com>
+wrote:
+
+> Try replacing:
+> isLeaf = True
+> with
+> isLeaf = False
+>
+>
+> On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+>
+>> I'm sure I'm overlooking something obvious here but I just can't get my
+>> head around it.
+>>
+>> Here's the setup: twisted.web server that generates dynamic content.
+>> Child that serves up static content, e.g. css and favoicon.  However, the
+>> static content isn't making it. Instead, any hit to localhost/static
+>> actually yields up a copy of / again.
+>>
+>> Here's the server code
+>>
+>> import sys
+>>
+>> from twisted.internet import reactor, endpoints
+>> from twisted.web import server
+>> from twisted.web.resource import Resource
+>> from twisted.web.static import File
+>>
+>> sys.path.append('lib')
+>>
+>> content = """
+>> <!DOCTYPE html>
+>> <html lang="en">
+>> <head>
+>>     <meta charset="UTF-8">
+>>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+>> </head>
+>> <body>
+>>     <span class='twistedTest'>This</span> is a test
+>> </body>
+>> </html>
+>> """
+>>
+>>
+>> class tServer(Resource):
+>>     isLeaf = True
+>>
+>>     def render_GET(self, request):
+>>         return bytes(content, "utf-8")
+>>
+>>
+>> if __name__ == "__main__":
+>>     root = tServer()
+>>     root.putChild(b"static", File("static"))
+>>
+>>     site = server.Site(root)
+>>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>>     endpoint.listen(site)
+>>
+>>     reactor.run()
+>>     print("Shutting down!")
+>>
+>> It's run with the command 'python tserver.py'.  The expectation is that
+>> what is inside the custom <span> will be red.
+>>
+>> In the same dir as the script is a subdir 'static' with the css file
+>> inside it.
+>>
+>> If I replace 'root' with     root = Resource() then / doesn't serve up
+>> anything, but /static is a directory listing of the static directory.
+>>
+>> The dynamic server is basically a copy of several tutorials cooked down
+>> to something that I could use to demonstrate the problem.
+>>
+>> What am I missing here? /headscratch
+>>
+>> Regards,
+>>
+>> Jeff
+>> _______________________________________________
+>> Twisted-Python mailing list
+>> Twisted-Python at twistedmatrix.com
+>> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181031/5c543cad/attachment-0002.html>
+

@@ -1,0 +1,160 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Remove setupClass branch of trial - what is the	motivation?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Remove%20setupClass%20branch%20of%20trial%20-%20what%20is%20the%0A%09motivation%3F&In-Reply-To=%3Cd06a5cd30511022146q3711b42fy%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="044383.html">
+   <LINK REL="Next"  HREF="044414.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Remove setupClass branch of trial - what is the	motivation?</H1>
+    <B>Jonathan Lange</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Remove%20setupClass%20branch%20of%20trial%20-%20what%20is%20the%0A%09motivation%3F&In-Reply-To=%3Cd06a5cd30511022146q3711b42fy%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Remove setupClass branch of trial - what is the	motivation?">jml at mumak.net
+       </A><BR>
+    <I>Wed Nov  2 22:46:15 MST 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="044383.html">[Twisted-Python] Remove setupClass branch of trial - what is the	motivation?
+</A></li>
+        <LI>Next message (by thread): <A HREF="044414.html">[Twisted-Python] Remove setupClass branch of trial - what is	the motivation?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44399">[ date ]</a>
+              <a href="thread.html#44399">[ thread ]</a>
+              <a href="subject.html#44399">[ subject ]</a>
+              <a href="author.html#44399">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 02/11/05, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at divmod.com</A> &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at divmod.com</A>&gt; wrote:
+&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> On Tue, 1 Nov 2005 12:38:21 -0500, Jean-Paul Calderone &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at divmod.com</A>&gt; wrote:
+</I>&gt;<i> &gt;On Tue, 01 Nov 2005 10:47:09 -0500, Itamar Shtull-Trauring
+</I>&gt;<i> &gt;&lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">itamar at itamarst.org</A>&gt; wrote:
+</I>&gt;<i> &gt;&gt;Hi,
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;Still haven't gotten an answer to this; why is the motivation for
+</I>&gt;<i> &gt;&gt;deprecating a perfectly reasonable feature?
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;FWIW, I also would like to know the answer to this question.
+</I>&gt;<i>
+</I>&gt;<i> Yeah, uh...
+</I>&gt;<i>
+</I>&gt;<i> As I understand it the implementation was previously horrendously broken.  Now it is not.  Given that it is now no longer broken, and some quite reasonable tests I've seen make use of it (in particular: tests for Divmod ClickChronicle do some very expensive setup in a setUpClass), I'd like to see it stick around.
+</I>&gt;<i>
+</I>
+Thanks everyone for your patience while I make the time to answer this question.
+
+I'd like to deprecate setUpClass, but I'm not totally sold on it.  The
+biggest problem I have with it is that it encourages (nay, forces)
+users to share state between tests.  This may be a problem inherent
+with any setup optimisation -- but I'd like to experiment first.
+
+My other problems are to do with implementation -- and these are the
+problems I feel most keenly.  Trial only knows about classes in the
+test loader.  After that, it only knows about things to call run() on.
+ Sometimes these are collections of tests (suites), sometimes these
+are actual tests.  setUpClass mandates a ClassSuite -- a suite that
+runs setUpClass at the start and tearDownClass at the end.
+
+One big implication is that a TestCase isn't (necessarily) a
+self-contained TestCase.  It has to be wrapped in a ClassSuite to make
+sure that it gets properly set up and torn down.  Running a single
+test shouldn't require a suite.
+
+ClassSuite also means that the test loader needs to have two suite
+factories.  This makes it more difficult to extend (which you'd want
+to do for alternative runners (ala GUIs) and also if you have a cool
+way to optimise your tests locally -- see below).
+
+In addition, ClassSuite makes &quot;what happens when tests are run&quot; a fair
+bit more complicated.  This is particularly confusing wrt
+KeyboardInterrupt and reactor cleanup.
+
+Oh yeah, and it makes things incompatible with unittest.
+
+
+The example below shows what I'm considering at the moment.  This is
+the testresources system by Robert Collins.  One of the reasons I
+hesitated on this post is that I wanted to have chewed over this more.
+But here 'tis.
+
+
+Instead of:
+
+class FooTest(unittest.TestCase):
+    def setUpClass(self):
+        self.db = ExpensiveAcquisition()
+
+    def tearDownClass(self):
+        self.db.expensiveDismissal()
+
+    def test_foo(self):
+        self.failUnless(self.db.isAwesome())
+
+we have:
+
+class DBResource(resources.Resource):
+    def makeResource(self):
+        cls.db = ExpensiveAcquisition()
+        return cls.db
+    makeResource = classmethod(makeResource)
+
+    def cleanResource(self):
+        cls.db.expensiveDismissal()
+    cleanResource = classmethod(cleanResource)
+
+
+class FooTest(unittest.ResourcedTestCase):
+    resources = [ ('db', DBResource) ]
+
+    def test_foo(self):
+         self.failUnless(self.db.isAwesome())
+
+
+One of the advantages of this is that it can be made faster than
+setUpClass / tearDownClass because the OptimizingTestSuite can look at
+all the tests and resources underneath is to establish the best order
+to run the tests, and it can preserve resources between TestCase
+classes.
+
+cheers,
+jml
+
+PS. Jp, I hope your day continues as wonderfully as you thought it
+would start. :)
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="044383.html">[Twisted-Python] Remove setupClass branch of trial - what is the	motivation?
+</A></li>
+	<LI>Next message (by thread): <A HREF="044414.html">[Twisted-Python] Remove setupClass branch of trial - what is	the motivation?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44399">[ date ]</a>
+              <a href="thread.html#44399">[ thread ]</a>
+              <a href="subject.html#44399">[ subject ]</a>
+              <a href="author.html#44399">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

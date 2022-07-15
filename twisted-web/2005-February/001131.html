@@ -1,0 +1,190 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] html cache with timeout
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20html%20cache%20with%20timeout&In-Reply-To=A7D910CA-7412-11D9-A757-000A95A50FB2%40fuhm.net">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   <LINK REL="Next"  HREF="001132.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] html cache with timeout</H1>
+    <B>Valentino Volonghi aka Dialtone</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20html%20cache%20with%20timeout&In-Reply-To=A7D910CA-7412-11D9-A757-000A95A50FB2%40fuhm.net"
+       TITLE="[Twisted-web] html cache with timeout">dialtone at divmod.com
+       </A><BR>
+    <I>Tue Feb  1 05:58:49 MST 2005</I>
+    <P><UL>
+        
+        <LI>Next message: <A HREF="001132.html">[Twisted-web] html cache with timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1131">[ date ]</a>
+              <a href="thread.html#1131">[ thread ]</a>
+              <a href="subject.html#1131">[ subject ]</a>
+              <a href="author.html#1131">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Tue, 1 Feb 2005 00:32:25 -0500, James Y Knight &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">foom at fuhm.net</A>&gt; wrote:
+&gt;<i> Yes, it is. One thing that I think would make it more useful, if it can 
+</I>&gt;<i> be pulled off, is to allow caching at any level. That is, something 
+</I>&gt;<i> like the following stan:
+</I>&gt;<i> html[body[cached(timeout=10, keys=(IFoo, 
+</I>&gt;<i> IBar))[semi_constant_header_stuff], very_dynamic_content]]
+</I>&gt;<i> 
+</I>&gt;<i> That is, a function which will render its contents to a string the 
+</I>&gt;<i> first time it's called, and store/return it for the next 10 seconds, 
+</I>&gt;<i> using the same mechanism as the posted patch. The cache would be keyed 
+</I>&gt;<i> off certain interfaces, and only those will get passed on to the 
+</I>&gt;<i> functions being rendered inside, thus ensuring the safety of the cache.
+</I>&gt;<i> 
+</I>&gt;<i> I think there are a lot of pages that are mostly &quot;semi-static&quot;, but 
+</I>&gt;<i> have some very dynamic content in them, so something like could be 
+</I>&gt;<i> *very* useful.
+</I>&gt;<i> 
+</I>&gt;<i> Anyhow, this is just an outline of how I think it might work, but I 
+</I>&gt;<i> haven't tried to implement it yet, so I don't know if it will work out 
+</I>&gt;<i> the way I'd like it to. :)
+</I>
+Here I am. Below there's a more fine grained implementation. You can use it like this:
+
+cached(name=&quot;foo&quot;, lifetime=10)[t.p['hi boy']]
+
+the name should be enough to give a cache for everyone since you can do:
+
+cached(name=IAvatar(ctx).uid, lifetime=60)[t.p['Hi ', IAvatar(ctx).username]]
+
+If you don't pass the lifetime parameter it won't be cached.
+
+I must admit I haven't tested it yet since I don't know how to write unittests for this stuff... ;P. Let me know what do you think about. I also think that having another nevow tag for this cached would be ok.
+
+Index: nevow/tags.py
+===================================================================
+--- nevow/tags.py       (revision 1136)
++++ nevow/tags.py       (working copy)
+@@ -62,7 +62,9 @@
+ def inlineJS(s):
+     return script(type=&quot;text/javascript&quot;, language=&quot;JavaScript&quot;)[xml('\n//&lt;![CDATA[\n%s\n//]]&gt;\n' % s)]
+ 
+-__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object', '_map', 'drange', 'Tag', 'directive', 'xml', 'raw', 'slot', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
++__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object',
++                  '_map', 'drange', 'Tag', 'directive', 'xml', 'raw',
++                  'slot', 'cached', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
+ 
+ 
+ ########################
+Index: nevow/flat/flatstan.py
+===================================================================
+--- nevow/flat/flatstan.py      (revision 1136)
++++ nevow/flat/flatstan.py      (working copy)
+@@ -226,6 +226,31 @@
+         return serialize(original.default, context)
+     return serialize(data, context)
+ 
++_CACHE = {}
++from time import time as now
++def CachedSerializer(original, context):
++    if context.precompile:
++        original.children = precompile(original.children, context)
++        return original
++
++    cached = _CACHE.get(original.name, None)
++    if cached and cached[0] &gt; now()-original.lifetime:
++        return cached[1]
++    toSerialize = serialize(original.children, context)
++    tmp = []
++    while 1:
++        try:
++            d = toSerialize.next()
++            tmp.append(d)
++        except StopIteration:
++            c = ''.join(tmp)
++            break
++        except AttributeError:
++            c = toSerialize
++            break
++    _CACHE[original.name] = (now(), c)
++    return c
++
+ def ContextSerializer(original, context):
+     originalContext = original.clone(deep=False)
+     originalContext.precompile = context and context.precompile or False
+Index: nevow/__init__.py
+===================================================================
+--- nevow/__init__.py   (revision 1136)
++++ nevow/__init__.py   (working copy)
+@@ -182,6 +182,7 @@
+ nevow.flat.flatstan.RendererSerializer            nevow.inevow.IRenderer
+ nevow.flat.flatstan.DirectiveSerializer           nevow.stan.directive
+ nevow.flat.flatstan.SlotSerializer                nevow.stan.slot
++nevow.flat.flatstan.CachedSerializer              nevow.stan.cached 
+ nevow.flat.flatstan.ContextSerializer             nevow.context.WovenContext
+ nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.Deferred
+ nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.DeferredList
+Index: nevow/stan.py
+===================================================================
+--- nevow/stan.py       (revision 1136)
++++ nevow/stan.py       (working copy)
+@@ -119,8 +119,33 @@
+         &quot;&quot;&quot;
+         raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
+ 
++class cached(object):
++    &quot;&quot;&quot;Marker for cached content
++    &quot;&quot;&quot;
++    __slots__ = ['name', 'children', 'lifetime']
+ 
++    def __init__(self, name, lifetime=0):
++        self.name = name
++        self.children = []
++        self.lifetime = lifetime
+ 
++    def __repr__(self):
++        return &quot;cached('%s','%s')&quot; % self.name, self.lifetime
++
++    def __getitem__(self, children):
++        &quot;&quot;&quot;cached content is what is being cached
++        &quot;&quot;&quot;
++        if not isinstance(children, (list, tuple)):
++            children = [children]
++        self.children.extend(children)
++        return self
++
++    def __iter__(self):
++        &quot;&quot;&quot;Prevent an infinite loop if someone tries to do
++            for x in cached('foo'):
++        &quot;&quot;&quot;
++        raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
++
+ class Tag(object):
+     &quot;&quot;&quot;Tag instances represent XML tags with a tag name, attributes,
+     and children. Tag instances can be constructed using the Prototype
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	<LI>Next message: <A HREF="001132.html">[Twisted-web] html cache with timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1131">[ date ]</a>
+              <a href="thread.html#1131">[ thread ]</a>
+              <a href="subject.html#1131">[ subject ]</a>
+              <a href="author.html#1131">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

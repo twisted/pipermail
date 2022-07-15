@@ -1,0 +1,337 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] App design / Twisted Logging?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20App%20design%20/%20Twisted%20Logging%3F&In-Reply-To=E1D9hQW-0000pT-01%40pyramid.twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009800.html">
+   <LINK REL="Next"  HREF="009802.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] App design / Twisted Logging?</H1>
+    <B>Paul Campbell</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20App%20design%20/%20Twisted%20Logging%3F&In-Reply-To=E1D9hQW-0000pT-01%40pyramid.twistedmatrix.com"
+       TITLE="[Twisted-Python] App design / Twisted Logging?">paul at ref.nmedia.net
+       </A><BR>
+    <I>Sat Mar 12 23:49:31 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009800.html">[Twisted-Python] deferToThread()
+</A></li>
+        <LI>Next message: <A HREF="009802.html">[Twisted-Python] Choosing /reactors
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9801">[ date ]</a>
+              <a href="thread.html#9801">[ thread ]</a>
+              <a href="subject.html#9801">[ subject ]</a>
+              <a href="author.html#9801">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&gt;<i> &gt;&gt; -&gt; Do I need a thread for every copy/move operation (large 
+</I>&gt;<i> &gt;files via network)?
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;Nope. That's the beauty of twisted code. I've written this 
+</I>&gt;<i> &gt;sort of handling
+</I>&gt;<i> &gt;multiple packet trains many times. Write a protocol.
+</I>&gt;<i> 
+</I>&gt;<i> Hm, sounds like using FTP and not shutil.move via system's SMB?
+</I>&gt;<i> Or is there already something better in twisted?
+</I>&gt;<i> 
+</I>&gt;<i> If I'd write my own protocol to wrap shutil.move,
+</I>&gt;<i> the operation would be blocking because I don't
+</I>&gt;<i> work on file block level and the protocol doesn't make sense.
+</I>&gt;<i> I'm not feeling like writing file transfer code on file block level.
+</I>&gt;<i> Or do you think it would be worth the hassle?
+</I>
+It is so darned easy to write your own protocols that there's really not
+much point in reusing like you are attempting to do. Here's a simple
+example:
+
+from twisted.internet.protocol import Protocol, ClientFactory
+from sys import stdout
+from string import unpack
+
+class FileXferProtocol(Protocol):
+    &quot;&quot;&quot;Handles receiving files. Fire off via the factory.&quot;&quot;&quot;
+    def dataReceived(self, data):
+        if not hasattr(self, &quot;filesize&quot;):
+            # First block of the file; get the final size
+            self.filesize = unpack(&quot;!L&quot;, data[:4])
+            data = data[4:]
+
+        # Receiving blocks of the file
+        self.openfile.write(data)
+        self.recvdlen += len(data)
+        if self.recvdlen == self.filesize:
+            self.openfile.close()
+            self.transport.loseConnection()
+        return
+
+class FileXferFactory(ClientFactory):
+    &quot;&quot;&quot;Creates protocols to receive files&quot;&quot;&quot;
+    protocol = FileXferProtocol
+
+    def __init__(self, filename):
+        self.filename = filename
+        self.openfile = file(filename)
+
+if __name__ == '__main__':
+    # First, create the factory protocol and initialize it
+    f = FileXferFactory(&quot;tempfile&quot;)
+    # Second, connect to a server to get a file (127.0.0.1:9999 in this case)
+    reactor.connectTCP(&quot;127.0.0.1&quot;, 9999, f)
+    reactor.run() # Call the reactor
+
+You could get hung up on worrying about blocks and reassembly and whatnot
+(and I have done so in the past), but why bother? About the only thing
+necessary here is to install some sort of error checking. In the factory
+code it might be appropriate to do some error checking (make sure the entire
+file was received) and then to call the next piece of code (the file handler).
+
+On the server side, simply read some bytes and shovel it onto the port. It
+would look something like this:
+
+class fileXferSend(Protocol):
+    &quot;&quot;&quot;Sends files&quot;&quot;&quot;
+    def connectionMade(self):
+        # The factory already set this up with a file to send
+        self.openfile = open(self.filename)
+        # Somewhat braindead code because the standard object won't give length
+        self.openfile.seek(0,2)
+        self.length = self.openfile.tell()
+        # Start over
+        self.openfile.seek(0, 0)
+        block = self.openfile.read(500) # Prime the system
+        self.transport.write(pack(&quot;!L&quot;, self.length) + block)
+        reactor.callLater(0, self.sendBlocks)
+    def sendBlocks(self):
+        # Keep sending out blocks of the file until it is done
+        block = self.openfile.read(1000)
+        if len(block): # Keep repeating as long as there is data
+            self.transport.write(block)
+            reactor.callLater(0, self.sendBlocks)
+        else:
+            self.openfile.close()
+        return
+
+This works very easily because TCP already handles packet assembly and
+ordering and checksums on all the blocks. So all you have to do is shovel
+the data across the network. At least theoretically, you don't even have to
+keep track of file length. Also, you could alternatively simply prepend a
+byte at the beginning of the file. The byte could be say &quot;C&quot; for a
+continuation or &quot;E&quot; for &quot;eof of file&quot;. The code would work almost the
+same. Or you could be very careful about monitoring the error codes that
+come out of connectionLost to be sure whether it was a &quot;normal&quot; session
+close from the host or a dropped session (error), and don't bother
+implementing ANY sort of &quot;find the end of the file&quot; stuff.
+
+&gt;<i> So not using DOM but per-line XML handling.
+</I>&gt;<i> Not that convenient, because I use only small bits
+</I>&gt;<i> of all the XML data that are spread all over the files,
+</I>&gt;<i> but I guess it would become better twisted code.
+</I>
+Perhaps. I'm not really familiar with minidom all that well. The above
+code contains a perfect example of what I mean. If I had set the parameter
+in the file.read() command to -1 or omitted it, then the .read() function
+would have dumped the entire file into a string. Although this may have
+serious memory implications, the basic problem is that it will also block
+twisted while it is reading the entire file into memory. Instead, the above
+code reads a chunk of file, sends a packet, and then returns to the reactor
+in a short loop (reactor.callLater(0, ...)) which allows the reactor to
+intersperse calls with other events.
+
+&gt;<i> That's perhaps a general problem with twisted: There are great
+</I>&gt;<i> solutions for everything, but you need to know them in detail
+</I>&gt;<i> to know which fits your problem. Or you must know how you should
+</I>&gt;<i> reshape your problem to fit in some twisted solution...
+</I>
+Did you ever notice the same problem with basically every other framework
+out there? I suggested that you read up on flows for a specific reason.
+Flows allow you to do what you are suggesting in a very twisted way...you
+can sequence your XML procedure so that you break it up into short bits of
+execution that by themselves are effectively non-blocking. That is the
+&quot;twisted way&quot;. Flows let you manage this situation when you have a full
+blown state machine, not just a linear sequence of steps. BUT, the 
+documentation for Flows and Deferred's is really good at explaining how
+to break your code up into small non-blocking pieces. So I wasn't really
+pushing you to USE the Flows module, but to use the concepts that are in
+it (just read the introductory parts to get the idea).
+
+
+&gt;<i> I know twisted &quot;does it all&quot;(TM), but was is &quot;it&quot;? ;-)
+</I>
+That is the trouble with frameworks. WxWidgets is one of the best GUI
+frameworks available that works well with Python (via wxPython). But
+interestingly enough, wxWidgets includes it's own sockets library! However,
+before you ask, it is not easy to get wxPython (and wxWidgets) to play well
+with twisted. It is also reactor based, but unlike Python, the reactor in
+wxWidgets is very unfriendly to all other reactor-based systems.
+
+&gt;<i> I'm just trying to write a simple directory watcher (I need
+</I>&gt;<i> this at every corner of my app), Patrick Lauber wrote an answer
+</I>&gt;<i> to my initial question on that, but that wasn't really what I needed.
+</I>&gt;<i>
+</I>&gt;<i> It works so far that it calls a deferred callback if it gets a
+</I>&gt;<i> notify on a new/changed file, but only once; next time I get an
+</I>&gt;<i> &quot;AlreadyCalledError&quot; - looks like I don't yet understand deferreds.
+</I>
+Common error. A deferred is a promise to call back at some time in the
+future, but only once (no more, no less)! Quite often,
+reactor.callLater(0, xxx) is what you
+want to do. On the face of it, reactor.callLater() appears to be a timer
+mechanism. But what happens if you call it with the twisted idiom
+reactor.callLater(0, function, parameters)?
+
+This is a very common twisted idiom. What it does is schedule another
+function to run immediately when the reactor is allowed to schedule (assuming
+that there aren't several more functions that are already ready to run...
+otherwise it waits in line). And (subject to buffer limits on pending calls),
+you can call a function via the reactor as many times as you want.
+
+Otherwise, your code can call back again and receive another
+deferred, and eventually another callback. Also, you may be looking instead
+for &quot;deferredList&quot;. For instance, let's say that you are processing a list
+of files in parallel. In threading-based code, you'd fire off a thread for
+each file and then wait for each one to return (or perhaps never wait). In
+deferred's, you'd do something similar:
+
+dlist = list()
+for i in filelist:
+    dlist.append(handleFile(i) # handleFile returns a deferred
+return defer.deferredList(dlist)
+
+This routine will return a single Deferred, but the callback results will be
+a list of the results (and their errback/callback status) from ALL of the
+handleFile() calls.
+
+&gt;<i> At the moment it's inherited from pb.Root, because I'll need it to
+</I>&gt;<i> run remotely sometimes, but perhaps it would be better to use a
+</I>&gt;<i> service or something else -- it should run &quot;all the time&quot; if not
+</I>&gt;<i> stopped and call a callback for every file.
+</I>&gt;<i> I attached the file, perhaps someone can point out my biggest mistakes?
+</I>
+pb is useful if you intend on using the Perspective Broker in the future
+for twisted's own version of RPC's. If not, it is probably wise to stay
+away. PB makes it very easy to refactor your code into PB form later on
+if you so desire. My only problem with it is that you REALLY need to
+control both ends of the pipe and you have to live within the limitations
+of TCP/IP (a big limit in the certain P2P code which is better off with
+very light weight RPC's).
+
+&gt;<i> &gt;first but once you get used to it, deferred's seem just well...obvious.
+</I>&gt;<i> 
+</I>&gt;<i> I hope to get into that higher state of mind soon. ;-)
+</I>
+Everywhere that you anticipate your code blocking on a procedure call,
+the code itself needs to return a deferred early on (before it blocks). Then
+later on, it uses the deferred to pass a result. Frequently, you will have
+bits of code that read something like this:
+
+d = defer.Deferred()
+reactor.callLater(0.00001, nextStep, d)
+return d
+
+def nextStep(d):
+    ...does something...
+    d.callback(real return)
+
+Then the caller commonly does something like:
+state.x = &lt;state is a utility class to pass around function state&gt;
+d=callDeferredCode(xxx)
+d.addcallback(responseHandler, state)
+return
+
+def responseHandler(response, state):
+    ...
+
+This totally decouples the two routines. Essentially, the calling function
+and the called function coordinate an orderly shutdown of the calling
+function's code. Then the callee goes about it's business of running some
+lengthy function (perhaps waiting on network transmissions) before finally
+returning with a value in hand. The caller then picks up via the second
+function and the saved state.
+
+This pattern is a bit ugly but at least it is reasonably readable and it
+gets around so many ugly details. Once you've written a couple of these,
+you'll start to think about when and where and how to place the deferred
+and reactor.callLater calls appropriately. At first, it's just a bit of
+a challenge wrapping your head around the concept of continuations.
+
+Oh...and the state thing...this gets mentioned once in a while and once
+you use it, it is highly intuitive but new users frequently miss the
+concept. First, create a &quot;utility class&quot;:
+
+class Utility:
+    pass
+
+What good is an empty class? Plenty! Within a class, you can always use
+the self object for this. But outside of that, use the utility class as
+a temporary storage bin with named slots. By this I mean,
+
+state = Utility()
+
+state.filename = &quot;the file I don't want to forget about&quot;
+state.status = &quot;The number I'll need later&quot;
+
+
+Also one other thing...once you create a deferred (defer.Deferred), you
+can chain off of it as much as you want in both the caller and callee.
+For instance, the callee may not bother creating the deferred but may instead
+make calls to a deeper function and simply addCallback() before returning
+the SAME deferred variable to the caller. Then when the deferred actually
+fires, it can pre-proces the returned results before returning them to the
+top-level caller.
+
+Clear as much, right? Well, this situation happens for instance if you have
+a function to clean up/process the raw results from a network I/O call
+before returning the answers to a higher level. For instance, if you are
+writing your own RPC handler to use UDP packets (which I've done), the
+lowest level is responsible for handling network I/O. The next level up
+is responsible for detecting and handling retransmissions. The next level
+up is responsible for splitting/concatenating data that is too big to
+fit inside a single packet. And the next level up is responsible for doing
+a version of pickle/unpickle. So that the higher level routines communicate
+essentially with &quot;rpcSend(method, param1, param2, param3...) calls while the
+lower level routines completely obscure the details (and are in turn
+obscured from the lower level details of the protocol).
+
+&gt;<i> I enjoyed being able to switch the logging output, e.g. from file to
+</I>&gt;<i> database or email per config file without the need to go into the code.
+</I>&gt;<i> I don't feel like re-inventing the wheel, but as Glyph pointed out,
+</I>&gt;<i> the config syntax of standard logging is just ugly and messy; the
+</I>&gt;<i> config syntax of log4[j|perl|net] ist much more logical. Perhaps
+</I>&gt;<i> someone should write a log4twisted module...
+</I>
+More likely, just a log4python, with sufficient room that log4twisted doesn't
+really require too much. For instance, log4python can use the .next() call
+to iterate over log entries (when reading from it). twisted code will just
+use this interface (instead of .dumpEntireLog) to sanely read the log in
+chunks.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009800.html">[Twisted-Python] deferToThread()
+</A></li>
+	<LI>Next message: <A HREF="009802.html">[Twisted-Python] Choosing /reactors
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9801">[ date ]</a>
+              <a href="thread.html#9801">[ thread ]</a>
+              <a href="subject.html#9801">[ subject ]</a>
+              <a href="author.html#9801">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

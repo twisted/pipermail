@@ -1,0 +1,152 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted server blocking on MySQL read in main	thread when using adbapi.ConnectionPool
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted%20server%20blocking%20on%20MySQL%20read%20in%20main%0A%09thread%20when%20using%20adbapi.ConnectionPool&In-Reply-To=%3C519A9463.5070201%40cernium.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="026998.html">
+   <LINK REL="Next"  HREF="026960.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted server blocking on MySQL read in main	thread when using adbapi.ConnectionPool</H1>
+    <B>Dan Williams</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted%20server%20blocking%20on%20MySQL%20read%20in%20main%0A%09thread%20when%20using%20adbapi.ConnectionPool&In-Reply-To=%3C519A9463.5070201%40cernium.com%3E"
+       TITLE="[Twisted-Python] twisted server blocking on MySQL read in main	thread when using adbapi.ConnectionPool">dwilliams at cernium.com
+       </A><BR>
+    <I>Mon May 20 15:23:47 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="026998.html">[Twisted-Python] Service downtime
+</A></li>
+        <LI>Next message: <A HREF="026960.html">[Twisted-Python] twisted server blocking on MySQL read in main	thread when using adbapi.ConnectionPool
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#26958">[ date ]</a>
+              <a href="thread.html#26958">[ thread ]</a>
+              <a href="subject.html#26958">[ subject ]</a>
+              <a href="author.html#26958">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>...and I don't understand why it is running in the main (reactor)
+thread.
+
+I have a twisted.web server that uses adbapi.ConnectionPool to read
+and sometimes update a MySQL database with small amounts of data at a
+fairly high rate.
+
+It's been stable for quite a while, but is now seeing increasing load
+and been hanging a couple of times a day. monit gets triggered when
+the web server fails to respond to an HTTP GET health check. SIGTERM
+won't terminate it, so I'm using monit to send it SIGABRT.
+
+Examining the core file shows that the main (reactor) thread is
+blocking in a read in the mysql client library:
+
+&gt;<i> Program terminated with signal 6, Aborted.
+</I>&gt;<i> #0  0x00007f549b341d2d in read () from
+</I>&gt;<i> /lib/x86_64-linux-gnu/libpthread.so.0
+</I>&gt;<i> (gdb) bt 10
+</I>&gt;<i> #0  0x00007f549b341d2d in read () from
+</I>&gt;<i> /lib/x86_64-linux-gnu/libpthread.so.0
+</I>&gt;<i> #1  0x00007f5497429112 in vio_read_buff () from
+</I>&gt;<i> /usr/lib/x86_64-linux-gnu/libmysqlclient.so.18
+</I>&gt;<i> #2  0x00007f549741b24f in ?? () from
+</I>&gt;<i> /usr/lib/x86_64-linux-gnu/libmysqlclient.so.18
+</I>&gt;<i> #3  0x00007f549741bde8 in my_net_read () from
+</I>&gt;<i> /usr/lib/x86_64-linux-gnu/libmysqlclient.so.18
+</I>&gt;<i> #4  0x00007f54974155ba in cli_safe_read () from
+</I>&gt;<i> /usr/lib/x86_64-linux-gnu/libmysqlclient.so.18
+</I>&gt;<i> #5  0x00007f5497416618 in ?? () from
+</I>&gt;<i> /usr/lib/x86_64-linux-gnu/libmysqlclient.so.18
+</I>&gt;<i> #6  0x00007f5497413f8b in mysql_next_result () from
+</I>&gt;<i> /usr/lib/x86_64-linux-gnu/libmysqlclient.so.18
+</I>&gt;<i> #7  0x00007f549792bccc in ?? () from
+</I>&gt;<i> /usr/lib/python2.7/dist-packages/_mysql.so
+</I>&gt;<i> #8  0x0000000000497ea4 in PyEval_EvalFrameEx ()
+</I>&gt;<i> #9  0x0000000000498602 in PyEval_EvalFrameEx ()
+</I>&gt;<i> (More stack frames follow...)
+</I>&gt;<i> (gdb) bt -10
+</I>&gt;<i> #62 0x0000000000498602 in PyEval_EvalFrameEx ()
+</I>&gt;<i> #63 0x0000000000498602 in PyEval_EvalFrameEx ()
+</I>&gt;<i> #64 0x0000000000498602 in PyEval_EvalFrameEx ()
+</I>&gt;<i> #65 0x0000000000498602 in PyEval_EvalFrameEx ()
+</I>&gt;<i> #66 0x000000000049f1c0 in PyEval_EvalCodeEx ()
+</I>&gt;<i> #67 0x00000000004a9081 in PyRun_FileExFlags ()
+</I>&gt;<i> #68 0x00000000004a9311 in PyRun_SimpleFileExFlags ()
+</I>&gt;<i> #69 0x00000000004aa8bd in Py_Main ()
+</I>&gt;<i> #70 0x00007f549a05976d in __libc_start_main () from
+</I>&gt;<i> /lib/x86_64-linux-gnu/libc.so.6
+</I>&gt;<i> #71 0x000000000041b9b1 in _start ()
+</I>&gt;<i> (gdb)
+</I>
+All of the 10 thread pool threads are sitting waiting on locks:
+
+&gt;<i> (gdb) thread 11
+</I>&gt;<i> [Switching to thread 11 (Thread 0x7f54963dd700 (LWP 2691))]
+</I>&gt;<i> #0  0x00007f549b340fd0 in sem_wait () from
+</I>&gt;<i> /lib/x86_64-linux-gnu/libpthread.so.0
+</I>&gt;<i> (gdb) bt 10
+</I>&gt;<i> #0  0x00007f549b340fd0 in sem_wait () from
+</I>&gt;<i> /lib/x86_64-linux-gnu/libpthread.so.0
+</I>&gt;<i> #1  0x0000000000547525 in lock_PyThread_acquire_lock.49023 ()
+</I>&gt;<i> #2  0x0000000000497ea4 in PyEval_EvalFrameEx ()
+</I>&gt;<i> #3  0x000000000049f1c0 in PyEval_EvalCodeEx ()
+</I>&gt;<i> #4  0x00000000004983b8 in PyEval_EvalFrameEx ()
+</I>&gt;<i> #5  0x000000000049f1c0 in PyEval_EvalCodeEx ()
+</I>&gt;<i> #6  0x00000000004983b8 in PyEval_EvalFrameEx ()
+</I>&gt;<i> #7  0x000000000049f1c0 in PyEval_EvalCodeEx ()
+</I>&gt;<i> #8  0x00000000004a8a92 in function_call ()
+</I>&gt;<i> #9  0x00000000004e9f36 in PyObject_Call ()
+</I>&gt;<i> (More stack frames follow...)
+</I>&gt;<i> (gdb)
+</I>
+What has me very confused is seeing the MySQL read happening in the
+main thread; how can that be?
+
+This is running in AWS EC2 on a pretty busy host but there isn't any
+discernible correlation between times of high I/O or CPU usage and the
+hangs.
+
+Environment is Ubuntu 12.04.1 LTS, Python 2.7.3, Twisted 11.1.0.
+
+Thanks for any help!
+
+Dan
+
+
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="026998.html">[Twisted-Python] Service downtime
+</A></li>
+	<LI>Next message: <A HREF="026960.html">[Twisted-Python] twisted server blocking on MySQL read in main	thread when using adbapi.ConnectionPool
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#26958">[ date ]</a>
+              <a href="thread.html#26958">[ thread ]</a>
+              <a href="subject.html#26958">[ subject ]</a>
+              <a href="author.html#26958">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

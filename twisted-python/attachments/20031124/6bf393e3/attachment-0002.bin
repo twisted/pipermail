@@ -1,0 +1,104 @@
+from twisted.application import internet, service, strports
+
+from twisted.python import usage
+from twisted.python.util import sibpath
+
+from twisted.web.server import Site
+from twisted.cred.portal import Portal
+from twisted.cred.checkers import AllowAnonymousAccess, FilePasswordDB
+from twisted.web.woven.guard import UsernamePasswordWrapper, SessionWrapper
+from twisted.cred.credentials import IAnonymous
+
+from twisted.spread import pb
+
+from ratcontrol import login
+from ratcontrol.web import utility
+import ratcontrol
+
+class Options(usage.Options):
+    optParameters = [
+        ['httpport', None, ratcontrol.config.httpPortNumber,
+            "Port to run web server on."],
+        ['pbport', None, ratcontrol.config.pbPortNumber,
+            "Port to run perspective broker server on."],
+        ['flashport', None, 4321,
+            "Port to run flash conduit on."],
+    ]
+    optFlags = [
+        ['web', None, "Enable web server."],
+        ['pb', None, "Enable pb server."],
+        ['flash', None, "Enable flash conduit."],
+    ]
+
+    def opt_httpport(self, port):
+        """Set the port to run the web server on"""
+        self['httpport'] = port
+
+    def opt_pbport(self, port):
+        """Set the port to run the pb server on"""
+        self['pbport'] = port
+
+    def opt_flashport(self, port=None):
+        """Start a flashconduit on the specified port.
+        """
+        if not port:
+            port = "4321"
+        self['flashport'] = port
+
+
+def hashMD5(username, password, infile_password):
+    import md5
+    return md5.new(password).hexdigest()
+
+def addHTTP(config, realm, service):
+    portal = Portal(realm)
+    # Allow anonymous access.
+    portal.registerChecker(AllowAnonymousAccess(), IAnonymous)
+    # Allow users registered in the password file.
+    portal.registerChecker(FilePasswordDB(sibpath(__file__, "passwords.txt")))
+
+    site = Site(
+        SessionWrapper(
+            UsernamePasswordWrapper(portal, callback=utility.loginCallback)
+        ),
+    )
+    strports.service("tcp:%s" % config['httpport'], site).setServiceParent(service)
+
+    # Add flash conduit for LivePage.
+    # This allows javascript be sent from server to client
+    # without a browser refresh.
+    from twisted.web.woven.flashconduit import FlashConduitFactory
+    flashport = config.get('flashport', None)
+    i = internet.TCPServer(int(flashport), FlashConduitFactory(site))
+    i.setServiceParent(service)
+
+
+def addPB(config, realm, service):
+    portal = Portal(realm)
+    # Allow anonymous access.
+    portal.registerChecker(AllowAnonymousAccess(), IAnonymous)
+    # Allow users registered in the password file.
+    portal.registerChecker(FilePasswordDB(sibpath(__file__, "passwords.txt")))
+
+    factory = pb.PBServerFactory(portal)
+    svc = internet.TCPServer(config['pbport'], factory)
+    svc.setName("RatControl PB Service")
+    svc.setServiceParent(service)
+
+def makeService(config):
+    s = service.MultiService()
+
+    rlm = login.RatControlRealm()
+
+    systems = (
+        ('web', addHTTP),
+        ('pb',  addPB),
+    )
+
+    for (key, func) in systems:
+        # Add the service if it is enabled in the config obj
+        if config.has_key(key):
+            if config[key]:
+                func(config, rlm, s)
+    return s
+

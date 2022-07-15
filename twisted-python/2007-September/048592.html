@@ -1,0 +1,224 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] tracebacks in twisted web2
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20tracebacks%20in%20twisted%20web2&In-Reply-To=%3C82767f010709251904w20c3af47j30a7cf3f540fd6bb%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="048591.html">
+   <LINK REL="Next"  HREF="048593.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] tracebacks in twisted web2</H1>
+    <B>Paul Perez</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20tracebacks%20in%20twisted%20web2&In-Reply-To=%3C82767f010709251904w20c3af47j30a7cf3f540fd6bb%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] tracebacks in twisted web2">paul at paulperez.net
+       </A><BR>
+    <I>Tue Sep 25 20:04:10 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="048591.html">[Twisted-Python] reactor.stop() doesn't stop the select reactor?
+</A></li>
+        <LI>Next message (by thread): <A HREF="048593.html">[Twisted-Python] Discovering Twisted : reactor.stop()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48592">[ date ]</a>
+              <a href="thread.html#48592">[ thread ]</a>
+              <a href="subject.html#48592">[ subject ]</a>
+              <a href="author.html#48592">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Dear List:
+
+I am having a heck of a time trying to figure out why this traceback is
+happening, and I was hoping that you could shed some light on the situation.
+I am sorry for bothering you with this simple thing, but I can't seem to
+figure it out!
+
+The code and traceback are below. The traceback only happens when I call
+httprequest.writeResponse(httpresponse) from a callback. When the same code
+is called inline and not in a deferred, it works just fine. Even stranger is
+that the response is written to the client even though the traceback occurs.
+
+
+An explanation of what I am trying to do:
+
+A consumer requests data. If there is data in the queue when the consumer
+first checks, return the result right away. If there is no data present,
+return a deferred and wait. When the producer inserts data into the queue,
+check if there is a consumer waiting. If so, begin callback chain on
+consumer.
+
+The code works fine (no traceback) in the case where there is no deferred
+needed (in QueueCache.maybedefer). When there is a deferred, the traceback
+happens during the callback (in QueueCache.put). Again, the consumer
+actually gets the correct result, but the traceback still occurs!
+
+Any ideas?
+
+Thanks in advance!
+
+~P
+
+
+from twisted.internet import reactor, defer
+from twisted.web2     import http, responsecode
+import Queue
+
+TIMEOUT = 10
+
+def respond(result, httprequest):
+    httpresponse = http.Response(responsecode.OK, {}, stream=result)
+    httprequest.writeResponse(httpresponse)
+
+class QueueCache(object):
+    def __init__(self):
+        self.queue = {}
+        self.defer = {}
+
+    def get_data(self, xSig):
+        return self.get_queue(xSig).get_nowait()
+
+    def push_data(self, xSig, value):
+        self.get_queue(xSig).put(value)
+
+    def get_queue(self, xSig):
+        try:
+            return self.queue[xSig]
+        except KeyError:
+            q = Queue.Queue()
+            self.queue[xSig] = q
+            return q
+
+    def defer_request(self, xSig, httprequest):
+        if self.defer.has_key(xSig):
+            raise Exception(&quot;Client %s already has a deferred request!&quot;
+%(xSig))
+
+        def timeout(deferred, request):
+            xSig = request.args['X-Signature'][0]
+            try:
+                self.defer.pop(xSig)
+            except KeyError:
+                print 'Timeout called and xSig `%s` was not in cache!' %
+xSig
+            respond('ACK',request)
+
+        d = defer.Deferred()
+        d.addCallback(respond, httprequest)
+        d.setTimeout(TIMEOUT, timeout, httprequest)
+        self.defer[xSig] = d
+        return d
+
+    def put(self, data):
+        xSig = data['X-Signature']
+        try:
+            d = self.defer.pop(xSig)
+            d.callback(data['message'])
+        except KeyError:
+            self.push_data(xSig,data)
+
+    def maybedefer(self, httprequest):
+        xSig = httprequest.args['X-Signature'][0]
+        try:
+            data = self.get_data(xSig)
+            result = http.Response(
+                responsecode.OK,
+                {},
+                stream=data['message']
+                )
+        except Queue.Empty:
+            result = self.defer_request(xSig, httprequest)
+        return result
+
+-----------------------------------------------------------------------------------------------------
+2007-09-25 18:38:38-0700 [-] Original exception:
+2007-09-25 18:38:38-0700 [-] Unhandled Error
+        Traceback (most recent call last):
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 304,
+in _startRunCallbacks
+
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 317,
+in _runCallbacks
+
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 281,
+in _continue
+
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 277,
+in unpause
+
+        --- &lt;exception caught here&gt; ---
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 317,
+in _runCallbacks
+
+          File &quot;C:\Projects\PyServer\twisted\web2\server.py&quot;, line 518, in
+_cbFinishRender
+
+        exceptions.TypeError: html is not a resource or a response
+
+2007-09-25 18:38:39-0700 [-] Unhandled error in Deferred:
+2007-09-25 18:38:39-0700 [-] Unhandled Error
+        Traceback (most recent call last):
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 317,
+in _runCallbacks
+
+          File &quot;C:\Projects\PyServer\twisted\web2\server.py&quot;, line 476, in
+_processingFailed
+
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 200,
+in addErrback
+
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 182,
+in addCallbacks
+
+        --- &lt;exception caught here&gt; ---
+          File &quot;C:\Projects\PyServer\twisted\internet\defer.py&quot;, line 317,
+in _runCallbacks
+
+          File &quot;C:\Projects\PyServer\twisted\web2\server.py&quot;, line 492, in
+_processingReallyFailed
+
+          File &quot;C:\Python24\lib\site-packages\twisted\web2\http.py&quot;, line
+446, in writeResponse
+            self.chanRequest.writeHeaders(response.code, response.headers)
+          File &quot;C:\Projects\PyServer\twisted\web2\channel\http.py&quot;, line
+431, in writeHeaders
+
+          File &quot;C:\Projects\PyServer\twisted\web2\channel\http.py&quot;, line
+466, in _writeHeaders
+
+        exceptions.AttributeError: 'HTTPChannelRequest' object has no
+attribute 'transport'
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20070925/0424e51c/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="048591.html">[Twisted-Python] reactor.stop() doesn't stop the select reactor?
+</A></li>
+	<LI>Next message (by thread): <A HREF="048593.html">[Twisted-Python] Discovering Twisted : reactor.stop()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48592">[ date ]</a>
+              <a href="thread.html#48592">[ thread ]</a>
+              <a href="subject.html#48592">[ subject ]</a>
+              <a href="author.html#48592">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,229 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] HTTP client TODOs
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20HTTP%20client%20TODOs&In-Reply-To=87vez8r925.fsf%40unpluggable.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002028.html">
+   <LINK REL="Next"  HREF="002031.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] HTTP client TODOs</H1>
+    <B>Scott Lamb</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20HTTP%20client%20TODOs&In-Reply-To=87vez8r925.fsf%40unpluggable.com"
+       TITLE="[Twisted-web] HTTP client TODOs">slamb at slamb.org
+       </A><BR>
+    <I>Fri Nov  4 08:58:51 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002028.html">[Twisted-web] HTTP client TODOs
+</A></li>
+        <LI>Next message: <A HREF="002031.html">[Twisted-web] HTTP client TODOs
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2030">[ date ]</a>
+              <a href="thread.html#2030">[ thread ]</a>
+              <a href="subject.html#2030">[ subject ]</a>
+              <a href="author.html#2030">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Jan Alonzo wrote:
+&gt;<i> I am new to twisted and one of my priority right now is to help out with the
+</I>&gt;<i> HTTP client code in the web2 module. Is there a TODO specific to the client
+</I>&gt;<i> library somewhere that I can look at? 
+</I>
+I saw some '@@@' markers in comments indicating things that need to be 
+fixed or tested.
+
+I have some patches which aren't quite ready for inclusion. No unit 
+tests, plus the stream-kludgey-reset.patch is true to its name; it needs 
+to be reworked in the manner described in the list discussion.
+
+Actually, the auth-python23.patch is ready, if a committer can merge it. 
+I added a unit test in the last patch, which Jp broke on Python 2.3 when 
+he applied it. (Don't mess with perfection. ;)
+
+Regards,
+Scott
+-------------- next part --------------
+Fixes bug in which authorization retries of POST actions would not send the
+actual data.
+
+<A HREF="http://twistedmatrix.com/pipermail/twisted-web/2005-September/001924.html">http://twistedmatrix.com/pipermail/twisted-web/2005-September/001924.html</A>
+
+Index: twisted/web2/stream.py
+===================================================================
+--- twisted/web2/stream.py	(revision 14571)
++++ twisted/web2/stream.py	(working copy)
+@@ -9,7 +9,8 @@
+ 
+ The IStream interface is very simple. It consists of two methods:
+ read, and close. The read method should either return some data, None
+-if there is no data left to read, or a Deferred. Close frees up any
++if there is no data left to read, or a Deferred. The reset method will
++make subsequent reads start over from the beginning. Close frees up any
+ underlying resources and causes read to return None forevermore.
+ 
+ IByteStream adds a bit more to the API:
+@@ -61,6 +62,10 @@
+         Errors may be indicated by exception or by a Deferred of a Failure.
+         &quot;&quot;&quot;
+         
++
++    def reset():
++        &quot;&quot;&quot;Resets the stream.&quot;&quot;&quot;
++
+     def close():
+         &quot;&quot;&quot;Prematurely close. Should also cause further reads to
+         return None.&quot;&quot;&quot;
+@@ -249,16 +254,19 @@
+             if len(mem) &lt; length:
+                 raise ValueError(&quot;len(mem) &lt; start + length&quot;)
+             self.length = length
++        self.written = False
+ 
++    def reset(self):
++        self.written = False
++
+     def read(self):
+-        if self.mem is None:
++        if self.mem is None or self.written:
+             return None
++        self.written = True
+         if self.length == 0:
+             result = None
+         else:
+             result = buffer(self.mem, self.start, self.length)
+-        self.mem = None
+-        self.length = 0
+         return result
+ 
+     def close(self):
+Index: twisted/web2/client/http.py
+===================================================================
+--- twisted/web2/client/http.py	(revision 14571)
++++ twisted/web2/client/http.py	(working copy)
+@@ -52,8 +52,8 @@
+     @ivar extraHeaders: Additional headers you want sent as part of the
+         http request
+ 
+-    @type body: str
+-    @ivar body: The data associated with this request. This value can be None.
++    @type stream: IByteStream
++    @ivar stream: The data associated with this request. This value can be None.
+ 
+     @type deferred: Deferred
+     @ivar deferred: The C{Deferred} that will fire when this
+@@ -286,7 +286,7 @@
+         # Lastly, if there's a body, send that.
+         if self.request.stream:
+             if self.factory.logging:
+-                _doLog(&quot;[Sent] body (%d byte(s))&quot; % len(self.request.body))
++                _doLog(&quot;[Started Sending Body]&quot;)
+ 
+             d = stream.StreamProducer(self.request.stream).beginProducing(self.transport)
+             d.addCallback(self._endSendRequest)
+@@ -709,6 +709,8 @@
+         if authHeader and self.authHandlers:
+             creds = self.authHandlers[authHeader[0].lower()].getCredentials(authHeader[1], request)
+             if creds:
++                if request.stream is not None:
++                    request.stream.reset()
+                 req = Request(request.method, request.uri, request.args,
+                               request.headers, request.stream)
+ 
+-------------- next part --------------
+Fixes direct SSL connections. (Though you should use stunnel as a proxy,
+anyway - it's much faster.)
+
+Index: twisted/web2/client/http.py
+===================================================================
+--- twisted/web2/client/http.py	(revision 14553)
++++ twisted/web2/client/http.py	(working copy)
+@@ -659,7 +659,7 @@
+         if hasattr(self, &quot;wrappingFactory&quot;):
+             result = reactor.connectTCP(self.host, self.port, self.wrappingFactory)
+         elif self.sslContextFactory is not None:
+-            result = reactor.connectSSL(self.host, self.port, self.sslContextFactory, self)
++            result = reactor.connectSSL(self.host, self.port, self, self.sslContextFactory)
+         else:
+             result = reactor.connectTCP(self.host, self.port, self)
+ 
+-------------- next part --------------
+Fixes a bug which caused a new HTTP connection for every request.
+
+HTTPClient._endResponse() was calling self.response.stream.finish(), then
+immediately checking if there are any more requests and, since there weren't
+any, shutting down the connection. stream._StreamReader doesn't call the
+completion deferred until later (with a callLater(0).) Thus, my load tester's
+_handleFullResponse was never getting a chance to say &quot;hey, I do have another
+request&quot;. Give it that chance by using the same CallLater(0) trick before
+deciding whether to tear down the connection.
+
+Index: twisted/web2/client/http.py
+===================================================================
+--- twisted/web2/client/http.py	(revision 14553)
++++ twisted/web2/client/http.py	(working copy)
+@@ -482,12 +482,18 @@
+             self.state = CONNECTED
+         self._decoder = None
+ 
+-        connection = None
+         if self.response is not None:
+             if self.response.stream is not None:
+                 self.response.stream.unregisterProducer()
+                 self.response.stream.finish()
+ 
++        reactor.callLater(0, self._endResponse2)
++
++    def _endResponse2(self):
++        connection = None
++        if self.factory.logging:
++            _doLog(&quot;[End Response 2]&quot;)
++
+         # assert(self.connection is not None)
+ #             if self.request is not None and self.request.deferred is not None:
+ #                 self.request.deferred.callback(self.response)
+-------------- next part --------------
+Makes basic authorization work on Python 2.3, which doesn't have b64encode.
+
+Index: twisted/web2/client/auth.py
+===================================================================
+--- twisted/web2/client/auth.py	(revision 14553)
++++ twisted/web2/client/auth.py	(working copy)
+@@ -54,7 +54,7 @@
+     scheme = 'Basic'
+ 
+     def encodeCredentials(self, creds, challenge, request=None):
+-        return base64.b64encode(':'.join(creds))
++        return base64.encodestring(':'.join(creds)).strip()
+ 
+ 
+ class HTTPDigestAuthHandler(BaseHTTPAuthHandler):
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002028.html">[Twisted-web] HTTP client TODOs
+</A></li>
+	<LI>Next message: <A HREF="002031.html">[Twisted-web] HTTP client TODOs
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2030">[ date ]</a>
+              <a href="thread.html#2030">[ thread ]</a>
+              <a href="subject.html#2030">[ subject ]</a>
+              <a href="author.html#2030">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

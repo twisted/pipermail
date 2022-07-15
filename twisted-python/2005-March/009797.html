@@ -1,0 +1,176 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Twisted 2.0 prerelease (close!!)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Twisted%202.0%20prerelease%20%28close%21%21%29&In-Reply-To=7bcdefe7917f30a6f202948915bb7ed7%40fuhm.net">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009785.html">
+   <LINK REL="Next"  HREF="009754.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Twisted 2.0 prerelease (close!!)</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Twisted%202.0%20prerelease%20%28close%21%21%29&In-Reply-To=7bcdefe7917f30a6f202948915bb7ed7%40fuhm.net"
+       TITLE="[Twisted-Python] Twisted 2.0 prerelease (close!!)">andrea at cpushare.com
+       </A><BR>
+    <I>Sat Mar 12 08:21:39 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009785.html">[Twisted-Python] Twisted 2.0 prerelease (close!!)
+</A></li>
+        <LI>Next message: <A HREF="009754.html">[Twisted-Python] Twisted 2.0 prerelease (close!!)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9797">[ date ]</a>
+              <a href="thread.html#9797">[ thread ]</a>
+              <a href="subject.html#9797">[ subject ]</a>
+              <a href="author.html#9797">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, Mar 11, 2005 at 11:55:31AM -0500, James Y Knight wrote:
+&gt;<i> Here ya go. The last file is actually an unrelated patch that lets you 
+</I>&gt;<i> pass None as the verify callback instead of using an empty lambda.
+</I>
+Thanks a lot, works fine, I verified loseConnection now calls
+set/get/set shutdown with printf.
+
+I'll bug the pyopenssl maintainer too about this.
+
+This is the patch against CVS head.
+
+Index: pyOpenSSL/src/ssl/connection.c
+===================================================================
+RCS file: /u/cvs/pyopenssl/pyOpenSSL/src/ssl/connection.c,v
+retrieving revision 1.28
+diff -u -p -r1.28 connection.c
+--- pyOpenSSL/src/ssl/connection.c	6 Aug 2004 10:21:56 -0000	1.28
++++ pyOpenSSL/src/ssl/connection.c	12 Mar 2005 13:19:13 -0000
+@@ -756,6 +756,43 @@ ssl_Connection_set_app_data(ssl_Connecti
+     return Py_None;
+ }
+ 
++static char ssl_Connection_get_shutdown_doc[] = &quot;\n\
++Get shutdown state\n\
++\n\
++Arguments: self - The Connection object\n\
++           args - The Python argument tuple, should be empty\n\
++Returns:   The shutdown state, a bitmask of SENT_SHUTDOWN, RECEIVED_SHUTDOWN.\n\
++&quot;;
++static PyObject *
++ssl_Connection_get_shutdown(ssl_ConnectionObj *self, PyObject *args)
++{
++    if (!PyArg_ParseTuple(args, &quot;:get_shutdown&quot;))
++        return NULL;
++
++    return PyInt_FromLong((long)SSL_get_shutdown(self-&gt;ssl));
++}
++
++static char ssl_Connection_set_shutdown_doc[] = &quot;\n\
++Set shutdown state\n\
++\n\
++Arguments: self - The Connection object\n\
++           args - The Python argument tuple, should be\n\
++             shutdown state - bitmask of SENT_SHUTDOWN, RECEIVED_SHUTDOWN.\n\
++Returns:   None\n\
++&quot;;
++static PyObject *
++ssl_Connection_set_shutdown(ssl_ConnectionObj *self, PyObject *args)
++{
++    int shutdown;
++
++    if (!PyArg_ParseTuple(args, &quot;i:set_shutdown&quot;, &amp;shutdown))
++        return NULL;
++
++    SSL_set_shutdown(self-&gt;ssl, shutdown);
++    Py_INCREF(Py_None);
++    return Py_None;
++}
++
+ static char ssl_Connection_state_string_doc[] = &quot;\n\
+ Get a verbose state description\n\
+ \n\
+@@ -888,6 +925,8 @@ static PyMethodDef ssl_Connection_method
+     ADD_METHOD(makefile),
+     ADD_METHOD(get_app_data),
+     ADD_METHOD(set_app_data),
++    ADD_METHOD(get_shutdown),
++    ADD_METHOD(set_shutdown),
+     ADD_METHOD(state_string),
+     ADD_METHOD(sock_shutdown),
+     ADD_METHOD(get_peer_certificate),
+Index: pyOpenSSL/src/ssl/context.c
+===================================================================
+RCS file: /u/cvs/pyopenssl/pyOpenSSL/src/ssl/context.c,v
+retrieving revision 1.17
+diff -u -p -r1.17 context.c
+--- pyOpenSSL/src/ssl/context.c	6 Aug 2004 10:21:56 -0000	1.17
++++ pyOpenSSL/src/ssl/context.c	12 Mar 2005 13:19:13 -0000
+@@ -244,7 +244,7 @@ ssl_Context_set_passwd_cb(ssl_ContextObj
+     if (!PyArg_ParseTuple(args, &quot;O|O:set_passwd_cb&quot;, &amp;callback, &amp;userdata))
+         return NULL;
+ 
+-    if (!PyCallable_Check(callback))
++    if (callback != Py_None &amp;&amp; !PyCallable_Check(callback))
+     {
+         PyErr_SetString(PyExc_TypeError, &quot;expected PyCallable&quot;);
+         return NULL;
+@@ -572,7 +572,10 @@ ssl_Context_set_verify(ssl_ContextObj *s
+     Py_DECREF(self-&gt;verify_callback);
+     Py_INCREF(callback);
+     self-&gt;verify_callback = callback;
+-    SSL_CTX_set_verify(self-&gt;ctx, mode, global_verify_callback);
++    if (callback == Py_None)
++	    SSL_CTX_set_verify(self-&gt;ctx, mode, NULL);
++    else
++	    SSL_CTX_set_verify(self-&gt;ctx, mode, global_verify_callback);
+ 
+     Py_INCREF(Py_None);
+     return Py_None;
+Index: pyOpenSSL/src/ssl/ssl.c
+===================================================================
+RCS file: /u/cvs/pyopenssl/pyOpenSSL/src/ssl/ssl.c,v
+retrieving revision 1.12
+diff -u -p -r1.12 ssl.c
+--- pyOpenSSL/src/ssl/ssl.c	10 Aug 2004 21:42:51 -0000	1.12
++++ pyOpenSSL/src/ssl/ssl.c	12 Mar 2005 13:19:13 -0000
+@@ -180,6 +180,10 @@ do {                                    
+     PyModule_AddIntConstant(module, &quot;OP_NETSCAPE_CA_DN_BUG&quot;, SSL_OP_NETSCAPE_CA_DN_BUG);
+     PyModule_AddIntConstant(module, &quot;OP_NETSCAPE_DEMO_CIPHER_CHANGE_BUG&quot;, SSL_OP_NETSCAPE_DEMO_CIPHER_CHANGE_BUG);
+ 
++    /* For SSL_set_shutdown */
++    PyModule_AddIntConstant(module, &quot;SENT_SHUTDOWN&quot;, SSL_SENT_SHUTDOWN);
++    PyModule_AddIntConstant(module, &quot;RECEIVED_SHUTDOWN&quot;, SSL_RECEIVED_SHUTDOWN);
++
+     dict = PyModule_GetDict(module);
+     if (!init_ssl_context(dict))
+         goto error;
+
+You folks are doing a great job. Keep up the great work!
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009785.html">[Twisted-Python] Twisted 2.0 prerelease (close!!)
+</A></li>
+	<LI>Next message: <A HREF="009754.html">[Twisted-Python] Twisted 2.0 prerelease (close!!)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9797">[ date ]</a>
+              <a href="thread.html#9797">[ thread ]</a>
+              <a href="subject.html#9797">[ subject ]</a>
+              <a href="author.html#9797">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

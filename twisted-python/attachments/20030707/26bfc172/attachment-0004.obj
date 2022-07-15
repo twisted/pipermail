@@ -1,0 +1,181 @@
+"""
+DNS-Based Service Discovery
+
+This is a simplistic Twisted-based client for the DNS-SD system currently
+detailed at: http://files.dns-sd.org/draft-cheshire-dnsext-dns-sd.txt
+
+DNS-SD is an imporant part of ZeroConf, or what Apple calls (with typical
+marketing flair) Rendezvous. Given a service (say, 'http'), a protocol (in this
+case, 'tcp') and a domain (say, 'example.com') DNS-SD defines a system of
+queries that should return all the appropriate servers (assuming the servers
+and the DNS server all co-operate).
+
+A quick example stolen from the above documentation:
+
+    $ nslookup -q=ptr _ftp._tcp.dns-sd.org.
+    _ftp._tcp.dns-sd.org name=Apple\032QuickTime\032Files.dns-sd.org
+    _ftp._tcp.dns-sd.org name=Microsoft\032Developer\032Files.dns-sd.org
+    _ftp._tcp.dns-sd.org name=Registered\032Users'\032Only.dns-sd.org
+
+
+TODO:
+ - Seperate the 'find service instances' step from the 'get service instance
+   details' step, so clients can pick a service, store it in a config file, and
+   look up the details when they need them.
+"""
+
+import codecs
+
+from twisted.internet import defer
+from twisted.names import client
+
+# The DNS server 224.0.0.251:5353 (UDP) is a magical value which means
+# 'multicast DNS'. At least on MacOS X 10.2.6, it Just Works.
+defaultResolver = client.Resolver(servers=[('224.0.0.251', 5353)])
+
+def findServices(serviceName, protoName, 
+        domain="local", timeout=None, resolver=defaultResolver):
+    """Find all the servers in domain serving the given protocol.
+
+    @type serviceName: C{string}
+    @param serviceName: A service name, as seen in /etc/services. For example,
+    'http', 'imap4', 'ssh' and so forth.
+
+    @type protoName: C{string}
+    @param protoName: The name of the protocol used - 'tcp' or 'udp'.
+
+    @type domain: C{string}
+    @param domain: The DNS domain in which the queries will be performed. If
+    none is supplied, the default "local" will be used.
+
+    @type timeout: C{None} or C{list} of C{int}
+    @param timeout: The query is tried len(timeout) times, and each attempt is
+    given the appropriate number of seconds in which to complete. When the last
+    timeout expires, the query is considered failed.
+
+    @type resolver: A subclass of C{twisted.names.common.ResolverBase}.
+    @param resolver: This resolver will be used to do all the name resolving.
+    If this parameter isn't supplied, a default resolver will be used that does
+    multicast-DNS queries.
+
+    @rtype: C{Deferred} that will return a C{list} of C{dict}s. Each C{dict}
+    will have the following keys:
+        - C{serviceInstance}: The complete DNS name that should be resolved
+          (ask for the SRV record) whenever you want to connect to it.
+        - C{instance}: A Unicode string containing the human-readable name of
+          this service instance.
+        - C{servers}: A C{list} of (C{hostname}, C{port}) tuples. These should
+          all implement the given service. Note that this list could be
+          different each time you connect, so if you're going to save something
+          in a settings file, you should save C{serviceInstance}.
+        - C{settings}: A C{dict} of service-dependant settings. This is
+          generally the minimum extra information required to connect to
+          a service - for example, a http service might have a setting 'path'
+          that gives the path a client should request.
+    """
+
+    # This is the deferred that will be fired once all the results are in.
+    masterD = defer.Deferred()
+
+    # Convention seems to dictate that the domain of discovered services won't
+    # have a trailing '.' so strip it for string-comparison purposes.
+    if domain[-1] == '.': domain = domain[:-1]
+    
+    resultDomain = '_%s._%s.%s' % (serviceName, protoName, domain)
+
+    d = resolver.lookupPointer(resultDomain, timeout)
+    d.addCallback(__processPointerRecords, resolver, timeout, resultDomain,
+            masterD)
+    d.addErrback(masterD.errback)
+
+    return masterD
+
+def __processPointerRecords( (answers, auth, add), resolver, timeout, 
+        resultDomain, masterD):
+
+    if not len(answers):
+        masterD.errback("No pointer records found!")
+        return
+
+    dlist = []
+    resultSuffix = "." + resultDomain
+
+    for record in answers:
+        serviceInstanceName = record.payload.name.name
+
+        # We can't just split at the first '.' because the service instance
+        # name can contain '.'s.
+        if serviceInstanceName.endswith(resultSuffix):
+            instanceNameUTF8 = serviceInstanceName[:-1 * len(resultSuffix)]
+            instanceName = codecs.getdecoder('UTF8')(instanceNameUTF8)[0]
+        else:
+            # This should never happen.
+            instanceName = serviceInstanceName
+
+        def addExtraNames( (ans, auth, add), 
+                sn=serviceInstanceName, ins=instanceName):
+            return (ans, auth, add, sn, ins)
+        
+        d = resolver.lookupService(serviceInstanceName, timeout)
+        d.addCallback(addExtraNames)
+        dlist.append(d)
+
+    d = defer.DeferredList(dlist)
+
+    d.addCallback(__processServiceRecords, resolver, timeout, masterD)
+    d.addErrback(masterD.errback)
+
+def __processServiceRecords(records, resolver, timeout, masterD):
+
+    dlist = []
+    
+    for (answers, auth, add, serviceInstanceName, instanceName) in \
+            [r[1] for r in records if r[0]]:
+
+        servers = [ (a.payload.target.name, a.payload.port) for a in answers]
+
+        def addExtraNames( (ans, auth, add), 
+                sn=serviceInstanceName, ins=instanceName, sv=servers):
+            return (ans, auth, add, sn, ins, sv)
+
+        d = resolver.lookupText(serviceInstanceName, timeout)
+        d.addCallback(addExtraNames)
+        dlist.append(d)
+
+    d = defer.DeferredList(dlist)
+    
+    d.addCallback(__processTextRecords, masterD)
+
+def __processTextRecords(records, masterD):
+
+    res = []
+
+    for (answers, auth, add, serviceInstanceName, instanceName, servers) in \
+            [r[1] for r in records if r[0]]:
+
+        textDict = {}
+
+        for textRecord in [a.payload for a in answers]:
+            for textItem in [i for i in textRecord.data if len(i)]:
+                parts = textItem.split('=', 1)
+                
+                if len(parts) == 1:
+                    key = parts[0].lower()
+                    value = 1
+                else:
+                    key = parts[0].lower()
+                    value = parts[1]
+
+                if not textDict.has_key(key):
+                    textDict[key] = value
+
+        resultDict = {
+            "serviceInstance": serviceInstanceName,
+            "instance": instanceName,
+            "servers": servers,
+            "settings": textDict,
+        }
+
+        res.append(resultDict)
+
+    masterD.callback(res)

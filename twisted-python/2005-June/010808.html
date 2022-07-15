@@ -1,0 +1,233 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Distinguishing TCP connections
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Distinguishing%20TCP%20connections&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="010807.html">
+   <LINK REL="Next"  HREF="010809.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Distinguishing TCP connections</H1>
+    <B>Grant McDonald</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Distinguishing%20TCP%20connections&In-Reply-To="
+       TITLE="[Twisted-Python] Distinguishing TCP connections">gmcdonald at infocomp.com
+       </A><BR>
+    <I>Tue Jun 21 21:15:51 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="010807.html">[Twisted-Python] defers, reactor,	idiomatic/proper usage -- new user questions.
+</A></li>
+        <LI>Next message: <A HREF="010809.html">[Twisted-Python] Re: Distinguishing TCP connections
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10808">[ date ]</a>
+              <a href="thread.html#10808">[ thread ]</a>
+              <a href="subject.html#10808">[ subject ]</a>
+              <a href="author.html#10808">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Eric,
+
+I came up with a nice way of managing connections on the last project I
+worked on:
+
+The DataConnection is the protocol instance (in this case inheriting from
+Int32StringReceiver).  Each time a protocol connects it calls the
+registerSource
+
+class DataConnection(Int32StringReceiver):
+    
+    def __init__(self, manager):
+        self.manager = manager
+    
+    def closeConnection(self):
+        self.transport.loseConnection()
+    
+    def connectionMade(self):
+        print 'registering connection'
+        self.registerConnection()
+        
+    def connectionLost(self, reason):
+        print 'connection lost, removing....'
+        self.removeConnection()
+
+	.
+	.
+[ code omitted for brevity ]
+	.
+	.
+ 
+    def registerConnection(self):
+        &quot;&quot;&quot;
+        register data connection with connection manager.
+        &quot;&quot;&quot;
+        self.manager.registerSource(self)
+        
+    def removeConnection(self):
+        &quot;&quot;&quot;
+        remove this connection from the connection manager.
+        &quot;&quot;&quot;
+        self.manager.removeSource(self.id)
+
+    def setId(self, id):
+        self.id = id
+        
+And the ConnectionManager is the factory class (inherited from the generic
+Factory class).
+ 
+class ConnectionManager(Factory):
+    
+    def __init__(self, eventhandler):
+        self.ids = 0
+        self.sources = {}
+        self.eventhandler = eventhandler    # -- see comments later
+    
+    def buildProtocol(self, addr):
+        return DataConnection(self)
+
+    def newId(self):
+        &quot;&quot;&quot;
+        get an id that is unique for the life of the connection manager.
+        &quot;&quot;&quot;
+        id = self.ids+1
+        self.ids = id
+        return id
+
+    def registerSource(self, source):
+        &quot;&quot;&quot;
+        register a new source, this assigns the source an id and
+        adds it to the sources dictionary.
+        &quot;&quot;&quot;
+        id = self.newId()
+        self.sources[id] = source
+        
+        # set source id
+        source.setId(id)
+
+    def removeSource(self, id):
+        &quot;&quot;&quot;
+        remove the connection indicated by the source id from the current
+connection
+        pool any subsequent behaviour must be handled in the event manager.
+        &quot;&quot;&quot;
+        if self.sources.has_key(id):
+            del self.sources[id]
+
+    def closeConnections(self):
+        for source in self.sources.values():
+            source.closeConnection()
+
+[ code omitted for brevity ]
+
+As you can see the when a connection is made it is registered with the
+factory instance.  This uniquely identifies the connection, and allows you
+to identify when you get a message which connection it is from.  This also
+simplifies sending a message back along the same channel:
+
+To do this you can create an event handler that implements some form of
+event processing:
+
+class EventHandler:
+
+    def __init__(self, manager):
+        self.manager = manager
+
+    def messageReceived(self, id, message):
+        # process message
+        ...
+        
+        # create new message
+        newMessage = &quot;this is a test&quot;
+        
+        # send new message back along same connection
+        self.manager.sendMessage(id, newMessage)
+
+And in the ConnectionManager add something like the following methods:
+
+    def propagateMessage(self, id, message):
+        &quot;&quot;&quot;
+        This method simply passes the received message through to the
+        EventHandler class instance along with the id of the connection
+        the message was received from.
+        &quot;&quot;&quot;
+        self.eventhandler.messageReceived(id, message)
+        
+    def sendMessage(self, id, message):
+        &quot;&quot;&quot;
+        This method retrieves the correct connection and sends a message
+through it.
+        &quot;&quot;&quot;
+        if self.sources.has_key(id):
+            self.sources[id].emitMessage(message)
+
+And the DataConnection:
+
+    def stringReceived(self, data):
+        self.manager.propagateEvent(self.id, data)
+
+    def emitMessage(self, message):
+        &quot;&quot;&quot;
+        send a message along the data connection.
+        &quot;&quot;&quot;
+        self.sendString(message)
+
+
+If any of this is unclear please let me know.
+
+Regards,
+
+Grant McDonald
+
+----Original Message-----
+From: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>
+[mailto:<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>]On Behalf Of Eric Hsu
+Sent: 21 June 2005 17:33
+To: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">radix at twistedmatrix.com</A>
+Cc: Twisted general discussion
+Subject: Re: [Twisted-Python] How could I distinguish each TCP connection?
+
+Thank you very much!
+You've been a GREAT help :D
+2005/6/21, Christopher Armstrong &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">radeex at gmail.com</A>&gt;:
+I suggest, instead of using the stock &quot;Factory&quot;, making a subclass of
+it with buildProtocol implemented like so:
+
+def buildProtocol(self, addr):
+    p = Factory.buildProtocol(self, addr)
+    self.connections.append (p)
+    return p
+
+Or similar (you'll have to define the 'connections' list yourself in
+__init__). In the protocol's connectionLost, you could then remove the
+protocol from that list.
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20050622/31e3f5a4/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20050622/31e3f5a4/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="010807.html">[Twisted-Python] defers, reactor,	idiomatic/proper usage -- new user questions.
+</A></li>
+	<LI>Next message: <A HREF="010809.html">[Twisted-Python] Re: Distinguishing TCP connections
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10808">[ date ]</a>
+              <a href="thread.html#10808">[ thread ]</a>
+              <a href="subject.html#10808">[ subject ]</a>
+              <a href="author.html#10808">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,81 @@
+#!/bin/env python
+# coding: utf-8
+import os, os.path, sys
+import win32file, win32con, win32event
+from twisted.spread import pb
+from twisted.internet import reactor, defer
+from twisted.python import log
+
+class DirWatcher(pb.Root):
+    """Watch a directory for new/changed files
+
+    Inherited from pb.Root, because it should work remotely.
+    But perhaps a Service would be better?
+    """
+    def __init__(self, path, *args):
+        self.d = defer.Deferred()
+        if not os.path.isdir(path):
+            raise pb.Error('Invalid directory: %s' % path)
+        self.path = os.path.abspath(path)
+        self.handle = win32file.FindFirstChangeNotification(
+            self.path, 0, win32con.FILE_NOTIFY_CHANGE_FILE_NAME)
+        self.refresh = 1 # sec
+
+    def __del__(self):
+        win32file.FindCloseChangeNotification(self.handle)
+        pb.Root.__del__(self)
+
+    def _fileFound(self, filename):
+        print 'fileFound'
+        return filename
+
+    def scanDir(self):
+        # blocking (waits for max. 10s):
+        print 'scan' # only to see that it works
+        self.pathResult = win32event.WaitForSingleObject(self.handle, self.refresh * 10000)
+        # if wait returned for a notify, not for timeout
+        if self.pathResult == win32con.WAIT_OBJECT_0:
+            newContent = os.listdir(self.path)
+            added = [f for f in newContent if not f in self.pathContent]
+            deleted = [f for f in self.pathContent if not f in newContent]
+            self.pathContent = newContent
+            self.addedFiles.append(added)
+            self.deletedFiles.append(deleted)
+            for af in added:
+                self.d.callback(af)
+        win32file.FindNextChangeNotification(self.handle)
+        if self.running and not self.paused:
+            reactor.callLater(self.refresh, self.scanDir)
+
+    def remote_start(self):
+        self.pathContent = os.listdir(self.path) # blocking!?
+        self.addedFiles = []
+        self.deletedFiles = []
+        self.running = 1
+        self.paused = 0
+        reactor.callLater(1, self.scanDir)
+        self.d.addCallback(self._fileFound)
+        return self.d
+
+    def remote_stop(self):
+        self.running = 0
+        return self.d
+
+    def remote_pause(self):
+        self.paused = 1
+        return self.d
+
+    def remote_resume(self):
+        self.paused = 0
+        reactor.callLater()
+        return self.d
+
+def printData(d):
+    print d
+
+if __name__ == '__main__':
+    wp = sys.argv[1] or '.'
+    dw = DirWatcher(wp)
+    d = dw.remote_start()
+    d.addCallback(printData)
+    reactor.run()

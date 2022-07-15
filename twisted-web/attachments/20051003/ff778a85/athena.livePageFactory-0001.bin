@@ -1,0 +1,114 @@
+Index: athena.py
+===================================================================
+--- athena.py	(revision 1796)
++++ athena.py	(working copy)
+@@ -3,8 +3,10 @@
+ from twisted.internet import defer
+ from twisted.python import log
+ 
+-from nevow import inevow, rend, url, static, json, util, tags
++from nevow import inevow, rend, url, static, json, util, tags, guard
+ 
++class LivePageError(Exception):
++    """base exception for livepage errors"""
+ 
+ def neverEverCache(request):
+     """
+@@ -14,7 +16,6 @@
+     request.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+     request.setHeader('Pragma', 'no-cache')
+ 
+-
+ def activeChannel(request):
+     """
+     Mark this connection as a 'live' channel by setting the
+@@ -23,7 +24,6 @@
+     request.setHeader("Connection", "close")
+     request.write('')
+ 
+-
+ class LivePageTransport(rend.Page):
+     def __init__(self, livePage):
+         self.livePage = livePage
+@@ -92,12 +92,44 @@
+         pass
+ 
+ 
++class LivePageFactory:
++    def __init__(self, LivePage):
++        self._LivePage = LivePage
++        self.clients = {}
++
++    def clientFactory(self, context):
++        livepageId = inevow.IRequest(context).getHeader('Livepage-Id')
++        if livepageId != None:
++            if not self.clients.has_key(livepageId):
++                """not quite sure what to do here"""
++                raise LivePageError
++            return self.clients[livepageId]
++        return self._manufactureClient()
++
++    def _manufactureClient(self):
++        return self._LivePage(self)
++
++    def addClient(self, client):
++        id = self._newClientID()
++        self.clients[id] = client
++        return id
++
++    def _newClientID(self):
++        return guard._sessionCookie()
++
++    def getClients(self):
++        return self.clients.values()
++
++
+ class LivePage(rend.Page):
+     transportFactory = LivePageTransport
+     transportLimit = 2
+-
+     _rendered = False
+ 
++    def __init__(self, factory):
++        rend.Page.__init__(self)
++        self.factory = factory
++
+     def renderHTTP(self, ctx):
+         assert not self._rendered, "Cannot render a LivePage more than once"
+         self._rendered = True
+@@ -105,6 +137,8 @@
+         self._transportQueue = defer.DeferredQueue(size=self.transportLimit)
+         self._remoteCalls = {}
+ 
++        self.clientid = self.factory.addClient(self)
++
+         neverEverCache(inevow.IRequest(ctx))
+         return rend.Page.renderHTTP(self, ctx)
+ 
+@@ -140,10 +174,13 @@
+ 
+     def render_liveglue(self, ctx):
+         return [
++            tags.script(type='text/javascript')[tags.raw("""
++                var nevow_livepageId = '%s';
++            """ % self.clientid)],
+             tags.script(type='text/javascript', src=url.here.child("json.js")),
+             tags.script(type='text/javascript', src=url.here.child("mochikit.js")),
+             tags.script(type='text/javascript', src=url.here.child("athena.js")),
+-            ]
++        ]
+ 
+     _javascript = {'mochikit.js': 'MochiKit.js',
+                    'json.js': 'json.js',
+Index: athena.js
+===================================================================
+--- athena.js	(revision 1796)
++++ athena.js	(working copy)
+@@ -120,6 +120,7 @@
+     var req = MochiKit.Async.getXMLHttpRequest();
+     req.open('GET', url, true);
+     nevow_outstandingTransports++;
++    req.setRequestHeader('Livepage-Id', nevow_livepageId);
+     return req;
+ }
+ 

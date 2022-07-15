@@ -1,0 +1,262 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: Serving files from many web-servers thru one
+	central web-server
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20Serving%20files%20from%20many%20web-servers%20thru%20one%0A%09central%20web-server&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000700.html">
+   <LINK REL="Next"  HREF="000707.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: Serving files from many web-servers thru one
+	central web-server</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20Serving%20files%20from%20many%20web-servers%20thru%20one%0A%09central%20web-server&In-Reply-To="
+       TITLE="[Twisted-web] Re: Serving files from many web-servers thru one
+	central web-server">db3l at fitlinxx.com
+       </A><BR>
+    <I>Wed Sep 29 00:40:47 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000700.html">[Twisted-web] Re: Serving files from many web-servers thru one
+	central web-server
+</A></li>
+        <LI>Next message: <A HREF="000707.html">[Twisted-web] Re: Serving files from many web-servers thru one
+	central web-server
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#706">[ date ]</a>
+              <a href="thread.html#706">[ thread ]</a>
+              <a href="subject.html#706">[ subject ]</a>
+              <a href="author.html#706">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thomas Weholt &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">thomas.weholt at gmail.com</A>&gt; writes:
+
+&gt;<i> Oh, darn!! Forgot all about this when I started my project. I've read
+</I>&gt;<i> thru most of the docs I've  found so far, but I'm still somewhat
+</I>&gt;<i> clueless. Can anybody provide a simple example of how to do this,
+</I>&gt;<i> preferrably without using the examples in
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/documents/current/howto/using-twistedweb#auto19.">http://twistedmatrix.com/documents/current/howto/using-twistedweb#auto19.</A>
+</I>&gt;<i> I'm hooking a xmlrpc-handler and a UDP listener into it as well and
+</I>&gt;<i> find the good ol'
+</I>(...)
+
+Well, I experimented tonight and here's a quick example of some
+situations.  In re-reading your original post, I realized it wasn't
+clear if your &quot;reads data from several subnet servers&quot; comment
+referred to wanting to access web resources on the internal servers,
+or just some other service you needed data from.  If the latter, then
+you can use your own PB session that can be richer in interface than a
+web resource if you wanted, so I gave a simple example of that too.
+
+This example just runs both the simulated main server and subset
+server objects within the same process over a loopback connection, but
+should work identically over any other link.
+
+There is a main and child resource on the server side, and the same on
+the internal/subnet side, tied into a URL on the server side by using
+the ResourcePublisher/ResourceSubscription.  An additional server side
+resource turns into its own pure PB call to a remote server object.
+Once running you can access the following URLs:
+
+<A HREF="http://localhost:8000">http://localhost:8000</A>                    ExternalRoot
+<A HREF="http://localhost:8000/child">http://localhost:8000/child</A>              ExternalChild
+<A HREF="http://localhost:8000/data">http://localhost:8000/data</A>               InternalData.remote_getData()
+<A HREF="http://localhost:8000/internal">http://localhost:8000/internal</A>           InternalRoot
+<A HREF="http://localhost:8000/internal/child">http://localhost:8000/internal/child</A>     InternalChild
+
+In the InternalData case, I'm making a new PB session for each
+rendering request.  Presumably you'd want to structure things to
+maintain a persistent connection only reconnecting when necessary
+(which, BTW, is basically what ResourceSubscription does).
+
+It all seems to work as expected... it's simplistic but hopefully
+it'll point you in the right direction.  Shouldn't be any problem to
+tie in additional protocols (such as XMLRPC/UDP) into either the main
+server or subnet server processes.
+
+-- David
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+import sys
+
+from twisted.python import log
+from twisted.internet import reactor
+from twisted.spread import pb
+from twisted.web import server, resource, distrib
+
+#
+# An internal PB server object on the internal subnet server, with simple
+# direct access (no authentication) via a root object.
+
+class InternalData(pb.Root):
+
+    def remote_getData(self):
+        # This could be its own deferrable operation
+        return 'Internal data'
+
+
+#
+# Resources on the internal subnet servers
+#
+
+class InternalChild(resource.Resource):
+    &quot;&quot;&quot;A child resource rendered on the internal server&quot;&quot;&quot;
+
+    def render(self, request):
+        return '&lt;html&gt;&lt;body&gt;Internal Child&lt;/body&gt;&lt;/html&gt;'
+
+
+class InternalRoot(resource.Resource):
+    &quot;&quot;&quot;The root of the tree rendered on the internal server&quot;&quot;&quot;
+
+    def getChild(self, path, request):
+        # Support direct rendering (no trailing &quot;/&quot; on request)
+        if path == '':
+            return self
+        else:
+            return resource.Resource.getChild(self, path, request)
+
+    def render(self, request):
+        return '&lt;html&gt;&lt;body&gt;Internal Root&lt;/body&gt;&lt;/html&gt;'
+
+
+#
+# Resources on the primary web server
+#
+
+class MainData(resource.Resource):
+    &quot;&quot;&quot;A child resource that renders a data call to the internal server&quot;&quot;&quot;
+
+    def __init__(self, host, port):
+        resource.Resource.__init__(self)
+        self.host = host
+        self.port = port
+
+    def render(self, request):
+        &quot;&quot;&quot;Make a request to the remote root object, and use that result
+        as the result of our rendering&quot;&quot;&quot;
+        
+        def failure(value):
+            request.write('&lt;html&gt;&lt;body&gt;'
+                          'Unable to access data:&lt;br&gt;%s'
+                          '&lt;/body&gt;&lt;/html&gt;' % value)
+
+        def success(value):
+            request.write('&lt;html&gt;&lt;body&gt;%s&lt;/body&gt;&lt;/html&gt;' % value)
+            
+        # Right now we make a new connection to the internal host for
+        # each rendering request (pretty darn inefficient!)
+        factory = pb.PBClientFactory()
+        reactor.connectTCP(self.host, self.port, factory)
+
+        # Obtain a reference to the remote object, call the getData method
+        # and then disconnect.
+        root = factory.getRootObject()
+        root.addCallback(lambda root:
+                         root.callRemote('getData').addCallback(success))
+        root.addErrback(failure)
+        root.addCallback(lambda _: request.finish())
+        root.addCallback(lambda _: factory.disconnect())
+        return server.NOT_DONE_YET
+
+
+class MainChild(resource.Resource):
+    &quot;&quot;&quot;A child resource rendered directly on the main server&quot;&quot;&quot;
+
+    def render(self, request):
+        return '&lt;html&gt;&lt;body&gt;Main Server Child&lt;/body&gt;&lt;/html&gt;'
+        
+
+class MainRoot(resource.Resource):
+    &quot;&quot;&quot;The primary root resource on the main server&quot;&quot;&quot;
+
+    def getChild(self, path, request):
+        # Support direct rendering (no trailing &quot;/&quot; on request)
+        if path == '':
+            return self
+        else:
+            return resource.Resource.getChild(self, path, request)
+
+    def render(self, request):
+        return '&lt;html&gt;&lt;body&gt;Main Server Root&lt;/body&gt;&lt;/html&gt;'
+
+
+#
+# Simulate main and subnet servers.  The main server will listen on port
+# 8000 and the subnet server will listen (for PB connections) on port 8001.
+# Additionally the subnet server will provide the InternalData object
+# on port 8002.
+#
+
+if __name__ == &quot;__main__&quot;:
+
+    #
+    # Build up a subnet server &quot;site&quot;:
+    #     /         InternalRoot
+    #     /child    InternalChild
+    #
+    iroot = InternalRoot()
+    iroot.putChild('child', InternalChild())
+    isite = server.Site(iroot)
+
+    #
+    # Build up the main server &quot;site&quot;:
+    #     /          MainRoot
+    #     /child     MainChild
+    #     /data      Render result of call to InternalData's retrieveData
+    #     /internal  Request to / on subnet server
+    #
+    root = MainRoot()
+    root.putChild('child', MainChild())
+    root.putChild('data', MainData('localhost', 8002))
+    root.putChild('internal', distrib.ResourceSubscription('localhost',8001))
+    site = server.Site(root)
+
+    #
+    # Now start both servers listening.  Note that if these were really
+    # running on separate machines, the internal server could do a listenTCP
+    # for isite on 8000 to support normal web lookups, while also supporting
+    # port 8001 for the PB proxied lookups.
+    #
+    reactor.listenTCP(8000, site)
+    reactor.listenTCP(8001,
+                      pb.PBServerFactory(distrib.ResourcePublisher(isite)))
+    reactor.listenTCP(8002,pb.PBServerFactory(InternalData()))
+                      
+    log.startLogging(sys.stdout)
+    reactor.run()
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000700.html">[Twisted-web] Re: Serving files from many web-servers thru one
+	central web-server
+</A></li>
+	<LI>Next message: <A HREF="000707.html">[Twisted-web] Re: Serving files from many web-servers thru one
+	central web-server
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#706">[ date ]</a>
+              <a href="thread.html#706">[ thread ]</a>
+              <a href="subject.html#706">[ subject ]</a>
+              <a href="author.html#706">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

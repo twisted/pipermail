@@ -1,0 +1,195 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Mimicking a blocking API using Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Mimicking%20a%20blocking%20API%20using%20Twisted&In-Reply-To=2E3289BE-DCD4-4DA2-8C42-A01C287113F9%40lvh.cc">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="025404.html">
+   <LINK REL="Next"  HREF="025408.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Mimicking a blocking API using Twisted</H1>
+    <B>Paul Reznicek</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Mimicking%20a%20blocking%20API%20using%20Twisted&In-Reply-To=2E3289BE-DCD4-4DA2-8C42-A01C287113F9%40lvh.cc"
+       TITLE="[Twisted-Python] Mimicking a blocking API using Twisted">maillists at ergo-pc.net
+       </A><BR>
+    <I>Sun Mar 25 21:27:42 EDT 2012</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="025404.html">[Twisted-Python] Mimicking a blocking API using Twisted
+</A></li>
+        <LI>Next message: <A HREF="025408.html">[Twisted-Python] Mimicking a blocking API using Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#25406">[ date ]</a>
+              <a href="thread.html#25406">[ thread ]</a>
+              <a href="subject.html#25406">[ subject ]</a>
+              <a href="author.html#25406">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+I have similar needs and did not found usable answers, so I wrote some
+q&amp;d hacks for doctests and also for UI interactions, where the user should
+be blocked until something in non-blocking deferred finish or &quot;time-outed&quot;.
+
+Below hacks are working with twisted 10.0.0, no idea about more actual versions.
+
+1. Multiple start/stop of reactor during doctests works when using &quot;reactor.crash&quot;
+   Example - 2 tested class methods in one class:
+# ---------------------
+def method_a(self, parm):
+    '''
+    &gt;&gt;&gt; g = GateWay('TEST')
+    &gt;&gt;&gt; s1 = reactor.callWhenRunning(lambda: print(g.method_a('X') ) )
+    &gt;&gt;&gt; s2 = reactor.callWhenRunning(lambda: print(g.method_a('Y') ) )
+    &gt;&gt;&gt; s3 = reactor.callWhenRunning(lambda: print(g.method_a('Z') ) )
+    &gt;&gt;&gt; s0 = reactor.callLater(11.1, reactor.crash); reactor.run()  # doctest:+ELLIPSIS
+    {u'result of X...}
+    {u'result of Y...}
+    {u'result of Z...}
+    '''
+    [code]
+
+def method_b(self):
+    &gt;&gt;&gt; g = GateWay('TEST')
+    &gt;&gt;&gt; s1 = reactor.callWhenRunning(lambda: print(g.method_b() ) )
+    &gt;&gt;&gt; s0 = reactor.callLater(5.1, reactor.crash); reactor.run()   # doctest:+ELLIPSIS
+    {u'bytes': ..., u'packets': ..., u'duration': ...}
+    '''
+    [code]
+# ---------------------
+This way, it is possible to use doctests with reactor start/stop in several
+methods/functions in a class/module and also in external doctests files.
+
+
+2. Sleep w/o blocking reactor:
+# ---------------------
+def nonBlockingSleep(delay):
+    '''Hack to allow sleep for a period of time w/o blocking the reactor
+    Do *block* the caller for `delay` seconds.
+    '''
+    if delay &gt; 90:
+        print('WARNING nonBlockingSleep delay={0} sec. dangerous, reset to 90s'.format(delay) )
+        delay = 90.0
+    toTime = time.time() + delay
+    while toTime &gt;= time.time():
+        try:
+            reactor.iterate(0.055)
+        except Exception as err:
+            pass
+        time.sleep(0.001)
+# ---------------------
+The values of .iterate() and .sleep() are the best, I found.
+time.sleep(0.001) is important, it is not reliable w/o + CPU load is high.
+
+
+3. Wait until deferred return a result or timeout expire
+# ---------------------
+def sleepUntilDFRDresult(dfrd, timeout=60):
+    '''Hack to make non-blocking deferred waiting for its result or error for
+    in `timeout` specified number of seconds, but not to block reactor loop.
+    This wrapper *block* the caller until deferred.result or timeout appears.
+
+    &gt;&gt;&gt; dfrd = defer.Deferred() #.addBoth(cbReactorStop)
+    &gt;&gt;&gt; sleepUntilDFRDresult(dfrd)       # doctest:+ELLIPSIS
+    Exception(u'ERROR sleepUntilDFRDresult server not running for: &lt;Deferred at 0x...&gt; from &lt;doctest
+__main__/&lt;module&gt; #L1',)
+
+    &gt;&gt;&gt; startTime = time.time()
+    &gt;&gt;&gt; f = lambda: print(sleepUntilDFRDresult(dfrd, timeout=999), 'in:', time.time()-startTime,
+'sec.' )
+    &gt;&gt;&gt; s1 = reactor.callWhenRunning( f );
+    &gt;&gt;&gt; dc2 = reactor.callLater(2, dfrd.callback, 'CALLED')
+    &gt;&gt;&gt; dc0 = reactor.callLater(3, reactor.crash); reactor.run()   # doctest:+ELLIPSIS
+    WARNING sleepUntilDFRDresult timeout=999 sec. dangerous
+    CALLED in: 2.0... sec.
+    '''
+    if timeout &gt; 600:
+        print('WARNING sleepUntilDFRDresult timeout={0} sec. dangerous'.format(timeout) )
+
+    err = None
+    if not isinstance(dfrd, defer.Deferred):
+        err = 'ERROR sleepUntilDFRDresult dfrd &quot;{0}&quot; not Deferred: '.format(type(dfrd))
+    elif not reactor.running:
+        err = 'ERROR sleepUntilDFRDresult server not running for: '
+    else:
+        toTime = time.time() + timeout
+        while not dfrd.called and toTime &gt;= time.time():
+            try:
+                reactor.iterate(0.055)
+            except Exception as err:
+                pass
+            Htime.sleep(0.001)
+        if dfrd.called and hasattr(dfrd, 'result'):
+            return dfrd.result
+    func_name, module_name, line_no = tools.getCallerNameLocation()
+    repr_dfrd = '{0} from {2}/{1} #L{3}'.format(dfrd, func_name, module_name, line_no)
+    err = Exception( (err or 'ERROR TIMEOUT sleepUntilDFRDresult for: ') + repr_dfrd )
+##     print(err)
+    return err
+# ---------------------
+This hack is not 100% reliable, but I did not found a better solution.
+There is sometime an &quot;Already called...&quot; error in the logs, when server is under
+high load with lot of connections, but since around 2 years I did not observed
+a data loss or other severer problem.
+
+I hope it helps.
+If somebody have a better (less &quot;hacky&quot;) solution for above 3 tasks,
+please send it to this list.
+
+Regards
+Paul
+
+Laurens Van Houtven wrote:
+&gt;<i> The thing I'm documenting is a server, I'm documenting it by interacting with it as a client. I realize that doesn't entirely detract from your point -- you might still be introducing problems that would not affect a &quot;real&quot; client.
+</I>&gt;<i> 
+</I>&gt;<i> My intention is to write BDD-ish stuff (except not with the usual cucumber-style scenario text).
+</I>&gt;<i> 
+</I>&gt;<i> cheers
+</I>&gt;<i> lvh
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> On 25 Mar 2012, at 23:44, Itamar Turner-Trauring wrote:
+</I>&gt;<i> 
+</I>&gt;&gt;<i> On 03/25/2012 05:02 PM, Laurens Van Houtven wrote:
+</I>&gt;&gt;&gt;<i> Hi,
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> I'm trying to find out if there's a reasonable way to mimic a blocking 
+</I>&gt;&gt;&gt;<i> API with an existing non-blocking API. I want to do this so I can 
+</I>&gt;&gt;&gt;<i> write doctests.
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> For example, I want to make a remote AMP call. It returns a deferred. 
+</I>&gt;&gt;&gt;<i> Instead of returning a deferred, I want it to block until the deferred 
+</I>&gt;&gt;&gt;<i> fires.
+</I>&gt;&gt;<i> Doctests are supposed to document and test, or perhaps have tested 
+</I>&gt;&gt;<i> documentation. If the API you're presenting doesn't match actual usage, 
+</I>&gt;&gt;<i> that's bad documentation...
+</I>
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="025404.html">[Twisted-Python] Mimicking a blocking API using Twisted
+</A></li>
+	<LI>Next message: <A HREF="025408.html">[Twisted-Python] Mimicking a blocking API using Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#25406">[ date ]</a>
+              <a href="thread.html#25406">[ thread ]</a>
+              <a href="subject.html#25406">[ subject ]</a>
+              <a href="author.html#25406">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

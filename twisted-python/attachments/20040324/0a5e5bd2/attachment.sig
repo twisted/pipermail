@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.2-rc1-SuSE (GNU/Linux)
+
+iD8DBQFAYbQ2dbAkQ4sp9r4RAsFVAJ9cFrBPr3sM+sxqfT/i17hPMpfGDACgp6mB
+GSdQmvC99GGzuO7t7UhZlfQ=
+=KHDu
+-----END PGP SIGNATURE-----

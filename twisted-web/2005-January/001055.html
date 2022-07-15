@@ -1,0 +1,202 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] VHostMonsterResource for url-context instead of
+	subdomain
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20VHostMonsterResource%20for%20url-context%20instead%20of%0A%09subdomain&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001053.html">
+   <LINK REL="Next"  HREF="001057.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] VHostMonsterResource for url-context instead of
+	subdomain</H1>
+    <B>Steven Armstrong</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20VHostMonsterResource%20for%20url-context%20instead%20of%0A%09subdomain&In-Reply-To="
+       TITLE="[Twisted-web] VHostMonsterResource for url-context instead of
+	subdomain">sa at c-area.ch
+       </A><BR>
+    <I>Wed Jan 19 04:57:56 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001053.html">[Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)
+</A></li>
+        <LI>Next message: <A HREF="001057.html">[Twisted-web] reduce deferred stack in nevow
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1055">[ date ]</a>
+              <a href="thread.html#1055">[ thread ]</a>
+              <a href="subject.html#1055">[ subject ]</a>
+              <a href="author.html#1055">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello twisted hackers
+
+I've been playing arround with nevow and twisted for a while now.
+While looking for a way to use twisted with apache I came across the 
+following problem and hacked together a possible solution.
+
+In the twisted docs 
+(<A HREF="http://twisted.sourceforge.net/TwistedDocs-1.3.0/howto/using-twistedweb.html#auto21">http://twisted.sourceforge.net/TwistedDocs-1.3.0/howto/using-twistedweb.html#auto21</A>)
+it sais to use VHostMonsterResource and proxy the documentroot to 
+twisted. In my setup I can't do this. What I need is a way to proxy only 
+a specific url-context to twisted while the rest of the domain remains 
+under apache's control.
+
+This is what I came up with. It seems to work well, the nevow examples 
+are all working with this setup. All except those that don't work in 
+native twisted/nevow eather that is.
+
+Code is attached as vhostlocation.txt to prevent linebreaks from beeing 
+hosed.
+
+Do you guys see any problems with this approach?
+Are there any implications through changing request.uri and 
+request.prepath that I didn't think/know of?
+
+cheers
+Steven
+
+
+-------------- next part --------------
+from twisted.python import log
+from nevow import vhost
+import re
+
+_debug = False
+_vhost_location_delim = &quot;@&quot;
+_vhost_re = re.compile('(.*)(/'+ _vhost_location_delim +'.*'+ _vhost_location_delim +'/)(.*)')
+
+class VHostLocation(vhost.VHostMonsterResource):
+    &quot;&quot;&quot;
+    Represents a single url-context of a Apache VirtualHost.
+    Using this you do not need to proxy an entire virtual host to twisted.
+    Instead you can proxy a specific location like:
+    &lt;VirtualHost *&gt;
+        ...
+        ServerName www.example.com
+        RewriteRule ^/nevow-app$ /nevow-app/ [R=301,L]
+        ProxyPass /nevow-app/ <A HREF="http://localhost:8080/vhost/http/www.example.com:80/@nevow-app@/">http://localhost:8080/vhost/http/www.example.com:80/@nevow-app@/</A>
+        
+        # this also works
+        #ProxyPass /nevow/app/ <A HREF="http://localhost:8080/vhost/http/www.example.com:80/@nevow/app@/">http://localhost:8080/vhost/http/www.example.com:80/@nevow/app@/</A>
+        ...
+    &lt;/VirtualHost&gt;
+
+    In this example only the <A HREF="http://www.example.com/nevow-app">http://www.example.com/nevow-app</A> location is handled by twisted.
+    The rest of the VirtualHost remains under Apache's control.
+
+    The location used by Apache is passed to twisted through the trailing @<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">location-name at .</A>
+    This is then used to fix request.uri and the request.postpath list to hold the segments 
+    needed to create a valid absolute url.
+    
+    So the ProxyPass directive in the above example is seen/used as:
+    Apache internal:
+        /nevow-app/somepage
+    Twisted internal:
+        /somepage
+    Twisted absolute:
+        <A HREF="http://www.example.com/nevow-app/somepage">http://www.example.com/nevow-app/somepage</A>
+    &quot;&quot;&quot;
+
+    def _fix_segments(self, segments):
+        &quot;&quot;&quot;
+        Removes the vhost_location from the given segments if necessary.
+        Returns the modified segments and the vhost_location.
+        vhost_location would be &quot;nevow-app&quot; in the example mentioned above.
+        segments before: ('http', 'www.example.com:80', '@nevow-app@', 'somepage')
+        segments after: ('http', 'www.example.com:80', 'somepage')
+        &quot;&quot;&quot;
+        segments_string = &quot;/&quot;.join(segments)
+        vhost_location = _vhost_re.sub(r'\2',segments_string)
+        # remove leading and trailing slash and delimiter
+        vhost_location = vhost_location[(len(_vhost_location_delim)+1):-(len(_vhost_location_delim)+1)]
+        new_segments = tuple(_vhost_re.sub(r'\1/\3',segments_string).split(&quot;/&quot;))
+        return new_segments, vhost_location
+
+    def _fix_path(self, request, vhost_location):
+        &quot;&quot;&quot;
+        Fixes the requests uri.
+        Fixes the requests postpath list.
+        Given the above example:
+        request.uri before: /@nevow-app@/somepage
+        request.uri after: /somepage
+        request.postpath before: ['http', 'www.example.com:80', '@nevow-app@', 'somepage']
+        request.postpath after: ['http', 'www.example.com:80', 'nevow-app', 'somepage']
+        &quot;&quot;&quot;
+        request.uri = request.uri.replace(&quot;/&quot;+ _vhost_location_delim + vhost_location + _vhost_location_delim, &quot;&quot;)
+        #request.path = &quot;/&quot;+ vhost_location + request.path
+        postpath = &quot;/&quot;.join(request.postpath)
+        postpath = postpath.replace(_vhost_location_delim + vhost_location + _vhost_location_delim, vhost_location)
+        request.postpath = postpath.split(&quot;/&quot;)
+
+    def locateChild(self, ctx, segments):
+        &quot;&quot;&quot;
+        First fixes the given segments. see _fix_segments
+        Then passes the method call to the superclass.
+        Then fixes the request.postpath. see _fix_path
+        returns what the superclass returned without changing it.
+        &quot;&quot;&quot;
+        request = inevow.IRequest(ctx)
+        if _debug:
+            log.msg(&quot;request.uri: %s&quot; % request.uri)
+            log.msg(&quot;request.path: %s&quot; % request.path)
+            log.msg(&quot;request.prepath: %s&quot; % request.prepath)
+            log.msg(&quot;request.postpath: %s&quot; % request.postpath)
+            log.msg(&quot;segments: %s&quot; % str(segments))
+
+        segments, vhost_location = self._fix_segments(segments)
+        if _debug: 
+            log.msg(&quot;segments after: %s&quot; % str(segments))
+            log.msg(&quot;vhost_location: %s&quot; % vhost_location)
+
+        res, segs = vhost.VHostMonsterResource.locateChild(self, ctx, segments)
+        if _debug:
+            log.msg(&quot;segs: %s&quot; % str(segs))
+
+        if vhost_location:
+            self._fix_path(request, vhost_location)
+
+        if _debug:
+            log.msg(&quot;request.uri after: %s&quot; % request.uri)
+            log.msg(&quot;request.postpath after: %s&quot; % request.postpath)
+        return res, segs
+
+
+application = service.Application(&quot;examples-vhost&quot;)
+page = Examples()
+#vResource = vhost.VHostMonsterResource()
+vResource = VHostLocation()
+page.putChild('vhost', vResource)
+
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001053.html">[Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)
+</A></li>
+	<LI>Next message: <A HREF="001057.html">[Twisted-web] reduce deferred stack in nevow
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1055">[ date ]</a>
+              <a href="thread.html#1055">[ thread ]</a>
+              <a href="subject.html#1055">[ subject ]</a>
+              <a href="author.html#1055">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

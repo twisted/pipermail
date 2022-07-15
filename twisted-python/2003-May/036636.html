@@ -1,0 +1,200 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] database access via cred and ssl encryption
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20database%20access%20via%20cred%20and%20ssl%20encryption&In-Reply-To=%3C20030517022708.GA27129%40doublegemini.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="036633.html">
+   <LINK REL="Next"  HREF="036639.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] database access via cred and ssl encryption</H1>
+    <B>Clark C. Evans</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20database%20access%20via%20cred%20and%20ssl%20encryption&In-Reply-To=%3C20030517022708.GA27129%40doublegemini.com%3E"
+       TITLE="[Twisted-Python] database access via cred and ssl encryption">cce at clarkevans.com
+       </A><BR>
+    <I>Fri May 16 20:27:08 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="036633.html">[Twisted-Python] database access via cred and ssl encryption
+</A></li>
+        <LI>Next message (by thread): <A HREF="036639.html">[Twisted-Python] database access via cred and ssl encryption
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36636">[ date ]</a>
+              <a href="thread.html#36636">[ thread ]</a>
+              <a href="subject.html#36636">[ subject ]</a>
+              <a href="author.html#36636">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Joe,
+
+My requirement was to have a server authenticate via a client
+via a server certificate known by the client.   To implement
+this, I had to patch the internet/ssl.py file; and to make 
+the 'fetch' aspect easy, I had a small change to web/client.py
+As far as I know, these patches have not been applied; however,
+you may find them useful...
+
+Clark
+-------------- next part --------------
+39c39
+&lt; from OpenSSL import SSL
+---
+&gt;<i> from OpenSSL import SSL, crypto
+</I>57a58,60
+&gt;<i> def dumpCertificate(cert, filetype = crypto.FILETYPE_PEM ):
+</I>&gt;<i>     ''' a helper to dump an incoming cert as a PEM '''
+</I>&gt;<i>     return crypto.dump_certificate(filetype, cert)
+</I>62,63c65,67
+&lt;                  sslmethod=SSL.SSLv23_METHOD):
+&lt;         self.privateKeyFileName = privateKeyFileName
+---
+&gt;<i>                  sslmethod=SSL.SSLv23_METHOD, verifyCallback = None):
+</I>&gt;<i>         self.verifyCallback      = (verifyCallback, )      
+</I>&gt;<i>         self.privateKeyFileName  = privateKeyFileName
+</I>67a72,77
+&gt;<i>                         
+</I>&gt;<i>     def verifyCertificate(self, conn, cert, errno, depth, retcode):
+</I>&gt;<i>         cb = self.verifyCallback[0]
+</I>&gt;<i>         if cb: return cb(cert)
+</I>&gt;<i>         return 1
+</I>&gt;<i> 
+</I>71a82,83
+&gt;<i>         if self.verifyCallback[0]:
+</I>&gt;<i>             ctx.set_verify(SSL.VERIFY_PEER, self.verifyCertificate) 
+</I>-------------- next part --------------
+--- client.py.orig	Tue Mar 25 18:10:28 2003
++++ client.py	Tue Mar 25 18:55:08 2003
+@@ -63,7 +63,8 @@
+         l = self.headers.get('location')
+         if not l:
+             self.handleStatusDefault()
+-        host, port, url = _parse(l[0])
++        https, host, port, url = _parse(l[0])
++        assert not https, &quot;https redirects not implemented yet&quot;
+         self.factory.host, self.factory.url = host, url
+         reactor.connectTCP(host, port, self.factory)
+         self.quietLoss = 1
+@@ -105,7 +106,9 @@
+ 
+     protocol = HTTPPageGetter
+ 
+-    def __init__(self, host, url, method='GET', postdata=None, headers=None, agent=&quot;Twisted PageGetter&quot;):
++    def __init__(self, host, url, method='GET', postdata=None, 
++                 headers=None, agent=None):
++        if agent is None: agent = &quot;Twisted PageGetter&quot;
+         if headers is not None:
+             self.headers = headers
+         if postdata is not None:
+@@ -141,8 +144,10 @@
+     protocol = HTTPPageDownloader
+     value = None
+ 
+-    def __init__(self, host, url, fileName, method='GET', postdata=None, headers=None, agent=&quot;Twisted client&quot;):
+-        HTTPClientFactory.__init__(self, host, url, method=method, postdata=postdata, headers=headers, agent=agent)
++    def __init__(self, host, url, fileName, method='GET', postdata=None, 
++                 headers=None, agent = None):
++        HTTPClientFactory.__init__(self, host, url, method, 
++                                   postdata, headers, agent)
+         self.fileName = fileName
+         self.deferred = defer.Deferred()
+         self.waiting = 1
+@@ -166,26 +171,59 @@
+ def _parse(url):
+     parsed = urlparse.urlparse(url)
+     url = urlparse.urlunparse(('','')+parsed[2:])
+-    host, port = parsed[1], 80
++    host = parsed[1]
++    if 'https' == parsed[0]:
++        https, port = 1, 443
++    else:
++        https, port = 0, 80
+     if ':' in host:
+         host, port = host.split(':')
+         port = int(port)
+-    return host, port, url
++    return https, host, port, url
+ 
+-def getPage(url, *args, **kwargs):
++def getPage(url, method='GET', postdata=None, headers=None, agent = None):
+     '''download a web page
+ 
+     Download a page. Return a deferred, which will
+     callback with a page or errback with a description
+     of the error.
+     '''
+-    host, port, url = _parse(url)
+-    factory = HTTPClientFactory(host, url, *args, **kwargs)
++    https, host, port, path = _parse(url)
++    if https: return getSecurePage(url, method, postdata, headers, agent)
++    factory = HTTPClientFactory(host, path, method, postdata, headers, agent)
+     reactor.connectTCP(host, port, factory)
+     return factory.deferred
+ 
++try:
++    from twisted.internet import ssl
++    def getSecurePage(url, method='GET', postdata=None, headers=None, 
++                      agent = None,
++                      privateKeyFileName = None, certificateFileName = None,
++                      sslmethod=ssl.SSL.SSLv23_METHOD, verifyCallback = None, 
++                      serverCertificateFileName = None):
++        &quot;&quot;&quot; download a secure page &quot;&quot;&quot;
++        https, host, port, path = _parse(url)
++        if serverCertificateFileName:
++            cert = file(serverCertificateFileName).read()
++            verifyCallback = lambda rhs: ssl.dumpCertificate(cert) == rhs
++        if verifyCallback or certificateFileName or privateKeyFileName:
++            context = ssl.DefaultOpenSSLContextFactory(
++                          privateKeyFileName, certificateFileName,
++                          sslmethod, verifyCallback)
++            context.isClient = 1
++        else:
++            context = ssl.ClientContextFactory()
++        factory = HTTPClientFactory(host, path, method, postdata, headers)
++        reactor.connectSSL(host, port, factory, context)
++        return factory.deferred
++except:
++    def getSecurePage(*args,**kwargs):
++        raise Exception(&quot;ssl not available&quot;)
++
+ def downloadPage(url, file, *args, **kwargs):
+-    host, port, url = _parse(url)
+-    factory = HTTPDownloader(host, url, file, *args, **kwargs)
++    https, host, port, path = _parse(url)
++    assert not https, &quot;https is not yet implemented here&quot;
++    factory = HTTPDownloader(host, path, file, *args, **kwargs)
+     reactor.connectTCP(host, port, factory)
+     return factory.deferred
++
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="036633.html">[Twisted-Python] database access via cred and ssl encryption
+</A></li>
+	<LI>Next message (by thread): <A HREF="036639.html">[Twisted-Python] database access via cred and ssl encryption
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36636">[ date ]</a>
+              <a href="thread.html#36636">[ thread ]</a>
+              <a href="subject.html#36636">[ subject ]</a>
+              <a href="author.html#36636">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,95 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] memory leaks
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20memory%20leaks&In-Reply-To=%3CFCF86015-D929-42AB-84A7-93140272F847%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="063393.html">
+   <LINK REL="Next"  HREF="063397.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] memory leaks</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20memory%20leaks&In-Reply-To=%3CFCF86015-D929-42AB-84A7-93140272F847%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] memory leaks">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Mon Dec  5 23:09:15 MST 2016</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="063393.html">[Twisted-Python] memory leaks
+</A></li>
+        <LI>Next message (by thread): <A HREF="063397.html">[Twisted-Python] memory leaks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#63396">[ date ]</a>
+              <a href="thread.html#63396">[ thread ]</a>
+              <a href="subject.html#63396">[ subject ]</a>
+              <a href="author.html#63396">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Dec 4, 2016, at 9:50 AM, Jean-Paul Calderone &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> On Sun, Dec 4, 2016 at 12:50 AM, Glyph Lefkowitz &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt;&gt; wrote:
+</I>&gt;<i> Following up on a Stack Overflow question from some time ago, <A HREF="http://stackoverflow.com/questions/40604545/twisted-using-connectprotocol-to-connect-endpoint-cause-memory-leak?noredirect=1#comment68573508_40604545">http://stackoverflow.com/questions/40604545/twisted-using-connectprotocol-to-connect-endpoint-cause-memory-leak?noredirect=1#comment68573508_40604545</A> &lt;<A HREF="http://stackoverflow.com/questions/40604545/twisted-using-connectprotocol-to-connect-endpoint-cause-memory-leak?noredirect=1#comment68573508_40604545">http://stackoverflow.com/questions/40604545/twisted-using-connectprotocol-to-connect-endpoint-cause-memory-leak?noredirect=1#comment68573508_40604545</A>&gt; since the submitter added a minimal reproducer, I used Heappy <A HREF="https://pypi.org/project/guppy/">https://pypi.org/project/guppy/</A> &lt;<A HREF="https://pypi.org/project/guppy/">https://pypi.org/project/guppy/</A>&gt; to look at memory sizing, and seeing large numbers of Logger instances and type objects leaking when using client endpoints.  It was not immediately obvious to me where the leak is occurring though, as I was careful to clean up the Deferred results and not leave them in a failure state.
+</I>&gt;<i> 
+</I>&gt;<i> I am hoping that I can entice someone else to diagnose this far enough to actually file a bug :-).
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> Answered.  I didn't file a bug, I'll let someone else with ideas about twisted.logger think about what exactly the bug is.
+</I>
+I wrote up this bug, and will file it when the ability to file bugs on Trac comes back:
+
+twisted.logger._initialBuffer can consume a surprisingly large amount of memory if logging is not initialized
+
+
+The way that `twisted.logger` is supposed to work is that at process startup time, the global log observer has a ring buffer for any messages emitted before logging is initialized, and emit those messages to the initial set of log observers passed to `globalLogBeginner.beginLoggingTo`.
+
+The size of this buffer (in `twisted.logger._buffer._DEFAULT_BUFFER_MAXIMUM` is 65535.  This value was selected arbitrarily, probably because somebody (me or wsanchez) thought &quot;huh, yeah, 64k, that's probably a fine number); but of course, that's 64k ''bytes''.
+
+If this were a buffer of actual formatted log messages, of say 200 bytes each, that would be about 13 megabytes, which is maybe an acceptable amount of RAM to spend on a log buffer.
+
+However, it isn't that.  It's a buffer of 64k log ''events'', each of which probably has a `log_logger` and `log_source` set, each of which is an object attached to potentially arbitrary data.  For example, every `Factory` that starts up logs something, which means you're holding on to an instance, and an instance dictionary, and the protocol instance, and the protocol instance dictionary.  Worse yet, any logged ''failures'' might hold on to all the stuff on their stack.
+
+Add it all up and you end up with a log buffer totaling in the hundreds of megabytes, or even gigabytes, once it's full.  In an application that naively uses Twisted without ever initializing logging, this hangs around forever.
+
+This buffer should probably be a ''lot'' smaller, and we might want to emit a warning when it fills up, reminding people that it is ''only polite'' to start up the logging subsystem, even just to explicitly throw logs away.
+
+Text is here in case someone else manages to make trac come back and would like to file it before I get back :).
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20161205/f15acb77/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="063393.html">[Twisted-Python] memory leaks
+</A></li>
+	<LI>Next message (by thread): <A HREF="063397.html">[Twisted-Python] memory leaks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#63396">[ date ]</a>
+              <a href="thread.html#63396">[ thread ]</a>
+              <a href="subject.html#63396">[ subject ]</a>
+              <a href="author.html#63396">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

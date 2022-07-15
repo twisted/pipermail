@@ -1,0 +1,348 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: How to receive a big stream data?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20How%20to%20receive%20a%20big%20stream%20data%3F&In-Reply-To=m21wfe5ubz.fsf%40valheru.db3l.homeip.net">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="015738.html">
+   <LINK REL="Next"  HREF="015679.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: How to receive a big stream data?</H1>
+    <B>steven wang</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20How%20to%20receive%20a%20big%20stream%20data%3F&In-Reply-To=m21wfe5ubz.fsf%40valheru.db3l.homeip.net"
+       TITLE="[Twisted-Python] Re: How to receive a big stream data?">steven.zdwang at gmail.com
+       </A><BR>
+    <I>Fri Jul 20 00:50:19 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="015738.html">[Twisted-Python] Re: How to receive a big stream data?
+</A></li>
+        <LI>Next message: <A HREF="015679.html">[Twisted-Python] twisted.web2 server timeout?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15769">[ date ]</a>
+              <a href="thread.html#15769">[ thread ]</a>
+              <a href="subject.html#15769">[ subject ]</a>
+              <a href="author.html#15769">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thank you very much! :)
+
+On 7/12/07, David Bolen &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">db3l.net at gmail.com</A>&gt; wrote:
+&gt;<i>
+</I>&gt;<i> &quot;steven wang&quot; &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">steven.zdwang at gmail.com</A>&gt; writes:
+</I>&gt;<i>
+</I>&gt;<i> &gt; But I want to receive binary data in my protocol.
+</I>&gt;<i>
+</I>&gt;<i> Even if you start with a non-binary header, you can switch to
+</I>&gt;<i> receiving binary information at any time by going using the raw mode
+</I>&gt;<i> of most of the basic protocols.  And having some sort of ASCII header
+</I>&gt;<i> prior to the raw data is often a very simple way to handle things
+</I>&gt;<i> (something in common with a tremendous number of standard TCP-based
+</I>&gt;<i> protocols).
+</I>&gt;<i>
+</I>&gt;<i> Your original post had a fairly straight-forward ASCII header that I
+</I>&gt;<i> think would probably be fine.  What you're probably missing is the
+</I>&gt;<i> concept of switching to a raw binary receive mode which then switches
+</I>&gt;<i> your protocol from getting data in its lineReceived method to having
+</I>&gt;<i> rawDataReceived called.
+</I>&gt;<i>
+</I>&gt;<i> For example, here's a slightly stripped pair of protocols (server and
+</I>&gt;<i> client) that I'm currently using as part of a bigger project.  Most of
+</I>&gt;<i> the communication is over a PB connection which the client uses to
+</I>&gt;<i> perform operations on the server, one of which is editing job
+</I>&gt;<i> information.  But jobs contain attached files (often very large
+</I>&gt;<i> audio/video files), so committing changes to a job also involves
+</I>&gt;<i> transmitting up any newly added files.  So after the client updates
+</I>&gt;<i> the server's meta data, it initiates a separate set of file transfers
+</I>&gt;<i> across a different port.
+</I>&gt;<i>
+</I>&gt;<i> In my case, the header for a file transfer includes a session key
+</I>&gt;<i> (which the protocol uses to reference the original PB-based job
+</I>&gt;<i> session the client was using) along with a file key used for storage
+</I>&gt;<i> (which uniquely references a specific file in the job).  The final
+</I>&gt;<i> element is the total file size.  That is, upon connecting, the client
+</I>&gt;<i> transmits a line such as:
+</I>&gt;<i>
+</I>&gt;<i>     &lt;session_uuid&gt; &lt;file_uuid&gt; #######
+</I>&gt;<i>
+</I>&gt;<i> where the two uuids are specific to the transfer underway (and help
+</I>&gt;<i> with security since a random client isn't going to know the right
+</I>&gt;<i> ids), and ######## is the overall file length.  After sending that
+</I>&gt;<i> line (e.g., right after its final newline), the client just blasts up
+</I>&gt;<i> the raw data.
+</I>&gt;<i>
+</I>&gt;<i> The protocol is a simple LineReceiver based protocol, that receives
+</I>&gt;<i> that information information as an ASCII initial line, after which it
+</I>&gt;<i> switches to raw mode to receive the data.  Although the data length
+</I>&gt;<i> could technically be inferred from when the client disconnects, having
+</I>&gt;<i> it up front ensures I can detect a transfer that gets interrupted.
+</I>&gt;<i>
+</I>&gt;<i> So on the server side you have:
+</I>&gt;<i>
+</I>&gt;<i>           - - - - - - - - - - - - - - - - - - - - - - - - -
+</I>&gt;<i>
+</I>&gt;<i> class FileIOProtocol(LineReceiver):
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self):
+</I>&gt;<i>         self.info = None
+</I>&gt;<i>         self.outfile = None
+</I>&gt;<i>         self.remain = 0
+</I>&gt;<i>         self.crc = 0
+</I>&gt;<i>
+</I>&gt;<i>     def lineReceived(self, line):
+</I>&gt;<i>         logger.debug('FileIOProtocol:lineReceived:%s', line)
+</I>&gt;<i>         sess_key, file_key, self.size = line.split()
+</I>&gt;<i>         file_key = uuid.UUID(file_key)
+</I>&gt;<i>
+</I>&gt;<i>         try:
+</I>&gt;<i>             session_uuid = uuid.UUID(sess_key)
+</I>&gt;<i>         except:
+</I>&gt;<i>             logger.debug('FileIOProtocol:lineReceived Invalid session')
+</I>&gt;<i>             self.transport.loseConnection()
+</I>&gt;<i>             return
+</I>&gt;<i>
+</I>&gt;<i>         self.job_session = self.factory.sessions.get(session_uuid)
+</I>&gt;<i>         if not self.job_session:
+</I>&gt;<i>             logger.debug('FileIOProtocol:lineReceived Invalid session')
+</I>&gt;<i>             self.transport.loseConnection()
+</I>&gt;<i>             return
+</I>&gt;<i>
+</I>&gt;<i>         if not self.job_session.active:
+</I>&gt;<i>             logger.debug('FileIOProtocol:lineReceived Stale session')
+</I>&gt;<i>             self.transport.loseConnection()
+</I>&gt;<i>             return
+</I>&gt;<i>
+</I>&gt;<i>         # [db3l] The original code validates the individual file uuid here
+</I>&gt;<i>         # resulting in self.job_file as job file object from the session
+</I>&gt;<i>
+</I>&gt;<i>         if not self.job_file:
+</I>&gt;<i>             logger.debug('FileIOProtocol:lineReceived Invalid file key')
+</I>&gt;<i>             self.transport.loseConnection()
+</I>&gt;<i>             return
+</I>&gt;<i>
+</I>&gt;<i>         # Create the upload directory if not already present
+</I>&gt;<i>         if not os.path.isdir(self.job_session.upload_dir):
+</I>&gt;<i>             os.makedirs(self.job_session.upload_dir)
+</I>&gt;<i>
+</I>&gt;<i>         self.outfilename = os.path.join(self.job_session.upload_dir,
+</I>&gt;<i>                                         self.job_file['uuid'].hex)
+</I>&gt;<i>
+</I>&gt;<i>         logger.debug('FileIOProtocol:lineReceived Receiving into %s',
+</I>&gt;<i>                      self.outfilename)
+</I>&gt;<i>         try:
+</I>&gt;<i>             self.outfile = open(self.outfilename,'wb')
+</I>&gt;<i>         except Exception, value:
+</I>&gt;<i>             logger.debug('FileIOProtocol:lineReceived Unable to open file
+</I>&gt;<i> %s '
+</I>&gt;<i>                          '(%s)', self.outfilename, value)
+</I>&gt;<i>             self.transport.loseConnection()
+</I>&gt;<i>             return
+</I>&gt;<i>
+</I>&gt;<i>         self.remain = int(self.size)
+</I>&gt;<i>         logger.debug('FileIOProtocol:lineReceived Entering raw mode: %s
+</I>&gt;<i> %s',
+</I>&gt;<i>                      self.outfile, self.remain)
+</I>&gt;<i>         self.setRawMode()
+</I>&gt;<i>
+</I>&gt;<i>     def rawDataReceived(self, data):
+</I>&gt;<i>         self.remain -= len(data)
+</I>&gt;<i>         self.crc = crc32(data, self.crc)
+</I>&gt;<i>         self.outfile.write(data)
+</I>&gt;<i>
+</I>&gt;<i>     def connectionMade(self):
+</I>&gt;<i>         LineReceiver.connectionMade(self)
+</I>&gt;<i>         logger.debug('FileIOProtocol:connectionMade')
+</I>&gt;<i>
+</I>&gt;<i>     def connectionLost(self, reason):
+</I>&gt;<i>         LineReceiver.connectionLost(self, reason)
+</I>&gt;<i>         logger.debug('FileIOProtocol:connectionLost')
+</I>&gt;<i>         if self.outfile:
+</I>&gt;<i>             self.outfile.close()
+</I>&gt;<i>
+</I>&gt;<i>             if self.remain != 0:
+</I>&gt;<i>                 # Problem uploading - discard
+</I>&gt;<i>                 logger.debug('FileIOProtocol:connectionLost
+</I>&gt;<i> remain(%d)!=0',
+</I>&gt;<i>                              self.remain)
+</I>&gt;<i>
+</I>&gt;<i>                 os.remove(self.outfilename)
+</I>&gt;<i>             else:
+</I>&gt;<i>                 # Update job object with upload status
+</I>&gt;<i>                 self.job_file['uploaded'] = datetime.utcnow()
+</I>&gt;<i>                 self.job_file['size'] = self.size
+</I>&gt;<i>                 self.job_file['crc'] = self.crc
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> class FileIOFactory(ServerFactory):
+</I>&gt;<i>     protocol = FileIOProtocol
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self, db, sessions, options):
+</I>&gt;<i>         self.db = db
+</I>&gt;<i>         self.options = options
+</I>&gt;<i>         self.sessions = sessions
+</I>&gt;<i>
+</I>&gt;<i>           - - - - - - - - - - - - - - - - - - - - - - - - -
+</I>&gt;<i>
+</I>&gt;<i> which is bound to an appropriate port on the server however you'd like.
+</I>&gt;<i> I use code like:
+</I>&gt;<i>
+</I>&gt;<i>     self.fileio = FileIOFactory(db, self.sessions, options)
+</I>&gt;<i>     reactor.listenTCP(self.options['file_port'], self.fileio)
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> On the client side, I have an equivalent protocol that transmits up
+</I>&gt;<i> the file.  It's run beneath a GUI, so keeps a reference to the GUI
+</I>&gt;<i> controller object that might indicate it needs to cancel a transfer
+</I>&gt;<i> mid-stream, as well as updating the controller during the transfer so
+</I>&gt;<i> it can update a progress bar on screen.
+</I>&gt;<i>
+</I>&gt;<i> It is also a LineReceiver based protocol, and uses the Twisted
+</I>&gt;<i> FileSender object to do the raw data transfer (which is implemented as
+</I>&gt;<i> a straight producer with the TCP socket being the consumer).  The
+</I>&gt;<i> connectionMade method is where it transmits the ASCII header and then
+</I>&gt;<i> institutes the raw data transfer.
+</I>&gt;<i>
+</I>&gt;<i>           - - - - - - - - - - - - - - - - - - - - - - - - -
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> class TransferCancelled(Exception):
+</I>&gt;<i>     &quot;&quot;&quot;Exception for a user cancelling a transfer&quot;&quot;&quot;
+</I>&gt;<i>     pass
+</I>&gt;<i>
+</I>&gt;<i> class FileIOClient(LineReceiver):
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self, path, sess_key, file_key, controller):
+</I>&gt;<i>         self.path = path
+</I>&gt;<i>         self.sess_key = sess_key
+</I>&gt;<i>         self.file_key = file_key
+</I>&gt;<i>         self.controller = controller
+</I>&gt;<i>
+</I>&gt;<i>         self.infile = open(self.path, 'rb')
+</I>&gt;<i>         self.insize = os.stat(self.path).st_size
+</I>&gt;<i>
+</I>&gt;<i>         self.result = None
+</I>&gt;<i>         self.completed = False
+</I>&gt;<i>
+</I>&gt;<i>         self.controller.file_sent = 0
+</I>&gt;<i>         self.controller.file_size = self.insize
+</I>&gt;<i>
+</I>&gt;<i>     def _monitor(self, data):
+</I>&gt;<i>         self.controller.file_sent += len(data)
+</I>&gt;<i>         self.controller.total_sent += len(data)
+</I>&gt;<i>
+</I>&gt;<i>         # Check with controller to see if we've been cancelled and abort
+</I>&gt;<i>         # if so.
+</I>&gt;<i>         if self.controller.cancel:
+</I>&gt;<i>             print 'FileIOClient._monitor Cancelling'
+</I>&gt;<i>             # Need to unregister the producer with the transport or it
+</I>&gt;<i> will
+</I>&gt;<i>             # wait for it to finish before breaking the connection
+</I>&gt;<i>             self.transport.unregisterProducer()
+</I>&gt;<i>             self.transport.loseConnection()
+</I>&gt;<i>             # Indicate a user cancelled result
+</I>&gt;<i>             self.result = TransferCancelled('User cancelled transfer')
+</I>&gt;<i>
+</I>&gt;<i>         return data
+</I>&gt;<i>
+</I>&gt;<i>     def cbTransferCompleted(self, lastsent):
+</I>&gt;<i>         self.completed = True
+</I>&gt;<i>         self.transport.loseConnection()
+</I>&gt;<i>
+</I>&gt;<i>     def connectionMade(self):
+</I>&gt;<i>         self.transport.write('%s %s %s\r\n' % (str(self.sess_key),
+</I>&gt;<i>                                                str(self.file_key),
+</I>&gt;<i>                                                self.insize))
+</I>&gt;<i>         sender = FileSender()
+</I>&gt;<i>         sender.CHUNK_SIZE = 2 ** 16
+</I>&gt;<i>         d = sender.beginFileTransfer(self.infile, self.transport,
+</I>&gt;<i>                                      self._monitor)
+</I>&gt;<i>         d.addCallback(self.cbTransferCompleted)
+</I>&gt;<i>
+</I>&gt;<i>     def connectionLost(self, reason):
+</I>&gt;<i>         LineReceiver.connectionLost(self, reason)
+</I>&gt;<i>         print 'FileIOClient:connectionLost'
+</I>&gt;<i>         self.infile.close()
+</I>&gt;<i>         if self.completed:
+</I>&gt;<i>             self.controller.completed.callback(self.result)
+</I>&gt;<i>         else:
+</I>&gt;<i>             self.controller.completed.errback(reason)
+</I>&gt;<i>
+</I>&gt;<i> class FileIOClientFactory(ClientFactory):
+</I>&gt;<i>
+</I>&gt;<i>     protocol = FileIOClient
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self, path, sess_key, file_key, controller):
+</I>&gt;<i>         self.path = path
+</I>&gt;<i>         self.sess_key = sess_key
+</I>&gt;<i>         self.file_key = file_key
+</I>&gt;<i>         self.controller = controller
+</I>&gt;<i>
+</I>&gt;<i>     def clientConnectionFailed(self, connector, reason):
+</I>&gt;<i>         ClientFactory.clientConnectionFailed(self, connector, reason)
+</I>&gt;<i>         self.controller.completed.errback(reason)
+</I>&gt;<i>
+</I>&gt;<i>     def buildProtocol(self, addr):
+</I>&gt;<i>         print 'buildProtocol'
+</I>&gt;<i>         p = self.protocol(self.path, self.sess_key, self.file_key,
+</I>&gt;<i>                           self.controller)
+</I>&gt;<i>         p.factory = self
+</I>&gt;<i>         return p
+</I>&gt;<i>
+</I>&gt;<i>           - - - - - - - - - - - - - - - - - - - - - - - - -
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> Within the presentation layer controller on the client, initiating a
+</I>&gt;<i> transfer is done with:
+</I>&gt;<i>
+</I>&gt;<i>     def _transmitOne(self, address, port, path, sess_key, file_key):
+</I>&gt;<i>         self.completed = defer.Deferred()
+</I>&gt;<i>         f = FileIOClientFactory(path, sess_key, file_key, self)
+</I>&gt;<i>         reactor.connectTCP(address, port, f)
+</I>&gt;<i>         return self.completed
+</I>&gt;<i>
+</I>&gt;<i> and the result is that self.completed fires (callback or errback) when
+</I>&gt;<i> the transfer is done (which the controller uses to then initiate the
+</I>&gt;<i> next transfer when there are a list of files to go up for a job).
+</I>&gt;<i>
+</I>&gt;<i> While probably not exactly what you're trying to do, perhaps it'll
+</I>&gt;<i> point you in the right direction.
+</I>&gt;<i>
+</I>&gt;<i> -- David
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20070720/37570bc1/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20070720/37570bc1/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="015738.html">[Twisted-Python] Re: How to receive a big stream data?
+</A></li>
+	<LI>Next message: <A HREF="015679.html">[Twisted-Python] twisted.web2 server timeout?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15769">[ date ]</a>
+              <a href="thread.html#15769">[ thread ]</a>
+              <a href="subject.html#15769">[ subject ]</a>
+              <a href="author.html#15769">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

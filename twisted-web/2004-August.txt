@@ -1,0 +1,1663 @@
+From jlb at houseofdistraction.com  Mon Aug  2 11:36:40 2004
+From: jlb at houseofdistraction.com (Jeff Bowden)
+Date: Mon Aug  2 11:37:25 2004
+Subject: [Twisted-web] nested nevow:data?
+Message-ID: <410E7BA8.4050209@houseofdistraction.com>
+
+Should it be possible to nest nevow:data declarations in a template?  E.g.
+
+    <html nevow:data="order" nevow:render="order">
+    <head><title>Order <nevow:slot name="order_number"/></title></head>
+    <body>
+      <h1>Order <nevow:slot name="order_number"/></h1>
+      <ul nevow:data="order_items" nevow:render="sequence">
+        <li nevow:pattern="item" nevow:render="mapping">
+           ... slots and stuff
+        </li>
+       </ul>
+    </body>
+
+
+When I do this I get a big long stack trace rooted in 
+nevow/accessors.py.  It works fine if I remove the outer 
+nevow:data="order" (and dummy up a static fillSlots call for 
+"order_number" in render_order).  It also works if I remove the inner 
+section.
+
+I can work around the problem by putting the nevow:data="order" 
+declaration  in multiple places but it would be handy if I didn't have 
+to.  Is this a bug or is it by design?
+
+
+From indigo at bitglue.com  Mon Aug  2 12:20:54 2004
+From: indigo at bitglue.com (Phil Frost)
+Date: Mon Aug  2 12:20:56 2004
+Subject: [Twisted-web] nested nevow:data?
+In-Reply-To: <410E7BA8.4050209@houseofdistraction.com>
+References: <410E7BA8.4050209@houseofdistraction.com>
+Message-ID: <20040802182054.GA16326@unununium.org>
+
+It is possible. The problem is probably elsewhere, perhaps one of the
+methods is misbehaving or does not exist. It can often be hard to tell
+from the traceback because almost everything in nevow is deferred, so
+the problem is not manifest until long after it was encountered.
+
+On Mon, Aug 02, 2004 at 10:36:40AM -0700, Jeff Bowden wrote:
+> Should it be possible to nest nevow:data declarations in a template?  E.g.
+> 
+>    <html nevow:data="order" nevow:render="order">
+>    <head><title>Order <nevow:slot name="order_number"/></title></head>
+>    <body>
+>      <h1>Order <nevow:slot name="order_number"/></h1>
+>      <ul nevow:data="order_items" nevow:render="sequence">
+>        <li nevow:pattern="item" nevow:render="mapping">
+>           ... slots and stuff
+>        </li>
+>       </ul>
+>    </body>
+> 
+> 
+> When I do this I get a big long stack trace rooted in 
+> nevow/accessors.py.  It works fine if I remove the outer 
+> nevow:data="order" (and dummy up a static fillSlots call for 
+> "order_number" in render_order).  It also works if I remove the inner 
+> section.
+> 
+> I can work around the problem by putting the nevow:data="order" 
+> declaration  in multiple places but it would be handy if I didn't have 
+> to.  Is this a bug or is it by design?
+
+From dp at divmod.org  Mon Aug  2 13:07:10 2004
+From: dp at divmod.org (Donovan Preston)
+Date: Mon Aug  2 13:08:01 2004
+Subject: [Twisted-web] nested nevow:data?
+In-Reply-To: <410E7BA8.4050209@houseofdistraction.com>
+References: <410E7BA8.4050209@houseofdistraction.com>
+Message-ID: <2804DFAC-E4B7-11D8-BA7F-000A95864FC4@divmod.org>
+
+
+On Aug 2, 2004, at 1:36 PM, Jeff Bowden wrote:
+
+> Should it be possible to nest nevow:data declarations in a template?  
+> E.g.
+>
+>    <html nevow:data="order" nevow:render="order">
+>    <head><title>Order <nevow:slot name="order_number"/></title></head>
+>    <body>
+>      <h1>Order <nevow:slot name="order_number"/></h1>
+>      <ul nevow:data="order_items" nevow:render="sequence">
+>        <li nevow:pattern="item" nevow:render="mapping">
+>           ... slots and stuff
+>        </li>
+>       </ul>
+>    </body>
+>
+>
+> When I do this I get a big long stack trace rooted in 
+> nevow/accessors.py.  It works fine if I remove the outer 
+> nevow:data="order" (and dummy up a static fillSlots call for 
+> "order_number" in render_order).  It also works if I remove the inner 
+> section.
+>
+> I can work around the problem by putting the nevow:data="order" 
+> declaration  in multiple places but it would be handy if I didn't have 
+> to.  Is this a bug or is it by design?
+
+What type is "order"? A data directive puts that data on the context 
+stack for the duration of that xml node; additional data directives are 
+handled by getting an IContainer adapter around the nearest data on the 
+stack. If, as I am suspecting, "order" is a rich python class, what you 
+want to do is either mix in DataFactory to your order class and declare 
+that it implements IContainer, or provide an IContainer adapter for 
+your order class (which is probably a subclass of DataFactory). For 
+example:
+
+class OrderContainer(DataFactory):
+	def data_order_number(self, ctx, data):
+		return self.original.orderNumber
+
+	def data_order_items(self, ctx, data):
+		return self.original.items
+
+compy.registerAdapter(OrderContainer, MyOrderClass, IContainer)
+
+This is by design. It's intended to work in such a way that fragments 
+of template can have data pushed at them, and they can operate without 
+knowledge of the context of the entire page.
+
+The biggest mistake people make in this area is when they do something 
+like push a list onto the context and then try to access another data_ 
+method of the Page class. The directive will be satisfied by doing 
+IContainer(theList).child(theDirective), and since the IContainer 
+adapter for lists doesn't know how to handle anything except integer 
+indexes, they get an exception.
+
+eg:
+
+<ol n:data="someList" n:render="sequence">
+	<li n:pattern="header" n:data="someOtherDirective">
+	<!-- This won't work because "someList" is the topmost data on the 
+stack, and thus we will get an exception instead of having our 
+data_someOtherDirective method called on our Page -->
+		Header here
+	</li>
+	<li n:pattern="item" n:render="string">
+		Items here
+	</li>
+</ol>
+
+Woven used to have a syntax which used ".." and "/" to allow you to 
+navigate through the stuff on the data stack, but this hasn't yet been 
+implemented in nevow. It may be at some point in the future. For now, 
+the broken example above could be written like:
+
+<ol>
+	<li n:data="someOtherDirective">
+		Header here
+	</li>
+	<n:invisible n:data="someList" n:render="sequence">
+		<li n:pattern="item" n:render="string">
+			Items here
+		</li>
+	</n:invisible>
+</ol>
+
+dp
+
+
+From jlb at houseofdistraction.com  Mon Aug  2 16:52:31 2004
+From: jlb at houseofdistraction.com (Jeff Bowden)
+Date: Mon Aug  2 16:53:10 2004
+Subject: [Twisted-web] nested nevow:data?
+In-Reply-To: <2804DFAC-E4B7-11D8-BA7F-000A95864FC4@divmod.org>
+References: <410E7BA8.4050209@houseofdistraction.com>
+	<2804DFAC-E4B7-11D8-BA7F-000A95864FC4@divmod.org>
+Message-ID: <410EC5AF.5000406@houseofdistraction.com>
+
+Donovan Preston wrote:
+
+>
+> On Aug 2, 2004, at 1:36 PM, Jeff Bowden wrote:
+>
+>> Should it be possible to nest nevow:data declarations in a template?  
+>> E.g.
+>>
+>>    <html nevow:data="order" nevow:render="order">
+>>    <head><title>Order <nevow:slot name="order_number"/></title></head>
+>>    <body>
+>>      <h1>Order <nevow:slot name="order_number"/></h1>
+>>      <ul nevow:data="order_items" nevow:render="sequence">
+>>        <li nevow:pattern="item" nevow:render="mapping">
+>>           ... slots and stuff
+>>        </li>
+>>       </ul>
+>>    </body>
+>>
+>>
+>> When I do this I get a big long stack trace rooted in 
+>> nevow/accessors.py.  It works fine if I remove the outer 
+>> nevow:data="order" (and dummy up a static fillSlots call for 
+>> "order_number" in render_order).  It also works if I remove the inner 
+>> section.
+>>
+>> I can work around the problem by putting the nevow:data="order" 
+>> declaration  in multiple places but it would be handy if I didn't 
+>> have to.  Is this a bug or is it by design?
+>
+>
+> What type is "order"? A data directive puts that data on the context 
+> stack for the duration of that xml node; additional data directives 
+> are handled by getting an IContainer adapter around the nearest data 
+> on the stack. If, as I am suspecting, "order" is a rich python class, 
+> what you want to do is either mix in DataFactory to your order class 
+> and declare that it implements IContainer, or provide an IContainer 
+> adapter for your order class (which is probably a subclass of 
+> DataFactory). For example:
+>
+> class OrderContainer(DataFactory):
+>     def data_order_number(self, ctx, data):
+>         return self.original.orderNumber
+>
+>     def data_order_items(self, ctx, data):
+>         return self.original.items
+>
+> compy.registerAdapter(OrderContainer, MyOrderClass, IContainer)
+>
+> This is by design. It's intended to work in such a way that fragments 
+> of template can have data pushed at them, and they can operate without 
+> knowledge of the context of the entire page.
+>
+> The biggest mistake people make in this area is when they do something 
+> like push a list onto the context and then try to access another data_ 
+> method of the Page class. The directive will be satisfied by doing 
+> IContainer(theList).child(theDirective), and since the IContainer 
+> adapter for lists doesn't know how to handle anything except integer 
+> indexes, they get an exception.
+>
+> eg:
+>
+> <ol n:data="someList" n:render="sequence">
+>     <li n:pattern="header" n:data="someOtherDirective">
+>     <!-- This won't work because "someList" is the topmost data on the 
+> stack, and thus we will get an exception instead of having our 
+> data_someOtherDirective method called on our Page -->
+>         Header here
+>     </li>
+>     <li n:pattern="item" n:render="string">
+>         Items here
+>     </li>
+> </ol>
+
+
+So you are saying is that a nested data directive will try to reference 
+the outer data directive rather than the page class?  Wow, I'm glad I 
+asked.  I wouldn't have guessed that based on the tutorial.
+
+Is there a high-level overview or diagram somewhere of how all pieces of 
+Nevow fit together?
+
+OK anyway so yeah, as you guessed, "order" is a python list and the 
+exception I get matches your description exactly.  The 
+OrderContainer(DataFactory) suggestion seems like a conceptually clean 
+solution for my current task but it won't be quite so tidy when I go to 
+nest *it* inside of a more-or-less unrelated outer directive, which is 
+my next step.  Maybe I'll make a data container that just passes through 
+requests to the page and wraps them in a new instance of itself before 
+returning them (i.e. simple nesting with no implied relationship between 
+inner and outer scopes).
+
+
+From jlb at houseofdistraction.com  Fri Aug  6 17:27:14 2004
+From: jlb at houseofdistraction.com (Jeff Bowden)
+Date: Fri Aug  6 17:27:20 2004
+Subject: [Twisted-web] nested nevow:data?
+In-Reply-To: <2804DFAC-E4B7-11D8-BA7F-000A95864FC4@divmod.org>
+References: <410E7BA8.4050209@houseofdistraction.com>
+	<2804DFAC-E4B7-11D8-BA7F-000A95864FC4@divmod.org>
+Message-ID: <411413D2.4080707@houseofdistraction.com>
+
+I made a little app to try to try to get nested data declarations 
+working (attached).  The app works if I remove nevow:data="outer" from 
+the template (render_outer doesn't depend on any data) but otherwise it 
+complains:
+
+    nevow.accessors.NoAccessor: None does not implement IContainer, and
+    there is no registered adapter.
+
+My expectation was that since data_outer just returns self this should 
+just mean that there are two copies of the TestPage instance on the 
+context stack.  Apparently my understanding is wrong.  Are there any 
+working examples of nested data declarations out there?
+
+
+-------------- next part --------------
+from twisted.application import service, internet
+from nevow import rend, loaders, appserver
+
+
+class TestPage(rend.Page):
+    docFactory = loaders.htmlfile("testpage.html")
+    def __init__(self):
+        rend.Page.__init__(self)
+
+
+    def data_outer(self, context, data):
+        return self
+
+    def data_inner(self, context, data):
+        return [{'prop.1': 'data1', 'prop.2': 'data2'}]
+
+    def render_outer(self, context, data):
+        context.fillSlots("outer.title", "I'm soooo outer")
+        return context.tag
+
+site = appserver.NevowSite(TestPage())
+ 
+application = service.Application("example")
+internet.TCPServer(8086, site).setServiceParent(application)
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://pyramid.twistedmatrix.com/pipermail/twisted-web/attachments/20040806/7c46a532/testpage.html
+From mary-twisted at puzzling.org  Sat Aug  7 01:02:59 2004
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Sat Aug  7 01:03:13 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+Message-ID: <20040807070259.GB9343@titus.home.puzzling.org>
+
+For some reason, it might be spending most of my time sitting at the end
+of a long thin piece of string connecting me to the rest of the
+universe, but it might also have been watching people pound on my RSS
+feeds every five minutes, I've been trying to write cache-friendly Nevow
+resources.
+
+This involves setting two HTTP headers, "Last-Modifed" and "ETag". At
+the moment I'm setting both of these headers using my data source (files
+in the file system). However, this has left me with a bit of a quandry
+about my docFactory templates.
+
+When my templates change, so should my Last-Modified and ETag headers.
+Otherwise clients using caches will see my old templates more or less
+indefinitely, at least on pages I don't subsequently change, because
+their conditional GET requests complete with correct If-Modified-Since
+and If-None-Match headers will tell the server never to send a fresh
+copy of the data.
+
+So, I'm faced with the problem of dating my templates or otherwise
+detecting when they change and I can't think of a good way.
+
+Some thoughts:
+
+ 1. use file timestamps on the template files
+
+   Pros: Fits OK with the way I deal with the rest of the website data
+
+   Cons: Reduces flexibility. I can't think of a good way to do this
+   with Stan templates. I also can't think of a good way to do this
+   without restarting the server when my templates change. (I do
+   currently do this, but would prefer not to.)
+
+ 2. generate the ETag header based on a hash of page contents
+
+   Pros: As best I can tell, this is how the ETag header is really meant
+   to be generated, ideally it signals octect equality and should change
+   if, for example, Nevow for some reason starts pretty-printing output.
+
+   Cons: rend.Page.renderHTTP seems to make this really hard --
+   even if you set the bufferedflag = True, rend.Page.afterRender
+   doesn't seem to have any way to access the result of the render.
+   (Correct me if I'm wrong.) Also, this doesn't help with the
+   Last-Modified date, which means I'm not helping HTTP/1.0 caches very
+   much, unless I store the date the hash changed somewhere.
+
+ 3. store the templates in some kind of object store and date-stamp
+   them there.
+
+   Pros: This might well let me change templates without restarting the
+   server.
+
+   Cons: It imposes a maintainence burden whereby I have to update the
+   objet database with new templates. I like to have a copy of my
+   website and templates on two different servers, and as best I can
+   tell, no object database is going to like being copied to a remote
+   server without me killing all associated processes on the remote
+   server first, so there's a deployment problem.
+
+ 4. hash the template so that a changed template means a changed hash
+
+   Pros: This is probably nearly as good as hashing the page content,
+   accuracy-wise.
+
+   Cons: I don't have any idea how to hash a DocFactory object
+   effectively. Hashing the DocFactory still leaves me vulnerable to
+   changes in Nevow's rendering. Hashing the DocFactory won't tell me to
+   update Last-Modified unless I store the date that the DocFactory
+   changed somewhere.
+
+Anyone got any thoughts or has anyone solved this problem before? Help
+with implementing 2 (how do I get the page contents in order to hash
+them) or 4 (how can I hash a DocFactory object) also appreciated.
+
+-Mary
+
+From mary-twisted at puzzling.org  Sat Aug  7 23:26:03 2004
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Sat Aug  7 23:26:15 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+In-Reply-To: <20040807070259.GB9343@titus.home.puzzling.org>
+References: <20040807070259.GB9343@titus.home.puzzling.org>
+Message-ID: <20040808052603.GA26371@titus.home.puzzling.org>
+
+On Sat, Aug 07, 2004, Mary Gardiner wrote:
+>  2. generate the ETag header based on a hash of page contents
+> 
+>    Pros: As best I can tell, this is how the ETag header is really meant
+>    to be generated, ideally it signals octect equality and should change
+>    if, for example, Nevow for some reason starts pretty-printing output.
+> 
+>    Cons: rend.Page.renderHTTP seems to make this really hard --
+>    even if you set the bufferedflag = True, rend.Page.afterRender
+>    doesn't seem to have any way to access the result of the render.
+
+The attached seems to do what I want here, I'll be interested to hear
+about what horrors I am inflicting upon myself by doing this.
+
+-Mary
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: etag.py
+Type: text/x-python
+Size: 476 bytes
+Desc: not available
+Url : http://pyramid.twistedmatrix.com/pipermail/twisted-web/attachments/20040808/7f490116/etag.py
+From mary-twisted at puzzling.org  Sun Aug  8 00:12:39 2004
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Sun Aug  8 00:12:45 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+In-Reply-To: <20040808052603.GA26371@titus.home.puzzling.org>
+References: <20040807070259.GB9343@titus.home.puzzling.org>
+	<20040808052603.GA26371@titus.home.puzzling.org>
+Message-ID: <20040808061239.GA1509@titus.home.puzzling.org>
+
+On Sun, Aug 08, 2004, Mary Gardiner wrote:
+> The attached seems to do what I want here, I'll be interested to hear
+> about what horrors I am inflicting upon myself by doing this.
+
+Well the first is that flatten won't return while there are Deferreds
+lurking around in the stan tree (hence the existence of
+rend.deferflatten, I guess).
+
+Revision 2 attached. This one works in my test case...
+
+-Mary
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: etag.py
+Type: text/x-python
+Size: 641 bytes
+Desc: not available
+Url : http://pyramid.twistedmatrix.com/pipermail/twisted-web/attachments/20040808/750ba434/etag.py
+From foom at fuhm.net  Sun Aug  8 00:21:56 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Sun Aug  8 00:22:13 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+In-Reply-To: <20040808052603.GA26371@titus.home.puzzling.org>
+References: <20040807070259.GB9343@titus.home.puzzling.org>
+	<20040808052603.GA26371@titus.home.puzzling.org>
+Message-ID: <3F8E3754-E903-11D8-8D12-000A95A50FB2@fuhm.net>
+
+
+On Aug 8, 2004, at 1:26 AM, Mary Gardiner wrote:
+
+> On Sat, Aug 07, 2004, Mary Gardiner wrote:
+>>  2. generate the ETag header based on a hash of page contents
+>>
+>>    Pros: As best I can tell, this is how the ETag header is really 
+>> meant
+>>    to be generated, ideally it signals octect equality and should 
+>> change
+>>    if, for example, Nevow for some reason starts pretty-printing 
+>> output.
+>>
+>>    Cons: rend.Page.renderHTTP seems to make this really hard --
+>>    even if you set the bufferedflag = True, rend.Page.afterRender
+>>    doesn't seem to have any way to access the result of the render.
+>
+> The attached seems to do what I want here, I'll be interested to hear
+> about what horrors I am inflicting upon myself by doing this.
+
+Generally, ETags are never actually generated by hashing the page 
+content. That's just too expensive. To do that, you need to actually 
+generate the content before you can tell that you shouldn't send it to 
+the user. What a waste of resources!
+
+Apache (and new-web) generate ETags from files via: ETag("%X-%X-%X" % 
+(st.st_ino, st.st_size, st.st_mtime), weak = (time.time() - st.st_mtime 
+<= 1))
+
+That "good enough" guarantees that the file still has the same content 
+(the etag is weak if the last-modified is recent, because the file 
+could be modified twice within the last second and then you wouldn't 
+know).
+
+So, for dynamically generated pages, I'd do something similar (e.g. 
+your #1). Not sure what you mean about about reducing flexibility or 
+what you mean about it making you need to restart the server. If you 
+have to restart the server every time you change a template (e.g. for 
+stan), use the server start time as part of the ETag. Otherwise, use 
+the template modtime. The file-based doc-factories do store mtime, 
+although it's currently in a private attribute. That will get updated 
+when the template is reloaded.
+
+James
+
+
+From mary-twisted at puzzling.org  Sun Aug  8 00:41:01 2004
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Sun Aug  8 00:41:08 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+In-Reply-To: <3F8E3754-E903-11D8-8D12-000A95A50FB2@fuhm.net>
+References: <20040807070259.GB9343@titus.home.puzzling.org>
+	<20040808052603.GA26371@titus.home.puzzling.org>
+	<3F8E3754-E903-11D8-8D12-000A95A50FB2@fuhm.net>
+Message-ID: <20040808064101.GB1509@titus.home.puzzling.org>
+
+On Sun, Aug 08, 2004, James Y Knight wrote:
+> So, for dynamically generated pages, I'd do something similar (e.g. 
+> your #1). Not sure what you mean about about reducing flexibility or 
+> what you mean about it making you need to restart the server. If you 
+> have to restart the server every time you change a template (e.g. for 
+> stan), use the server start time as part of the ETag. Otherwise, use 
+> the template modtime. The file-based doc-factories do store mtime, 
+> although it's currently in a private attribute. That will get updated 
+> when the template is reloaded.
+
+Of course you're right about the expense of generating the content,
+although in some cases, if bandwidth is an issue, the generation time
+might be an acceptable expense against the saving in bandwidth.
+
+Ok, I didn't know the file based templates already had this data. It
+sounds like that is the way to go then. It's a shame in a way, stan is
+quite a nice way to template :)
+
+Thanks,
+
+-Mary
+
+From foom at fuhm.net  Sun Aug  8 10:20:28 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Sun Aug  8 10:20:39 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+In-Reply-To: <20040808064101.GB1509@titus.home.puzzling.org>
+References: <20040807070259.GB9343@titus.home.puzzling.org>
+	<20040808052603.GA26371@titus.home.puzzling.org>
+	<3F8E3754-E903-11D8-8D12-000A95A50FB2@fuhm.net>
+	<20040808064101.GB1509@titus.home.puzzling.org>
+Message-ID: <DCDCB654-E956-11D8-8D12-000A95A50FB2@fuhm.net>
+
+On Aug 8, 2004, at 2:41 AM, Mary Gardiner wrote:
+> Ok, I didn't know the file based templates already had this data. It
+> sounds like that is the way to go then. It's a shame in a way, stan is
+> quite a nice way to template :)
+
+I don't understand the issue with using stan? Why can't you use the 
+server start time?
+
+James
+
+
+From mary-twisted at puzzling.org  Sun Aug  8 15:03:46 2004
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Sun Aug  8 15:03:54 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+In-Reply-To: <DCDCB654-E956-11D8-8D12-000A95A50FB2@fuhm.net>
+References: <20040807070259.GB9343@titus.home.puzzling.org>
+	<20040808052603.GA26371@titus.home.puzzling.org>
+	<3F8E3754-E903-11D8-8D12-000A95A50FB2@fuhm.net>
+	<20040808064101.GB1509@titus.home.puzzling.org>
+	<DCDCB654-E956-11D8-8D12-000A95A50FB2@fuhm.net>
+Message-ID: <20040808210346.GA3658@titus.home.puzzling.org>
+
+On Sun, Aug 08, 2004, James Y Knight wrote:
+> I don't understand the issue with using stan? Why can't you use the
+> server start time?
+
+Because in practice I restart it about as often as Google recrawls my
+site (the code base is still moving), and Google is a major reason I
+want to send 304s.
+
+In any case, I've set it up so it uses the docFactory's ._mtime
+attribute if available and the server start time if not. In my case,
+since there's an advantage to using the template modified time I'm using
+file templates. (Also I didn't know they dynamically reloaded!)
+
+-Mary
+
+From foom at fuhm.net  Sun Aug  8 16:04:46 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Sun Aug  8 16:04:56 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+In-Reply-To: <20040808210346.GA3658@titus.home.puzzling.org>
+References: <20040807070259.GB9343@titus.home.puzzling.org>
+	<20040808052603.GA26371@titus.home.puzzling.org>
+	<3F8E3754-E903-11D8-8D12-000A95A50FB2@fuhm.net>
+	<20040808064101.GB1509@titus.home.puzzling.org>
+	<DCDCB654-E956-11D8-8D12-000A95A50FB2@fuhm.net>
+	<20040808210346.GA3658@titus.home.puzzling.org>
+Message-ID: <F5C3EACB-E986-11D8-8D12-000A95A50FB2@fuhm.net>
+
+
+On Aug 8, 2004, at 5:03 PM, Mary Gardiner wrote:
+
+> On Sun, Aug 08, 2004, James Y Knight wrote:
+>> I don't understand the issue with using stan? Why can't you use the
+>> server start time?
+>
+> Because in practice I restart it about as often as Google recrawls my
+> site (the code base is still moving), and Google is a major reason I
+> want to send 304s.
+
+Ah, interesting. Does google do something special with 304s besides 
+saving bandwidth?
+
+James
+
+
+From mary-twisted at puzzling.org  Sun Aug  8 16:39:47 2004
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Sun Aug  8 16:39:53 2004
+Subject: [Twisted-web] Cache-friendly Nevow pages
+In-Reply-To: <F5C3EACB-E986-11D8-8D12-000A95A50FB2@fuhm.net>
+References: <20040807070259.GB9343@titus.home.puzzling.org>
+	<20040808052603.GA26371@titus.home.puzzling.org>
+	<3F8E3754-E903-11D8-8D12-000A95A50FB2@fuhm.net>
+	<20040808064101.GB1509@titus.home.puzzling.org>
+	<DCDCB654-E956-11D8-8D12-000A95A50FB2@fuhm.net>
+	<20040808210346.GA3658@titus.home.puzzling.org>
+	<F5C3EACB-E986-11D8-8D12-000A95A50FB2@fuhm.net>
+Message-ID: <20040808223947.GA6416@titus.home.puzzling.org>
+
+On Sun, Aug 08, 2004, James Y Knight wrote:
+> Ah, interesting. Does google do something special with 304s besides
+> saving bandwidth?
+
+I have no idea, they may over time adjust their recrawl rate depending on
+how many 304s they get I suppose, but I don't have any evidence of this.
+It's the bandwidth I'm interested in. (It's an Australian thing, you
+ever pay 14c/MB, all of a sudden every 200 in your logs starts reading
+'$$$".)
+
+-Mary
+
+From jlb at houseofdistraction.com  Mon Aug  9 22:34:49 2004
+From: jlb at houseofdistraction.com (Jeff Bowden)
+Date: Mon Aug  9 22:34:54 2004
+Subject: [Twisted-web] nested nevow:data?
+In-Reply-To: <411413D2.4080707@houseofdistraction.com>
+References: <410E7BA8.4050209@houseofdistraction.com>	<2804DFAC-E4B7-11D8-BA7F-000A95864FC4@divmod.org>
+	<411413D2.4080707@houseofdistraction.com>
+Message-ID: <41185069.6080101@houseofdistraction.com>
+
+So is the behaviour I described below a bug or am I doing something wrong?
+
+Jeff Bowden wrote:
+
+> I made a little app to try to try to get nested data declarations 
+> working (attached).  The app works if I remove nevow:data="outer" from 
+> the template (render_outer doesn't depend on any data) but otherwise 
+> it complains:
+>
+>    nevow.accessors.NoAccessor: None does not implement IContainer, and
+>    there is no registered adapter.
+>
+> My expectation was that since data_outer just returns self this should 
+> just mean that there are two copies of the TestPage instance on the 
+> context stack.  Apparently my understanding is wrong.  Are there any 
+> working examples of nested data declarations out there?
+>
+>
+>------------------------------------------------------------------------
+>
+>from twisted.application import service, internet
+>from nevow import rend, loaders, appserver
+>
+>
+>class TestPage(rend.Page):
+>    docFactory = loaders.htmlfile("testpage.html")
+>    def __init__(self):
+>        rend.Page.__init__(self)
+>
+>
+>    def data_outer(self, context, data):
+>        return self
+>
+>    def data_inner(self, context, data):
+>        return [{'prop.1': 'data1', 'prop.2': 'data2'}]
+>
+>    def render_outer(self, context, data):
+>        context.fillSlots("outer.title", "I'm soooo outer")
+>        return context.tag
+>
+>site = appserver.NevowSite(TestPage())
+> 
+>application = service.Application("example")
+>internet.TCPServer(8086, site).setServiceParent(application)
+>
+>  
+>
+>
+> ------------------------------------------------------------------------
+>
+>
+>   Title: TITLE
+>
+>     * prop.1 - prop.2
+>
+>------------------------------------------------------------------------
+>
+>_______________________________________________
+>Twisted-web mailing list
+>Twisted-web@twistedmatrix.com
+>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>  
+>
+
+
+From dominic.fox at gmail.com  Wed Aug 11 15:24:22 2004
+From: dominic.fox at gmail.com (Dominic Fox)
+Date: Wed Aug 11 15:24:45 2004
+Subject: [Twisted-web] .htc behaviors
+Message-ID: <f278b2130408111424adbfe5a@mail.gmail.com>
+
+Hi,
+
+As you may know, the current version of MSIE doesn't support the css
+:hover selector properly for elements other that <a>. There is a hack
+to fix this, which involves attaching an IE "behavior" to the document
+via CSS, as follows:
+
+body { behavior: url(csshover.htc); }
+
+and serving the csshover.htc file (which defines the behaviour using
+jscript) along with the .css and .htm files as static content. The
+hack is documented here:
+
+http://www.xs4all.nl/~peterned/csshover.html
+
+In order to get this to work with servers other than IIS, you need to
+set the MIME type for files with the .htc extension to be
+'text/x-component', otherwise the behavior won't be loaded properly.
+
+This doesn't work using Twisted (specifically, using
+twisted.web.static.File to serve the page, stylesheet and behavior).
+You can serve the file, and you can set the MIME type by adding it to
+mimetypes.types_map, but the behavior still isn't loaded.
+
+One fix is to change the extension to something else, e.g. .htcHACK,
+and set the MIME type for that extension instead. That works OK. But
+why does it work, and why is it necessary? Is something else in
+Twisted deciding that all files with .htc extensions are Twisted
+documentation pages, and forcing the content type header back to
+text/html?
+
+curious,
+Dominic
+
+--
+// Dream in black and white -
+// model cities, shooting up in the air
+
+From foom at fuhm.net  Wed Aug 11 15:44:13 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Wed Aug 11 15:44:18 2004
+Subject: [Twisted-web] .htc behaviors
+In-Reply-To: <f278b2130408111424adbfe5a@mail.gmail.com>
+References: <f278b2130408111424adbfe5a@mail.gmail.com>
+Message-ID: <96125C26-EBDF-11D8-BF5E-000A95A50FB2@fuhm.net>
+
+
+On Aug 11, 2004, at 5:24 PM, Dominic Fox wrote:
+> One fix is to change the extension to something else, e.g. .htcHACK,
+> and set the MIME type for that extension instead. That works OK. But
+> why does it work, and why is it necessary? Is something else in
+> Twisted deciding that all files with .htc extensions are Twisted
+> documentation pages, and forcing the content type header back to
+> text/html?
+
+My first guess is that your file was cached by the browser with the 
+wrong content-type, before you figured out how to set the right one. 
+You might try just renaming the file to somethingelse.htc.
+
+Did you verify that the server is actually sending the wrong 
+content-type when it's .htc? The easiest way to do so is to telnet to 
+your webserver and type "HEAD /whatever.file HTTP/1.0" and look at the 
+output.
+
+James
+
+
+From dominic.fox at gmail.com  Thu Aug 12 03:32:52 2004
+From: dominic.fox at gmail.com (Dominic Fox)
+Date: Thu Aug 12 03:32:59 2004
+Subject: [Twisted-web] .htc behaviors
+In-Reply-To: <96125C26-EBDF-11D8-BF5E-000A95A50FB2@fuhm.net>
+References: <f278b2130408111424adbfe5a@mail.gmail.com>
+	<96125C26-EBDF-11D8-BF5E-000A95A50FB2@fuhm.net>
+Message-ID: <f278b21304081202321bfc0605@mail.gmail.com>
+
+James,
+
+Spot on: the problem was caused by the browser cacheing the file with
+the wrong content-type. Everything's working now.
+
+Thanks for your help,
+Dominic
+
+On Wed, 11 Aug 2004 17:44:13 -0400, James Y Knight <foom@fuhm.net> wrote:
+> 
+> On Aug 11, 2004, at 5:24 PM, Dominic Fox wrote:
+> > One fix is to change the extension to something else, e.g. .htcHACK,
+> > and set the MIME type for that extension instead. That works OK. But
+> > why does it work, and why is it necessary? Is something else in
+> > Twisted deciding that all files with .htc extensions are Twisted
+> > documentation pages, and forcing the content type header back to
+> > text/html?
+> 
+> My first guess is that your file was cached by the browser with the
+> wrong content-type, before you figured out how to set the right one.
+> You might try just renaming the file to somethingelse.htc.
+> 
+> Did you verify that the server is actually sending the wrong
+> content-type when it's .htc? The easiest way to do so is to telnet to
+> your webserver and type "HEAD /whatever.file HTTP/1.0" and look at the
+> output.
+> 
+> James
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> 
+
+
+-- 
+// Dream in black and white -
+// model cities, shooting up in the air
+
+From tazzo at email.it  Fri Aug 13 03:42:00 2004
+From: tazzo at email.it (Tazzo)
+Date: Fri Aug 13 03:42:00 2004
+Subject: [Twisted-web] nevow HTML based template fragment problem
+Message-ID: <c2e465a529741a452a4b66a067a32c2c@213.140.11.195>
+
+How can I insert a html rendered template inside another
+html rendered template?
+I mean, I have a rend.Page class with a docFactory that load
+a template (ex: page.html) with a header tag to renderize.
+The problem is that the header tag must be loaded from another
+rend.Page class who have is docFactory template (ex: header.html)
+to renderize, before send it. 
+How can I use the header rend.Page class from a render method in
+another rend.Page class?
+ 
+ --
+ Email.it, the professional e-mail, gratis per te: http://www.email.it/f
+ 
+ Sponsor:
+ Acquista ora Email.it Phone Card e comincia a risparmiare sulle tue
+telefonate! Clicca e scopri l'offerta
+ Clicca qui: http://adv.email.it/cgi-bin/foclick.cgi?mid=2684&d=20040813
+
+
+
+From matt at pollenation.net  Fri Aug 13 09:43:26 2004
+From: matt at pollenation.net (Matt Goodall)
+Date: Fri Aug 13 09:43:54 2004
+Subject: [Twisted-web] nevow HTML based template fragment problem
+In-Reply-To: <c2e465a529741a452a4b66a067a32c2c@213.140.11.195>
+References: <c2e465a529741a452a4b66a067a32c2c@213.140.11.195>
+Message-ID: <1092411805.32647.325.camel@harold>
+
+On Fri, 2004-08-13 at 10:42, Tazzo wrote:
+> How can I insert a html rendered template inside another
+> html rendered template?
+> I mean, I have a rend.Page class with a docFactory that load
+> a template (ex: page.html) with a header tag to renderize.
+> The problem is that the header tag must be loaded from another
+> rend.Page class who have is docFactory template (ex: header.html)
+> to renderize, before send it. 
+> How can I use the header rend.Page class from a render method in
+> another rend.Page class?
+
+Short answer ...
+
+Return the header rend.Page from the page's render method.
+
+Long answer ...
+
+Assuming the header contains dynamic content then your header's class
+should really extend rend.Fragment:
+
+    class Header(rend.Fragment):
+        def render_something(self, ctx, data):
+            return something
+        docFactory = loaders.xmlfile('header.html')
+
+    class Page(rend.Page):
+        def render_header(self, ctx, data):
+            return Header()
+        docFactory = loaders.xmlfile('page.html')
+
+But, if the header is completely static then you can just return a
+loader:
+
+    class Page(rend.Page):
+        def render_header(self, ctx, data):
+            return loaders.xmlfile('header.html')
+        docFactory = loaders.xmlfile('page.html')
+
+Note: there's not actually a whole lot of difference between Fragment
+and Page in this scenario but a fragment is conceptually cleaner.
+
+Hope this helps.
+
+Cheers, Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \          Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+
+
+From linuxlist at roggeroetortia.it  Thu Aug 19 01:03:35 2004
+From: linuxlist at roggeroetortia.it (Alessandro Barchi)
+Date: Thu Aug 19 01:05:58 2004
+Subject: [Twisted-web] Error in my first test...
+Message-ID: <PJEMIFKADBNPJIOLANHBIEBDHJAA.linuxlist@roggeroetortia.it>
+
+Hi
+
+I try to write a very simple example
+with nevow.
+
+but I have this error, where I wrong?
+
+It seems that I cannot load the file alextest.py
+but the file exists!
+
+Thanks!!
+
+alex@mail:~/src/python/tests/nevow_samples/mysample0$ twistd -noy runapp.tac
+2004/08/19 08:47 CEST [-] Log opened.
+2004/08/19 08:47 CEST [-] twistd 1.3.0rc1 (/usr/bin/python2.3 2.3.4)
+starting up
+2004/08/19 08:47 CEST [-] reactor class:
+twisted.internet.default.SelectReactor
+2004/08/19 08:47 CEST [-] Loading runapp.tac...
+2004/08/19 08:47 CEST [-] Traceback (most recent call last):
+2004/08/19 08:47 CEST [-]   File
+"/usr/lib/python2.3/site-packages/twisted/application/app.py", line 118, in
+getApplication
+2004/08/19 08:47 CEST [-]     application =
+service.loadApplication(filename, style, passphrase)
+2004/08/19 08:47 CEST [-]   File
+"/usr/lib/python2.3/site-packages/twisted/application/service.py", line 319,
+in loadApplication
+2004/08/19 08:47 CEST [-]     application = sob.loadValueFromFile(filename,
+'application', passphrase)
+2004/08/19 08:47 CEST [-]   File
+"/usr/lib/python2.3/site-packages/twisted/persisted/sob.py", line 213, in
+loadValueFromFile
+2004/08/19 08:47 CEST [-]     exec data in d, d
+2004/08/19 08:47 CEST [-]   File "<string>", line 1
+2004/08/19 08:47 CEST [-]      import alextest
+2004/08/19 08:47 CEST [-]                     ^
+2004/08/19 08:47 CEST [-]  SyntaxError: invalid syntax
+2004/08/19 08:47 CEST [-] Failed to load application: invalid syntax (line
+1)
+2004/08/19 08:47 CEST [-] Traceback (most recent call last):
+          File "/usr/bin/twistd", line 36, in ?
+            run()
+          File "/usr/lib/python2.3/site-packages/twisted/scripts/twistd.py",
+line 184, in run
+            app.run(runApp, ServerOptions)
+          File
+"/usr/lib/python2.3/site-packages/twisted/application/app.py", line 205, in
+run
+            runApp(config)
+          File "/usr/lib/python2.3/site-packages/twisted/scripts/twistd.py",
+line 174, in runApp
+            application = app.getApplication(config, passphrase)
+        --- <exception caught here> ---
+          File
+"/usr/lib/python2.3/site-packages/twisted/application/app.py", line 118, in
+getApplication
+            application = service.loadApplication(filename, style,
+passphrase)
+          File
+"/usr/lib/python2.3/site-packages/twisted/application/service.py", line 319,
+in loadApplication
+            application = sob.loadValueFromFile(filename, 'application',
+passphrase)
+          File "/usr/lib/python2.3/site-packages/twisted/persisted/sob.py",
+line 213, in loadValueFromFile
+            exec data in d, d
+        exceptions.SyntaxError: invalid syntax (line 1)
+
+
+Failed to load application: invalid syntax (line 1)
+2004/08/19 08:47 CEST [-]
+
+barchi@roggeroetortia.it
+
+  Poligrafico_Roggero_&_Tortia S.p.A.
+------------------------------------------
+Via Frejus 5 - 10092 Beinasco TO Italy
+Tel. +390113499222 - Fax +39 0113498866
+
+
+From matt at pollenation.net  Thu Aug 19 02:57:51 2004
+From: matt at pollenation.net (Matt Goodall)
+Date: Thu Aug 19 02:58:10 2004
+Subject: [Twisted-web] Error in my first test...
+In-Reply-To: <PJEMIFKADBNPJIOLANHBIEBDHJAA.linuxlist@roggeroetortia.it>
+References: <PJEMIFKADBNPJIOLANHBIEBDHJAA.linuxlist@roggeroetortia.it>
+Message-ID: <1092905871.24287.14.camel@harold>
+
+On Thu, 2004-08-19 at 08:03, Alessandro Barchi wrote:
+> Hi
+> 
+> I try to write a very simple example
+> with nevow.
+> 
+> but I have this error, where I wrong?
+> 
+> It seems that I cannot load the file alextest.py
+> but the file exists!
+> 
+> Thanks!!
+> 
+> alex@mail:~/src/python/tests/nevow_samples/mysample0$ twistd -noy runapp.tac
+> 2004/08/19 08:47 CEST [-] Log opened.
+> 2004/08/19 08:47 CEST [-] twistd 1.3.0rc1 (/usr/bin/python2.3 2.3.4)
+> starting up
+> 2004/08/19 08:47 CEST [-] reactor class:
+> twisted.internet.default.SelectReactor
+> 2004/08/19 08:47 CEST [-] Loading runapp.tac...
+> 2004/08/19 08:47 CEST [-] Traceback (most recent call last):
+> 2004/08/19 08:47 CEST [-]   File
+> "/usr/lib/python2.3/site-packages/twisted/application/app.py", line 118, in
+> getApplication
+> 2004/08/19 08:47 CEST [-]     application =
+> service.loadApplication(filename, style, passphrase)
+> 2004/08/19 08:47 CEST [-]   File
+> "/usr/lib/python2.3/site-packages/twisted/application/service.py", line 319,
+> in loadApplication
+> 2004/08/19 08:47 CEST [-]     application = sob.loadValueFromFile(filename,
+> 'application', passphrase)
+> 2004/08/19 08:47 CEST [-]   File
+> "/usr/lib/python2.3/site-packages/twisted/persisted/sob.py", line 213, in
+> loadValueFromFile
+> 2004/08/19 08:47 CEST [-]     exec data in d, d
+> 2004/08/19 08:47 CEST [-]   File "<string>", line 1
+> 2004/08/19 08:47 CEST [-]      import alextest
+> 2004/08/19 08:47 CEST [-]                     ^
+> 2004/08/19 08:47 CEST [-]  SyntaxError: invalid syntax
+> 2004/08/19 08:47 CEST [-] Failed to load application: invalid syntax (line
+> 1)
+> 2004/08/19 08:47 CEST [-] Traceback (most recent call last):
+>           File "/usr/bin/twistd", line 36, in ?
+>             run()
+>           File "/usr/lib/python2.3/site-packages/twisted/scripts/twistd.py",
+> line 184, in run
+>             app.run(runApp, ServerOptions)
+>           File
+> "/usr/lib/python2.3/site-packages/twisted/application/app.py", line 205, in
+> run
+>             runApp(config)
+>           File "/usr/lib/python2.3/site-packages/twisted/scripts/twistd.py",
+> line 174, in runApp
+>             application = app.getApplication(config, passphrase)
+>         --- <exception caught here> ---
+>           File
+> "/usr/lib/python2.3/site-packages/twisted/application/app.py", line 118, in
+> getApplication
+>             application = service.loadApplication(filename, style,
+> passphrase)
+>           File
+> "/usr/lib/python2.3/site-packages/twisted/application/service.py", line 319,
+> in loadApplication
+>             application = sob.loadValueFromFile(filename, 'application',
+> passphrase)
+>           File "/usr/lib/python2.3/site-packages/twisted/persisted/sob.py",
+> line 213, in loadValueFromFile
+>             exec data in d, d
+>         exceptions.SyntaxError: invalid syntax (line 1)
+> 
+> 
+> Failed to load application: invalid syntax (line 1)
+> 2004/08/19 08:47 CEST [-]
+
+If twisted's sob.py is one of the last modules in the traceback then the
+problem is almost certainly in the .tac file. In this case, the error is
+a syntax error on line 1 of the .tac file.
+
+I suspect that you have a DOS vs UNIX line ending problem. Have you
+copied the file from DOS to UNIX (or vice versa) without fixing the line
+endings? It looks like you're on a Linux box so "file runapp.tac" will
+probably report that you have CRLF line endings. If so, use flip (or
+similar tool) to change the line endings and try it all again.
+
+Hope this helps.
+
+Cheers, Matt
+
+-- 
+Matt Goodall <matt@pollenation.net>
+
+
+From linuxlist at roggeroetortia.it  Thu Aug 19 03:25:37 2004
+From: linuxlist at roggeroetortia.it (Alessandro Barchi)
+Date: Thu Aug 19 03:27:59 2004
+Subject: [Twisted-web] Error in my first test...
+In-Reply-To: <1092905871.24287.14.camel@harold>
+Message-ID: <PJEMIFKADBNPJIOLANHBMEBFHJAA.linuxlist@roggeroetortia.it>
+
+> 
+> If twisted's sob.py is one of the last modules in the traceback then the
+> problem is almost certainly in the .tac file. In this case, the error is
+> a syntax error on line 1 of the .tac file.
+> 
+> I suspect that you have a DOS vs UNIX line ending problem. Have you
+> copied the file from DOS to UNIX (or vice versa) without fixing the line
+> endings? It looks like you're on a Linux box so "file runapp.tac" will
+> probably report that you have CRLF line endings. If so, use flip (or
+> similar tool) to change the line endings and try it all again.
+> 
+> Hope this helps.
+
+Yes!!  
+
+You have centered the objective!
+Probably i've copy and paste the source from 
+a samba share.  
+
+Now flipping all...
+
+
+Many thanks!!!
+
+
+Cheers, Alessandro
+
+
+From serj_trejo at hotmail.com  Sun Aug 22 08:51:12 2004
+From: serj_trejo at hotmail.com (Sergio Trejo)
+Date: Sun Aug 22 08:51:44 2004
+Subject: [Twisted-web] Diagraming Twisted apps
+Message-ID: <BAY12-F2jehzJ2hjUC000065a9b@hotmail.com>
+
+I have truly enjoyed working with the Twisted Framework in recent weeks and 
+have delved into Nevow, Atop, PB, and Twisted.web. I am creating an 
+application with all of these components and am finding that my application 
+is growing and becoming a bit complex.
+
+In order to keep track of the complexity of asynchronicity (deferreds, 
+etc.), I am wondering what, if any, diagramming tools twisted developers use 
+for designing visual schematics to accompany their projects? Are there any 
+such programs that can parse code based on twisted which automatically 
+generates visual representations of flows and logic?
+
+Has anyone tried using Dia?
+
+Serg
+
+_________________________________________________________________
+The new MSN 8: advanced junk mail protection and 2 months FREE* 
+http://join.msn.com/?page=features/junkmail
+
+
+From cce at clarkevans.com  Sun Aug 22 12:06:43 2004
+From: cce at clarkevans.com (Clark C. Evans)
+Date: Sun Aug 22 12:06:47 2004
+Subject: [Twisted-web] Diagraming Twisted apps
+In-Reply-To: <BAY12-F2jehzJ2hjUC000065a9b@hotmail.com>
+References: <BAY12-F2jehzJ2hjUC000065a9b@hotmail.com>
+Message-ID: <20040822180643.GA68372@prometheusresearch.com>
+
+On Sun, Aug 22, 2004 at 10:51:12AM -0400, Sergio Trejo wrote:
+| Has anyone tried using Dia?
+
+I use graphviz and a UML graphing tool based on its dot files.
+http://www.zipcon.net/~adamf/software/PyUmlGraph/
+http://www.research.att.com/sw/tools/graphviz/
+
+Clark
+
+From angryhicKclown at netscape.net  Mon Aug 23 12:11:00 2004
+From: angryhicKclown at netscape.net (angryhicKclown@netscape.net)
+Date: Mon Aug 23 12:11:44 2004
+Subject: [Twisted-web] nevow - alternating row colors?
+Message-ID: <1051F400.71E44DEA.519F8DB3@netscape.net>
+
+If I have a table, and I want the background colors to alternate, how would I do that in Nevow?
+
+__________________________________________________________________
+Switch to Netscape Internet Service.
+As low as $9.95 a month -- Sign up today at http://isp.netscape.com/register
+
+Netscape. Just the Net You Need.
+
+New! Netscape Toolbar for Internet Explorer
+Search from anywhere on the Web and block those annoying pop-ups.
+Download now at http://channels.netscape.com/ns/search/install.jsp
+
+From dp at ulaluma.com  Mon Aug 23 12:47:32 2004
+From: dp at ulaluma.com (Donovan Preston)
+Date: Mon Aug 23 12:47:55 2004
+Subject: [Twisted-web] nevow - alternating row colors?
+In-Reply-To: <1051F400.71E44DEA.519F8DB3@netscape.net>
+References: <1051F400.71E44DEA.519F8DB3@netscape.net>
+Message-ID: <E4636594-F534-11D8-BD6E-000A95864FC4@ulaluma.com>
+
+
+On Aug 23, 2004, at 2:11 PM, angryhicKclown@netscape.net wrote:
+
+> If I have a table, and I want the background colors to alternate, how 
+> would I do that in Nevow?
+
+You just supply multiple pattern nodes with the same name, and nevow 
+will cycle through them when it is copying them. For example, if you 
+are rendering a list of items in a table, you would supply more than 
+one 'item' pattern node:
+
+<table nevow:render="sequence" nevow:data="whatever">
+     <tr nevow:pattern="item" style="background-color: blue"> ... </tr>
+     <tr nevow:pattern="item" style="background-color: red"> ... </tr>
+</table>
+
+dp
+
+
+From indigo at bitglue.com  Mon Aug 23 12:55:38 2004
+From: indigo at bitglue.com (Phil Frost)
+Date: Mon Aug 23 12:55:40 2004
+Subject: [Twisted-web] nevow - alternating row colors?
+In-Reply-To: <1051F400.71E44DEA.519F8DB3@netscape.net>
+References: <1051F400.71E44DEA.519F8DB3@netscape.net>
+Message-ID: <20040823185538.GB20311@unununium.org>
+
+One option is to use the :even and :odd (iirc) selectors of CSS.
+
+Another way is to have multiple patterns with the same name; the
+coresponding patternGenerator will then alternate between them. For
+example, if you have this template:
+
+<table n:render='fu'>
+  <tr n:pattern='item'><td>111</td></tr>
+  <tr n:pattern='item'><td>222</td></tr>
+</table>
+
+and this code:
+
+def render_fu(self, context, data):
+  pattern = context.patternGenerator('item')
+  content = [pattern() for _ in xrange(4)]
+  return context.tag.clear()[content]
+
+you will get a table
+
+111
+222
+111
+222
+
+render_sequence is a builtin renderer that works like this already. If
+you have some data in a sequence and each one outputs a row,
+render_sequence is probably what you want. The docstring is in rend.py;
+you can pydoc nevow.rend.sequence to see it.
+
+On Mon, Aug 23, 2004 at 02:11:00PM -0400, angryhicKclown@netscape.net wrote:
+> If I have a table, and I want the background colors to alternate, how
+> would I do that in Nevow?
+
+From matt at pollenation.net  Mon Aug 23 13:20:18 2004
+From: matt at pollenation.net (Matt Goodall)
+Date: Mon Aug 23 13:20:49 2004
+Subject: [Twisted-web] nevow - alternating row colors?
+In-Reply-To: <20040823185538.GB20311@unununium.org>
+References: <1051F400.71E44DEA.519F8DB3@netscape.net>
+	<20040823185538.GB20311@unununium.org>
+Message-ID: <1093288818.1762.48.camel@debian>
+
+On Mon, 2004-08-23 at 14:55 -0400, Phil Frost wrote:
+> One option is to use the :even and :odd (iirc) selectors of CSS.
+
+I think it's nth-child(even) actually but that's a CSS3 selector and has
+little (if any) browser support yet.
+
+Cheers, Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \          Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+
+
+From evenprimes at gmail.com  Tue Aug 24 16:09:09 2004
+From: evenprimes at gmail.com (Chris Cioffi)
+Date: Tue Aug 24 16:09:18 2004
+Subject: [Twisted-web] nevow - alternating row colors?
+In-Reply-To: <1051F400.71E44DEA.519F8DB3@netscape.net>
+References: <1051F400.71E44DEA.519F8DB3@netscape.net>
+Message-ID: <f03f4fdf04082415094556d8e9@mail.gmail.com>
+
+Not strictly with Nevow, but it works nicely...
+
+http://www.alistapart.com/articles/zebratables/
+
+Chris
+
+On Mon, 23 Aug 2004 14:11:00 -0400, angryhickclown@netscape.net
+<angryhickclown@netscape.net> wrote:
+> If I have a table, and I want the background colors to alternate, how would I do that in Nevow?
+> 
+> __________________________________________________________________
+> Switch to Netscape Internet Service.
+> As low as $9.95 a month -- Sign up today at http://isp.netscape.com/register
+> 
+> Netscape. Just the Net You Need.
+> 
+> New! Netscape Toolbar for Internet Explorer
+> Search from anywhere on the Web and block those annoying pop-ups.
+> Download now at http://channels.netscape.com/ns/search/install.jsp
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> 
+
+
+-- 
+Still searching for an even prime > 2!
+
+From knowak at mail.desy.de  Fri Aug 27 08:39:53 2004
+From: knowak at mail.desy.de (Krzystof Nowak)
+Date: Fri Aug 27 08:40:26 2004
+Subject: [Twisted-web] How to generate xhtml code with Resource.render?
+Message-ID: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de>
+
+I have written a python's rpy script which generats a web page. All seems
+works fine, but for now I was playing with html. Now, I decided to
+upgrade
+to xhtml (I need a different namespaces, you will see below). I've have
+written an xhtml file:
+<?xml version="1.0" encoding="iso-8859-1"?>
+<html xmlns="http://www.w3.org/1999/xhtml"
+xmlns:svg="http://www.w3.org/2000/svg">
+<head></head><body>
+
+List
+<ul>
+ <li>one</li>
+ <li>two</li>
+</ul>
+
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" width="10cm"
+height="10cm">
+<svg:title> A two shapes</svg:title>
+<svg:g transform="scale(0.5)">
+<svg:polygon style="fill:red; stroke:blue; stroke-width:10" points="350,
+75 379,161 469,161 397,215 423,301 350,250 277,301 303,215 231,161
+321,161"/>
+</svg:g>
+</svg:svg>
+
+</body></html>
+
+And it is working. But when I'm trying to generate this file by rpy
+script in this way:
+
+class Resource(resource.Resource):
+	def render(self, request):
+		request.write('''
+<?xml version="1.0" encoding="iso-8859-1"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:svg="http://www.w3.org/2000/svg">
+<head></head><body>
+
+List
+<ul>
+ <li>one</li>
+ <li>two</li>
+ <li>three</li>
+</ul>
+
+<svg:svg xmlns:svg="http://www.w3.org/2000/svg" width="10cm" height="10cm">
+<svg:title> A two shapes</svg:title>
+<svg:g transform="scale(0.5)">
+<svg:polygon style="fill:red; stroke:blue; stroke-width:10" points="350,75 379,161 469,161 397,215 423,301 350,250 277,301 303,215 231,161 321,161"/>
+</svg:g>
+</svg:svg>
+
+</body></html>
+''')
+		request.finish()
+		return server.NOT_DONE_YET
+resource = Resource()
+
+browser dosent seem to understand that its xhtml code. I think I'm missing
+something very easy, maybe I'm not properly understand philosophy of xhtml
+or python.web. Do you know how to manage with this problem?
+
+(Sorry for my english :) )
+
+Cheers
+Krzys
+
+From mary-twisted at puzzling.org  Fri Aug 27 08:54:10 2004
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Fri Aug 27 08:54:16 2004
+Subject: [Twisted-web] How to generate xhtml code with Resource.render?
+In-Reply-To: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de>
+References: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de>
+Message-ID: <20040827145410.GB2690@puzzling.org>
+
+On Fri, Aug 27, 2004, Krzystof Nowak wrote:
+> browser dosent seem to understand that its xhtml code. I think I'm missing
+> something very easy, maybe I'm not properly understand philosophy of xhtml
+> or python.web. Do you know how to manage with this problem?
+
+You might want to look at
+http://twistedmatrix.com/documents/current/howto/using-twistedweb#auto17
+for this. In particular:
+
+> class Resource(resource.Resource):
+> 	def render(self, request):
+
+I believe you want to be doing this by returning a string from
+render_GET, rather than by reimplementing render.
+
+-Mary
+
+From knowak at mail.desy.de  Fri Aug 27 09:25:09 2004
+From: knowak at mail.desy.de (Krzystof Nowak)
+Date: Fri Aug 27 09:25:46 2004
+Subject: [Twisted-web] How to generate xhtml code with Resource.render?
+In-Reply-To: <20040827145410.GB2690@puzzling.org>
+References: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de> 
+	<20040827145410.GB2690@puzzling.org>
+Message-ID: <Pine.LNX.4.58.0408271722100.23090@lipka.desy.de>
+
+On Fri, 27 Aug 2004, Mary Gardiner wrote:
+
+> > class Resource(resource.Resource):
+> > 	def render(self, request):
+>
+> I believe you want to be doing this by returning a string from
+> render_GET, rather than by reimplementing render.
+>
+> -Mary
+>
+
+Unfortunately it makes no difference :( Browser still doesnt understand
+<svg:*> correctly although both codes received by browser are the same.
+Anyway, thanks
+Krzys
+
+From radeex at gmail.com  Fri Aug 27 09:38:55 2004
+From: radeex at gmail.com (Christopher Armstrong)
+Date: Fri Aug 27 09:39:08 2004
+Subject: [Twisted-web] How to generate xhtml code with Resource.render?
+In-Reply-To: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de>
+References: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de>
+Message-ID: <60ed19d404082708381233bbe0@mail.gmail.com>
+
+On Fri, 27 Aug 2004 16:39:53 +0200 (MEST), Krzystof Nowak
+<knowak@mail.desy.de> wrote:
+> browser dosent seem to understand that its xhtml code. I think I'm missing
+> something very easy, maybe I'm not properly understand philosophy of xhtml
+> or python.web. Do you know how to manage with this problem?
+
+I'll guess mime-type. You might have to set it to something other than
+the default, text/html. Dunno what to, though.
+
+-- 
+ Twisted | Christopher Armstrong: International Man of Twistery
+  Radix  |          Release Manager,  Twisted Project
+---------+            http://radix.twistedmatrix.com
+
+From dominic.fox at gmail.com  Fri Aug 27 09:58:01 2004
+From: dominic.fox at gmail.com (Dominic Fox)
+Date: Fri Aug 27 09:58:47 2004
+Subject: [Twisted-web] How to generate xhtml code with Resource.render?
+In-Reply-To: <60ed19d404082708381233bbe0@mail.gmail.com>
+References: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de>
+	<60ed19d404082708381233bbe0@mail.gmail.com>
+Message-ID: <f278b213040827085842675b19@mail.gmail.com>
+
+For xhtml, you need to find out whether the client will accept
+application/xml+xhtml. If it will, then change the MIME type to that:
+
+   request.setHeader('Content-type', 'application/xml+xhtml')
+
+Otherwise, make sure it's text/html. You may need to do this by force,
+if the file extension isn't '.htm' or '.html'.
+
+Dominic
+
+On Fri, 27 Aug 2004 11:38:55 -0400, Christopher Armstrong
+<radeex@gmail.com> wrote:
+> On Fri, 27 Aug 2004 16:39:53 +0200 (MEST), Krzystof Nowak
+> <knowak@mail.desy.de> wrote:
+> > browser dosent seem to understand that its xhtml code. I think I'm missing
+> > something very easy, maybe I'm not properly understand philosophy of xhtml
+> > or python.web. Do you know how to manage with this problem?
+> 
+> I'll guess mime-type. You might have to set it to something other than
+> the default, text/html. Dunno what to, though.
+> 
+> --
+>  Twisted | Christopher Armstrong: International Man of Twistery
+>   Radix  |          Release Manager,  Twisted Project
+> ---------+            http://radix.twistedmatrix.com
+> 
+> 
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> 
+
+
+-- 
+// Dream in black and white -
+// model cities, shooting up in the air
+
+From knowak at mail.desy.de  Sat Aug 28 08:52:43 2004
+From: knowak at mail.desy.de (Krzystof Nowak)
+Date: Sat Aug 28 08:53:24 2004
+Subject: [Twisted-web] How to generate xhtml code with Resource.render?
+In-Reply-To: <f278b213040827085842675b19@mail.gmail.com>
+References: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de> 
+	<60ed19d404082708381233bbe0@mail.gmail.com> 
+	<f278b213040827085842675b19@mail.gmail.com>
+Message-ID: <Pine.LNX.4.58.0408281652050.4441@lipka.desy.de>
+
+Thanks alot. Now its working :)
+
+Krzys
+
+
+On Fri, 27 Aug 2004, Dominic Fox wrote:
+
+> For xhtml, you need to find out whether the client will accept
+> application/xml+xhtml. If it will, then change the MIME type to that:
+>
+>    request.setHeader('Content-type', 'application/xml+xhtml')
+>
+> Otherwise, make sure it's text/html. You may need to do this by force,
+> if the file extension isn't '.htm' or '.html'.
+>
+> Dominic
+>
+> On Fri, 27 Aug 2004 11:38:55 -0400, Christopher Armstrong
+> <radeex@gmail.com> wrote:
+> > On Fri, 27 Aug 2004 16:39:53 +0200 (MEST), Krzystof Nowak
+> > <knowak@mail.desy.de> wrote:
+> > > browser dosent seem to understand that its xhtml code. I think I'm missing
+> > > something very easy, maybe I'm not properly understand philosophy of xhtml
+> > > or python.web. Do you know how to manage with this problem?
+> >
+> > I'll guess mime-type. You might have to set it to something other than
+> > the default, text/html. Dunno what to, though.
+> >
+> > --
+> >  Twisted | Christopher Armstrong: International Man of Twistery
+> >   Radix  |          Release Manager,  Twisted Project
+> > ---------+            http://radix.twistedmatrix.com
+> >
+> >
+> >
+> > _______________________________________________
+> > Twisted-web mailing list
+> > Twisted-web@twistedmatrix.com
+> > http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> >
+>
+>
+> --
+> // Dream in black and white -
+> // model cities, shooting up in the air
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+From knowak at mail.desy.de  Mon Aug 30 04:13:43 2004
+From: knowak at mail.desy.de (Krzystof Nowak)
+Date: Mon Aug 30 04:14:24 2004
+Subject: [Twisted-web] How to generate xhtml code with Resource.render?
+In-Reply-To: <f278b213040827085842675b19@mail.gmail.com>
+References: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de> 
+	<60ed19d404082708381233bbe0@mail.gmail.com> 
+	<f278b213040827085842675b19@mail.gmail.com>
+Message-ID: <Pine.LNX.4.58.0408301209040.3014@lipka.desy.de>
+
+
+Do you know why now JavaScript doesnt work on my page? It is working when
+the page is text/html. Sorry for maybe stupid questions... but I cant
+manage it alone :/
+
+Krzys
+
+
+
+From knowak at mail.desy.de  Mon Aug 30 05:46:56 2004
+From: knowak at mail.desy.de (Krzysztof Nowak)
+Date: Mon Aug 30 05:47:32 2004
+Subject: [Twisted-web] How to generate xhtml code with Resource.render?
+In-Reply-To: <Pine.LNX.4.58.0408301209040.3014@lipka.desy.de>
+References: <Pine.LNX.4.58.0408271610430.22406@lipka.desy.de> 
+	<60ed19d404082708381233bbe0@mail.gmail.com> 
+	<f278b213040827085842675b19@mail.gmail.com> 
+	<Pine.LNX.4.58.0408301209040.3014@lipka.desy.de>
+Message-ID: <Pine.LNX.4.58.0408301343430.3775@lipka.desy.de>
+
+OK, Im sorry, it was of course silly question. I have surrounded Jscript
+with <![CDATA[..]]> but it should be //<[!CDATA[...//]]>. Sorry for
+disturbing you. This question had nothing to twisted.web topic.
+
+Krzys
+
+On Mon, 30 Aug 2004, Krzystof Nowak wrote:
+
+>
+> Do you know why now JavaScript doesnt work on my page? It is working when
+> the page is text/html. Sorry for maybe stupid questions... but I cant
+> manage it alone :/
+>
+> Krzys
+>
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+

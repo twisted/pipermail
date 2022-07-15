@@ -1,0 +1,298 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] A pseudo-deferred class that can be canceled
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20A%20pseudo-deferred%20class%20that%20can%20be%20canceled&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="021325.html">
+   <LINK REL="Next"  HREF="021328.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] A pseudo-deferred class that can be canceled</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20A%20pseudo-deferred%20class%20that%20can%20be%20canceled&In-Reply-To="
+       TITLE="[Twisted-Python] A pseudo-deferred class that can be canceled">terry at jon.es
+       </A><BR>
+    <I>Wed Jan  6 23:55:30 EST 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="021325.html">[Twisted-Python] A pseudo-deferred class that can be canceled
+</A></li>
+        <LI>Next message: <A HREF="021328.html">[Twisted-Python] A pseudo-deferred class that can be canceled
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21327">[ date ]</a>
+              <a href="thread.html#21327">[ thread ]</a>
+              <a href="subject.html#21327">[ subject ]</a>
+              <a href="author.html#21327">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi Glyph
+
+It's very late here, so I'll limit myself to a few thousand lines of reply.
+
+&gt;&gt;&gt;&gt;&gt;<i> &quot;Glyph&quot; == Glyph Lefkowitz &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; writes:
+</I>Glyph&gt; On Jan 6, 2010, at 7:09 AM, Terry Jones wrote:
+
+Glyph&gt; What I mean is, there are a lot of weird little edge-cases in how
+Glyph&gt; multiple layers of the stack interact when they're dealing with a
+Glyph&gt; shared Deferred, and if we're
+
+The above was truncated.
+
+Glyph&gt; However, upon further inspection I think that they key distinction
+Glyph&gt; between what you've proposed and what I'm talking about is the
+Glyph&gt; distinction between cancelling *one* layer of the callback chain and
+Glyph&gt; cancelling *all* layers of the callback chain.
+
+Yes, that's right. I nearly made a diagram for people today, but didn't
+know if anyone would be interested. But here's one way to look at it.
+
+In today's deferred world, you have (in general) situations like this:
+
+  func makes d -&gt; c1 -&gt; c2 -&gt; c3 -&gt; c4 -&gt; c5 -&gt; c6 -&gt; c7 -&gt; client -&gt; c8 -&gt; c9
+
+I.e., the client makes a call, gets its hands on a deferred (which already
+has zero or more call/errbacks on its chain) and adds its own callbacks.
+
+At that point cancellation is very hard. Neither the client, nor the
+deferred itself, or the original function, can know how to cancel the
+operation. From the POV of the client and the deferred, that callback chain
+is just a bunch of indistinguishable functions.
+
+My ControllableDeferred class, if used by just the client, makes it
+possible for the client to cut the link between c7 and c8, either by iself
+(the client) calling the deferred it receives, which causes c8 to fire/err,
+or by deactivating it, thereby arranging that c8 is never called.
+
+So the ControllableDeferred in some sense introduces a cut point between
+two callbacks in the original chain. And the cut point is in a sensible
+logical position because the client added c8 and c9 and can be expected to
+know what to do to clean them up if it decides it's done waiting for the
+original d to fire.
+
+But the above picture is more uniform than the reality: it hides the fact
+that the callbacks were added to the deferred in groups (of zero or more).
+That is, the chain really looks like this:
+
+  func makes d -&gt; w1 -&gt; w2 -&gt; x1 -&gt; x2 -&gt; y1 -&gt; y2 -&gt; y3 -&gt; client -&gt; c8 -&gt; c9
+
+which is to say that the client in fact called function Y. Y called X. X
+called W, and W called something that returned a deferred. W then adds w1,
+and w2 to d and returns it to X. X adds x1 and x2 to d and returns it to Y.
+Y adds y1-3 and returns it to C.
+
+So you can imagine now that we insert a cut point at each logical boundary,
+and then the cancel information can flow back up the chain and each logical
+unit presumably knows how to discard / abort etc., whatever it may have in
+progress.
+
+That picture is mainly for clarity. I'm sure you're miles ahead already...
+
+
+Glyph&gt; Your description (elided for brevity's sake) was very helpful.
+Glyph&gt; You've got resources which your callbacks are consuming by way of
+Glyph&gt; being &quot;currently outstanding&quot;, and you want to be able to free
+Glyph&gt; *those* resources, without necessarily worrying about
+
+However you were going to finish that sentence, I agree :-)
+
+I want to free the resources, and I want to be able to get on with whatever
+it is I'm supposed to be doing.
+
+&gt;&gt;<i> Yes, agreed. I like the fact that the class is simple and that it deals
+</I>&gt;&gt;<i> with the client-side issues, allowing ignoring, timing out, early firing,
+</I>&gt;&gt;<i> etc.  As you say, the much harder problem remains. But the harder problem
+</I>&gt;&gt;<i> is a bit less messy now (at least in my mind): it's &quot;just&quot; cancellation.
+</I>&gt;&gt;<i> Responsibilities are cleanly divided by my class - the client takes care of
+</I>&gt;&gt;<i> itself, and cancellation has *only* to deal with callbacks placed on a
+</I>&gt;&gt;<i> deferred that was generated by what the client called.
+</I>
+Glyph&gt; I don't think that you can completely separate the problems.  You
+Glyph&gt; seem to have a reasonable solution to the problem of one layer of
+Glyph&gt; the Deferred stack, but once you're trying to deal with multiple
+Glyph&gt; layers of the stack at once, interactions occur which can be
+Glyph&gt; difficult to reconcile with the same API, many of which are already
+Glyph&gt; documented in the ticket's discussion.
+
+It may be that there are interactions between W and Y (for example) in my
+above (2nd) diagram, but I expect that would be infrequent. E.g., W might
+decide to attach a callback to d after it has been returned to (and added
+to by) X, Y, etc.  That seems to be a problem, but if W were to add those
+extra callbacks within another logical unit of the callback chain, it would
+be alerted of the cancellation in the normal fashion (twice). Make sense?
+
+&gt;&gt;<i> Looked at from this POV, an approach to cancellation would be for code that
+</I>&gt;&gt;<i> is able to cancel operations it has begun to also provide a cancel method.
+</I>&gt;&gt;<i> One way to think about doing this would be to have the cancel method take a
+</I>&gt;&gt;<i> deferred as an argument.
+</I>
+Glyph&gt; This is a *very* interesting idea, although I don't like the API
+Glyph&gt; that you propose for it.  By separating the cancel method from the
+Glyph&gt; Deferred itself, you remove the ability for a trivial client of that
+Glyph&gt; Deferred to say &quot;forget about it&quot; without also maintaining a
+Glyph&gt; reference to the thing that gave it the Deferred in the first place.
+
+I agree that's less desirable, but I'm not sure it's a necessary
+consequence of the approach. Or maybe it is.
+
+Today I modified my ControllableDeferred class to allow a cancelFunc
+argument. The __init__ is a tiny bit more clunky, but it has methods just
+like the old class, e.g.
+
+    def callback(self, result):
+        if not self._called:
+            self._called = True
+            if self.cancelFunc:
+                self.cancelFunc(self._calld)
+            defer.Deferred.callback(self, result)
+
+    def deactivate(self):
+        if not self._called:
+            self._called = True
+            if self.cancelFunc:
+                self.cancelFunc(self._calld)
+
+This is just what you suggest - the cancel function is inside the deferred
+class (my ControllableDeferred is a subclass of Deferred, so that's
+literally true).  The client, receiving an instance of this class, can just
+say &quot;forget about it&quot; and the cancel goes back to wherever it should go, if
+anywhere.  So you can imagine writing a getPage function (or class) that
+returns ControllableDeferred instances. Calling the deferred or
+deactivating it would then result in a HTTPClientFactory instance calling
+transport.loseConnection.
+
+&gt;&gt;<i> Something like my class could then hand the deferred back, effectively
+</I>&gt;&gt;<i> saying &quot;my client is no longer interested in this deferred. You can
+</I>&gt;&gt;<i> call/errback it, or not, it makes no difference to us&quot;. If you've done
+</I>&gt;&gt;<i> that once, you can do it multiple times - by which I mean that I might
+</I>&gt;&gt;<i> write code that's a client of getPage, and getPage is a client of XXX,
+</I>&gt;&gt;<i> and XXX is a client of YYY, etc. Each could in turn pass the deferred it
+</I>&gt;&gt;<i> got back to the thing that created it.
+</I>
+Glyph&gt; This implies, to me, that the cancellation callback would be better
+Glyph&gt; passed to addCallbacks(): effectively creating a third callback
+Glyph&gt; chain going from invoker to responder rather than the other way
+Glyph&gt; 'round as callbacks and errbacks do.
+
+Yes, I like that a lot, at least in a 5:30am superficial kinda way.
+
+A key difference between what I'd imagined and what you're suggesting is
+that in my approach, the cancel call goes directly to the thing (it would
+need to be a class instance, I suspect) that got the deferred. I.e. from my
+2nd diagram, if the client calls cancel (or deactivate, as in the code),
+then the thing that added y1 to the chain is going to have its cancel
+method called (or some method that it asked to have called). So the control
+in a sense jumps back over y3, y2 and y1 to the root of the logical Y
+section.
+
+Your approach passes the signal back up the chain. Most secondary steps,
+like y3 and y2, will pass the call along without taking any action. But
+they don't have to, which is good. And the first callback of a logical unit
+can always do exactly what would have been done in my approach above.
+
+I think your approach is better.
+
+Glyph&gt; I have stumbled in the direction of this thought a few times already
+Glyph&gt; but this is the first time I've had a really clear grasp of how it
+Glyph&gt; would work.  Now I can see that each layer of the stack may have its
+Glyph&gt; own resources that it might want to clean up... previously I thought
+Glyph&gt; this could be done entirely with errbacks, but in this version, it
+Glyph&gt; doesn't matter if the base deferred doesn't know how to kick off the
+Glyph&gt; errback chain: all the resources on the *rest* of the callback chain
+Glyph&gt; can be cleaned up.
+
+Yes. And the logical divisions of the call/errback chain are going to
+ignore each other in any case. Once a further-down-the-chain function has
+either called or deactivated the deferred (to put it simply - it's actually
+not just one deferred, at least in my implementation), it doesn't matter at
+all what the upstream (earlier) functions do - the result, if any, is not
+going through.
+
+Glyph&gt; I'm going to need to figure out some good values for XXX and YYY
+Glyph&gt; here in order to truly dispel the fog, though.
+
+I'm a bit foggy too. That's why I started playing with getPage to try to
+use a common example with at least a few levels of processing. But I didn't
+have time to think about it clearly. I wrote some foggy code, which I wont
+inflict on you. I'm pretty sure there's a clean solution in here though,
+that we can get to with a bit more back &amp; forth.
+
+&gt;&gt;<i> If there's no cancel method, then that's as far as can be gone with
+</I>&gt;&gt;<i> canceling.
+</I>
+Glyph&gt; This is one of the really tricky issues that has faced this feature
+Glyph&gt; all along: what happens when some part of the chain involved doesn't
+Glyph&gt; know what to do with a canceller?  And your solution here seems like
+Glyph&gt; it may be a very elegant hack: do exactly the same thing as other
+Glyph&gt; parts of the callback chain.  What I mean is: currently, if a
+Glyph&gt; particular callback pair doesn't have a callback or an errback, the
+Glyph&gt; behavior is to do nothing and pass the result through.  Cancellation
+Glyph&gt; could do exactly the same thing!
+
+Yes, that's great. That's *your* solution, btw :-)
+
+&gt;&gt;<i> At that point the result is no longer passed because the first
+</I>&gt;&gt;<i> ControllableDeferred instance that's involved will effectively snip the
+</I>&gt;&gt;<i> link (or send an early result) in the sequence of steps that would
+</I>&gt;&gt;<i> originally have been done.
+</I>
+Glyph&gt; Severing the link seems like a problem though; if we do that, then
+Glyph&gt; introducing any non-cancellation-aware Deferred - or callback, for
+Glyph&gt; that matter - into a cancellation-aware pipeline will prevent
+Glyph&gt; cancellations from propagating further up, and there should be no
+Glyph&gt; reason to do that.
+
+Yes, agreed.
+
+&gt;&gt;<i> And it keeps all code for doing cancellation out of the Deferred class.
+</I>
+Glyph&gt; Why is it that you want to keep the cancellation code out of
+Glyph&gt; Deferred?  It seems very useful to me to have one object that you
+Glyph&gt; can say &quot;stop&quot; to, without necessarily knowing what's going on above
+Glyph&gt; it or where it came from.
+
+Yes, I guess I didn't want to keep it out of there - especially since I
+already put it in today.... I guess what I really meant was that I wanted
+it to be clean / simple, because Deferreds are that way already (once
+you've spent a couple of years thinking about them).
+
+&gt;&gt;<i> OK, sorry for so many words. I hope this seems like it's heading in a
+</I>&gt;&gt;<i> useful direction. It does to me.
+</I>
+Glyph&gt; Yes, this has been very useful.  I hope we can distill this into
+Glyph&gt; some useful conclusions soon. :)
+
+I think we can / will.  It should be fairly easy to build an example based
+on getPage. I badly wanted to today, but we have a ton of stuff going on
+right now and I forced myself to put this aside for some hours.
+
+Terry
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="021325.html">[Twisted-Python] A pseudo-deferred class that can be canceled
+</A></li>
+	<LI>Next message: <A HREF="021328.html">[Twisted-Python] A pseudo-deferred class that can be canceled
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21327">[ date ]</a>
+              <a href="thread.html#21327">[ thread ]</a>
+              <a href="subject.html#21327">[ subject ]</a>
+              <a href="author.html#21327">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

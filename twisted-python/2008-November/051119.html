@@ -1,0 +1,150 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20A%20Python%20metaclass%20for%20Twisted%20allowing%20__init__%0A%09to%20return%20a%20Deferred&In-Reply-To=%3C20081103124912.6400.1267186575.divmod.xquotient.613%40weber.divmod.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051124.html">
+   <LINK REL="Next"  HREF="051126.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred</H1>
+    <B>glyph at divmod.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20A%20Python%20metaclass%20for%20Twisted%20allowing%20__init__%0A%09to%20return%20a%20Deferred&In-Reply-To=%3C20081103124912.6400.1267186575.divmod.xquotient.613%40weber.divmod.com%3E"
+       TITLE="[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred">glyph at divmod.com
+       </A><BR>
+    <I>Mon Nov  3 05:49:12 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051124.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+        <LI>Next message (by thread): <A HREF="051126.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51119">[ date ]</a>
+              <a href="thread.html#51119">[ thread ]</a>
+              <a href="subject.html#51119">[ subject ]</a>
+              <a href="author.html#51119">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 2 Nov, 11:48 pm, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">terry at jon.es</A> wrote:
+&gt;<i>Very briefly, I wrote a metaclass to allow you to write classes whose
+</I>&gt;<i>__init__ method uses deferreds. Your __init__ can create deferreds, 
+</I>&gt;<i>call
+</I>&gt;<i>functions that return deferreds, and of course return a deferred itself
+</I>&gt;<i>(that's the whole point). Your class instance wont be available until 
+</I>&gt;<i>after
+</I>&gt;<i>the deferred your __init__ returns has fired.
+</I>
+As a general stylistic thing, I've been writing a lot more classmethods 
+lately to determine arguments to __init__, rather than trying to make 
+__init__ itself do interesting tricks.  I can't find a name for this 
+&quot;design pattern&quot;, so let me describe it:
+
+One very common use-case is that we have some object - let's say an RFC 
+5322 email address - which is typically created from a string.  An 
+idiomatic way to do that might be like this:
+
+
+    import rfc822
+
+    class Address:
+        def __init__(self, addrstr):
+            l = list(rfc822.AddressList(addrstr))
+            if len(l) != 1:
+                raise ValueError(&quot;Too many or too few addresses.&quot;)
+            else:
+                desc, addr = l[0]
+                self.description = desc
+                self.localpart, self.domain = addr.split(&quot;@&quot;)
+
+But this is problematic.  With this class, it's hard to convert from a 
+different format of storing email addresses that has already been 
+parsed.  In order to create an Address from, i.e., a database record 
+containing a description, localpart, and domain, I now need to smash 
+everything back into a string, worrying about trivia like quoting; or I 
+need to resort to hacks like calling __new__ instead of __init__.  It 
+makes testing more difficult: in my tests I need to start having 
+formatted email addresses in strings instead of simply creating Address 
+objects.  If this class were hypothetically a bit smarter and dealt 
+nicely with unicode, my tests would need to learn about email-address 
+quoting rules in order to generate addresses with non-ASCII characters, 
+rather than leaving that logic entirely in the Address class.  Ugly all 
+around.
+
+However, I can pull the parsing logic out and separate it from the 
+initialization logic, and all of that gets much easier:
+
+    class Address:
+        def __init__(self, localpart, domain, description):
+            self.localpart = localpart
+            self.domain = domain
+            self.description = description
+
+        @classmethod
+        def fromString(cls, addrstr):
+            l = list(rfc822.AddressList(addrstr))
+            if len(l) != 1:
+                raise ValueError(&quot;Too many or too few addresses.&quot;)
+            else:
+                desc, addr = l[0]
+                loc, dom = addr.split(&quot;@&quot;)
+                return cls(loc, dom, desc)
+
+With this improved class, I can easily create Address objects in other 
+ways from other code.  Since it's a classmethod rather than a function, 
+it's just as friendly to inheritance as a constructor; perhaps even 
+moreso.  It opens the door to the evolution of other creation methods, 
+fromXXX classmethods, without breaking the constructor's signature or 
+changing the fromString method.
+
+You don't give a concrete example in your blog post, but I can imagine 
+that all these points apply twice over to any code that would use 
+Deferreds.  An __init__ that returns a Deferred means that in the 
+testing case, not only is there no way to directly construct the object 
+you want, there might be no way to even get one without spinning the 
+reactor.  What is that Deferred doing?  Maybe there's no way to get one 
+without actually generating network traffic!  Obviously, not an ideal 
+scenario.  For the tests for the code making the deferred request 
+itself, there will obviously need to be fake sources of data, but for 
+other tests that just want to interact with one of your objects, direct 
+construction is pretty much always easier.
+
+However, thanks for sharing nonetheless.  Although I wouldn't use it 
+personally, your code makes an interesting rhetorical point.  There's a 
+great deal of whinging that goes on around Deferreds being hard to work 
+with.  This metaclass is just another in a long line of tools that says 
+&quot;see?  it really isn't so hard to deal with a Deferred if you need to.&quot;
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051124.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+	<LI>Next message (by thread): <A HREF="051126.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51119">[ date ]</a>
+              <a href="thread.html#51119">[ thread ]</a>
+              <a href="subject.html#51119">[ subject ]</a>
+              <a href="author.html#51119">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,223 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] advice on asynchronous LDAP?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20advice%20on%20asynchronous%20LDAP%3F&In-Reply-To=%3C45596BD0.2060101%40ac-montpellier.fr%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="046852.html">
+   <LINK REL="Next"  HREF="046855.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] advice on asynchronous LDAP?</H1>
+    <B>jean-marc pouchoulon</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20advice%20on%20asynchronous%20LDAP%3F&In-Reply-To=%3C45596BD0.2060101%40ac-montpellier.fr%3E"
+       TITLE="[Twisted-Python] advice on asynchronous LDAP?">jean-marc.pouchoulon at ac-montpellier.fr
+       </A><BR>
+    <I>Tue Nov 14 00:10:08 MST 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="046852.html">[Twisted-Python] advice on asynchronous LDAP?
+</A></li>
+        <LI>Next message (by thread): <A HREF="046855.html">[Twisted-Python] advice on asynchronous LDAP?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#46853">[ date ]</a>
+              <a href="thread.html#46853">[ thread ]</a>
+              <a href="subject.html#46853">[ subject ]</a>
+              <a href="author.html#46853">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Shimon Rura wrote:
+
+&gt;<i> Hi folks,
+</I>&gt;<i>
+</I>Hello
+
+&gt;<i> I'm a newbie writing a twisted server that needs to access an LDAP
+</I>&gt;<i> server.  I started by using python-ldap, which worked fine and is well
+</I>&gt;<i> documented, but doesn't seem to have support for a callback mechanism
+</I>&gt;<i> that would make it appropriate for a twisted app.  So I switched to
+</I>&gt;<i> ldaptor, which fits the twisted model, but doesn't seem to have much
+</I>&gt;<i> documentation.
+</I>
+I tried to use it but it worked only with twisted 1.3
+
+&gt;<i>
+</I>&gt;<i> I'm looking for advice from people who have some familiarity with
+</I>&gt;<i> writing twisted apps that include an LDAP client.  Ideally, I'd like
+</I>&gt;<i> to find either:
+</I>&gt;<i>
+</I>&gt;<i> (1) a way to use the standard python-ldap library in a multitasking
+</I>&gt;<i> twisted server (i.e. without busy wait; polling at timed intervals is
+</I>&gt;<i> a possibility but also seems bad), or
+</I>
+The way I found was to use python ldap and deferToThread.
+This is not really  in the &quot;asynchronous spirit of twisted &quot; but it works.
+
+Here an example I used to make a small sendmail X map lookup:
+
+from twisted.application import internet, service
+from twisted.internet import protocol,reactor, defer, threads
+from twisted.internet.protocol import Protocol
+from twisted.protocols import basic
+import ldap
+
+
+class MapProtocol(Protocol):
+
+    def dataReceived(self, Mel):
+        d = threads.deferToThread(self.factory._lire_annuaire_ldap,Mel)
+        d.addCallback(self._cb)
+        d.addErrback(self._eb)
+
+    def _cb(self, result):
+        self.transport.write(result)
+        
+
+    def _eb(self, error):
+        print error
+        self.transport.loseConnection()
+
+class MapFactory(protocol.ServerFactory):
+    protocol = MapProtocol
+
+    def __init__(self, servers,who, cred, mydomains, dictstatus):
+
+        # directory
+        self.ldapservers  = ldapservers
+        self.who = who
+        self.cred = cred
+        self.mydomains = mydomains
+        self.NOTFOUND = dictstatus['NOTFOUND']
+        self.TEMP = dictstatus['PERM']
+
+
+    def _lire_annuaire_ldap(self,mel):
+        &quot;&quot;&quot; lookup directory server retourne RHS &quot;&quot;&quot;
+
+        def _bind2ldap(servers,who=&quot;&quot;,cred=&quot;&quot;):
+            &quot;&quot;&quot; Trouve une serveur ldap dispo dans la liste qui lui est passé &quot;&quot;&quot;
+            status = False
+            for server in servers:
+                   urildap = &quot;<A HREF="ldap://">ldap://</A>&quot; + server
+                   l = ldap.initialize(urildap)
+                   l.protocol_version=ldap.VERSION3
+                   try:
+                       resultbind = l.simple_bind_s(who,cred)
+                       status = True
+                       break
+                   except ldap.LDAPError,e :
+                       continue
+            return(status,l)
+
+
+        uid = ''
+        mailhost = ''
+        aretourner = self.NOTFOUND
+
+        statusldap = False # directory server est disponible ?
+
+
+        # Nom de la map
+        # si on en a plusieurs dans le futur
+
+        nommap = mel.split()[0].split(':')[1]
+
+        # map LHS
+        mel = mel.split()[1][:-1]
+        
+
+        # our domain or not ?
+
+        try:
+                mydomain = mel.split('@')[1]
+        except IndexError,e:
+                mydomain = 'mydomain'
+
+      
+        if mydomain in self.mydomains:
+            statusldap, maconn =  _bind2ldap(self.ldapservers,self.who,self.cred)
+
+            if statusldap:
+                marequete = '(|(mail=' + mel + ')(mailalternateaddress=' + mel +')(mailequivalentaddress=' + mel
+ + '))'
+               
+                result_data = maconn.search_s(&quot;dc=...&quot;, ldap.SCOPE_SUBTREE, marequete , ['uid', 'mailhost']
+)
+                
+                if len(result_data) &gt; 0:
+                    try:
+                       uid  = ''.join(result_data[0][1]['uid'])
+                    except KeyError:
+                       print 'error clef:%s' % mel
+                       uid = mel.split(&quot;@&quot;)[0]
+                    mailhost  = ''.join(result_data[0][1]['mailhost'])
+                    status = 'OK '
+                    reponse = status + '&lt;' + uid + '@' + mailhost + '&gt;'
+                    aretourner = str(len(reponse)) + &quot;:&quot; + reponse + ','
+                else:
+                   aretourner = self.NOTFOUND
+            else:
+                aretourner = self.PERM
+        else:
+            aretourner = self.NOTFOUND
+            
+        return (aretourner)
+
+
+# Status de lookup &quot;fixe&quot;
+dictstatus = {'NOTFOUND' : '8:NOTFOUND,', 'PERM' : '4:PERM,'}
+
+
+# servers/user/pass necessaire au bind
+# 
+
+server = [&quot;ldap1&quot;,&quot;ldap2&quot;]
+binddn = &quot;&quot;
+passwd = &quot;&quot;
+mydomains = [&quot;mydomain&quot;]
+
+
+
+application = service.Application('mapsmx', uid=663, gid=663)
+factory = MapFactory(server,binddn,passwd,mydomains,dictstatus)
+internet.TCPServer(8090, factory).setServiceParent(
+    service.IServiceCollection(application))
+
+
+HTH
+jmp
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="046852.html">[Twisted-Python] advice on asynchronous LDAP?
+</A></li>
+	<LI>Next message (by thread): <A HREF="046855.html">[Twisted-Python] advice on asynchronous LDAP?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#46853">[ date ]</a>
+              <a href="thread.html#46853">[ thread ]</a>
+              <a href="subject.html#46853">[ subject ]</a>
+              <a href="author.html#46853">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

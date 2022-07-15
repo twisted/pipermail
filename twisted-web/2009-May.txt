@@ -1,0 +1,804 @@
+From dave at ramenlabs.com  Fri May  1 14:29:30 2009
+From: dave at ramenlabs.com (Dave Benjamin)
+Date: Fri, 1 May 2009 11:29:30 -0700 (MST)
+Subject: [Twisted-web] system.multicall support for the XML-RPC server
+Message-ID: <alpine.DEB.2.00.0905011129050.14916@spoomusic.com>
+
+Hello,
+
+The Twisted XML-RPC server does not come with system.multicall, a de facto 
+standard method which allows a batch of methods to be called in a single 
+request.
+
+I wrote an implementation which handles deferred results and ensures that 
+exceptions in one method call do not prevent the other methods from 
+executing.
+
+I had to add to the XMLRPCIntrospection class in order to include my 
+method in the system namespace, even though it is not really an 
+introspection method. It's also possible to subclass XMLRPCIntrospection
+from outside of xmlrpc.py and use putSubHandler instead of 
+xmlrpc.addIntrospection to create the "system" namespace.
+
+Anyhow, let me know what you think. Patch follows. Thanks for making 
+Twisted such a joy to read and use.
+
+Dave
+
+
+--- /usr/share/pyshared/twisted/web/xmlrpc.py   2008-09-05 
+02:18:26.000000000 -0700
++++ xmlrpc.py   2009-05-01 10:58:39.000000000 -0700
+@@ -246,6 +246,33 @@
+      xmlrpc_methodSignature.signature = [['array', 'string'],
+                                          ['string', 'string']]
+
++    def xmlrpc_multicall(self, calls):
++        """
++        Boxcar multiple RPC calls in one request.
++        """
++        results = []
++        for call in calls:
++            name = call['methodName']
++            params = call['params']
++            method = self._xmlrpc_parent._getFunction(name)
++            try:
++                d = defer.maybeDeferred(method, *params)
++                g = defer.waitForDeferred(d)
++                yield g
++                result = [g.getResult()]
++            except Fault, f:
++                result = {'faultCode': f.faultCode,
++                          'faultString': f.faultString}
++            except Exception, e:
++                log.err(e)
++                result = {'faultCode': self.FAILURE,
++                          'faultString': 'error'}
++            results.append(result)
++        yield results
++
++    xmlrpc_multicall = defer.deferredGenerator(xmlrpc_multicall)
++    xmlrpc_multicall.signature = [['array', 'array']]
++
+
+  def addIntrospection(xmlrpc):
+      """
+
+
+From glyph at divmod.com  Fri May  1 21:26:28 2009
+From: glyph at divmod.com (glyph at divmod.com)
+Date: Sat, 02 May 2009 01:26:28 -0000
+Subject: [Twisted-web] system.multicall support for the XML-RPC server
+In-Reply-To: <alpine.DEB.2.00.0905011129050.14916@spoomusic.com>
+References: <alpine.DEB.2.00.0905011129050.14916@spoomusic.com>
+Message-ID: <20090502012628.12555.1989384605.divmod.xquotient.10221@weber.divmod.com>
+
+
+On 1 May, 06:29 pm, dave at ramenlabs.com wrote:
+>Hello,
+
+Hi Dave!  Thanks for taking the time to contribute.
+
+Unfortunately, this contribution will almost certainly be lost if you 
+don't open a ticket for it at <http://twistedmatrix.com/trac/newticket>. 
+Once you've done that, you'll need to mark it for review by adding the 
+"review" keyword and reassigning it to nobody - the empty entry at the 
+top of the "reassign" menu.
+
+More information on our development process is here:
+
+    http://twistedmatrix.com/trac/wiki/TwistedDevelopment
+
+I'll give you the first round of review on the list, though :).
+>The Twisted XML-RPC server does not come with system.multicall, a de 
+>facto
+>standard method which allows a batch of methods to be called in a 
+>single
+>request.
+
+Can you include a reference in the docstrig to some document describing 
+this standard, even if it's just a blog post or a wiki page somewhere 
+explaining its expected semantics?
+>I had to add to the XMLRPCIntrospection class in order to include my
+>method in the system namespace, even though it is not really an
+>introspection method. It's also possible to subclass 
+>XMLRPCIntrospection
+>from outside of xmlrpc.py and use putSubHandler instead of
+>xmlrpc.addIntrospection to create the "system" namespace.
+
+I'm not quite sure what you're getting at here - do you think one of 
+these other approaches would be better!
+>Anyhow, let me know what you think. Patch follows. Thanks for making
+>Twisted such a joy to read and use.
+
+Thanks for contributing!
+
+The first and most important thought I have about this patch is that 
+sadly, it does not include any unit tests.  Our development process 
+mandates that all new features have complete test coverage.  Ideally new 
+features would all be developed in a test-driven way.
+
+If you need some help with that, you're in luck.  There's a Twisted 
+sprint tomorrow (Saturday, May 2).  If you're in the vicinity of 
+Cambridge, MA, you can drop by the Divmod office and join us physically; 
+otherwise, join us in the #twisted IRC channel on chat.freenode.net.
+>--- /usr/share/pyshared/twisted/web/xmlrpc.py   2008-09-05
+>02:18:26.000000000 -0700
+>+++ xmlrpc.py   2009-05-01 10:58:39.000000000 -0700
+>@@ -246,6 +246,33 @@
+
+Just looking at this information in the diff here; the best way to 
+generate diffs for contribution is to have a checkout of current SVN 
+trunk and run 'svn diff' at the root.  Generating diffs against your 
+system installation of Twisted is problematic for many reasons.  For one 
+thing, it makes them harder to apply to the most recent code.  For 
+another, ubuntu and debian's versions of Twisted can diverge from the 
+version that we distribute, sometimes substantially, since they apply 
+their own patches.
+>      xmlrpc_methodSignature.signature = [['array', 'string'],
+>                                          ['string', 'string']]
+>
+>+    def xmlrpc_multicall(self, calls):
+>+        """
+>+        Boxcar multiple RPC calls in one request.
+>+        """
+
+It would be helpful if you included a "@param" describing the expected 
+structure of "calls" here, in addition to the description of this de- 
+facto standard.  As it is, I have to puzzle it out from .signature below 
+and the body of the method.
+>+        results = []
+>+        for call in calls:
+>+            name = call['methodName']
+>+            params = call['params']
+>+            method = self._xmlrpc_parent._getFunction(name)
+>+            try:
+>+                d = defer.maybeDeferred(method, *params)
+>+                g = defer.waitForDeferred(d)
+>+                yield g
+>+                result = [g.getResult()]
+>+            except Fault, f:
+>+                result = {'faultCode': f.faultCode,
+>+                          'faultString': f.faultString}
+>+            except Exception, e:
+>+                log.err(e)
+>+                result = {'faultCode': self.FAILURE,
+>+                          'faultString': 'error'}
+>+            results.append(result)
+>+        yield results
+>+
+>+    xmlrpc_multicall = defer.deferredGenerator(xmlrpc_multicall)
+
+By using deferredGenerator here, you're eliminating any possible 
+parallelism and forcing all of the requests to happen in serial, even if 
+they're deferred.  Is that intentional?  It looks like this would be 
+better written as a normal Deferred-using function.
+>+    xmlrpc_multicall.signature = [['array', 'array']]
+>+
+>
+>  def addIntrospection(xmlrpc):
+>      """
+>
+>_______________________________________________
+>Twisted-web mailing list
+>Twisted-web at twistedmatrix.com
+>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From dave at ramenlabs.com  Tue May  5 19:31:13 2009
+From: dave at ramenlabs.com (Dave Benjamin)
+Date: Tue, 5 May 2009 16:31:13 -0700 (MST)
+Subject: [Twisted-web] system.multicall support for the XML-RPC server
+In-Reply-To: <mailman.7.1241280002.7196.twisted-web@twistedmatrix.com>
+References: <mailman.7.1241280002.7196.twisted-web@twistedmatrix.com>
+Message-ID: <alpine.DEB.2.00.0905051623370.22980@spoomusic.com>
+
+On Sat, 2 May 2009, twisted-web-request at twistedmatrix.com wrote:
+
+> Hi Dave!  Thanks for taking the time to contribute.
+>
+> Unfortunately, this contribution will almost certainly be lost if you
+> don't open a ticket for it at <http://twistedmatrix.com/trac/newticket>.
+> Once you've done that, you'll need to mark it for review by adding the
+> "review" keyword and reassigning it to nobody - the empty entry at the
+> top of the "reassign" menu.
+
+Thanks for your thoughtful comments! I created a ticket with a patch and 
+unit test and tried to respond to all of the things you mentioned. The 
+ticket is here:
+
+http://twistedmatrix.com/trac/ticket/3823
+
+>> I had to add to the XMLRPCIntrospection class in order to include my
+>> method in the system namespace, even though it is not really an
+>> introspection method. It's also possible to subclass
+>> XMLRPCIntrospection
+>> from outside of xmlrpc.py and use putSubHandler instead of
+>> xmlrpc.addIntrospection to create the "system" namespace.
+>
+> I'm not quite sure what you're getting at here - do you think one of
+> these other approaches would be better!
+
+Well, I'm sort of thinking out loud here, because I'm not sure. As 
+designed, the way to get a "system" namespace in your XML-RPC server is to 
+call xmlrpc.addIntrospection(server). However, the "system.multicall" 
+method belongs to the "system" namespace and is not an introspection 
+method. If I were to add another method called xmlrpc.addMulticall(), the 
+two methods would both be responsible for creating the system namespace. 
+Would the multicall method go in its own class? Or would it be 
+monkey-patched onto the XMLRPCIntrospection class? The latter would 
+avoid breaking existing code, but it would also create an order of 
+operations requirement (first introspection, then multicall), which would 
+be inelegant.
+
+For comparison, this is how SimpleXMLRPCServer does it:
+http://docs.python.org/library/simplexmlrpcserver.html#SimpleXMLRPCServer.SimpleXMLRPCServer.register_introspection_functions
+
+> ... join us in the #twisted IRC channel on chat.freenode.net.
+
+I'll be around as "ramenboy" - maybe I'll see you around.
+
+Thanks,
+Dave
+
+-- 
+.. Dave Benjamin - Software Developer - Phoenix, Arizona
+.. http://ramenlabs.com | http://twitter.com/ramenlabs
+
+
+From michaelt at voxtelecom.co.za  Thu May  7 14:05:29 2009
+From: michaelt at voxtelecom.co.za (Michael Toop)
+Date: Thu, 7 May 2009 20:05:29 +0200
+Subject: [Twisted-web] Close TCP Connection Using web resource.Resource
+Message-ID: <356E0D6ED84C644F872767C81677F0310230B0@xena.internal.datapro.co.za>
+
+Hi,
+ 
+ We are struggling to close a TCP connection using web resource.Resource (the TR69 SOAP spec. mandates that we close the connection when we are done).
+ 
+ Our site is served in a TCP reactor & uses the NOT_DONE_YET variable in the def render_POST method.  We close the render_POST with a request.write('data') & a request.finish() but the connection stays open, stub code below.
+ 
+ We are not sure if it is the fact that we are using chunked encoding or if this is a bug?
+ 
+ Please assist.
+ 
+Warm Regards,
+ 
+Michael Toop
+ 
+def render_POST(self,request):
+   ...do stuff
+  d = getSoapText(request)
+  d.addCallback(request.write)
+  d.addCallback(request.close())
+  return server.NOT_DONE_YET 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090507/c041b386/attachment.htm 
+
+From drew.smathers at gmail.com  Thu May  7 14:47:33 2009
+From: drew.smathers at gmail.com (Drew Smathers)
+Date: Thu, 7 May 2009 14:47:33 -0400
+Subject: [Twisted-web] Close TCP Connection Using web resource.Resource
+In-Reply-To: <356E0D6ED84C644F872767C81677F0310230B0@xena.internal.datapro.co.za>
+References: <356E0D6ED84C644F872767C81677F0310230B0@xena.internal.datapro.co.za>
+Message-ID: <368574aa0905071147s124f7dbdp8e2f278cf1ec9879@mail.gmail.com>
+
+On Thu, May 7, 2009 at 2:05 PM, Michael Toop <michaelt at voxtelecom.co.za> wrote:
+> Hi,
+>
+> ?We are struggling to close a TCP connection using web
+> resource.Resource?(the TR69 SOAP spec. mandates that we close the connection
+> when we are done).
+>
+> ?Our site is served in a TCP reactor & uses the NOT_DONE_YET variable in the
+> def render_POST method.? We close the render_POST with a
+> request.write('data') & a request.finish() but the connection stays open,
+> stub code below.
+>
+> ?We are not sure if it is the fact that we are using chunked encoding or if
+> this is a bug?
+>
+> ?Please assist.
+>
+> Warm Regards,
+>
+> Michael Toop
+>
+> def render_POST(self,request):
+> ?? ...do stuff
+> ? d = getSoapText(request)
+> ??d.addCallback(request.write)
+> ??d.addCallback(request.close())
+> ? return server.NOT_DONE_YET
+>
+
+I'm guessing it was a typo above and should be something like:
+
+  d.addCallback(lambda ign: request.finish())
+
+Also, I don't think request.finish necessarily entails closing the
+connection as this depends upon whether or the channel is persistent
+via keep-alive.
+
+I think the rules for connection persistence in twisted.web are:
+
+HTTP 1.0:
+           non-persistent
+HTTP 1.1 and "Connection: close" in request headers:          non-persistent
+HTTP 1.1 and "Connection: close" NOT in request headers:   persistent
+
+-Drew
+
+
+From michaelt at voxtelecom.co.za  Thu May  7 15:22:47 2009
+From: michaelt at voxtelecom.co.za (Michael Toop)
+Date: Thu, 7 May 2009 21:22:47 +0200
+Subject: [Twisted-web] Close TCP Connection Using web resource.Resource
+References: <356E0D6ED84C644F872767C81677F0310230B0@xena.internal.datapro.co.za>
+	<368574aa0905071147s124f7dbdp8e2f278cf1ec9879@mail.gmail.com>
+Message-ID: <356E0D6ED84C644F872767C81677F0310230B2@xena.internal.datapro.co.za>
+
+Hi Drew,
+ 
+ Thanks for the feedback. 
+ 
+ There are no headers in our server that annotate this.  Great idea though, I didn't realise that this was an option.  What I will try is insert the "Connection: close" header in & see if the client responds with this (hopefully Twisted will then in turn close the connection).
+ 
+ FYI here are the headers in current server:
+ 
+Client:
+HTTP/1.1
+Content-Type: text/xml; charset=ISO-8859-1
+Host: vvvaacs.co.za
+User-Agent: Thomson_cwmp-engine/r6.2.W.1
+SOAPAction:
+Transfer-Encoding: chunked
+
+Server:
+HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+Date: Thu, 07 May 2009 12:42:00 GMT
+Content-Type: text/xml; charset=iso-8859-1
+Server: TwistedWeb/8.2.0
+
+Thanks,
+ 
+Michael
+
+________________________________
+
+From: twisted-web-bounces at twistedmatrix.com on behalf of Drew Smathers
+Sent: Thu 5/7/2009 08:47 PM
+To: Twisted Web World
+Subject: Re: [Twisted-web] Close TCP Connection Using web resource.Resource
+
+
+
+On Thu, May 7, 2009 at 2:05 PM, Michael Toop <michaelt at voxtelecom.co.za> wrote:
+> Hi,
+>
+>  We are struggling to close a TCP connection using web
+> resource.Resource (the TR69 SOAP spec. mandates that we close the connection
+> when we are done).
+>
+>  Our site is served in a TCP reactor & uses the NOT_DONE_YET variable in the
+> def render_POST method.  We close the render_POST with a
+> request.write('data') & a request.finish() but the connection stays open,
+> stub code below.
+>
+>  We are not sure if it is the fact that we are using chunked encoding or if
+> this is a bug?
+>
+>  Please assist.
+>
+> Warm Regards,
+>
+> Michael Toop
+>
+> def render_POST(self,request):
+>    ...do stuff
+>   d = getSoapText(request)
+>   d.addCallback(request.write)
+>   d.addCallback(request.close())
+>   return server.NOT_DONE_YET
+>
+
+I'm guessing it was a typo above and should be something like:
+
+  d.addCallback(lambda ign: request.finish())
+
+Also, I don't think request.finish necessarily entails closing the
+connection as this depends upon whether or the channel is persistent
+via keep-alive.
+
+I think the rules for connection persistence in twisted.web are:
+
+HTTP 1.0:
+           non-persistent
+HTTP 1.1 and "Connection: close" in request headers:          non-persistent
+HTTP 1.1 and "Connection: close" NOT in request headers:   persistent
+
+-Drew
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/ms-tnef
+Size: 6283 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20090507/8176a5d8/attachment.bin 
+
+From drew.smathers at gmail.com  Fri May  8 19:44:34 2009
+From: drew.smathers at gmail.com (Drew Smathers)
+Date: Fri, 8 May 2009 19:44:34 -0400
+Subject: [Twisted-web] Close TCP Connection Using web resource.Resource
+In-Reply-To: <356E0D6ED84C644F872767C81677F0310230B2@xena.internal.datapro.co.za>
+References: <356E0D6ED84C644F872767C81677F0310230B0@xena.internal.datapro.co.za>
+	<368574aa0905071147s124f7dbdp8e2f278cf1ec9879@mail.gmail.com>
+	<356E0D6ED84C644F872767C81677F0310230B2@xena.internal.datapro.co.za>
+Message-ID: <368574aa0905081644h431fc868rdf2a0077a65ea361@mail.gmail.com>
+
+On Thu, May 7, 2009 at 3:22 PM, Michael Toop <michaelt at voxtelecom.co.za> wrote:
+> Hi Drew,
+>
+> ?Thanks for the feedback.
+>
+> ?There are no headers in our server that annotate this. ?Great idea though, I didn't realise that this was an option. ?What I will try is insert the "Connection: close" header in & see if the client responds with this (hopefully Twisted will then in turn close the connection).
+>
+> ?FYI here are the headers in current server:
+>
+> Client:
+> HTTP/1.1
+> Content-Type: text/xml; charset=ISO-8859-1
+> Host: vvvaacs.co.za
+> User-Agent: Thomson_cwmp-engine/r6.2.W.1
+> SOAPAction:
+> Transfer-Encoding: chunked
+>
+> Server:
+> HTTP/1.1 200 OK
+> Transfer-Encoding: chunked
+> Date: Thu, 07 May 2009 12:42:00 GMT
+> Content-Type: text/xml; charset=iso-8859-1
+> Server: TwistedWeb/8.2.0
+>
+> Thanks,
+>
+> Michael
+>
+
+Hi Michael,
+
+It might be easier to just force the channel to be non-persistent
+before calling finish()  vs. trying to inject request headers:
+
+  request.channel.persistent = 0
+  request.finish()
+
+-Drew
+
+
+From federicotom at yahoo.it  Fri May  8 20:49:13 2009
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Sat, 09 May 2009 02:49:13 +0200
+Subject: [Twisted-web] Strange Guard Behaviour
+Message-ID: <4A04D309.7010801@yahoo.it>
+
+Hello alls,
+
+I have a particular (a little bit difficult) scenario and
+something is not working as I think, can't understand why.
+
+I'm launching, in the same process, two guard`ed application:
+
+   A ~> localhost:8080
+   B ~> localhots:9090
+
+Running Apache and depending by the requested segments, I
+proxy the request to A or B (fqdn is always the same and
+under https).
+
+In particular:
+
+   if segs[0] == 'foo':
+     redirect(B)
+   else:
+     redirect(A)
+
+If I do:
+
+   1)  I login A (not anonymously). All works.
+   2)  With the same Browser, I login to B (not anon).
+       All is working.
+
+Now, making the following requests, something strange happens:
+
+  * https://fqdn/foo/bla/bla/
+
+    the B resource is (correctly) returned.
+    Apache is proxing the request to B.
+
+  * https://fqdn/
+
+    the request is (correctly) forwarded to A... but
+    the B resource is returned!
+
+  * https://fqdn/some/url/here/ (some <> foo)
+
+    the A resource is returned, Apache proxing
+    (correctly) to A.
+
+I'm really blue, because I can't understand the
+different behaviour between "/" and "/notfoo/".
+Apache proxies to A, but in the first case B
+is returned, in the second, A is returned.
+
+Note that:
+
+  - cookieKey is different for the two resources
+  - I'm sure, reading apache logs, that requests
+    are correctly proxied.
+
+Do you have some idea?
+
+thank You
+br
+
+-- 
+efphe
+Today is Pungenday, the 55th day of Discord in the YOLD 3175
+
+
+From kiro at kircho.net  Fri May 29 03:49:59 2009
+From: kiro at kircho.net (Cyrille Vladimirov)
+Date: Fri, 29 May 2009 09:49:59 +0200
+Subject: [Twisted-web] mointwisted over SSL
+Message-ID: <FD1Jm1th.1243583399.8854840.kiro@kircho.net>
+
+Hi there!
+I am new in twisted.
+
+These days I try to run a moinmoin wiki server and using mointwisted
+python server as daemon. The server works fine (opens port 80 for
+connection and server wiki with no problem) but I am getting in trouble
+for run it over SSL.
+
+First I try to find out somewhere in docs and the only thing I found is:
+how to generate key and certificate and put 2 lines, about ssl_privekey
+and ssl_certificate.
+
+I am not sure in which config file(s) I have to put these lines and how
+exactly to run SSL part of the server and open port 443 for accepting of
+encrypted connections
+Please help me.
+Cyrille
+
+
+From glyph at divmod.com  Fri May 29 11:26:37 2009
+From: glyph at divmod.com (glyph at divmod.com)
+Date: Fri, 29 May 2009 15:26:37 -0000
+Subject: [Twisted-web] mointwisted over SSL
+In-Reply-To: <FD1Jm1th.1243583399.8854840.kiro@kircho.net>
+References: <FD1Jm1th.1243583399.8854840.kiro@kircho.net>
+Message-ID: <20090529152637.12555.1273593379.divmod.xquotient.12012@weber.divmod.com>
+
+On 07:49 am, kiro at kircho.net wrote:
+>These days I try to run a moinmoin wiki server and using mointwisted
+>python server as daemon. The server works fine (opens port 80 for
+>connection and server wiki with no problem) but I am getting in trouble
+>for run it over SSL.
+
+>I am not sure in which config file(s) I have to put these lines and how
+>exactly to run SSL part of the server and open port 443 for accepting 
+>of
+>encrypted connections
+
+This sounds like a question for the moinmoin list, not the twisted list. 
+Personally I don't know what the answer is - Twisted itself doesn't have 
+config files, so you must be referring to something in moinmoin.  We can 
+tell you what API to use to get SSL, or how to bind an SSL port using 
+the "twistd web" webserver, but apparently moinmoin has its own thing.
+
+
+From kiro at kircho.net  Fri May 29 17:12:07 2009
+From: kiro at kircho.net (Cyrille Vladimirov)
+Date: Fri, 29 May 2009 23:12:07 +0200
+Subject: [Twisted-web] mointwisted over SSL
+In-Reply-To: <20090529152637.12555.1273593379.divmod.xquotient.12012@weber.divmod.com>
+Message-ID: <ik1G4h45.1243631527.0161610.kiro@kircho.net>
+
+Hi glyph and thank you for answer.
+
+On 5/29/2009, "glyph at divmod.com" <glyph at divmod.com> wrote:
+
+>This sounds like a question for the moinmoin list, not the twisted list.
+>Personally I don't know what the answer is - Twisted itself doesn't have
+>config files, so you must be referring to something in moinmoin. 
+
+I am not sure for this, because twisted daemon is actionally accepting
+TCP connections and serves as web server, similar as way as serves any
+other web server. That's why this is the place where should be appears
+port 443 also. After that connection is "redirected" to the wiki
+content. Isn't ?
+
+
+ We can
+>tell you what API to use to get SSL, or how to bind an SSL port using
+>the "twistd web" webserver, but apparently moinmoin has its own thing.
+
+yes, please let me know how to bind port 443 and using twisted web
+webserver
+
+Kindest regards,
+Cyrille
+
+
+From george at ringdevelopment.com  Fri May 29 20:22:58 2009
+From: george at ringdevelopment.com (George Pauly)
+Date: Fri, 29 May 2009 20:22:58 -0400
+Subject: [Twisted-web] mointwisted over SSL
+In-Reply-To: <ik1G4h45.1243631527.0161610.kiro@kircho.net>
+References: <ik1G4h45.1243631527.0161610.kiro@kircho.net>
+Message-ID: <1243642978.6648.143.camel@localhost.localdomain>
+
+Cyrille,
+
+Moinmoin is built with Twisted Python, but any problem specific to
+Moinmoin is better addressed by the Moinmoin folks, not Twisted folks.
+
+The mail list for Moinmoin is here:
+
+https://lists.sourceforge.net/lists/listinfo/moin-user
+
+
+You are asking a butcher for a hair cut.  The butcher tells you to go to
+the barber.  Don't complain that cows have hair.
+
+
+Hope this helps you find your solution,
+
+George
+
+On Fri, 2009-05-29 at 23:12 +0200, Cyrille Vladimirov wrote:
+> Hi glyph and thank you for answer.
+> 
+> On 5/29/2009, "glyph at divmod.com" <glyph at divmod.com> wrote:
+> 
+> >This sounds like a question for the moinmoin list, not the twisted list.
+> >Personally I don't know what the answer is - Twisted itself doesn't have
+> >config files, so you must be referring to something in moinmoin. 
+> 
+> I am not sure for this, because twisted daemon is actionally accepting
+> TCP connections and serves as web server, similar as way as serves any
+> other web server. That's why this is the place where should be appears
+> port 443 also. After that connection is "redirected" to the wiki
+> content. Isn't ?
+> 
+> 
+>  We can
+> >tell you what API to use to get SSL, or how to bind an SSL port using
+> >the "twistd web" webserver, but apparently moinmoin has its own thing.
+> 
+> yes, please let me know how to bind port 443 and using twisted web
+> webserver
+> 
+> Kindest regards,
+> Cyrille
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+-- 
+George Pauly
+Ring Development
+www.ringdevelopment.com
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: This is a digitally signed message part
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20090529/00dc7646/attachment.pgp 
+
+From kiro at kircho.net  Sat May 30 01:53:40 2009
+From: kiro at kircho.net (Cyrille Vladimirov)
+Date: Sat, 30 May 2009 07:53:40 +0200
+Subject: [Twisted-web] mointwisted over SSL
+In-Reply-To: <1243642978.6648.143.camel@localhost.localdomain>
+Message-ID: <hDjgxEAR.1243662820.4398490.kiro@kircho.net>
+
+Thank you George
+Cyrille
+
+On 5/30/2009, "George Pauly" <george at ringdevelopment.com> wrote:
+
+>Cyrille,
+>
+>Moinmoin is built with Twisted Python, but any problem specific to
+>Moinmoin is better addressed by the Moinmoin folks, not Twisted folks.
+>
+>The mail list for Moinmoin is here:
+>
+>https://lists.sourceforge.net/lists/listinfo/moin-user
+>
+>
+>You are asking a butcher for a hair cut.  The butcher tells you to go to
+>the barber.  Don't complain that cows have hair.
+>
+>
+>Hope this helps you find your solution,
+>
+>George
+>
+>On Fri, 2009-05-29 at 23:12 +0200, Cyrille Vladimirov wrote:
+>> Hi glyph and thank you for answer.
+>> 
+>> On 5/29/2009, "glyph at divmod.com" <glyph at divmod.com> wrote:
+>> 
+>> >This sounds like a question for the moinmoin list, not the twisted list.
+>> >Personally I don't know what the answer is - Twisted itself doesn't have
+>> >config files, so you must be referring to something in moinmoin. 
+>> 
+>> I am not sure for this, because twisted daemon is actionally accepting
+>> TCP connections and serves as web server, similar as way as serves any
+>> other web server. That's why this is the place where should be appears
+>> port 443 also. After that connection is "redirected" to the wiki
+>> content. Isn't ?
+>> 
+>> 
+>>  We can
+>> >tell you what API to use to get SSL, or how to bind an SSL port using
+>> >the "twistd web" webserver, but apparently moinmoin has its own thing.
+>> 
+>> yes, please let me know how to bind port 443 and using twisted web
+>> webserver
+>> 
+>> Kindest regards,
+>> Cyrille
+>> 
+>> _______________________________________________
+>> Twisted-web mailing list
+>> Twisted-web at twistedmatrix.com
+>> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>-- 
+>George Pauly
+>Ring Development
+>www.ringdevelopment.com
+
+
+From info at cmsfruit.com  Sun May 31 13:08:56 2009
+From: info at cmsfruit.com (Information)
+Date: Sun, 31 May 2009 10:08:56 -0700
+Subject: [Twisted-web] Receiving gaierror 10093 getaddrinfo failed
+In-Reply-To: <mailman.0.1243789189.3138.twisted-web@twistedmatrix.com>
+References: <mailman.0.1243789189.3138.twisted-web@twistedmatrix.com>
+Message-ID: <4A22B9A8.5050209@cmsfruit.com>
+
+Hello,
+
+I am receiving the following error when trying to start a tcp server 
+with twisted with python 2.5:
+
+gaierror: (10093, 'getaddrinfo failed')
+
+and the code I am using to start the server is
+
+reactor.listenTCP(5555, ServerFactory())
+reactor.run(installSignalHandlers=0)
+
+It doesn't cause this error on all systems, just some, and the system 
+that is running this python code is able to access the Internet and 
+successfully do DNS lookups. What else can be the issue? I
+
+Thanks,
+John
+
+

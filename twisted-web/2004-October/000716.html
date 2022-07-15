@@ -1,0 +1,212 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] [PATCH] twisted.web2 support for gzip stream in/out
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5BPATCH%5D%20twisted.web2%20support%20for%20gzip%20stream%20in/out&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   <LINK REL="Next"  HREF="000717.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] [PATCH] twisted.web2 support for gzip stream in/out</H1>
+    <B>Valentino Volonghi</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5BPATCH%5D%20twisted.web2%20support%20for%20gzip%20stream%20in/out&In-Reply-To="
+       TITLE="[Twisted-web] [PATCH] twisted.web2 support for gzip stream in/out">dialtone at gmail.com
+       </A><BR>
+    <I>Fri Oct  1 19:33:52 MDT 2004</I>
+    <P><UL>
+        
+        <LI>Next message: <A HREF="000717.html">[Twisted-web] Re: [PATCH] twisted.web2 support for gzip stream
+	in/out
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#716">[ date ]</a>
+              <a href="thread.html#716">[ thread ]</a>
+              <a href="subject.html#716">[ subject ]</a>
+              <a href="author.html#716">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Following there's a patch for twisted.web2 to support gzip
+Content-Encoding of chunks.
+
+Thanks to Bob Ippolito for answering immediately to my mail about the
+permission to include his gzstream work in twisted.web2.
+
+Here is his mail:
+===
+From: Bob Ippolito &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">bob at redivi.com</A>&gt;
+To: Valentino Volonghi &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">dialtone at gmail.com</A>&gt;
+Date: Fri, 1 Oct 2004 20:50:35 -0400
+Subject: Re: gzstream integration with twisted
+
+Twisted.web2 may use my gzstream.
+
+On Oct 1, 2004, at 8:33 PM, Valentino Volonghi wrote:
+
+&gt;<i> Hi,
+</I>&gt;<i> I'm helping out Twisted developers to get twisted.web2 out before
+</I>&gt;<i> October 31.
+</I>&gt;<i>
+</I>&gt;<i> We are going to have a very complete implementation of HTTP 1.1 RFC.
+</I>&gt;<i> Doing so requires also having a gzip/gunzip stream to handle the
+</I>&gt;<i> Transfer-Coding.
+</I>&gt;<i>
+</I>&gt;<i> I've already talked to foom (the main developer of t.web2) and he
+</I>&gt;<i> asked for your permission to include gzstream in twisted.web2.
+</I>&gt;<i>
+</I>&gt;<i> That would be very helpful and your copyright will be kept entirely.
+</I>&gt;<i>
+</I>&gt;<i> Let me now your decision please. Thanks for attention.
+</I>&gt;<i>
+</I>&gt;<i> --
+</I>&gt;<i> Valentino Volonghi aka Dialtone
+</I>&gt;<i> Now running FreeBSD 5.3-beta6
+</I>&gt;<i> Blog: <A HREF="http://vvolonghi.blogspot.com">http://vvolonghi.blogspot.com</A>
+</I>&gt;<i> Home Page: <A HREF="http://xoomer.virgilio.it/dialtone/">http://xoomer.virgilio.it/dialtone/</A>
+</I>===
+
+files needed are attached. and patch following.
+I'll write also a bug for web2 and attach everything, but it's 3.30 AM
+now, and I'll do that tomorrow.
+
+Comments are welcome.
+
+Index: twisted/web2/http.py
+===================================================================
+--- twisted/web2/http.py        (revision 11886)
++++ twisted/web2/http.py        (working copy)
+@@ -33,6 +33,7 @@
+ from twisted.web2 import http_headers
+ from twisted.web2 import iweb
+ from twisted.web2 import error
++from twisted.web2 import gzstream
+
+ PERSIST_NO_PIPELINE = 2
+
+@@ -301,6 +302,12 @@
+         else:
+             return ifrange == self.out_headers.getHeader(&quot;last-modified&quot;)
+
++    def requestContentEncoding(self, name):
++        if name.lower() != 'gzip':
++            warnings.warn(&quot;WARNING! Currently only gzip content is supported&quot;)
++            return
++        self.out_headers.setHeader('Content-Encoding', name)
++
+
+ # FIXME: these last 3 methods don't belong here.
+
+@@ -347,6 +354,8 @@
+     partialHeader = ''
+     queued = 0
+     finishedReading = False
++    inChunkHandler = False
++    outChunkHandler = False
+
+     channel = None
+     request = None
+@@ -449,13 +458,14 @@
+
+     def rawDataReceived(self, data):
+         datalen = len(data)
++
+         if datalen &lt; self.length:
+             if not self.finished:
+-                self.request.handleContentChunk(data)
++                self.inChunkHandler(data)
+             self.length = self.length - datalen
+         else:
+             if not self.finished:
+-                self.request.handleContentChunk(data[:self.length])
++                self.inChunkHandler(data[:self.length])
+             extraneous = data[self.length:]
+             channel = self.channel # could go away from allContentReceived.
+             if not self.chunkedIn:
+@@ -493,6 +503,18 @@
+
+         self.channel.queueRequest(self)
+         request = self.channel.requestFactory(self, self.command,
+self.path, self.version, self.reqHeaders)
++
++        def decode_gzip(self, chunkHandler):
++            gunzipper = gzstream.GunzipStream()
++            gunzipper.write = chunkHandler
++            return gunzipper
++
++        # Set the client chunkhandler if the content is gzipped.
++        for encoding in self.reqHeaders.get('Content-Encoding', ()):
++            if encoding == 'gzip':
++                self.inChunkHandler = decode_gzip(request.handleContentChunk)
++            else:
++                self.inChunkHandler = request.handleContentChunk
+
+         # Reset header state variables
+         del self.reqHeaders
+@@ -633,11 +655,22 @@
+
+         l.append(&quot;\r\n&quot;)
+         self.transport.writeSequence(l)
++
++        def encode_gzip(chunkHandler):
++            gzipper = gzstream.GzipStream()
++            gzipper.write = chunkHandler
++            return gzipper
++
++        for encoding in headers.getHeader('Content-Encoding', ()):
++            if encoding == 'gzip':
++                self.outChunkHandler = encode_gzip(toChunk)
++            else:
++                self.outChunkHandler = toChunk
+
+
+     def writeData(self, data):
+         if self.chunkedOut:
+-            self.transport.writeSequence(toChunk(data))
++            self.transport.writeSequence(self.outChunkHandler(data))
+         else:
+             self.transport.write(data)
+
+=======
+
+HTH
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: <A HREF="http://vvolonghi.blogspot.com">http://vvolonghi.blogspot.com</A>
+Home Page: <A HREF="http://xoomer.virgilio.it/dialtone/">http://xoomer.virgilio.it/dialtone/</A>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: gzstream.tbz2
+Type: application/octet-stream
+Size: 2911 bytes
+Desc: not available
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-web/attachments/20041002/1579a28b/gzstream.obj">http://twistedmatrix.com/pipermail/twisted-web/attachments/20041002/1579a28b/gzstream.obj</A>
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	<LI>Next message: <A HREF="000717.html">[Twisted-web] Re: [PATCH] twisted.web2 support for gzip stream
+	in/out
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#716">[ date ]</a>
+              <a href="thread.html#716">[ thread ]</a>
+              <a href="subject.html#716">[ subject ]</a>
+              <a href="author.html#716">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

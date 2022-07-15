@@ -1,0 +1,153 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] How to force synchronous behavior
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20How%20to%20force%20synchronous%20behavior&In-Reply-To=%3CCF4FC6E5-F45A-4BD3-92EE-260D6EBFDFA7%40fuhm.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="044376.html">
+   <LINK REL="Next"  HREF="044341.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] How to force synchronous behavior</H1>
+    <B>James Y Knight</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20How%20to%20force%20synchronous%20behavior&In-Reply-To=%3CCF4FC6E5-F45A-4BD3-92EE-260D6EBFDFA7%40fuhm.net%3E"
+       TITLE="[Twisted-Python] How to force synchronous behavior">foom at fuhm.net
+       </A><BR>
+    <I>Sun Oct 30 19:58:51 MST 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="044376.html">[Twisted-Python] How to force synchronous behavior
+</A></li>
+        <LI>Next message (by thread): <A HREF="044341.html">[Twisted-Python] Re: [Twisted-commits] r14952 - Impelement spawnProcess for IOCP reactor. Resolves issue1008.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44370">[ date ]</a>
+              <a href="thread.html#44370">[ thread ]</a>
+              <a href="subject.html#44370">[ subject ]</a>
+              <a href="author.html#44370">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Given that there has already been a long thread about how one should  
+not do this, which I completely agree with, I'll not repeat it. Note  
+that I do not recommend this solution to the OP, but rather post this  
+just to appease to the people complaining about how the only answer  
+given is &quot;don't do that&quot;. &quot;Don't do that&quot; is the correct answer given  
+the information so far available, but, here's a different non-answer,  
+with code.
+
+On Oct 28, 2005, at 5:40 PM, Pedro Sanchez wrote:
+&gt;<i> def mySyncFunc()
+</I>&gt;<i>    x = 0
+</I>&gt;<i>    def done(data):
+</I>&gt;<i>       global x
+</I>&gt;<i>       x = data
+</I>&gt;<i>
+</I>&gt;<i>    d = someCalculation()
+</I>&gt;<i>    d.addCallback(done)
+</I>&gt;<i>    &lt;something here to hold until &quot;done&quot; is really done&gt;
+</I>&gt;<i>    return x
+</I>&gt;<i>
+</I>&gt;<i> print mySyncFunc()
+</I>&gt;<i>
+</I>
+The above code cannot work because for &quot;done&quot; to become done, the  
+twisted event loop must get a chance to run. For the event loop to  
+get a chance to run, you must return from that function. Basically,  
+how can you &quot;block&quot; waiting for an async event, while letting the  
+twisted event loop continue running? There is an answer: run your  
+code in a separate thread. However, that doesn't work either, because  
+the OP wants to use twisted APIs like ADBAPI or networking in  
+someCalculation. So there really is no way to do literally what's  
+asked in a working way. But, you can get something &quot;like&quot; the above  
+by splitting your code into synch-like-code to be run in a separate  
+thread, and async-twisted-using-code to be run in the twisted reactor  
+thread.
+
+Here's a little example. Please note, again, that I do not recommend  
+doing this except in circumstances where you absolutely must.
+
+import Queue
+from twisted.internet import reactor, defer
+from twisted.python import failure
+
+def callInReactor(__f, *__a, **__kw):
+     # Called in other thread
+     queue = Queue.Queue()
+     reactor.callFromThread(_calledFromThread, queue, __f, __a, __kw)
+     result = queue.get()
+     if isinstance(result, failure.Failure):
+         result.raiseException()
+     return result
+
+def _calledFromThread(queue, f, a, kw):
+     # Called in reactor thread
+     result = defer.maybeDeferred(f, *a, **kw)
+     result.addBoth(queue.put)
+
+def someCalculation():
+   # A demo &quot;calculation&quot;
+   d = defer.Deferred()
+   reactor.callLater(4, d.callback, 'hi')
+   return d
+
+x = 0
+def myAsyncFunctionInTwistedThread():
+   def done(data):
+     global x
+     x = data
+   d = someCalculation()
+   d.addCallback(done)
+   return d
+
+def mySyncFuncInAnotherThread():
+   # NOTE: in this other thread you cannot call any twisted APIs  
+besides reactor.callFromThread
+   # and a very few select others.
+   callInReactor(myAsyncFunctionInTwistedThread)
+   # callInReactor blocks until the deferred returned by  
+myAsyncFunctionInTwistedThread fires
+   print x
+
+# Start up a thread to call your blocking function in
+reactor.callInThread(mySyncFuncInAnotherThread)
+
+# Run the reactor
+reactor.run()
+
+
+
+
+James
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="044376.html">[Twisted-Python] How to force synchronous behavior
+</A></li>
+	<LI>Next message (by thread): <A HREF="044341.html">[Twisted-Python] Re: [Twisted-commits] r14952 - Impelement spawnProcess for IOCP reactor. Resolves issue1008.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44370">[ date ]</a>
+              <a href="thread.html#44370">[ thread ]</a>
+              <a href="subject.html#44370">[ subject ]</a>
+              <a href="author.html#44370">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

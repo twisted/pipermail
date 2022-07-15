@@ -1,0 +1,132 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] deferred object inside function
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20deferred%20object%20inside%20function&In-Reply-To=%3C20060708001843.29014.1344444676.divmod.quotient.27203%40ohm%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="046117.html">
+   <LINK REL="Next"  HREF="046120.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] deferred object inside function</H1>
+    <B>glyph at divmod.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20deferred%20object%20inside%20function&In-Reply-To=%3C20060708001843.29014.1344444676.divmod.quotient.27203%40ohm%3E"
+       TITLE="[Twisted-Python] deferred object inside function">glyph at divmod.com
+       </A><BR>
+    <I>Fri Jul  7 18:18:43 MDT 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="046117.html">[Twisted-Python] deferred object inside function
+</A></li>
+        <LI>Next message (by thread): <A HREF="046120.html">[Twisted-Python] deferred object inside function
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#46119">[ date ]</a>
+              <a href="thread.html#46119">[ thread ]</a>
+              <a href="subject.html#46119">[ subject ]</a>
+              <a href="author.html#46119">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, 7 Jul 2006 00:10:20 -0700, Yusnel Rojas García &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">yrojass at gmail.com</A>&gt; wrote:
+
+&gt;<i>from twisted.names import client, dns
+</I>&gt;<i>
+</I>&gt;<i>def somefunction(somepars):
+</I>&gt;<i>       r  = client.Resolver('/etc/resolv.conf')
+</I>                             ^ Resolver takes an IP address here,
+                               not a filename.
+&gt;<i>       d = r.resolve(dns.Query('www.example.com', dns.MX, dns.IN))
+</I>              ^ Resolver does not have a &quot;resolve&quot; method.
+                You can read the API documentation for IResolver here:
+    <A HREF="http://twistedmatrix.com/documents/current/api/twisted.internet.interfaces.IResolver.html">http://twistedmatrix.com/documents/current/api/twisted.internet.interfaces.IResolver.html</A>
+                Perhaps you meant &quot;lookupMailExchange&quot;?
+&gt;<i>       d.Callbacks(somefunct1, somefunctErr2)
+</I>          ^ Deferreds do not have this method.
+            You can read the API documentation for Deferred here:
+   <A HREF="http://twistedmatrix.com/documents/current/api/twisted.internet.defer.html">http://twistedmatrix.com/documents/current/api/twisted.internet.defer.html</A>
+            Perhaps you meant &quot;addCallbacks&quot;?
+&gt;<i>       return ?
+</I>               ^ what you want to return here is 'd'
+               That way callers of this function can get the results, but they have to wait for the results as well.
+
+The main thing you want to do, e.g. stop your program and wait in-place for results to appear, is completely impossible.  I've watched a number of people go through this process, and I can say with some certainty that what you need to do is focus on understanding why it's impossible, not searching for esoteric ways to make it happen.  If you _do_ manage to do something that appears to be what you want, it will be wrong in surprising and upsetting ways fairly quickly.  If you are just looking for a way to mess around interactively with Deferred objects and their results, run twisted/conch/stdio.py.  Here's a screenshot:
+
+<A HREF="http://twistedmatrix.com/users/glyph/screenshots/twisted-shell-resolving-a-name.png">http://twistedmatrix.com/users/glyph/screenshots/twisted-shell-resolving-a-name.png</A>
+
+I've also written a brief example of what you want to do that actually works.  Notice the parts of the code where the result does not exist vs. those where it does.  Keep in mind that *the reactor needs to do work*, such as sending and receiving traffic, in order to produce a result; it's impossible to produce one immediately.
+
+# ---- cut here ----
+
+# We don't need to build queries ourselves, just a resolver.
+from twisted.names.client import Resolver
+
+theResolver = Resolver(&quot;/etc/resolv.conf&quot;)
+
+def getMX(hostname=&quot;twistedmatrix.com&quot;, r=theResolver):
+    d = r.lookupMailExchange(hostname)
+    # We're going to look up twistedmatrix.com's address, but we don't have a
+    # result *now*...
+    def showAddress((answers, authority, additional)):
+        # but we _do_ have a result *now*.  the Deferred calls this function
+        # when it gets a result, because (see below) ...
+        print 'Got', len(answers), 'results.'
+        for resourceRecordHeader in answers:
+            mxRecord = resourceRecordHeader.payload
+            dnsName = mxRecord.name
+            nameString = dnsName.name
+            print &quot;one answer: &quot;, nameString
+        # pass through the values we were given in case callers of this
+        # function want to use them.
+        return (answers, authority, additional)
+    # here we tell the Deferred: when you get a successful result, call that
+    # function.
+    d.addCallback(showAddress)
+    # We return the Deferred so that callers of this function can act upon it.
+    return d
+
+from twisted.internet import reactor
+
+# Kick off our code: rather than addCallback, we use addBoth here, because we
+# want to stop the reactor whether it fails or not.  If we only wanted to act
+# in case the DNS operation failed, we could use addErrback instead.
+getMX().addBoth(lambda ignored: reactor.stop())
+
+# You don't have to do this in most Twisted programs, because they will be
+# running in the reactor already, and you generally don't want to stop the
+# reactor if your program is supposed to keep running.
+
+reactor.run()
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="046117.html">[Twisted-Python] deferred object inside function
+</A></li>
+	<LI>Next message (by thread): <A HREF="046120.html">[Twisted-Python] deferred object inside function
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#46119">[ date ]</a>
+              <a href="thread.html#46119">[ thread ]</a>
+              <a href="subject.html#46119">[ subject ]</a>
+              <a href="author.html#46119">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

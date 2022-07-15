@@ -1,0 +1,136 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Synchronization techniques
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Synchronization%20techniques&In-Reply-To=20070404181704.7769.37732181.divmod.xquotient.2128%40joule.divmod.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="015154.html">
+   <LINK REL="Next"  HREF="015158.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Synchronization techniques</H1>
+    <B>Brian Granger</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Synchronization%20techniques&In-Reply-To=20070404181704.7769.37732181.divmod.xquotient.2128%40joule.divmod.com"
+       TITLE="[Twisted-Python] Synchronization techniques">ellisonbg.net at gmail.com
+       </A><BR>
+    <I>Wed Apr  4 16:32:37 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="015154.html">[Twisted-Python] Synchronization techniques
+</A></li>
+        <LI>Next message: <A HREF="015158.html">[Twisted-Python] Synchronization techniques
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15157">[ date ]</a>
+              <a href="thread.html#15157">[ thread ]</a>
+              <a href="subject.html#15157">[ subject ]</a>
+              <a href="author.html#15157">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&gt;<i> &gt;With all that said, I have encountered a few highly unusual cases
+</I>&gt;<i> &gt;where I really did want blockOn to exist.  These cases had the
+</I>&gt;<i> &gt;characteristic that they couldn't be done any other way in Twisted.
+</I>&gt;<i> &gt;The answer in this case is to ditch twisted and use a tool that is
+</I>&gt;<i> &gt;better suited to the problem.  But in my experience these cases only
+</I>&gt;<i> &gt;pop up about 0.00001% of the time.
+</I>&gt;<i>
+</I>&gt;<i> I am very curious about your 0.00001% case.  Not that I don't believe such
+</I>&gt;<i> cases exist, but in every case but one (twisted ticket #2545) the issue has
+</I>&gt;<i> actually been a documentation problem with Twisted, where it wasn't clear
+</I>&gt;<i> how to do something the &quot;normal&quot; way with Deferreds and such.  I'd like to
+</I>&gt;<i> know if there is another such doc bug we should be filing :).
+</I>
+The cases I am thinking about is not an example of a doc bug.  The
+most relevant one is related to using Twisted in an interactive python
+(really IPython most of the time) session.  There are two difficulties
+we keep running into:
+
+1.  The interactive python interpreter is a completely synchronous
+universe - getting the reactor running in this context seems like a
+hack.  The only way I have seen this done is by running the reactor in
+a different thread.  The problem with this is that it is inevitable
+that you end up wanting to do things with Deferreds in the main thread
+where user code is running.  But, as I understand it, Twisted is not
+thread safe, so at that point, you are playing with (threaded) fire.
+
+2.  Users expect certain things in an interactive python session that
+don't mesh well with Twisted and the asynchronous universe:
+
+&gt;&gt;&gt;<i> psi = computeWavefunctionForHydrogen()
+</I>&gt;&gt;&gt;<i> psi.getEnergy(1)
+</I>-13.6
+# here the user looks at the energy (a human if statement) and decides
+if they actually want to
+# make the following plot.  If the answer were not -13.6, they would
+not make the plot.
+&gt;&gt;&gt;<i> plot(psi.getState(1))
+</I>
+Even if you could get the reactor running in an interactive python
+session it would be crazy to have to write something like (in an
+interactive session):
+
+&gt;&gt;&gt;<i> d = computeWavefunctionForHydrogen()
+</I>&gt;&gt;&gt;<i> def printAndPlot(psi, n):
+</I>&gt;&gt;&gt;<i>     print psi.getEnergy(n)
+</I>&gt;&gt;&gt;<i>     if abs(psi.getEnergy(n) - (psi.getEnergy(n)) &lt; 1.0e-4:
+</I>&gt;&gt;&gt;<i>         plot(psi.getState(n))
+</I>&gt;&gt;&gt;<i> d.addCallback(printAndPlot, 1)
+</I>
+The problem we are having is that we would like to use Twisted network
+clients in functions like computeWavefunctionForHydrogen.  But we
+simply can't as there is no way of returning the actual result to the
+user.  I can't emphasize enough that end users of such code
+(scientists) &quot;just want the damn result&quot; (not a deferred) and are
+willing to wait for it.  Thus in classes/functions that need to block
+for an actual result, we don't use twisted - we use blocking sockets
+instead.
+
+In blockOn existed, the implementation of
+computeWavefunctionForHydrogen could look like:
+
+def computeWavefunctionForHydrogen():
+    d = doRemoteComputationOnServerUsingTwisted()
+    return blockOn(d)
+
+The important point is that doRemoteComputationOnServerUsingTwisted is
+the only place where anything involving the network is happening in
+this process.  This type of code occurs mainly in clients.  In server
+code you are usually also listening on sockets, so there could be
+other asyncronous events that occur.  But in interactive client code,
+the network event are often very contained and isolated.
+
+One thing we have done in our blocking client code is to create
+something we call a PendingResult object.  It is basically a fully
+synchronous version of a deferred that allows a user to  poll for or
+block on a result that is being computed elsewhere.  It is designed
+for interactive usage, where only blocking sockets are used.
+
+Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="015154.html">[Twisted-Python] Synchronization techniques
+</A></li>
+	<LI>Next message: <A HREF="015158.html">[Twisted-Python] Synchronization techniques
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15157">[ date ]</a>
+              <a href="thread.html#15157">[ thread ]</a>
+              <a href="subject.html#15157">[ subject ]</a>
+              <a href="author.html#15157">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

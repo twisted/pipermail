@@ -1,0 +1,1493 @@
+From miles.chris at gmail.com  Fri Mar  3 11:09:47 2006
+From: miles.chris at gmail.com (Chris Miles)
+Date: Fri Mar  3 12:31:20 2006
+Subject: [Twisted-web] Re: remote admin app, ssh connection costs
+In-Reply-To: <8a6b32ea0602231433n72f2c712r686b9ebb653296e@mail.gmail.com>
+References: <8a6b32ea0602231433n72f2c712r686b9ebb653296e@mail.gmail.com>
+Message-ID: <4408785B.3040305@gmail.com>
+
+Why not try a connection pool, where a number of connections are kept 
+open to hosts up to a certain limit.  If a new connection is needed for 
+a host then an existing connection is closed and re-used.  Use a simple 
+LRU policy.
+
+The number of connections to pool should be configurable, as different 
+environments will have different requirements.
+
+Cheers
+CM
+
+Gustavo Rahal wrote:
+> Hi All
+> 
+> 
+> I did a small xmlrpc webservice that basicly expose some methods to 
+> interact (run commands, for example) with a lists of UNIX servers.
+> At startup, the webservice connects via ssh to all the UNIX servers 
+> (currently 16) and leave the connections open waiting for requests from 
+> clients.
+> The app was designed mostly as a way of learninig how to use twisted ssh 
+> modules, deferreds etc...
+> 
+> Some questions (I'll try to be brief):
+> 
+> 1) At startup, the ssh connections to the UNIX servers goes as far as 
+> the client connection step ( connection.SSHConnection) and are kept open.
+> So, each time a client requests (via xmlrpc) a shell command to run, the 
+> webservice opens a channel to this server (channel.SSHChannel) runs the 
+> command, gets the output and closes the channel.
+> 
+> Would it be better to leave a channel open so there is no overhead of 
+> openning a channel each time there is a command to run? What are the 
+> pros and cons?
+> 
+> 2) Supposing that the number of servers grow, how many simultaneous ssh 
+> connections is a reasonable amount?
+> 
+> Let's say a Pentium III 500MHz with 1 GB RAM and a 4 Mbits link. What is 
+> a reasonable amont? 0-50, 50-100, 100-150?
+
+-- 
+http://chrismiles.info/
+
+
+From PPNTWIMBXFFC at spammotel.com  Thu Mar  9 12:20:04 2006
+From: PPNTWIMBXFFC at spammotel.com (Marco Aschwanden)
+Date: Thu Mar  9 13:11:51 2006
+Subject: [Twisted-web] secure access to xmlrpc, soap (access from ip-ranges,
+	login, ssl) -  a feasible approach?
+Message-ID: <op.s55rvqexc87q46@localhost.localdomain>
+
+Hi
+
+I would like to write a server, that delivers the same services over  
+xmlrpc or soap. It is no problem to design this. The problem arises when  
+it comes to authentification.
+
+What I want:
+- Deliver services in xmlrpc or soap
+- Deliver services only to people in well defined ip-ranges  
+(192.168.1.*,...)
+- Deliver services only to logged in users (except for login requests  
+which should always pass!)
+- User don't have to log in each time they do a request! (overhead would  
+be deadly)
+- Deliver services encrypted (ssl) if desired
+
+What I have:
+- I have a server that delivers services over xmlrpc or soap
+- I have a class that keeps track for users that have logged  
+in/expired/available.
+- I have a class that can test, whether the request comes from a valid ip.
+
+
+The problem(s):
+- I know that twisted has "cred" library to authentificate people. I don't  
+see how this is usable with a stateless protocol like xmlrpc or soap. As  
+far as I understood the "cred"-library does not apply to xmlrpc or soap.  
+If it does, than a simple exmaple would be very nice.
+
+
+To me it seems, that the best point to enforce "authentification" and  
+"logged sessions" is to override render-method of
+--> twisted.web.xmlrpc.XMLRPC
+--> twisted.soap.SOAPPublisher
+
+
+ from twisted.web.xmlrpc import XMLRPC
+import xmlrpclib
+import bsw_config
+
+
+class XMLRPC_WITH_AUTH(XMLRPC):
+      def __init__(self):
+           XMLRPC.__init__(self)
+
+
+      def render(self, request):
+           """Overriding this let me introduce authentification."""
+
+           # <Modification>
+           # --> verify whether the ip is in the allowed range -->
+           # I do it here, before any further handling is done!
+           # verify --> request.client.host is allowed
+           # </Modification>
+
+           request.content.seek(0, 0)
+           args, functionPath = xmlrpclib.loads(request.content.read())
+
+           # <Modification>
+           # Always let login request pass! (xxx Multicall?)
+           if not functionPath == u"do_login":
+                # verify user logged in already based on IP (port always  
+changes -
+                # because xmlrpc is stateless)
+                # what other possibilty do I have for a unique id?
+                if not verify_user_is_logged_in(request.client.host):
+                     self._cbRender(Fault(xxx, xxx) , request)
+                     return server.NOT_DONE_YET
+           # </Modification>
+
+           try:
+                function = self._getFunction(functionPath)
+           except Fault, f:
+                self._cbRender(f, request)
+           else:
+                request.setHeader("content-type", "text/xml")
+                defer.maybeDeferred(function, *args).addErrback(
+                self._ebRender
+              ).addCallback(
+                self._cbRender, request
+              )
+           return server.NOT_DONE_YET
+
+
+The two <modification></modification> show my intended interventions.
+
+Is this a feasible approach?
+
+The only unique id I have from the client is his IP - the socket/port, as  
+I said, changes with each request (stateless nature of xmlrpc/soap). This  
+poses a security risk, because clients served from the same  
+proxy/router/firewall have the same IP... which forces me to add a unique  
+token to each request (please not).
+
+Do you know another unique item of each request, that identifies the  
+client further?
+
+To further secure the transport, I would like to be able to transport the  
+data over ssl. Is this as easy as:
+
+reactor.listenSSL(XMLRPC_PORT, server.Site(XmlrpcPublisher()), some_cert)
+reactor.listenSSL(SOAP_PORT, server.Site(SoapPublisher()), some_cert)
+
+
+Thanks for all your answers in advance,
+Greetins,
+Marco
+
+
+
+From mithrandi-twisted-web at mithrandi.za.net  Fri Mar 10 07:49:25 2006
+From: mithrandi-twisted-web at mithrandi.za.net (Tristan Seligmann)
+Date: Fri Mar 10 07:49:41 2006
+Subject: [Twisted-web] Re: [Nevow-commits] r5247 - Change package_data so
+	that distutils and setuptools include the athena_private
+In-Reply-To: <E1FHLsZ-000226-Gp@divmod.org>
+References: <E1FHLsZ-000226-Gp@divmod.org>
+Message-ID: <20060310134924.GA1908@mithrandi.za.net>
+
+* mg@divmod.net <mg@divmod.net> [2006-03-09 09:12:35 -0500]:
+
+> resource correctly.
+> 
+> Note: the actual package data is the athena_private directory in the nevow
+> package, not the files in the non-existant nevow.athena_private package.
+
+> Modified: trunk/Nevow/setupcommon.py
+> ==============================================================================
+> --- trunk/Nevow/setupcommon.py	(original)
+> +++ trunk/Nevow/setupcommon.py	Thu Mar  9 09:12:35 2006
+> @@ -17,6 +17,7 @@
+>              'freeform-default.css'
+>              ],
+>          'nevow': [
+> +            'athena_private/*',
+>              'athena.js',
+>              'defer.js',
+>              'divmod.js',
+> @@ -48,7 +49,4 @@
+>              'test_object.js',
+>              'testsupport.js',
+>              ],
+> -        'nevow.athena_private': [
+> -            'connection-status-down.png',
+> -            ],
+>          }
+> 
+
+This change does fix setuptools behaviour, but now distutils no longer
+works. I gues someone who knows more about distutils and setuptools than
+I do needs to figure this one out; I originally added the non-existent
+nevow.athena_private package because that was the only way that seemed
+to work for distutils. Argh!
+-- 
+mithrandi, i Ainil en-Balandor, a faer Ambar
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: Digital signature
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20060310/b36e10ba/attachment.pgp
+From matt at pollenation.net  Fri Mar 10 08:40:01 2006
+From: matt at pollenation.net (Matt Goodall)
+Date: Fri Mar 10 08:39:59 2006
+Subject: [Twisted-web] Re: [Nevow-commits] r5247 - Change package_data
+	so	that distutils and setuptools include the athena_private
+In-Reply-To: <20060310134924.GA1908@mithrandi.za.net>
+References: <E1FHLsZ-000226-Gp@divmod.org>
+	<20060310134924.GA1908@mithrandi.za.net>
+Message-ID: <44118FC1.4020308@pollenation.net>
+
+Tristan Seligmann wrote:
+> * mg@divmod.net <mg@divmod.net> [2006-03-09 09:12:35 -0500]:
+> 
+> 
+>>resource correctly.
+>>
+>>Note: the actual package data is the athena_private directory in the nevow
+>>package, not the files in the non-existant nevow.athena_private package.
+> 
+> 
+>>Modified: trunk/Nevow/setupcommon.py
+>>==============================================================================
+>>--- trunk/Nevow/setupcommon.py	(original)
+>>+++ trunk/Nevow/setupcommon.py	Thu Mar  9 09:12:35 2006
+>>@@ -17,6 +17,7 @@
+>>             'freeform-default.css'
+>>             ],
+>>         'nevow': [
+>>+            'athena_private/*',
+>>             'athena.js',
+>>             'defer.js',
+>>             'divmod.js',
+>>@@ -48,7 +49,4 @@
+>>             'test_object.js',
+>>             'testsupport.js',
+>>             ],
+>>-        'nevow.athena_private': [
+>>-            'connection-status-down.png',
+>>-            ],
+>>         }
+>>
+> 
+> 
+> This change does fix setuptools behaviour, but now distutils no longer
+> works. I gues someone who knows more about distutils and setuptools than
+> I do needs to figure this one out; I originally added the non-existent
+> nevow.athena_private package because that was the only way that seemed
+> to work for distutils. Argh!
+
+Yeah, you're right. Sorry about that, although I did try it out here and
+it seemed ok. Obviously, I had something lurking in sys.path.
+
+Perhaps we need to make athena_private a real package? Perhaps it's a
+setuptools bug?
+
+It doesn't quite seem like setuptools's fault to me - why should
+setuptools include *package* data from something that's not a package.
+On the other hand, setuptools should probably copy what distutils does.
+
+Any suggestions?
+
+- Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \          Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+
+From matt at pollenation.net  Fri Mar 10 08:56:36 2006
+From: matt at pollenation.net (Matt Goodall)
+Date: Fri Mar 10 08:56:30 2006
+Subject: [Twisted-web] Re: [Nevow-commits] r5247 - Change package_data
+	so	that distutils and setuptools include the athena_private
+In-Reply-To: <44118FC1.4020308@pollenation.net>
+References: <E1FHLsZ-000226-Gp@divmod.org>	<20060310134924.GA1908@mithrandi.za.net>
+	<44118FC1.4020308@pollenation.net>
+Message-ID: <441193A4.8090207@pollenation.net>
+
+Matt Goodall wrote:
+> Tristan Seligmann wrote:
+> 
+>>* mg@divmod.net <mg@divmod.net> [2006-03-09 09:12:35 -0500]:
+>>
+>>
+>>
+>>>resource correctly.
+>>>
+>>>Note: the actual package data is the athena_private directory in the nevow
+>>>package, not the files in the non-existant nevow.athena_private package.
+>>
+>>
+>>>Modified: trunk/Nevow/setupcommon.py
+>>>==============================================================================
+>>>--- trunk/Nevow/setupcommon.py	(original)
+>>>+++ trunk/Nevow/setupcommon.py	Thu Mar  9 09:12:35 2006
+>>>@@ -17,6 +17,7 @@
+>>>            'freeform-default.css'
+>>>            ],
+>>>        'nevow': [
+>>>+            'athena_private/*',
+>>>            'athena.js',
+>>>            'defer.js',
+>>>            'divmod.js',
+>>>@@ -48,7 +49,4 @@
+>>>            'test_object.js',
+>>>            'testsupport.js',
+>>>            ],
+>>>-        'nevow.athena_private': [
+>>>-            'connection-status-down.png',
+>>>-            ],
+>>>        }
+>>>
+>>
+>>
+>>This change does fix setuptools behaviour, but now distutils no longer
+>>works. I gues someone who knows more about distutils and setuptools than
+>>I do needs to figure this one out; I originally added the non-existent
+>>nevow.athena_private package because that was the only way that seemed
+>>to work for distutils. Argh!
+> 
+> 
+> Yeah, you're right. Sorry about that, although I did try it out here and
+> it seemed ok. Obviously, I had something lurking in sys.path.
+> 
+> Perhaps we need to make athena_private a real package? Perhaps it's a
+> setuptools bug?
+> 
+> It doesn't quite seem like setuptools's fault to me - why should
+> setuptools include *package* data from something that's not a package.
+> On the other hand, setuptools should probably copy what distutils does.
+> 
+> Any suggestions?
+
+Actually, this seems to be a problem with the package_data to data_files
+stuff in setup.py to support Python 2.3.
+
+setuptools and distutils (from Python 2.4) do actually do the right thing.
+
+- Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \          Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+
+From matt at pollenation.net  Fri Mar 10 09:35:23 2006
+From: matt at pollenation.net (Matt Goodall)
+Date: Fri Mar 10 09:35:20 2006
+Subject: [Twisted-web] Re: [Nevow-commits] r5247 - Change package_data
+	so	that distutils and setuptools include the athena_private
+In-Reply-To: <441193A4.8090207@pollenation.net>
+References: <E1FHLsZ-000226-Gp@divmod.org>	<20060310134924.GA1908@mithrandi.za.net>	<44118FC1.4020308@pollenation.net>
+	<441193A4.8090207@pollenation.net>
+Message-ID: <44119CBB.7060301@pollenation.net>
+
+Matt Goodall wrote:
+> Matt Goodall wrote:
+> 
+>>Tristan Seligmann wrote:
+
+[...]
+
+>>>This change does fix setuptools behaviour, but now distutils no longer
+>>>works. I gues someone who knows more about distutils and setuptools than
+>>>I do needs to figure this one out; I originally added the non-existent
+>>>nevow.athena_private package because that was the only way that seemed
+>>>to work for distutils. Argh!
+>>
+>>
+>>Yeah, you're right. Sorry about that, although I did try it out here and
+>>it seemed ok. Obviously, I had something lurking in sys.path.
+>>
+
+[...]
+
+> Actually, this seems to be a problem with the package_data to data_files
+> stuff in setup.py to support Python 2.3.
+
+Attached is a diff that I think should work ok with distutils (Python
+2.3 and 2.4) and setuptools.
+
+Could someone else test it out please; it was a bit rushed.
+
+Thanks, Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \          Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+-------------- next part --------------
+Index: setup.py
+===================================================================
+--- setup.py	(revision 5271)
++++ setup.py	(working copy)
+@@ -4,6 +4,7 @@
+ import os.path
+ from distutils.command import install
+ from distutils.core import setup
++import glob
+ import sys
+ import setupcommon
+ 
+@@ -21,10 +22,12 @@
+ 
+ # Turn the package_data into a data_files for 2.3 compatability
+ data_files = []
+-for pkg, files in setupcommon.package_data.items():
++for pkg, patterns in setupcommon.package_data.items():
+     pkgdir = os.path.join(*pkg.split('.'))
+-    files = [os.path.join(pkgdir, file) for file in files]
+-    data_files.append([site_packages+pkgdir, files])
++    for pattern in patterns:
++        globdir = os.path.dirname(pattern)
++        files = glob.glob(os.path.join(pkgdir, pattern))
++        data_files.append((os.path.join(site_packages,pkgdir,globdir),files))
+ 
+ # We need to list the packages explicitly.
+ packages = [
+From richard at reticulatus.plus.com  Sun Mar 12 08:44:28 2006
+From: richard at reticulatus.plus.com (Richard Townsend)
+Date: Sun Mar 12 08:43:34 2006
+Subject: [Twisted-web] Error using getPage
+Message-ID: <441433CC.1090403@reticulatus.plus.com>
+
+I was testing accessing url 
+"http://newsrss.bbc.co.uk/rss/newsonline_uk_edition/front_page/rss.xml" 
+using getPage() which was working fine until I deliberately changed the 
+url to 
+"http://newsrss.bbc.co.uk/rss/newsonline_uk_edition/front_page/rssZZ.xml" 
+to test error handling.
+
+Instead of calling my errback, it gave:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python2.4/site-packages/twisted/python/log.py", 
+line 53, in callWithLogger
+    return callWithContext({"system": lp}, func, *args, **kw)
+  File "/usr/local/lib/python2.4/site-packages/twisted/python/log.py", 
+line 38, in callWithContext
+    return context.call({ILogContext: newCtx}, func, *args, **kw)
+  File 
+"/usr/local/lib/python2.4/site-packages/twisted/python/context.py", line 
+59, in callWithContext
+    return self.currentContext().callWithContext(ctx, func, *args, **kw)
+  File 
+"/usr/local/lib/python2.4/site-packages/twisted/python/context.py", line 
+37, in callWithContext
+    return func(*args,**kw)
+--- <exception caught here> ---
+  File 
+"/usr/local/lib/python2.4/site-packages/twisted/internet/selectreactor.py", 
+line 139, in _doReadOrWrite
+    why = getattr(selectable, method)()
+  File "/usr/local/lib/python2.4/site-packages/twisted/internet/tcp.py", 
+line 349, in doRead
+    return self.protocol.dataReceived(data)
+  File 
+"/usr/local/lib/python2.4/site-packages/twisted/protocols/basic.py", 
+line 232, in dataReceived
+    why = self.lineReceived(line)
+  File "/usr/local/lib/python2.4/site-packages/twisted/web/http.py", 
+line 341, in lineReceived
+    key, val = line.split(':', 1)
+exceptions.ValueError: need more than 1 value to unpack
+
+-------------------
+Code:
+
+from twisted.internet import reactor
+from twisted.web.client import getPage
+
+def handleCallback(response):
+    print 'response: %s' % response
+    reactor.stop()
+   
+def handleErrback(failure):
+    print 'error: %s' % failure.getErrorMessage()
+    reactor.stop()
+
+url = 
+"http://newsrss.bbc.co.uk/rss/newsonline_uk_edition/front_page/rssZZ.xml"
+
+deferred = getPage(url)
+deferred.addCallbacks(handleCallback,
+                      handleErrback)
+reactor.run()
+-------------------
+
+Is there a fix for this problem ?
+
+I am using Twisted 2.2.0/Twisted-web 0.5.0 with Python 2.4.1 on SUSE 9.3
+
+regards,
+Richard Townsend
+
+
+
+From thostrup at gmail.com  Mon Mar 13 04:16:00 2006
+From: thostrup at gmail.com (Henrik Thostrup Jensen)
+Date: Mon Mar 13 04:16:06 2006
+Subject: [Twisted-web] Lingering HTTP Channel in web2 when testing with trial
+Message-ID: <f33a4da20603130216g2fb6ece6v36f9f53a50f2cc16@mail.gmail.com>
+
+Hi
+
+I have an application which uses web2. In good twisted style I'm writing
+tests for it, and using trial.
+
+When performing some rather simple page retrievals a get a lingering http
+channel. Setting
+twisted.internet.base.DelayedCall.debug = True
+I get this trace:
+
+
+  File "/usr/lib/python2.4/site-packages/twisted/trial/util.py", line 131,
+in _dispatch
+    getattr(self, "do_%s" % attr)()
+  File "/usr/lib/python2.4/site-packages/twisted/trial/util.py", line 173,
+in do_cleanPending
+    raise PendingTimedCallsError(s)
+twisted.trial.util.PendingTimedCallsError: pendingTimedCalls still pending
+(consider setting twisted.internet.base.DelayedCall.debug = True):
+<DelayedCall 1083946540 [19.9427890778s] called=0 cancelled=0
+HTTPChannel._lingerClose()
+
+traceback at creation:
+
+  File "/usr/bin/trial", line 24, in ?
+    run()
+      File "/usr/lib/python2.4/site-packages/twisted/scripts/trial.py", line
+676, in run
+    suite = reallyRun(config)
+      File "/usr/lib/python2.4/site-packages/twisted/scripts/trial.py", line
+657, in reallyRun
+    suite.run(config['random'])
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+250, in run
+    tr.runTests(randomize=(seed is not None))
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+496, in runTests
+    runner.runTests(randomize)
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+601, in runTests
+    self._apply(_runTestMethod)
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+543, in _apply
+    f(tm)
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+597, in _runTestMethod
+    testMethod.run(tci)
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+849, in run
+    orig(tci)
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+332, in __call__
+    lambda :util.wait(defer.maybeDeferred(self.original, *a, **kw),
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+409, in _runWithWarningFilters
+    return f(*a, **kw)
+      File "/usr/lib/python2.4/site-packages/twisted/trial/runner.py", line
+333, in <lambda>
+    timeout, useWaitError=True))
+      File "/usr/lib/python2.4/site-packages/twisted/trial/util.py", line
+325, in wait
+    r = _Wait.wait(d, timeout)
+      File "/usr/lib/python2.4/site-packages/twisted/trial/util.py", line
+269, in wait
+    reactor.iterate(0.01)
+      File "/usr/lib/python2.4/site-packages/twisted/internet/base.py", line
+360, in iterate
+    self.doIteration(delay)
+      File
+"/usr/lib/python2.4/site-packages/twisted/internet/selectreactor.py", line
+133, in doSelect
+    _logrun(selectable, _drdw, selectable, method, dict)
+      File "/usr/lib/python2.4/site-packages/twisted/python/log.py", line
+56, in callWithLogger
+    return callWithContext({"system": lp}, func, *args, **kw)
+      File "/usr/lib/python2.4/site-packages/twisted/python/log.py", line
+41, in callWithContext
+    return context.call({ILogContext: newCtx}, func, *args, **kw)
+      File "/usr/lib/python2.4/site-packages/twisted/python/context.py",
+line 52, in callWithContext
+    return self.currentContext().callWithContext(ctx, func, *args, **kw)
+      File "/usr/lib/python2.4/site-packages/twisted/python/context.py",
+line 31, in callWithContext
+    return func(*args,**kw)
+      File
+"/usr/lib/python2.4/site-packages/twisted/internet/selectreactor.py", line
+139, in _doReadOrWrite
+    why = getattr(selectable, method)()
+      File "/usr/lib/python2.4/site-packages/twisted/internet/abstract.py",
+line 134, in doWrite
+    result = self._closeWriteConnection()
+      File "/usr/lib/python2.4/site-packages/twisted/internet/tcp.py", line
+376, in _closeWriteConnection
+    p.writeConnectionLost()
+      File "/usr/lib/python2.4/site-packages/twisted/web2/channel/http.py",
+line 788, in writeConnectionLost
+    self._lingerTimer = reactor.callLater(20, self._lingerClose)
+>
+
+This if course makes sense, especially if the server lost its connection. I
+am doing cleanup in tearDown (calling stopListening() on the port), but
+trial still complains. Canceling the call, and calling it manually in
+tearDown, doesn't appear to help either. How do I make it shut it up in a
+proper way?
+
+
+PS. I'm rather pleased with the web2 framework, especially the stream
+framework (once I got my head wrapped around it), but it is hard to get an
+overview of the internals. A brief description of the design, philosophy,
+what was wrong with web(1), etc. would be very nice (I do realize that web2
+is a moving target).
+
+--
+   - Henrik
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20060313/16680bea/attachment.htm
+From thostrup at gmail.com  Mon Mar 13 09:31:18 2006
+From: thostrup at gmail.com (Henrik Thostrup Jensen)
+Date: Mon Mar 13 09:31:21 2006
+Subject: [Twisted-web] Re: Lingering HTTP Channel in web2 when testing with
+	trial
+In-Reply-To: <f33a4da20603130216g2fb6ece6v36f9f53a50f2cc16@mail.gmail.com>
+References: <f33a4da20603130216g2fb6ece6v36f9f53a50f2cc16@mail.gmail.com>
+Message-ID: <f33a4da20603130731s625208c2p6677efc3e4c76700@mail.gmail.com>
+
+On 3/13/06, Henrik Thostrup Jensen <thostrup@gmail.com> wrote:
+
+> How do I make it shut it up in a proper way?
+>
+
+By upgrading to Twisted 2.2. I'll go look into the corner now.
+
+--
+   - Henrik
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20060313/70504d3b/attachment.htm
+From general at eepatents.com  Thu Mar 16 04:23:50 2006
+From: general at eepatents.com (Ed Suominen)
+Date: Thu Mar 16 04:23:26 2006
+Subject: [Twisted-web] Trac via twisted.web2.wsgi
+Message-ID: <44193CB6.30706@eepatents.com>
+
+I've implemented a twisted.web2 resource for accessing Trac via WSGI.
+You can see both a working example and the code at
+
+http://foss.eepatents.com/DynamicSite/browser/branches/kiss-web2/dynamicsite/external.py
+
+There's a StanResource class there that I'm using and think is kind of
+cool, too.
+
+I use the following python code to provide my root resource for the
+foss.eepatents.com site. (A copy is at http://deadbeefbabe.org/paste/34
+in case the email version is too mangled to be useful.) Obviously,
+you'll want to personalize it for your own use and not call the home
+page "Ed Suominen's Free & Open Source Software Projects."
+
+This will all be part of an upcoming release of DynamicSite, a flexible,
+reasonably user-friendly vhost implementation of twisted.web2. Hopefully
+I will remain inspired to package it all up now that I've scratched my
+particular itch. Since I believe in generous usage of docstrings (hint,
+hint to the Twisted devs), the code in the kiss-web2 branch should be
+fairly easy to use even in its current raw form.
+
+Those interested in what can be (over)done with Nevow, dynamic image
+generation, intelligent caching, etc. might want to browse through the
+current revision (SVN:47) of trunk before I replace it with the "keep it
+simple stupid" twisted.web2 branch.
+
+Best regards,
+Ed Suominen
+
+> # DynamicSite:
+> # A virtual hosting twisted.web2 HTTP server that uses subdirectories for
+> # virtual host content. Subdirectories can be python packages providing dynamic
+> # content with a root resource object, or sources of static content.
+> #
+> # Copyright (C) 2006 by Edwin A. Suominen, http://www.eepatents.com
+> #
+> # This program is free software; you can redistribute it and/or modify it under
+> # the terms of the GNU General Public License as published by the Free Software
+> # Foundation; either version 2 of the License, or (at your option) any later
+> # version.
+> # 
+> # This program is distributed in the hope that it will be useful, but WITHOUT
+> # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+> # FOR A PARTICULAR PURPOSE.  See the file COPYING for more details.
+> # 
+> # You should have received a copy of the GNU General Public License along with
+> # this program; if not, write to the Free Software Foundation, Inc., 51
+> # Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
+> 
+> """
+> Provides a Trac resource via an WSGI gateway.
+> 
+> """
+> 
+> from dynamicsite.external import TracResource, StanResource
+> 
+> 
+> class HomePage(StanResource):
+>     """
+>     A home page for all of the trac project names and paths supplied in the
+>     I{projects} dict
+>     """
+>     def __init__(self, projects):
+>         self.projects = projects
+>     
+>     def render(self, request):
+>         title = "Ed Suominen's Free & Open Source Software Projects"
+>         body = [self.h2[title]]
+>         for projectName in self.projects.iterkeys():
+>             projectDescription = " ".join(self.projects[projectName][1:])
+>             body.append(self.p[self.a(href=projectName)[projectName],
+>                                ": %s" % projectDescription])
+>         
+>         return [self.html[
+>                 self.head[self.title[title]],
+>                 self.body[body]]]
+> 
+>     def locateChild(self, request, segments):
+>         projectName = segments[0]
+>         if projectName in self.projects:
+>             projectPath = self.projects[projectName][0]
+>             return TracResource(projectPath), segments[1:]
+>         else:
+>             return self, ()
+> 
+> 
+> projects = {"pNetworkX":("/var/trac/pnetworkx",
+>                          "An enhancement to the NetworkX package that provides",
+>                          "database persistency of underlying data in graph",
+>                          "objects"),
+>             
+>             "DynamicSite":("/var/trac/dynamicsite",
+>                            "A virtual hosting twisted.web2 HTTP server that",
+>                            "uses subdirectories for virtual host content")
+>             }
+> 
+> 
+> resource = HomePage(projects)
+
+
+From maillists at ivsn.com  Sat Mar 18 10:29:18 2006
+From: maillists at ivsn.com (Paul Reznicek)
+Date: Sat Mar 18 10:29:52 2006
+Subject: [Twisted-web] How to fill slots in sub-pattern
+Message-ID: <441C355E.9080100@ivsn.com>
+
+Hi all,
+
+I've one page template and would like to use different pattern in different
+Page subclasses.
+A snipped of the template:
+
+# ----------------------------------------------
+             <td class="main">
+                 <n:invisible n:render="contentMain" n:data="contentData">
+                 <table n:pattern="contentTable" n:render="sequence">
+                     <tr n:pattern="header">
+                         <th id="firstHeader">First Column</th>
+                         <th id="secondHeader">Second Column</th></tr>
+                     <tr n:pattern="item" n:render="row">
+                         <td><n:slot name="first_column" />data1</td>
+                         <td><n:slot name="second_column" />data2</td>
+                     </tr>
+                 </table>
+
+                 <table n:pattern="otherTableData" n:render="sequence">
+                     <tr n:pattern="header">
+                         <th id="firstHeader">Col 1</th>
+                         <th id="secondHeader">Col 2</th></tr>
+                         <th id="thirdHeader">Col 3</th></tr>
+                     <tr n:pattern="item" n:render="row">
+                         <td><n:slot name="first_column" />data1</td>
+                         <td><n:slot name="second_column" />data2</td>
+                         <td><n:slot name="third_column" />data3</td>
+                     </tr>
+                 </table>
+                 </n:invisible>
+             </td>
+# ----------------------------------------------
+
+The renderer should work like this:
+# ----------------------------------------------
+     def render_contentMain(self, ctx, data):
+         patternHere = inevow.IQ(ctx).onePattern('contentTable')
+         patternHere.fillSlots('first_column', data[0])
+         patternHere.fillSlots('second_column', data[1])
+         return patternHere.tag
+# ----------------------------------------------
+
+But this does not work ...
+Can somebody help me?
+
+Thanks in advance,
+Paul
+
+
+From maillists at ivsn.com  Sat Mar 18 11:38:57 2006
+From: maillists at ivsn.com (Paul Reznicek)
+Date: Sat Mar 18 11:39:32 2006
+Subject: [Twisted-web] How to fill slots in sub-pattern
+In-Reply-To: <441C355E.9080100@ivsn.com>
+References: <441C355E.9080100@ivsn.com>
+Message-ID: <441C45B1.4070202@ivsn.com>
+
+In replay to my self - I found a way:
+# ----------------------------------------------
+     def render_row(self, ctx, data):
+         ctx.fillSlots('first_column', data[0])
+         ctx.fillSlots('second_column', data[1])
+         return ctx.tag
+
+     def render_contentMain(self, ctx, data):
+         pat = inevow.IQ(ctx).onePattern('contentNews')
+         return pat(data=data)
+# ----------------------------------------------
+That's all !!!!!!!!!!!!!!!!!!
+Nevow is great !!!!!!!!!!!!!!
+Paul
+
+Paul Reznicek wrote:
+> Hi all,
+> 
+> I've one page template and would like to use different pattern in different
+> Page subclasses.
+> A snipped of the template:
+> 
+> # ----------------------------------------------
+>             <td class="main">
+>                 <n:invisible n:render="contentMain" n:data="contentData">
+>                 <table n:pattern="contentTable" n:render="sequence">
+>                     <tr n:pattern="header">
+>                         <th id="firstHeader">First Column</th>
+>                         <th id="secondHeader">Second Column</th></tr>
+>                     <tr n:pattern="item" n:render="row">
+>                         <td><n:slot name="first_column" />data1</td>
+>                         <td><n:slot name="second_column" />data2</td>
+>                     </tr>
+>                 </table>
+> 
+>                 <table n:pattern="otherTableData" n:render="sequence">
+>                     <tr n:pattern="header">
+>                         <th id="firstHeader">Col 1</th>
+>                         <th id="secondHeader">Col 2</th></tr>
+>                         <th id="thirdHeader">Col 3</th></tr>
+>                     <tr n:pattern="item" n:render="row">
+>                         <td><n:slot name="first_column" />data1</td>
+>                         <td><n:slot name="second_column" />data2</td>
+>                         <td><n:slot name="third_column" />data3</td>
+>                     </tr>
+>                 </table>
+>                 </n:invisible>
+>             </td>
+> # ----------------------------------------------
+> 
+> The renderer should work like this:
+> # ----------------------------------------------
+>     def render_contentMain(self, ctx, data):
+>         patternHere = inevow.IQ(ctx).onePattern('contentTable')
+>         patternHere.fillSlots('first_column', data[0])
+>         patternHere.fillSlots('second_column', data[1])
+>         return patternHere.tag
+> # ----------------------------------------------
+> 
+> But this does not work ...
+> Can somebody help me?
+> 
+> Thanks in advance,
+> Paul
+> 
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> 
+
+
+From grimmtooth at gmail.com  Mon Mar 20 00:25:04 2006
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Mon Mar 20 00:25:07 2006
+Subject: [Twisted-web] NameVirtualHost and web2
+Message-ID: <8f4623fb0603192225q53dd54a9x5df89dc50ca96293@mail.gmail.com>
+
+I've a working NameVirtualHost setup that I am trying to convert over to
+web2 and I've hit a speedbump. Here's the code, more or less:
+
+===========================
+from twisted.web2 import server, http, channel, vhost
+from twisted.web2 import static
+
+root = vhost.NameVirtualHost()
+
+site1 = server.Site(static.File("d:sites\site1"))
+site2 = server.Site(static.File("d:sites\site2"))
+
+root.addHost('www.grimmlabs.com', site1)
+root.addHost('www.g-labs.com', site2)
+
+site = server.Site(root)
+
+# Standard twisted application Boilerplate
+from twisted.application    import strports, service
+from twisted.internet       import reactor
+
+application = service.Application("Grimmlabs")
+s = strports.service('tcp:8080', channel.HTTPFactory(site))
+s.setServiceParent(application)
+===========================
+
+Run using twistd -ny file.py
+
+Starts up, no probs. When I go to load a page, though, I see this traceback:
+
+===========================
+          File "E:\Python\Lib\site-packages\twisted\web2\server.py", line
+263, in process
+            d = self._getChild(self.site.resource, self.postpath)
+          File "E:\Python\Lib\site-packages\twisted\web2\server.py", line
+290, in _getChild
+            return defer.maybeDeferred(
+          File "E:\Python\Lib\site-packages\twisted\internet\defer.py", line
+191, in addCallbac
+k
+            callbackKeywords=kw)
+          File "E:\Python\Lib\site-packages\twisted\internet\defer.py", line
+182, in addCallbac
+ks
+            self._runCallbacks()
+        --- <exception caught here> ---
+          File "E:\Python\Lib\site-packages\twisted\internet\defer.py", line
+307, in _runCallba
+cks
+            self.result = callback(self.result, *args, **kw)
+          File "E:\Python\Lib\site-packages\twisted\web2\server.py", line
+317, in _handleSegmen
+t
+            newres = iweb.IResource(newres)
+          File "E:\Python\lib\site-packages\zope\interface\interface.py",
+line 703, in __call__
+
+            raise TypeError("Could not adapt", obj, self)
+        exceptions.TypeError: ('Could not adapt',
+<twisted.web2.server.Siteobject at 0x00D9157
+0>, <SpecialAdaptInterfaceClass twisted.web2.iweb.IResource>)
+===========================
+
+(sorry about the formatting)
+
+I've tried a few variations with more or less the same results. Note that
+the sites I am trying to add all work just fine in web2 without the
+NameVirtualHost in the mix.
+
+I've looked over the examples and what docs we have here, and haven't come
+up with any inspiration. Help me Obi-wan Kenobi, you're my only hope...
+
+--
+"Ladies and gentlemen, there's nothing to worry about ... but please keep
+your heads down." - The Muppet Show
+
+Best,
+
+    Jeff
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20060320/39afe2d4/attachment.htm
+From dreid at dreid.org  Mon Mar 20 17:22:48 2006
+From: dreid at dreid.org (David Reid)
+Date: Mon Mar 20 17:20:31 2006
+Subject: [Twisted-web] NameVirtualHost and web2
+In-Reply-To: <8f4623fb0603192225q53dd54a9x5df89dc50ca96293@mail.gmail.com>
+References: <8f4623fb0603192225q53dd54a9x5df89dc50ca96293@mail.gmail.com>
+Message-ID: <441F3948.1030007@dreid.org>
+
+Jeff Grimmett wrote:
+> site1 = server.Site(static.File("d:sites\site1"))
+> site2 = server.Site(static.File("d:sites\site2"))
+> 
+> root.addHost('www.grimmlabs.com', site1)
+> root.addHost('www.g-labs.com', site2)
+> 
+
+I'm fairly sure that addHost never accepted a server.Site, even in 
+twisted.web but it most certainly doesn't in web2.
+
+simply change the above to
+
+==
+root.addHost('www.grimmlabs.com', static.File("d:sites\site1"))
+root.addHost('www.g-labs.com', static.File("d:sites\site2"))
+==
+
+-David
+
+From grimmtooth at gmail.com  Mon Mar 20 18:27:55 2006
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Mon Mar 20 18:27:57 2006
+Subject: [Twisted-web] NameVirtualHost and web2
+In-Reply-To: <441F3948.1030007@dreid.org>
+References: <8f4623fb0603192225q53dd54a9x5df89dc50ca96293@mail.gmail.com>
+	<441F3948.1030007@dreid.org>
+Message-ID: <8f4623fb0603201627r357ebf3eoa4237f2a23c6a43c@mail.gmail.com>
+
+On 3/20/06, David Reid <dreid@dreid.org> wrote:
+>
+> Jeff Grimmett wrote:
+> > site1 = server.Site(static.File("d:sites\site1"))
+> > site2 = server.Site(static.File("d:sites\site2"))
+> >
+> > root.addHost('www.grimmlabs.com', site1)
+> > root.addHost('www.g-labs.com', site2)
+
+
+
+I'm fairly sure that addHost never accepted a server.Site, even in
+> twisted.web but it most certainly doesn't in web2.
+
+
+You're right, I mistyped that part.  Therefore ...
+
+simply change the above to
+> ==
+> root.addHost('www.grimmlabs.com', static.File("d:sites\site1"))
+> root.addHost('www.g-labs.com', static.File("d:sites\site2"))
+> ==
+
+
+... was already that way, more or less. Sorry for the confusion.
+
+
+--
+"Ladies and gentlemen, there's nothing to worry about ... but please keep
+your heads down." - The Muppet Show
+
+Best,
+
+    Jeff
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20060320/f9e18fd3/attachment.htm
+From grimmtooth at gmail.com  Mon Mar 20 21:12:36 2006
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Mon Mar 20 21:12:41 2006
+Subject: [Twisted-web] NameVirtualHost and web2
+In-Reply-To: <8f4623fb0603201627r357ebf3eoa4237f2a23c6a43c@mail.gmail.com>
+References: <8f4623fb0603192225q53dd54a9x5df89dc50ca96293@mail.gmail.com>
+	<441F3948.1030007@dreid.org>
+	<8f4623fb0603201627r357ebf3eoa4237f2a23c6a43c@mail.gmail.com>
+Message-ID: <8f4623fb0603201912u1c26ffffla1ee0d100b9e6317@mail.gmail.com>
+
+THIS JUST IN
+
+I'm a spaz.
+
+I *did* accurately copy over my web2 version of the script. I don't know how
+I managed that, but good catch. I've put things to the way they should be
+and am now up and running.
+
+Thanks for pointing out the obvious. Sometimes I need it :)
+
+On 3/20/06, Jeff Grimmett <grimmtooth@gmail.com> wrote:
+>
+> On 3/20/06, David Reid <dreid@dreid.org> wrote:
+>
+> > Jeff Grimmett wrote:
+> > > site1 = server.Site(static.File("d:sites\site1"))
+> > > site2 = server.Site(static.File("d:sites\site2"))
+> > >
+> > > root.addHost(' www.grimmlabs.com', site1)
+> > > root.addHost('www.g-labs.com', site2)
+>
+>
+>
+> I'm fairly sure that addHost never accepted a server.Site, even in
+> > twisted.web but it most certainly doesn't in web2.
+>
+>
+> You're right, I mistyped that part.  Therefore ...
+>
+> simply change the above to
+> > ==
+> > root.addHost('www.grimmlabs.com', static.File("d:sites\site1"))
+> > root.addHost('www.g-labs.com', static.File ("d:sites\site2"))
+> > ==
+>
+>
+> ... was already that way, more or less. Sorry for the confusion.
+>
+>
+> --
+> "Ladies and gentlemen, there's nothing to worry about ... but please keep
+> your heads down." - The Muppet Show
+>
+> Best,
+>
+>     Jeff
+>
+
+
+
+--
+"Ladies and gentlemen, there's nothing to worry about ... but please keep
+your heads down." - The Muppet Show
+
+Best,
+
+    Jeff
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20060320/963baa6f/attachment.htm
+From grimmtooth at gmail.com  Mon Mar 20 22:55:33 2006
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Mon Mar 20 22:55:35 2006
+Subject: [Twisted-web] static.File.childNotFound gone walkabout?
+Message-ID: <8f4623fb0603202055tb258432x790b526af423d8cf@mail.gmail.com>
+
+In twisted.web.static.File we had support for a default "not found" page in
+the form of the attribute childNotFound. I notice that in web2 we just punt
+it. Was something niftier substituted or was it just dropped?
+
+(also, if the latter, you are still calling it in t.w2.twcgi.py around line
+328 or so, but that seems to be the only place)
+
+--
+"Ladies and gentlemen, there's nothing to worry about ... but please keep
+your heads down." - The Muppet Show
+
+Best,
+
+    Jeff
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20060320/4c4529b3/attachment.htm
+From dreid at dreid.org  Tue Mar 21 01:02:37 2006
+From: dreid at dreid.org (David Reid)
+Date: Tue Mar 21 01:00:15 2006
+Subject: [Twisted-web] static.File.childNotFound gone walkabout?
+In-Reply-To: <8f4623fb0603202055tb258432x790b526af423d8cf@mail.gmail.com>
+References: <8f4623fb0603202055tb258432x790b526af423d8cf@mail.gmail.com>
+Message-ID: <441FA50D.4040902@dreid.org>
+
+Jeff Grimmett wrote:
+> In twisted.web.static.File we had support for a default "not found" page in
+> the form of the attribute childNotFound. I notice that in web2 we just punt
+> it. Was something niftier substituted or was it just dropped?
+
+Custom error handlers hasn't really been addressed, I can think of a 
+couple ways to probably do it, but I'm not sure how well any of them 
+work off the top of my head, nor is there a standard way to do it.
+
+> (also, if the latter, you are still calling it in t.w2.twcgi.py around line
+> 328 or so, but that seems to be the only place)
+
+Thanks for the heads up, please file a bug for this in the tracker and 
+assign it to dreid.  A test case that hits this codepath is optional but 
+would be appreciated :).
+
+-David
+
+From grimmtooth at gmail.com  Tue Mar 21 10:01:19 2006
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Tue Mar 21 10:01:24 2006
+Subject: [Twisted-web] static.File.childNotFound gone walkabout?
+In-Reply-To: <441FA50D.4040902@dreid.org>
+References: <8f4623fb0603202055tb258432x790b526af423d8cf@mail.gmail.com>
+	<441FA50D.4040902@dreid.org>
+Message-ID: <8f4623fb0603210801q15340214gb91ba2e3bbab615d@mail.gmail.com>
+
+On 3/21/06, David Reid <dreid@dreid.org> wrote:
+
+Custom error handlers hasn't really been addressed, I can think of a couple
+> ways to probably do it, but I'm not sure how well any of them work off the
+> top of my head, nor is there a standard way to do it.
+
+
+OK. I wanted to make sure I wasn't missing something blindingly obvious
+(ref: virtual hosts and my astigmatism) before I went off writing something
+to give me the same sort of functionality.
+
+> (also, if the latter, you are still calling it in t.w2.twcgi.py around
+> line
+> > 328 or so, but that seems to be the only place)
+>
+> Thanks for the heads up, please file a bug for this in the tracker and
+> assign it to dreid.  A test case that hits this codepath is optional but
+> would be appreciated :).
+
+
+Will do. I don't have a test case for you since I found it via grep
+(actually SPE's search function but same thing). Terribly old school of me
+:-)
+
+--
+"Ladies and gentlemen, there's nothing to worry about ... but please keep
+your heads down." - The Muppet Show
+
+Best,
+
+    Jeff
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20060321/0b133cc2/attachment.htm
+From tv at twistedmatrix.com  Mon Mar 27 14:12:51 2006
+From: tv at twistedmatrix.com (Tommi Virtanen)
+Date: Mon Mar 27 14:12:52 2006
+Subject: [Twisted-web] forms has been renamed to formal
+Message-ID: <44284743.9010203@twistedmatrix.com>
+
+[resending because mailman and its admins hate me]
+
+Hi! I've just committed 3 changes to the forms SVN trunk that
+change the package from "forms" to "formal", as agreed with Matt
+earlier.
+
+Now, I'd like to get a release done, and a debian package made
+of it, then I can start using it for real. Matt, do you want to
+handle the release or should I? What version number should it get?
+
+From matt at pollenation.net  Wed Mar 29 17:43:21 2006
+From: matt at pollenation.net (Matt Goodall)
+Date: Wed Mar 29 17:43:28 2006
+Subject: [Twisted-web] forms has been renamed to formal
+In-Reply-To: <44284743.9010203@twistedmatrix.com>
+References: <44284743.9010203@twistedmatrix.com>
+Message-ID: <442B1B99.8080003@pollenation.net>
+
+Tommi Virtanen wrote:
+
+> Hi! I've just committed 3 changes to the forms SVN trunk that
+> change the package from "forms" to "formal", as agreed with Matt
+> earlier.
+
+Great! Thanks, Tommi.
+
+I just wish that the first I knew about the change being committed
+wasn't when I did "svn up". I knew Tommi was going to make the change, I
+just wish I'd read my email first ;-).
+
+I hope everyone's happy enough with the new name. formal is short, easy
+to type and reasonably descriptive so when Tommi volunteered to do the
+work I just said, "go for it".
+
+I admit to being extremely tempted by Mike Pelletier's "boviform"
+suggestion though ;-).
+
+> 
+> Now, I'd like to get a release done, and a debian package made
+> of it, then I can start using it for real. Matt, do you want to
+> handle the release or should I? What version number should it get?
+
+I would really appreciate it if you could handle it, at least at first.
+
+I don't mind what version it gets. Is there anything wrong with using
+whatever version it's at right now?
+
+Once again, thanks Tommi.
+
+Cheers, Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \	       Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+
+From frederic.gobry at epfl.ch  Thu Mar 30 07:19:22 2006
+From: frederic.gobry at epfl.ch (=?iso-8859-1?Q?Fr=E9d=E9ric?= Gobry)
+Date: Thu Mar 30 07:19:26 2006
+Subject: [Twisted-web] cookielib and http client
+Message-ID: <20060330131922.GE31895@mnementh.homelinux.org>
+
+Hi,
+
+Enclosed is a simple implementation of a subclass of t.web.client's
+HTTPClientFactory which uses the cookielib module from python2.4.
+
+This makes it possible to tune the way cookies are handled while getting
+web pages in twisted.
+
+I had in mind to work on a more complete port of mechanize
+<http://wwwsearch.sourceforge.net/mechanize/> to twisted, but had to
+switch to something else in the meantime. Hope it might be useful to
+someone.
+
+Fr?d?ric
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: cookiefetch.py
+Type: text/x-python
+Size: 2859 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20060330/172b74f0/cookiefetch.py
+From wstumpe at psipenta.com  Fri Mar 31 02:26:38 2006
+From: wstumpe at psipenta.com (Stumpe, Werner)
+Date: Fri Mar 31 02:26:56 2006
+Subject: [Twisted-web] Parameters for data_/render_
+Message-ID: <7398616C484ACB4BA6CA5ADD3BBE90D8269F50@pentad05.psipenta.de>
+
+Hi,
+
+ 
+
+I am working on a project (nevow + twisted) where lots of statistical
+computing is done using "R", interfaced by rpy.py. It works very well.
+To be able to parameterize the computing, I defined an additional
+namespace and put the parameters with this namespace inside the nevow
+templates. It looks like:
+
+ 
+
+<html xmlns:nevow="http://nevow.com/ns/nevow/0.1" 
+
+         xmlns:new_namespace="http://new_namespace.de/ns/0.1"
+
+         xmlns="http://www.w3.org/1999/xhtml"
+
+         xml:lang="de" lang="de"> 
+
+<head>
+
+  <meta content="text/html; charset=ISO-8859-1"
+http-equiv="content-type" />
+
+</head>
+
+<body>
+
+<img
+
+    new_namespace:title="Fehlerklasse 2 (letzte 50)" 
+
+    new_namespace:table="defect"
+
+    new_namespace:fields="measurement_id gravity" 
+
+    new_namespace:reorder_x="1" 
+
+    new_namespace:reverse_x="1" 
+
+    new_namespace:sql="class = 2 ORDER BY _id DESC LIMIT 50"
+
+    new_namespace:function="errorplot"
+
+    new_namespace:smooth="2"
+
+    nevow:data="Measurement" 
+
+    nevow:render="Plot">
+
+</body>
+
+</html>
+
+ 
+
+The parameters are extracted like this:
+
+ 
+
+    def data_Measurement (self, context, data):
+
+        """Extracts the parameters from the attribute-list.". 
+
+        
+
+        self.html_params = {}
+
+        self.script_params = None            
+
+        todelete = []
+
+        for theKey in context.tag.attributes:
+
+            keyFound = False 
+
+            if type(theKey) is tuple:
+
+                if len(theKey) == 2:
+
+                    ns = theKey[0]
+
+                    tag = theKey[1]
+
+                    if ns == u'http:// new_namespace.de/ns/0.1' :
+
+                       name = tag
+
+                       value = context.tag.attributes.get(theKey)
+
+                       self.script_params[name] = value
+
+                       ##
+
+                       ## Append the key to the list of keys to remove
+later.
+
+                       ## Unfortunately the parameters must be cleared,
+so that only valid attributes
+
+                       ## according the html-element are present in the
+rendering step.
+
+                       ## 
+
+                       todelete.append(theKey)
+
+        ##
+
+        ## Delete the param-keys from the attribule-list.
+
+        ## Otherwise the attributes would be present in the rendering
+and this is for the birds. 
+
+        ##
+
+        for theKey in todelete:
+
+            del context.tag.attributes[theKey]
+
+ 
+
+In the function render_measurement() the function is called with the
+parameters (in this case "errorplot") and the resulting image is
+rendered. This also works very well. My question is: Is there a better
+and simpler way to do that? And if not, why do I have to remove the
+additional attributes, because later on nevow gets confused about this
+attributes and produces a nice stack-trace?
+
+ 
+
+The next question is: In the render_whatever() functions an image is
+produced, and I want to write the image directly with perhaps
+request.write(). How can this be done using nevow?
+
+ 
+
+Thanks,
+
+Werner
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20060331/5706f77c/attachment.htm

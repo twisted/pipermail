@@ -1,0 +1,144 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] why deferred.setTimeout is not my favorite API	method
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20why%20deferred.setTimeout%20is%20not%20my%20favorite%20API%0A%09method&In-Reply-To=%3C20040418101627.GC7803%40frobozz%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="040049.html">
+   <LINK REL="Next"  HREF="040053.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] why deferred.setTimeout is not my favorite API	method</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20why%20deferred.setTimeout%20is%20not%20my%20favorite%20API%0A%09method&In-Reply-To=%3C20040418101627.GC7803%40frobozz%3E"
+       TITLE="[Twisted-Python] why deferred.setTimeout is not my favorite API	method">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Sun Apr 18 04:16:27 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="040049.html">[Twisted-Python] why deferred.setTimeout is not my favorite API	method
+</A></li>
+        <LI>Next message (by thread): <A HREF="040053.html">[Twisted-Python] why deferred.setTimeout is not my favorite API	method
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#40050">[ date ]</a>
+              <a href="thread.html#40050">[ thread ]</a>
+              <a href="subject.html#40050">[ subject ]</a>
+              <a href="author.html#40050">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sun, Apr 18, 2004 at 08:48:28AM +0000, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">slyphon at twistedmatrix.com</A> wrote:
+[...]
+&gt;<i> 
+</I>&gt;<i> again, there's a difference between stopping a long-running or
+</I>&gt;<i> long-waiting operation, which is something that deferreds cannot handle
+</I>&gt;<i> at all, and indicating that after a certain amount of time, we don't
+</I>&gt;<i> care about the result of that operation and would like to consider it an
+</I>&gt;<i> erroneous condition.
+</I>&gt;<i> 
+</I>[...]
+
+On Sun, Apr 18, 2004 at 04:21:11AM +0000, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at divmod.com</A> wrote:
+&gt;<i> 
+</I>&gt;<i>   I tend to prefer &quot;foo(x, y, timeout=z)&quot; over &quot;foo(x, y).setTimeout(z)&quot;.
+</I>&gt;<i>   As both require explicit support from the implementor of &quot;foo&quot; (as you
+</I>&gt;<i>   correctly note is the only way .setTimeout() can actually work), it
+</I>&gt;<i>   seems unnecessary to special-case this form of failure in Deferreds.  I
+</I>&gt;<i>   cast my vote for the former.
+</I>
+I think that timeouts, or cancellations in general, are something that
+Deferreds should *support*, even though they cannot provide them entirely
+automatically.  I'll try to explain why.
+
+Deferred objects are essentially placeholders for a result that isn't
+available yet -- a result that is deferred until some later time.
+Inevitably, this means there is some associated operation occuring that is
+working towards generating that result (even if this operation is passive --
+e.g. waiting for a response from a remote server).
+
+Generally, when the recipient of a Deferred is no longer interested in the
+result of that Deferred, there is no longer any need to continue the
+underlying operation that would create that result.  It would be good if the
+underlying operation was aborted in these situations (when possible), to
+save resources.
+
+Recipients of Deferreds have no knowledge of the result-generating operation
+that is associated with them, nor should they.  In effect, Deferreds are not
+just placeholders for pending results, but also intrinsically linked to the
+operation that will eventually fulfill them.
+
+Given that Deferreds are fundamentally linked to operations, not just
+results, why not use that relationship to provide a consistent interface for
+cancellations (and thus also timeouts)?
+
+Here are the potential drawbacks I can think of to this view of Deferreds:
+   - Not all operations are sanely interruptable, e.g. the worker thread
+     kicked off by deferToThread.
+   - foo(x, y, timeout=z) makes more sense for situations where a protocol
+     or something requires that timeouts be set before an operation begins,
+     and can't be adjusted once the operation is started.  I'm not aware of
+     any such operations, though.
+
+There are possibly other reasons why this view doesn't fit neatly -- if so,
+please tell me! :)
+
+The drawbacks I can think of aren't enough to dissuade me from this
+viewpoint, though.  They do mean that Deferreds may need to only support
+cancellations optionally, rather than always, according to what the creator
+of the Deferred declares to be appropriate (i.e. the &quot;allowTimeout&quot; I
+proposed for setTimeout, or perhaps &quot;canCancel&quot;).  I don't see this as a
+showstopper.
+
+If people dislike coupling these things this tightly, perhaps Deferreds
+should have an &quot;operation&quot; attribute, where things like a cancel method
+would go -- does &quot;deferred.operation.cancel('User clicked cancel')&quot; read ok?
+This is probably a good idea -- after all, a one-to-one relationship doesn't
+necessarily imply that two things should be represented as one object (e.g.
+HTTP Request and Response objects are always coupled that I can think of,
+but keeping them seperate still feels right).
+
+The operation object would also be a good place to put other functionality
+that maybe only some operations could support, e.g. pausing an operation, or
+something.  I'm just thinking out loud here.
+
+The problem with the explict operation object is that it would make it even
+harder for creators of Deferreds to fully implement things, although they
+could just simply not provide one if they wanted to be lazy, I guess.
+
+Any thoughts?
+
+-Andrew.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="040049.html">[Twisted-Python] why deferred.setTimeout is not my favorite API	method
+</A></li>
+	<LI>Next message (by thread): <A HREF="040053.html">[Twisted-Python] why deferred.setTimeout is not my favorite API	method
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#40050">[ date ]</a>
+              <a href="thread.html#40050">[ thread ]</a>
+              <a href="subject.html#40050">[ subject ]</a>
+              <a href="author.html#40050">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

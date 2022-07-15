@@ -1,0 +1,11 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.0.7 (GNU/Linux)
+
+iD8DBQE9VpFdedcO2BJA+4YRArPvAJ9jNwiBFA8AD+LJ3PNUDH8mPmjlJwCgwlUE
+VYzrcJJiQJKLtCayAeRo7uE=
+=Jn8/
+-----END PGP SIGNATURE-----

@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v2.0.4-svn0 (GNU/Linux)
+
+iD8DBQBIJDOfvd8ks9mF64IRAky2AJ0ZIwFAHLImh8K+4vxQnAxmEKLUvACgp3cK
+BgqI2V+KbXzg9r9pVeqK5WY=
+=qMig
+-----END PGP SIGNATURE-----

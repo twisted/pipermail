@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.0 (GNU/Linux)
+
+iD8DBQE+EnPredcO2BJA+4YRArmUAJkBAzgfX5dVMMpPo9TK1DfWarfrVwCgl5iO
+X46npFDPQ4RCwVnwQh6YlQY=
+=mgSi
+-----END PGP SIGNATURE-----

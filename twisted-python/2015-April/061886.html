@@ -1,0 +1,129 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Looking for some advice debugging issue with transport.write calls
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Looking%20for%20some%20advice%20debugging%20issue%20with%0A%20transport.write%20calls&In-Reply-To=%3CCACLJ_dFFDMKw%3DHOGGs4vhHGr_NUy%2BggqFZ-k%3DT9aNjQFtGvpVQ%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="061880.html">
+   <LINK REL="Next"  HREF="061890.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Looking for some advice debugging issue with transport.write calls</H1>
+    <B>Brian Costlow</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Looking%20for%20some%20advice%20debugging%20issue%20with%0A%20transport.write%20calls&In-Reply-To=%3CCACLJ_dFFDMKw%3DHOGGs4vhHGr_NUy%2BggqFZ-k%3DT9aNjQFtGvpVQ%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Looking for some advice debugging issue with transport.write calls">brian.costlow at gmail.com
+       </A><BR>
+    <I>Tue Apr 28 11:55:40 MDT 2015</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="061880.html">[Twisted-Python] Looking for some advice debugging issue with transport.write calls
+</A></li>
+        <LI>Next message (by thread): <A HREF="061890.html">[Twisted-Python] Looking for some advice debugging issue with	transport.write calls
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#61886">[ date ]</a>
+              <a href="thread.html#61886">[ thread ]</a>
+              <a href="subject.html#61886">[ subject ]</a>
+              <a href="author.html#61886">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Okay, figured this out.
+
+Abstract of the issue: I am a dumbass.
+
+First, Itamar gets to thrash me soundly, as there was a bug in some code
+(not shown in my example) that is not properly tested. That code was
+responsible for &quot;turning off&quot; the protocol instance if  connectionLost
+method was called, by doing some cleanup then redefining check_for_send in
+the instance as a no-op to stop it from pushing itself back on the reactor
+loop.
+
+Since the factory here is a reconnecting one, if the network or downstream
+server etc., glitches, we get a *new* connected protocol instance and an
+old, unconnected one. Due to the bug, both are consuming messages from the
+factory queue, calling the protocols' transport.write with the message data.
+
+This location has some issues, so the connection occasionally drops on the
+downstream end, which we don't see elsewhere.
+
+transport.write on a tcp connection looks like it just returns if the
+underlying fd object is closed. So messages picked up by the old object get
+bit-bucketed.
+
+<A HREF="http://twistedmatrix.com/documents/15.0.0/api/twisted.internet.tcp.Connection.html">http://twistedmatrix.com/documents/15.0.0/api/twisted.internet.tcp.Connection.html</A>
+<A HREF="http://twistedmatrix.com/trac/browser/tags/releases/twisted-15.0.0/twisted/internet/abstract.py#L339">http://twistedmatrix.com/trac/browser/tags/releases/twisted-15.0.0/twisted/internet/abstract.py#L339</A>
+
+To dos: Fix bug, proper unit test, fix integration test so we test dropping
+connections under load...
+
+Question: I'm assuming there's a good reason transport.write is written so
+it doesn't error and fails silently even though its underlying connection
+is not connected anymore. As part of grokking the guts of this thing I've
+been using for a decade...I'm curious to know why.
+
+
+
+On Tue, Apr 28, 2015 at 7:43 AM, Brian Costlow &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">brian.costlow at gmail.com</A>&gt;
+wrote:
+
+&gt;<i> On Mon, Apr 27, 2015 at 4:55 PM, Glyph Lefkowitz &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt;
+</I>&gt;<i> wrote:
+</I>&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Nothing strikes me as obviously wrong about this code (except the
+</I>&gt;&gt;<i> &quot;deferToThread&quot; which seems *slightly*
+</I>&gt;&gt;<i> suspicious, since nothing in the example appears to have anything to do
+</I>&gt;&gt;<i> with threads, and whenever you get threads involved things get complicated).
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;<i>  The deferToThread just shoves the write of the message string to file
+</I>&gt;<i> into the thread pool. It was added after this issue was observed. Using deferToThread
+</I>&gt;<i> is a hangover from attaching a logging callback when the file wrote, since
+</I>&gt;<i> removed, so callInThread would work also. I didn't want to add the file
+</I>&gt;<i> write onto the reactor thread here.
+</I>&gt;<i>
+</I>&gt;<i> I wish I could find a simpler case, but frankly, I have an integration
+</I>&gt;<i> test system that uses a test app to generate upstream messages, and an open
+</I>&gt;<i> source java app to simulate the downstream server. I can't reproduce this
+</I>&gt;<i> there even with all the moving parts.
+</I>&gt;<i>
+</I>&gt;<i> Happening &quot;in the wild&quot; at one location, was hoping for some advice on
+</I>&gt;<i> troubleshooting what happens between calling transport.write and seeing
+</I>&gt;<i> bytes on the wire. I guess it's time to go digging into parts of twisted
+</I>&gt;<i> I've always taken for granted, and learn something new. ;-)
+</I>&gt;<i>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20150428/00108b95/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="061880.html">[Twisted-Python] Looking for some advice debugging issue with transport.write calls
+</A></li>
+	<LI>Next message (by thread): <A HREF="061890.html">[Twisted-Python] Looking for some advice debugging issue with	transport.write calls
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#61886">[ date ]</a>
+              <a href="thread.html#61886">[ thread ]</a>
+              <a href="subject.html#61886">[ subject ]</a>
+              <a href="author.html#61886">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

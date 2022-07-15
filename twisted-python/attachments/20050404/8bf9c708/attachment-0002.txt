@@ -1,0 +1,142 @@
+[23:05] <exarkun> glyph: do you have a few minutes to help me decide which of a small group of thread-related changes should stay and which should be reverted?
+[23:06] <glyph> exarkun: If it does not involve looking at code, yes :)
+[23:07] <exarkun> there are three: PosixReactorBase.__init__ does whenThreaded(registerAsIOThread); PosixReactorBase.startRunning does registerAsIOThread(); PosixReactorBase.iterate does registerAsIOThread()
+[23:07] <exarkun> the middle one has been there for a long time
+[23:07] <exarkun> the other two were added a week ago
+[23:07] <glyph> Hmm.
+[23:08] <glyph> I don't think we care that the reactor is created from the same thread it's run in.
+[23:08] <glyph> so I'd say the first should go
+[23:08] <dash> btw
+[23:08] <dash> http://lists.xensource.com/archives/html/xen-devel/2005-04/msg00027.html
+[23:08] <pyn> Shorter URL: http://alnk.org/realrat
+[23:08] <exarkun> Also, do you think I am wrong to think that they all need to use whenThreaded?
+[23:09] <exarkun> dash: My mind cannot comprehend
+[23:09] <dash> exarkun: Hee
+[23:10] <spiv> glyph: It's almost enlightening, in a perverse sort of way ;)
+[23:11] *** glyph checks what whenThreaded does
+[23:12] <glyph> exarkun: No, I believe that they definitely should not, at least not with its current implementation.
+[23:12] <exarkun> :(
+[23:13] <glyph> exarkun: it builds up a list of callbacks, so if the iterate() one did it, you'd build up a ridiculously huge list pretty fast
+[23:13] <exarkun> The iterate() one bothers me somewhat.  I hope to remove it.
+[23:14] <exarkun> But that's merely an efficiency concern.
+[23:14] <exarkun> I think it would lead to correct results, which the current code does not.
+[23:14] <glyph> I think that the iterate() one should be removed too.
+[23:14] <exarkun> at least, not in the absence of thread support.
+[23:14] <exarkun> So what if we leave only the __init__ one, with whenThreaded
+[23:15] <exarkun> I think that preserves the spirit of the oldest one, from startRunning, but makes it actually correct, since tests calling only iterate() will hit __init__ but not startRunning
+[23:17] <radix> what if there was an ifThreaded instead of whenThreaded?
+[23:18] <glyph> exarkun: the whenThreaded is silly
+[23:18] <exarkun> radix: What'd be the advantage?
+[23:18] <exarkun> glyph: Er?
+[23:19] <exarkun> glyph: Keep in mind I'm trying to fix both the actual threaded behavior as well as the behavior when "import thread" raises an ImportError.
+[23:19] <exarkun> whenThreaded strikes me as quite useful for the latter.
+[23:19] <glyph> Tests that use iterate *should* use startRunning
+[23:20] <glyph> Sigh.
+[23:20] <glyph> Iterate is such garbage.
+[23:20] <glyph> I never should have added it.
+[23:20] <glyph> anyway
+[23:21] <glyph> If the reactor is created, then sent off to another thread to be run (as it might be in, say, a wx application like Chandler), then putting it in __init__ would be bad
+[23:21] <exarkun> er, no?
+[23:21] <exarkun> Maybe whenThreaded/registerAsIOThread have a surprising interaction
+[23:21] <exarkun> but it turns out to be right, I think, even when called from __init__
+[23:22] <radix> exarkun: maybe I misunderstood, but I figured the usage whenThreaded you proposed was to make it so that the calls didn't happen at all if threading isnn't currently enabled
+[23:22] <exarkun> since it results in whatever thread calls threadable.init(1) to be registered as the IO thread
+[23:22] <exarkun> _not_ whatever thread called PosixReactorBase.__init__
+[23:22] <glyph> that is the next hing I was going to bring up
+[23:23] <exarkun> that should always be the actual IO thread, although right now some applications might have been fooled by init()'s docstring and called it
+[23:23] <exarkun> but we could replace it with a nop and have the reactor call the real implementation
+[23:24] <glyph> wait, .init() has to be called from the IO thread?  why?
+[23:24] <exarkun> if you want to depend on whenThreaded(registerAsIOThread) to dtrt, which I am proposing we do
+[23:25] <glyph> I do not like whenThreaded
+[23:25] <exarkun> right now its documentation suggests that any program which uses threads call it
+[23:25] <exarkun> but that is not accurate
+[23:25] <exarkun> if you use twisted's threading APIs you don't have to call it ever yourself
+[23:25] <glyph> and I doubt anyone ever does
+[23:26] <exarkun> I agree that the behavior of whenThreaded is freaky
+[23:27] <exarkun> I am not sure how to replace it, though
+[23:27] <exarkun> Also a lot of stuff uses it
+[23:27] <glyph> whenThreaded is used 3 times in the entire Twisted codebase
+[23:27] <glyph> one of the uses is in log.py and is totally stupid
+[23:27] <glyph> one is in context.py and could be fixed
+[23:27] <glyph> and the third is the one you're talking about
+[23:27] <exarkun> okay maybe not a lot
+[23:28] *** glyph googles for 3rd-party code
+[23:28] <exarkun> heh, I am doing that too :)
+[23:28] <glyph> google finds 1 commit message and the API docs for 1.2 and 1.1
+[23:28] <glyph> it can't even find it in the docs for 1.3 :D
+[23:28] <exarkun> ok
+[23:28] <exarkun> so how shall I change it
+[23:29] <glyph> Well
+[23:29] <glyph> I'm thinking
+[23:30] <glyph> let's make .iterate() nice and slow, so people won't want to call it
+[23:30] <exarkun> no
+[23:30] <exarkun> buildbot takes too long already
+[23:30] <glyph> It can do the check to make sure that it's in the IO thread, that it's not attempting reentrancy, and then set itself up as the IO thread if one hasn't been set
+[23:30] <exarkun> that would be more trouble than it is worth
+[23:30] <glyph> I don't think it's actually going to slow down buildbot appreciably
+[23:30] <glyph> it might slow down pythondirector if it called .iterate() a lot
+[23:31] <glyph> anyway, basically write the 'set up the reactor to run' logic and call it in startRunning and in iterate
+[23:31] <glyph> the logic being
+[23:31] <glyph> if there's an IO thread already, let's make sure we're in it and we're not already running
+[23:31] <glyph> if there isn't an IO thread, make us the IO thread (if we are using threads)
+[23:32] <glyph> and yes, threadable.init ought to set the IO thread as well, because it was doing that before anyway and that is really the correct time to do it
+[23:32] <glyph> actually
+[23:32] <glyph> who calls threadable.init?
+[23:32] <exarkun> random code and IReactorThreads methods
+[23:32] <glyph> _initThreadPool
+[23:32] <glyph> nice
+[23:32] <glyph> that _is_ the right place to call it, and that _does_ have to be in the IO thread
+[23:33] <exarkun> yes
+[23:33] <glyph> OK, so I was totally wrong about threadable.init() being called from a non-IO thread
+[23:34] <glyph> sounds like the right place to do it is *just* in threadable.init() then, leave it out of the reactor entirely
+[23:34] <exarkun> well, except for "random code"
+[23:35] <exarkun> ./twisted/conch/ssh/factory.py:    threadable.init(1)
+[23:35] <exarkun> ./twisted/flow/test/test_flow.py:threadable.init()
+[23:35] <exarkun> ./twisted/test/test_internet.py:threadable.init(1)
+[23:35] <exarkun> for example.
+[23:35] <glyph> unlikely that any of those are in a non-IO thread :)
+[23:35] <exarkun> unlikely, yes
+[23:35] <exarkun> but not as satisfyingly absolutely in the IO thread as _initThreadPool
+[23:35] <glyph> GAH that import isn't even USED
+[23:36] <exarkun> and the docstring for threadable.init suggests _call this method_ to anyone reading, imho
+[23:36] <glyph> OK, the docstring should clearly be fixed
+[23:36] <exarkun> I've deleted all three of those calls in my branch, btw
+[23:36] <exarkun> I just dunno about code outside of twisted
+[23:36] <exarkun> actually maybe only two of them, I think the test_internet call was important
+[23:37] <glyph> seriously>?
+[23:37] <exarkun> it doesn't use IReactorThreads
+[23:37] <exarkun> it just makes a thread and does stuff
+[23:37] <glyph> augh
+[23:37] <glyph> that test is brokeen
+[23:38] <exarkun> eh
+[23:38] <exarkun> it is avoiding covering more code than it cares about :)
+[23:38] <glyph> You could test the same functionality using _actual_ public APIs
+[23:38] <exarkun> yes!  however
+[23:38] <exarkun> are we going to say you can't start a thread except using twisted's thread APIs if you are using twisted?
+[23:38] <exarkun> I think that is what we would have to do if we say you can never call threadable.init
+[23:43] <glyph> I think perhaps it would be best to suggest that if you are going to start threads and manage threads, you should do it from a function called from callInThread
+[23:44] <glyph> hrm.
+[23:44] <exarkun> I would agree entirely, if callInThread didn't force you into using a single threadpool.
+[23:44] <glyph> again, chandler poses a problem - I bet they're not doing that.
+[23:46] <exarkun> So, um, to back up and perhaps narrow scope slightly
+[23:46] <exarkun> The current code does the right thing, I think, except when the platform lacks threads
+[23:46] <exarkun> it does more than it needs to, probably, but it doesn't look like it ever does anything that's plain wrong
+[23:47] <exarkun> platforms that lack thread support need to just not have registerAsIOThread called, or registerAsIOThread needs to be a no-op on those platforms
+[23:47] <exarkun> Hmm
+[23:48] <exarkun> Correction: registerAsIOThread in __init__ on a thread-supporting platform is also sub-optimal now, as it forces the import of the thread module when we may not actually need it.
+[23:48] <exarkun> Your earlier proposal to do a crapload of examination in startRunning and iterate seems the most sane to me right now
+[23:49] <exarkun> However, whenThreaded still seems like the right solution to this problem to me
+[23:50] <glyph> So, for example, callFromThread when the reactor is not running will...?
+[23:50] <exarkun> And maybe dumping it actually does introduce a bug: whenThreaded lets us synchronize blahblahblah right when threads are enabled, whereas checking in iterate is subject to a race
+[23:51] <exarkun> The obviously correct implementation of isInIOThread (to me) is True iff the thread id matches up _or_ registerAsIOThread has never been called
+[23:51] <exarkun> but I may be missing something
+[23:52] <glyph> exarkun: the problem is that .iterate() is stupid and cannot be made to work
+[23:52] <glyph> exarkun: reactor startup is the correct time to set the IO thread
+[23:52] <glyph> exarkun: it should be _un_set in reactor teardown
+[23:52] <glyph> (though perhaps not in crash())
+[23:53] <exarkun> Ok, but that is moot, because I am not going to remove iterate() any time soon
+[23:54] <glyph> Yes, but having iterate() behave in random, non-deterministic, broken ways in edge cases is preserving its current behavior :)
+[23:54] <exarkun> Ok
+[23:54] <exarkun> So whenThreaded(registerAsIOThread) in startRunning and no calls to registerAsIOThread anywhere else?
+[23:55] <glyph> That seems like a good start.
+[23:55] <exarkun> ok so I am just reverting the entire change of a week ago :)

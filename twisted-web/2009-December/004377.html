@@ -1,0 +1,184 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] [nevow &amp; deferreds] page rendering occurs before data is available after callback
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5Bnevow%20%26%20deferreds%5D%20page%20rendering%20occurs%20before%20data%0A%20is%20available%20after%20callback&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   <LINK REL="Next"  HREF="004378.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] [nevow &amp; deferreds] page rendering occurs before data is available after callback</H1>
+    <B>Matthieu HUIN</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5Bnevow%20%26%20deferreds%5D%20page%20rendering%20occurs%20before%20data%0A%20is%20available%20after%20callback&In-Reply-To="
+       TITLE="[Twisted-web] [nevow &amp; deferreds] page rendering occurs before data is available after callback">matthieu.huin at wallix.com
+       </A><BR>
+    <I>Wed Dec  2 12:01:55 EST 2009</I>
+    <P><UL>
+        
+        <LI>Next message: <A HREF="004378.html">[Twisted-web] [nevow &amp; deferreds] page rendering occurs	before	data is available after callback
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4377">[ date ]</a>
+              <a href="thread.html#4377">[ thread ]</a>
+              <a href="subject.html#4377">[ subject ]</a>
+              <a href="author.html#4377">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Greetings,
+
+I need to render a page with Nevow containing data extracted from a
+database. The query might take time so it is taken care of with
+twisted.adbapi, and thus with a Deferred.
+
+My render function returns this Deferred - to which some callbacks have
+been added to format the data. All is well as long as the request is
+fast enough for the Deferred to be dealt with quasi-synchronously. If
+the query takes too much time, the render function simply returns the
+Deferred, which is set at None, instead of its result value. 
+
+Here is an extract of the code :
+
+-------------------------------------------------------------------------
+
+class Page(rend.Page):
+
+    addSlash = True
+    buffered = True
+    docFactory = loaders.xmlfile(util.sibpath(__file__, 'rest.xhtml'))
+
+    def renderHTTP(self, ctx):
+        &quot;&quot;&quot;Override render HTTP to handle authentication.
+
+        We override renderHTTP to ensure that nothing has been sent to
+        be able to change error code.
+        &quot;&quot;&quot;
+        self.authorized = True
+        request = inevow.IRequest(ctx)
+
+        # Which kind of request ?
+        if request.method == &quot;POST&quot;:
+            # It may be an overloaded POST, check for _method
+            if ctx.arg(&quot;_method&quot;) in [&quot;PUT&quot;, &quot;DELETE&quot;]:
+                request.method = ctx.arg(&quot;_method&quot;)
+                del request.args[&quot;_method&quot;]
+
+        # Is the user authorized?
+        username, password = request.getUser(), request.getPassword()
+        d = defer.maybeDeferred(Authenticate().authenticate, username,
+password)
+        # If not authenticated, turn it into a failure
+        d.addCallback(lambda x: x or
+failure.Failure(Unauthenticated(&quot;Incorrect username or password&quot;)))
+        d.addCallback(lambda x: Authorize().authorize(username,
+(request.method,
+
+inevow.ICurrentSegments(ctx))))
+        # If not authorized, turn it into a failure
+        d.addCallback(lambda x: x or failure.Failure(Unauthenticated(&quot;No
+rights to access this resource&quot;)))
+        # Add privilege info - /!\ possible race condition here ?
+        d.addCallback(lambda x : privileger(x,ctx) )
+        # Trap any authentication error
+        d.addErrback(lambda x: x.trap(Unauthenticated) and
+self.render_ask_authentication(ctx))
+        # Back to normal rendering
+        d.addCallback(lambda x: rend.Page.renderHTTP(self, ctx))
+        return d
+
+    def render_PUT(self, ctx, data):
+        &quot;&quot;&quot;Handle a query&quot;&quot;&quot;
+
+        def unsuccessful_results(failure, ctx):
+            &quot;&quot;&quot;Render an error message because of unsucessful results&quot;&quot;&quot;
+            inevow.IRequest(ctx).setResponseCode(http.BAD_REQUEST)
+            return T.invisible[&quot;While processing the query, we get this
+error:&quot;,
+                               failure]
+
+        def successful_results(self, results, query):
+            &quot;&quot;&quot;Render successful results.
+
+            This function will store the results and link back to the
+            resource containing chunk of them
+            &quot;&quot;&quot;
+
+            # We store results
+            SearchEngineResource.serial += 1
+            if self.original not in SearchEngineResource.results:
+                SearchEngineResource.results[self.original] = {}
+
+SearchEngineResource.results[self.original][SearchEngineResource.serial]
+= [time.time(),
+
+query,
+
+results]
+            # Display query results
+                return T.p[&quot;The query was successful. &quot;,
+                    &quot;There are &quot;, T.span(_class=&quot;cardinal&quot;)[
+                        len(results)
+                        ], &quot; result(s). You need to &quot;, T.a(href=&quot;%d/&quot; %
+SearchEngineResource.serial)[
+                        &quot;fetch them&quot;
+                        ], &quot;.&quot;
+                       ]
+        user = inevow.IRequest(ctx).getUser()            
+        try:
+            # We get a deferred object
+            result = self.original.query(ctx.arg(&quot;value&quot;), user)
+        except ValueError, e:
+            # ValueError is thrown synchronously
+            inevow.IRequest(ctx).setResponseCode(http.BAD_REQUEST)
+            return &quot;While processing the query %r, we get this error: %
+s&quot; % (ctx.arg(&quot;value&quot;),
+
+e)
+        result.addCallbacks(lambda x: successful_results(self, x,
+ctx.arg(&quot;value&quot;)),
+                            errback=unsuccessful_results,
+errbackArgs=(ctx,))
+        return result
+
+----------------------------------------------------------------------------
+
+The callbacks on the Deferred are executed flawlessly otherwise. The
+rendering simply seems not to care whether the Deferred has been called
+or not.
+
+What can I do to correct this behavior ? Could it be because renderHTTP
+returns a Deferred already ?
+
+
+Matthieu
+
+
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	<LI>Next message: <A HREF="004378.html">[Twisted-web] [nevow &amp; deferreds] page rendering occurs	before	data is available after callback
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4377">[ date ]</a>
+              <a href="thread.html#4377">[ thread ]</a>
+              <a href="subject.html#4377">[ subject ]</a>
+              <a href="author.html#4377">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

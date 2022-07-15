@@ -1,0 +1,112 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Performance issue in reactor.callLater
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Performance%20issue%20in%20reactor.callLater&In-Reply-To=%3C413D7680.6060103%40gkec.informatik.tu-darmstadt.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="041051.html">
+   <LINK REL="Next"  HREF="041060.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Performance issue in reactor.callLater</H1>
+    <B>Stefan Behnel</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Performance%20issue%20in%20reactor.callLater&In-Reply-To=%3C413D7680.6060103%40gkec.informatik.tu-darmstadt.de%3E"
+       TITLE="[Twisted-Python] Performance issue in reactor.callLater">behnel_ml at gkec.informatik.tu-darmstadt.de
+       </A><BR>
+    <I>Tue Sep  7 02:51:12 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="041051.html">[Twisted-Python] Performance issue in reactor.callLater
+</A></li>
+        <LI>Next message (by thread): <A HREF="041060.html">[Twisted-Python] Performance issue in reactor.callLater - clean	patch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41059">[ date ]</a>
+              <a href="thread.html#41059">[ thread ]</a>
+              <a href="subject.html#41059">[ subject ]</a>
+              <a href="author.html#41059">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+Stefan Behnel schrieb:
+&gt;<i> I guess I do see a problem if the value of a call somewhere 
+</I>&gt;<i> in the heap is changed. That brakes the heap invariant and may conflict 
+</I>&gt;<i> with further changes to the heap. Let me think about it.
+</I>
+Ok, I thought about it. And I believe the best way to do this is to write a specialized heap version. I copied the heapq implementation and adapted it so that it keeps track of the position in the heap for each DelayedCall. That makes it possible to remove a call without linear overhead and in log(N) time.
+
+So, comparing the complexity of the heap version with the original version:
+
+callLater:
+	ORIG:	O(log(N)) for binary search + O(N) for array insertion (python lists are arrays as far as I know)
+	HEAP:	O(1) as it is only appended to a list. Insertion is done in runUntilCurrent (as late as possible)
+
+cancel:
+	ORIG:	O(N) for linear array deletion
+	HEAP:	O(log(N)) if it was already inserted, O(1) if it was only stored for later insertion (see post by Bob)
+
+reset:
+	ORIG:	O(N) for linear array deletion + O(log(N)) for binary search + O(N) for array insertion
+	HEAP:	O(log(N)) for removal + O(log(N)) for insertion if it was already inserted
+		O(1) if it was only stored
+
+delay:
+	see reset - could actually be implemented twice as fast in the heap (only _siftup), but I didn't do that - it's fast enough anyway
+
+runUntilCurrent:
+	heap implementation is about log(N) times slower, which is still much faster than the original implementaion if you add it up with callLater. There is always one call to callLater and at most (!) one iteration in runUntilCurrent for each DelayedCall.
+
+
+So, summing it up, it kicks ass.
+
+
+Other things to mention:
+
+getDelayCalls has a slight change in semantics: It only returns the delayed calls that were already inserted into the heap, so if you run callLater and getDelayCalls in the same iteration of the main loop, you will not find your delayed call in the returned tuple. This is due to the change Bob proposed.
+
+
+Now, are there any test cases in Twisted for the ReactorTime part? I'd like to see them run over my implementation to check if it works as expected in all cases.
+
+You should also consider running pychecker over the old version, there were some unused variables and that kind of stuff.
+
+Hoping for approval,
+Stefan
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: base.py.diff
+Type: text/x-patch
+Size: 8016 bytes
+Desc: not available
+URL: &lt;/pipermail/twisted-python/attachments/20040907/d2473bac/attachment-0002.bin&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="041051.html">[Twisted-Python] Performance issue in reactor.callLater
+</A></li>
+	<LI>Next message (by thread): <A HREF="041060.html">[Twisted-Python] Performance issue in reactor.callLater - clean	patch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41059">[ date ]</a>
+              <a href="thread.html#41059">[ thread ]</a>
+              <a href="subject.html#41059">[ subject ]</a>
+              <a href="author.html#41059">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

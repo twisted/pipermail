@@ -1,0 +1,119 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] logging
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20logging&In-Reply-To=%3CE746C265-4D12-4423-B971-457E4FF261AD%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="027089.html">
+   <LINK REL="Next"  HREF="027085.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] logging</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20logging&In-Reply-To=%3CE746C265-4D12-4423-B971-457E4FF261AD%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] logging">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Sat Jun 15 05:37:40 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="027089.html">[Twisted-Python] logging
+</A></li>
+        <LI>Next message: <A HREF="027085.html">[Twisted-Python] logging
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27082">[ date ]</a>
+              <a href="thread.html#27082">[ thread ]</a>
+              <a href="subject.html#27082">[ subject ]</a>
+              <a href="author.html#27082">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Jun 14, 2013, at 11:18 PM, Christopher Armstrong &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">radix at twistedmatrix.com</A>&gt; wrote:
+
+&gt;<i> This conversation has gotten pretty sprawling; time to reel it in with
+</I>&gt;<i> some code.
+</I>&gt;<i> 
+</I>&gt;<i> What do you think of this for an API that meets in the middle?
+</I>&gt;<i> 
+</I>&gt;<i> <A HREF="https://gist.github.com/radeex/5787124">https://gist.github.com/radeex/5787124</A>
+</I>&gt;<i> 
+</I>&gt;<i> This example implementation only concerns itself with the points under
+</I>&gt;<i> debate right now; obviously it's completely unusable in general. But
+</I>&gt;<i> anyway:
+</I>&gt;<i> 
+</I>&gt;<i> 1. it supports English logs
+</I>&gt;<i> 2. it doesn't require you to specify a formatting if you want to just
+</I>&gt;<i> log a bunch of data
+</I>&gt;<i> 3. it makes it easy to specify a system (both manually and based on
+</I>&gt;<i> the module your code is in)
+</I>
+
+First off, thanks again for taking the time to correspond about this, I'm very happy for this conversation to be attracting attention and making progress :).
+
+Moving right along...
+
+This code is relying on the semantics of the existing log.msg() call (which are bad, for the reasons I enumerated in the start of this thread), right down to the dependence on %-formatting.  The main thing I'm interested in at the moment is actually fixing those semantics to be more useful; the specific thing we're talking about here, persistent log identifiers, is interesting to me at the moment mostly as it relates to that.
+
+I realize you might just be relying on it for familiarity, you might not have had time to read the whole new thing, so I'm not trying to tear down your idea based on that alone :).
+
+But Wilfredo already implemented a thing which addresses the namespacing-of-log-messaages issue, and it does about 2/3 of what your proposal already does (except it has, like, tests and stuff).  Right down to the _getframe() hack (although  &lt;<A HREF="http://trac.calendarserver.org/browser/CalendarServer/trunk/twext/python/log.py#L312">http://trac.calendarserver.org/browser/CalendarServer/trunk/twext/python/log.py#L312</A>&gt; uses inspect.currentframe() which has a public-sounding name at least :)).  As I mentioned in my immediately-previous reply, the logger's 'namespace' does not need to be the same as your module name, so it can be a &quot;more persistent&quot; identifier if you have one.
+
+More significantly, you're actually going to the trouble of constructing a format string.  This produces output in an ad-hoc format: '='-separated str()s of your log keys (although only the ones you pass directly in your message; those annotating or augmenting the message at subsequent points by other publishers / observers are ignored), which you are presumably relying upon being smooshed into a plain-text log file, right along side many other messages which do not fit this format.  Presumably this could lead to issues like traceback lines with '=' assignments in them showing up in whatever kind of ad-hoc log-analysis you want to do later, and ambiguous unparseable results if any fields in the log message have a '=' and a space in their repr.
+
+Let's not make it the responsibility of the emitter, or the format string, to get those values into a text log file that can be scanned with a regex (albeit in the case of your proposal, a much-simplified regex).  Let's push that responsibility down into the log observer, and actually save it as structured data and *parse* it later.
+
+As all the hip young kids will tell you, this type of data should be persisted with JSON, but we should probably have code to support multiple formats.  Another advantage of serializing and parsing the logs as structured data would allow tools written to work on a &quot;live&quot; log observer to also analyze persistent logs in at least a similar way, if not entirely the same way.
+
+(An object that has survived the grim ordeal of translation to and from JSON will surely be made less by the process, and can't be treated quite the same way by a log observer; but, as I'm sure you'll agree, this is probably better than the alternative of Pickle.  An unpickled object will be brought fully back to life, but, in the words of the recent NIN release, it will have &quot;came back haunted&quot;.)
+
+Maybe we could even do a SQLite observer.  Honestly I'm not sure which format is best.
+
+Since it's also important to be able to *filter* logs, and avoid the work of formatting or serializing them at all, it would be best to push this work as far down the line as possible.  The construction of the format string is itself a whole ton of string-copying, the sort of thing I'd really like to avoid.  (Last I measured, dictionary operations that don't cause a reallocation - and most don't, unless you're inserting in a long loop - are cheaper than even apparently small string copies.)
+
+In fact, it strikes me that perhaps *this* is the feature we should be talking about implementing: writing a structured log observer and parser, firming up the contract between emitters and observers so it's clear what to do with data that can't be serialized - more than exactly which fields we use to identify messages that are interesting to us.
+
+Relatedly, we could make log analysis a first-class task; instead of assuming someone will grep the log file later, actually provide a simple log-query tool that users can plug their code into, presuming they're using a log format which is cleanly parseable.  Maybe have a little web resource that serves up nicely formatted views of your logs.
+
+I can implement the UUID thing as a completely separate ticket and we can discuss it on its own merits; meanwhile, you can happily add log IDs to everything in your applications.  I'd be quite happy to table this part of the conversation for a separate ticket; I just thought it would be a nice thing that could fall out of some of the other parts of a new logging system.
+
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20130615/e3f97758/attachment-0001.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20130615/e3f97758/attachment-0001.html</A>&gt;
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="027089.html">[Twisted-Python] logging
+</A></li>
+	<LI>Next message: <A HREF="027085.html">[Twisted-Python] logging
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27082">[ date ]</a>
+              <a href="thread.html#27082">[ thread ]</a>
+              <a href="subject.html#27082">[ subject ]</a>
+              <a href="author.html#27082">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

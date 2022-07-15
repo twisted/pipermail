@@ -1,0 +1,237 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20stop/start%20client%20connections%20with%20loseConnection%0A%20in%20ReconnectingClientFactory&In-Reply-To=%3C001201d4e0d1%24d9c24040%248d46c0c0%24%40cmsconstruct.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory</H1>
+    <B>Chris Satterthwaite</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20stop/start%20client%20connections%20with%20loseConnection%0A%20in%20ReconnectingClientFactory&In-Reply-To=%3C001201d4e0d1%24d9c24040%248d46c0c0%24%40cmsconstruct.com%3E"
+       TITLE="[Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory">chris at cmsconstruct.com
+       </A><BR>
+    <I>Fri Mar 22 11:08:19 MDT 2019</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64672">[ date ]</a>
+              <a href="thread.html#64672">[ thread ]</a>
+              <a href="subject.html#64672">[ subject ]</a>
+              <a href="author.html#64672">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello community,
+
+ 
+
+First of all - thanks for an awesome platform!  I'm brand new to this
+community, but have been using Twisted a couple years.
+
+ 
+
+Reason for posting:
+
+I've hit a condition with ReconnectingClientFactory that I'm not sure is per
+design.  I have a work around right now, but need your perspective.  Seems
+like there should be a better/right way to do this.
+
+ 
+
+Attempted design:
+
+I'd like to have long running TCP clients (forever until stopped), with a
+long running TCP server.  When a long running client hits a problem with a
+dependency (database is down, kafka bus unavailable, external API not
+responding, etc), I want the client to go offline for a while and then come
+back online. an automated, self-recovery type action.  Since it's not ok to
+start/stop/restart the Twisted Reactor, I am letting the client finish
+whatever it can do, disconnect from the service, destruct the dependencies,
+wait for a period of time, and then attempt a clean re-initialization of
+those dependencies along with reconnecting to the Twisted Server.
+
+ 
+
+Problem case:
+
+I'm using the ReconnectingClientFactory in my client.  When the client hits
+a problem, it calls transport.loseConnection().  But whenever the client
+calls this, after the disconnect - it does not reconnect; stopFactory is
+called and everything exits. 
+
+ 
+
+Work around:
+
+I noticed some Twisted source code that works off factory.numPorts.  If
+numPorts is 1 and the client loses the connection, it goes to 0 and calls
+the cleanup.  So I conditionally increase this number right before
+intentionally disconnecting, and then reset that after reconnecting.  This
+solves the problem, but it's a hack.  
+
+ 
+
+I'll attach the test scripts to this post (if attachments are allowed), but
+the main code is with these functions in the factory:
+
+ 
+
+                def clientConnectionLost(self, connector, reason):
+
+                                print('  factory clientConnectionLost:
+reason: {}'.format(reason))
+
+                                # if self.disconnectedOnPurpose:
+
+                                #             ## Hack to keep reactor alive
+
+                                #             print('  factory
+clientConnectionLost: increasing numPorts')
+
+                                #             self.numPorts += 1
+
+                                #             self.numPortsChanged = True
+
+                                #             self.disconnectedOnPurpose =
+False
+
+                                print('  ... simulate client going idle
+before attempting restart...')
+
+                                time.sleep(5)
+
+ 
+ReconnectingClientFactory.clientConnectionLost(self, connector, reason)
+
+                                print('  factory clientConnectionLost:
+end.\n')
+
+ 
+
+                def clientConnectionMade(self):
+
+                                print('  factory clientConnectionMade:
+starting numPorts: {}'.format(self.numPorts))
+
+                                # if self.numPortsChanged :
+
+                                #             ## Resetting from hacked value
+
+                                #             print('  factory
+clientConnectionMade: decreasing numPorts')
+
+                                #             self.numPorts -= 1
+
+                                #             self.numPortsChanged = False
+
+                                print('  factory clientConnectionMade:
+finished numPorts: {}'.format(self.numPorts))
+
+ 
+
+                def cleanup(self):
+
+                                print('factory cleanup: calling
+loseConnection')
+
+                                if self.connectedClient is not None:
+
+ 
+self.connectedClient.transport.loseConnection()
+
+                                                self.disconnectedOnPurpose =
+True
+
+ 
+
+With the above lines commented out, once the cleanup call does
+transport.loseConnection(), the factory stops at the end of
+clientConnectionLost. 
+
+ 
+
+ 
+
+Sample scripts/logs:
+
+I've tried to create short test scripts and corresponding logs (with the
+client failing, and then with it restarting when I use the workaround).
+I've cut out several thousand lines to get down to something simple for the
+example test scripts, but I know the client is still a little long.  Again,
+I'm not sure if attachments work on the mailing list, but I'll attempt to
+attach the client/server scripts with the corresponding pass/fail logs.
+
+ 
+
+Thanks!
+
+ 
+
+-Chris
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20190322/df901b5a/attachment-0002.html&gt;
+-------------- next part --------------
+An embedded and charset-unspecified text was scrubbed...
+Name: testClient.py
+URL: &lt;/pipermail/twisted-python/attachments/20190322/df901b5a/attachment-0004.ksh&gt;
+-------------- next part --------------
+An embedded and charset-unspecified text was scrubbed...
+Name: testServer.py
+URL: &lt;/pipermail/twisted-python/attachments/20190322/df901b5a/attachment-0005.ksh&gt;
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: client_not_working.log
+Type: application/octet-stream
+Size: 1280 bytes
+Desc: not available
+URL: &lt;/pipermail/twisted-python/attachments/20190322/df901b5a/attachment-0006.obj&gt;
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: client_working_with_hack.log
+Type: application/octet-stream
+Size: 2139 bytes
+Desc: not available
+URL: &lt;/pipermail/twisted-python/attachments/20190322/df901b5a/attachment-0007.obj&gt;
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: server.log
+Type: application/octet-stream
+Size: 682 bytes
+Desc: not available
+URL: &lt;/pipermail/twisted-python/attachments/20190322/df901b5a/attachment-0008.obj&gt;
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64672">[ date ]</a>
+              <a href="thread.html#64672">[ thread ]</a>
+              <a href="subject.html#64672">[ subject ]</a>
+              <a href="author.html#64672">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

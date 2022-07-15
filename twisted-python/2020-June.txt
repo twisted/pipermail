@@ -1,0 +1,2437 @@
+From barry.scott at forcepoint.com  Tue Jun  2 05:54:34 2020
+From: barry.scott at forcepoint.com (Barry Scott)
+Date: Tue, 02 Jun 2020 12:54:34 +0100
+Subject: [Twisted-Python] log.callWithLogger not used - slows down reactor?
+Message-ID: <2722953.e9J7NaK4W3@fpbarry>
+
+I'm hunting down performance issue in our code and spotted this in
+passing. As far I can tell nothing seems to need callWithLogger.
+
+I ran our 6k+ tests with this patch applied and everything worked.
+
+Does anything in the twisted world need it?
+
+Barry
+
+diff --git a/src/twisted/internet/pollreactor.py b/src/twisted/internet/
+pollreactor.py
+index 6db1660b9..6901e5c95 100644
+--- a/src/twisted/internet/pollreactor.py
++++ b/src/twisted/internet/pollreactor.py
+@@ -165,7 +165,7 @@ class PollReactor(posixbase.PosixReactorBase, 
+posixbase._PollLikeMixin):
+                 # Handles the infrequent case where one selectable's
+                 # handler disconnects another.
+                 continue
+-            log.callWithLogger(selectable, _drdw, selectable, fd, event)
++            _drdw(selectable, fd, event)
+ 
+     doIteration = doPoll
+ 
+
+
+
+
+
+From glyph at twistedmatrix.com  Wed Jun  3 00:38:14 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 2 Jun 2020 23:38:14 -0700
+Subject: [Twisted-Python] Deprecate and remove
+ t.internet.ssl.DistinguishedName ?
+In-Reply-To: <20200530061628.GA15115@kosmos.hhhh.org>
+References: <20200530061628.GA15115@kosmos.hhhh.org>
+Message-ID: <73629A0D-81A0-4C87-B110-5FEC2F4D25EE@twistedmatrix.com>
+
+
+
+> On May 29, 2020, at 11:16 PM, Wim Lewis <wiml at hhhh.org> wrote:
+> 
+> I'm looking at a fix for bug <https://twistedmatrix.com/trac/ticket/9804>
+> (Cannot load a PEM certificate with Unicode in subject). The underlying
+> problem is that the DistinguishedName class can't handle non-ascii AVAs.
+> The fix I've made simply avoids creating DistinguishedName instances when
+> it isn't necessary, but that leaves the question of what to do with the
+> class. I think that the best thing to do is to deprecate the class
+> entirely and replace it with simpler API. 
+
+Thanks for checking in about this!
+
+> Reasons I think that the DN class is broken:
+>  - The values in a certificate are conceptually text-strings, not
+>    byte strings; they may be in ASCII, UTF8, UTF16, or several
+>    other encodings. However
+>    - DN represents these textual values as `bytes` instead of `str`
+>    - DN can't handle non-ASCII-representable values at all, even if
+>      the user never tries to access that value
+>  - It can only handle a subset of the attribute-assertions found in
+>    a PKIX DN; there's no escape hatch for others (e.g. OID keys or
+>    whatever)
+>  - It can't represent the full structure of a DN (specific ordering,
+>    multiple-value RDNs, AVAs whos values aren't textual, etc.) ---
+>    these are not common in the PKIX world but they are valid
+
+Ugh.  I wrote this class where I knew literally nothing about TLS, and really just wanted it to be the thing it effectively is to the user (i.e. "connect to a hostname") rather than the thing it actually is (a tarpit of unnecessarily complex asn.1 nonsense).
+
+Additionally, this was when pyOpenSSL was unmaintained and buggy as hell and X509Name would segfault when you so much as sneezed at it right.
+
+> What I propose as an alternative:
+>  - Replace APIs that take `DistinguishedName` classes with ones that take
+>    `Union[OpenSSL.crypto.X509Name, dict]` where the `dict` format is parsed
+>    with the same convenience semantics as DistinguishedName, except that
+>    values are `str`
+>  - Replace APIs that return `DistinguishedName` with ones that return
+>    OpenSSL.crypto.X509Name, which is already fairly convenient to use
+>    (e.g. it has attributes for retrieving/setting commonName
+>    and so on without dealing with the full complexity of X.500 names)
+>  - Deprecate `DistinguishedName` and the APIs that use it for eventual removal
+>  - Expose a convenience function for the dict -> X509Name transform
+> 
+> Any objections? Thoughts on how I should go about doing this? Should I
+> do it as part of this Trac ticket or split it out?
+> 
+> The only downside I can think of is that this exposes the
+> OpenSSL.crypto.X509Name type as part of Twisted's API. I don't think
+> this is a huge reduction in flexibility --- Twisted's API already somewhat
+> assumes that TLS is implemented using OpenSSL, and only users whose needs
+> are *already* not well met by DistinguishedName will care if that `Union`
+> type changes in the future.
+
+We've been slowly trying to paper over the aspects of the API that expose OpenSSL details and provide a more complete abstraction for years.  We are not there yet, as you observe!  We do still somewhat assume TLS uses OpenSSL.  But I really want to get away from that; I want to be able to use SChannel on Windows and Network.framework on macOS and provide a nice abstraction that floats above that.  This means - particularly in the latter case - not just eliminating the OpenSSL dependency, but actually adding new APIs that allow some pluggability on the reactor itself to allow for combining higher-level protocols together in the reactor itself.  (Maybe even HTTP, given the way that NSURLSession seems to want to provide HTTP3 as a platform service directly, skipping sockets and indeed TCP and TLS entirely...)
+
+In a nearer-term, more practical way that we might leverage this soon, is a "lite" TLS provider that uses the stdlib's SSLSocket rather than all of pyOpenSSL; this would substantially reduce the dependency weight of Twisted on embedded platforms (for example, you can get the built-in SSL module in a context like https://omz-software.com/pythonista/ <https://omz-software.com/pythonista/> but there's no way to get cryptography & pyOpenSSL at all).
+
+One success story on this front is optionsForClientTLS().  Hopefully one day in the not too distant future we can get an optionsForServerTLS and slowly hide CertificateOptions underneath it.
+
+So I would see this refactoring as an opportunity to move further away from pyOpenSSL dependency rather than further towards it.  I'm all for deprecating "DN", it's a terrible wrapper, but I think we could have a better wrapper.
+
+That said; if abstracting this stuff away is really challenging, and you already have a fix close to ready to go, we can always evolve the API again when we do this for real, and have an actual second backend to prove the interface against.
+
+-glyph
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200602/c39481ca/attachment.htm>
+
+From glyph at twistedmatrix.com  Wed Jun  3 01:05:02 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Wed, 3 Jun 2020 00:05:02 -0700
+Subject: [Twisted-Python] [RFC] Drop support for Python 3.5 sometime
+ after May 2021?
+In-Reply-To: <887b3218-b523-483f-8a2d-754266cf35b0@www.fastmail.com>
+References: <CAG=rPVeM1ohNMTErKseTEkhNr6Eo5ZG8ioZFTODp05i06Egj2Q@mail.gmail.com>
+ <C623591F-DA86-4AB9-980A-8217BEAC04B5@twistedmatrix.com>
+ <759e4eed-01c7-4455-a6fa-338daeb15776@www.fastmail.com>
+ <9701438.nUPlyArG6x@fpbarry>
+ <CAEeXt4OG3UWgj62dHpiVtY+Z-qZSyaXkZJdKfPqtk9v-jMtRDA@mail.gmail.com>
+ <c6f62455-99fe-4fe9-a866-3982505098e9@www.fastmail.com>
+ <EC462A98-D7AD-4B9D-BF1E-7C839C1426B0@twistedmatrix.com>
+ <887b3218-b523-483f-8a2d-754266cf35b0@www.fastmail.com>
+Message-ID: <0AAFB8A6-D4FC-4216-99F6-157DD7E9E667@twistedmatrix.com>
+
+
+
+> On May 28, 2020, at 3:13 PM, Tom Most <twm at freecog.net> wrote:
+> 
+> On Fri, May 22, 2020, at 10:54 PM, Glyph wrote:
+>> So, pidfd's cool, we should totally use it. Also we should use posix_spawn and maybe some other stuff too. But I wonder if there's any heuristic we could use to speed up our current strategy, like ordering the to-reap list by putting things with no open FDs at the front of it? And optimistically assuming that once we've found something to reap, maybe we can stop? And maybe it should run in a cooperator, rather than just blocking the reactor indefinitely?
+> 
+> Those all sound like reasonable optimizations with little downside to me.
+
+Great!  Anybody feel like filing some tickets? :)
+
+>> Honestly it had not occurred to me that people were managing 20k+ python interpreters at a time with spawnProcess (although, yikes, amazing, you've gotta talk more about this application, and what kind of hardware you're on!)
+> 
+> Nonono, that was a synthetic stress test. It did spawn Python processes, but they immediately called `exec sleep` to conserve memory.
+> 
+> The result of the test was that the service would run out of memory _well_ before inefficiencies in Twisted's reaping scheme became a problem.
+
+
+Aah, that's less exciting ;).
+
+-g
+
+From glyph at twistedmatrix.com  Wed Jun  3 01:07:37 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Wed, 3 Jun 2020 00:07:37 -0700
+Subject: [Twisted-Python] log.callWithLogger not used - slows down
+ reactor?
+In-Reply-To: <2722953.e9J7NaK4W3@fpbarry>
+References: <2722953.e9J7NaK4W3@fpbarry>
+Message-ID: <32F8EC6F-5425-402E-933D-61FA7E00BDC0@twistedmatrix.com>
+
+
+
+> On Jun 2, 2020, at 4:54 AM, Barry Scott <barry.scott at forcepoint.com> wrote:
+> 
+> I'm hunting down performance issue in our code and spotted this in
+> passing. As far I can tell nothing seems to need callWithLogger.
+> 
+> I ran our 6k+ tests with this patch applied and everything worked.
+> 
+> Does anything in the twisted world need it?
+> 
+> Barry
+> 
+> diff --git a/src/twisted/internet/pollreactor.py b/src/twisted/internet/
+> pollreactor.py
+> index 6db1660b9..6901e5c95 100644
+> --- a/src/twisted/internet/pollreactor.py
+> +++ b/src/twisted/internet/pollreactor.py
+> @@ -165,7 +165,7 @@ class PollReactor(posixbase.PosixReactorBase, 
+> posixbase._PollLikeMixin):
+>                 # Handles the infrequent case where one selectable's
+>                 # handler disconnects another.
+>                 continue
+> -            log.callWithLogger(selectable, _drdw, selectable, fd, event)
+> +            _drdw(selectable, fd, event)
+> 
+>     doIteration = doPoll
+
+I think that we may have eliminated all the dependency on it.  Do your logs look any different with this change applied?  If you can demonstrate its impact on speed.twistedmatrix.com <http://speed.twistedmatrix.com/> maybe we can go ahead and do this.  The logger used to be far more dependent on this, but the "system" portion of the log message is now based more on who is doing the logging than what socket provoked the event (which is what this is tracking, effectively).
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200603/35970aff/attachment-0001.htm>
+
+From barry.scott at forcepoint.com  Wed Jun  3 03:51:18 2020
+From: barry.scott at forcepoint.com (Barry Scott)
+Date: Wed, 03 Jun 2020 10:51:18 +0100
+Subject: [Twisted-Python] log.callWithLogger not used - slows down
+ reactor?
+In-Reply-To: <32F8EC6F-5425-402E-933D-61FA7E00BDC0@twistedmatrix.com>
+References: <2722953.e9J7NaK4W3@fpbarry>
+ <32F8EC6F-5425-402E-933D-61FA7E00BDC0@twistedmatrix.com>
+Message-ID: <7106598.EvYhyI6sBW@fpbarry>
+
+On Wednesday, 3 June 2020 08:07:37 BST Glyph wrote:
+> > On Jun 2, 2020, at 4:54 AM, Barry Scott <barry.scott at forcepoint.com>
+> > wrote:
+> > 
+> > I'm hunting down performance issue in our code and spotted this in
+> > passing. As far I can tell nothing seems to need callWithLogger.
+> > 
+> > I ran our 6k+ tests with this patch applied and everything worked.
+> > 
+> > Does anything in the twisted world need it?
+> > 
+> > Barry
+> > 
+> > diff --git a/src/twisted/internet/pollreactor.py b/src/twisted/internet/
+> > pollreactor.py
+> > index 6db1660b9..6901e5c95 100644
+> > --- a/src/twisted/internet/pollreactor.py
+> > +++ b/src/twisted/internet/pollreactor.py
+> > @@ -165,7 +165,7 @@ class PollReactor(posixbase.PosixReactorBase,
+> > 
+> > posixbase._PollLikeMixin):
+> >                 # Handles the infrequent case where one selectable's
+> >                 # handler disconnects another.
+> >                 continue
+> > 
+> > -            log.callWithLogger(selectable, _drdw, selectable, fd, event)
+> > +            _drdw(selectable, fd, event)
+> > 
+> >     doIteration = doPoll
+> 
+> I think that we may have eliminated all the dependency on it.  Do your logs
+> look any different with this change applied?  If you can demonstrate its
+> impact on speed.twistedmatrix.com <http://speed.twistedmatrix.com/> maybe
+> we can go ahead and do this.  The logger used to be far more dependent on
+> this, but the "system" portion of the log message is now based more on who
+> is doing the logging than what socket provoked the event (which is what
+> this is tracking, effectively).
+
+Curious, if its dead code why do you need a speed test? For your comment
+it seems you planned to stop using this.
+
+What is it I would need to do for a speed test?
+
+Barry
+
+
+> 
+> -glyph
+
+
+
+
+
+From trac at twistedmatrix.com  Sun Jun  7 00:05:16 2020
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 07 Jun 2020 06:05:16 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1591509916.59.2962834500556622550@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200607/169181f0/attachment.htm>
+
+From rodrigc at crodrigues.org  Sun Jun  7 17:21:46 2020
+From: rodrigc at crodrigues.org (Craig Rodrigues)
+Date: Sun, 7 Jun 2020 16:21:46 -0700
+Subject: [Twisted-Python] twistedchecker now uses pylint >= 2.4.4,
+ can we use type annotations in Twisted now?
+In-Reply-To: <B7036604-8208-491E-BEA0-58E0B6858FD0@twistedmatrix.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVdkYv2PfG+k6nea6Wer4-LbTp10tBcbXGaA7q7NcZ9Q0Q@mail.gmail.com>
+ <B7036604-8208-491E-BEA0-58E0B6858FD0@twistedmatrix.com>
+Message-ID: <CAG=rPVcBTNrp0bgj08eBb0vW8Q4KH0GHWdnDnd_FnVzRmzeQwQ@mail.gmail.com>
+
+I have merged a few PR's to trunk which eliminate hundreds of errors
+encountered with:
+
+
+*tox -e mypy*
+I think we can take several passes with more PR's to whack away all these
+mypy errors,
+and turn on mypy as part of the default CI for Twisted.
+
+I have seen a few errors like:
+
+src/twisted/words/protocols/jabber/sasl_mechanisms.py:47:1: error:
+'Anonymous' is missing following 'ISASLMechanism' interface members:
+getResponse.  [misc]
+    class Anonymous(object):
+src/twisted/words/protocols/jabber/sasl_mechanisms.py:61:1: error: 'Plain'
+is missing following 'ISASLMechanism' interface members: getResponse.
+ [misc]
+    class Plain(object):
+src/twisted/internet/_dumbwin32proc.py:110:1: error: 'Process' is missing
+following 'twisted.internet.interfaces.ITransport' interface members:
+getHost, getPeer.  [misc]
+    class Process(_pollingfile._PollingTimer, BaseProcess):
+src/twisted/internet/process.py:959:1: error: 'PTYProcess' is missing
+following 'twisted.internet.interfaces.ITransport' interface members:
+getHost, getPeer.  [misc]
+    class PTYProcess(abstract.FileDescriptor, _BaseProcess):
+src/twisted/internet/process.py:959:1: error: 'PTYProcess' is missing
+following 'IProcessTransport' interface members: closeChildFD,
+writeToChild.  [misc]
+    class PTYProcess(abstract.FileDescriptor, _BaseProcess):
+src/twisted/internet/base.py:504:1: error: 'ReactorBase' is missing
+following 'IReactorCore' interface members: run.  [misc]
+    class ReactorBase(PluggableResolverMixin)
+
+
+For a class to properly implement a Zope interface, is it mandatory that
+it  implement every method in that interface?
+
+If we modify the classes with mypy errors to properly implement these
+methods (even with no-ops) is that the correct
+way to go?
+
+--
+Craig
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200607/7522a25e/attachment.htm>
+
+From exarkun at twistedmatrix.com  Sun Jun  7 17:43:15 2020
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Sun, 7 Jun 2020 19:43:15 -0400
+Subject: [Twisted-Python] twistedchecker now uses pylint >= 2.4.4,
+ can we use type annotations in Twisted now?
+In-Reply-To: <CAG=rPVcBTNrp0bgj08eBb0vW8Q4KH0GHWdnDnd_FnVzRmzeQwQ@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVdkYv2PfG+k6nea6Wer4-LbTp10tBcbXGaA7q7NcZ9Q0Q@mail.gmail.com>
+ <B7036604-8208-491E-BEA0-58E0B6858FD0@twistedmatrix.com>
+ <CAG=rPVcBTNrp0bgj08eBb0vW8Q4KH0GHWdnDnd_FnVzRmzeQwQ@mail.gmail.com>
+Message-ID: <CAEeXt4PGPY+ANNE4+yYB8253yz-wEABjoKovnJvPkTApkykDnQ@mail.gmail.com>
+
+On Sun, Jun 7, 2020 at 7:22 PM Craig Rodrigues <rodrigc at crodrigues.org>
+wrote:
+
+> I have merged a few PR's to trunk which eliminate hundreds of errors
+> encountered with:
+>
+>
+> *tox -e mypy*
+> I think we can take several passes with more PR's to whack away all these
+> mypy errors,
+> and turn on mypy as part of the default CI for Twisted.
+>
+> I have seen a few errors like:
+>
+> src/twisted/words/protocols/jabber/sasl_mechanisms.py:47:1: error:
+> 'Anonymous' is missing following 'ISASLMechanism' interface members:
+> getResponse.  [misc]
+>     class Anonymous(object):
+> src/twisted/words/protocols/jabber/sasl_mechanisms.py:61:1: error: 'Plain'
+> is missing following 'ISASLMechanism' interface members: getResponse.
+>  [misc]
+>     class Plain(object):
+> src/twisted/internet/_dumbwin32proc.py:110:1: error: 'Process' is missing
+> following 'twisted.internet.interfaces.ITransport' interface members:
+> getHost, getPeer.  [misc]
+>     class Process(_pollingfile._PollingTimer, BaseProcess):
+> src/twisted/internet/process.py:959:1: error: 'PTYProcess' is missing
+> following 'twisted.internet.interfaces.ITransport' interface members:
+> getHost, getPeer.  [misc]
+>     class PTYProcess(abstract.FileDescriptor, _BaseProcess):
+> src/twisted/internet/process.py:959:1: error: 'PTYProcess' is missing
+> following 'IProcessTransport' interface members: closeChildFD,
+> writeToChild.  [misc]
+>     class PTYProcess(abstract.FileDescriptor, _BaseProcess):
+> src/twisted/internet/base.py:504:1: error: 'ReactorBase' is missing
+> following 'IReactorCore' interface members: run.  [misc]
+>     class ReactorBase(PluggableResolverMixin)
+>
+>
+> For a class to properly implement a Zope interface, is it mandatory that
+> it  implement every method in that interface?
+>
+
+Yes.
+
+
+>
+> If we modify the classes with mypy errors to properly implement these
+> methods (even with no-ops) is that the correct
+> way to go?
+>
+
+Who does this serve?  I would say no, this is not correct.  If a type
+declares it implements an interface and it cannot provide useful
+implementations of every method/attribute, then it made a mistake in its
+declaration or the interface has the wrong methods/attributes.
+
+Jean-Paul
+
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200607/f28513d7/attachment.htm>
+
+From glyph at twistedmatrix.com  Sun Jun  7 18:13:56 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Sun, 7 Jun 2020 17:13:56 -0700
+Subject: [Twisted-Python] twistedchecker now uses pylint >= 2.4.4,
+ can we use type annotations in Twisted now?
+In-Reply-To: <CAEeXt4PGPY+ANNE4+yYB8253yz-wEABjoKovnJvPkTApkykDnQ@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVdkYv2PfG+k6nea6Wer4-LbTp10tBcbXGaA7q7NcZ9Q0Q@mail.gmail.com>
+ <B7036604-8208-491E-BEA0-58E0B6858FD0@twistedmatrix.com>
+ <CAG=rPVcBTNrp0bgj08eBb0vW8Q4KH0GHWdnDnd_FnVzRmzeQwQ@mail.gmail.com>
+ <CAEeXt4PGPY+ANNE4+yYB8253yz-wEABjoKovnJvPkTApkykDnQ@mail.gmail.com>
+Message-ID: <8A9C147A-4C3B-4FC0-A24F-BC5BD95C3797@twistedmatrix.com>
+
+
+
+> On Jun 7, 2020, at 4:43 PM, Jean-Paul Calderone <exarkun at twistedmatrix.com> wrote:
+> 
+> On Sun, Jun 7, 2020 at 7:22 PM Craig Rodrigues <rodrigc at crodrigues.org <mailto:rodrigc at crodrigues.org>> wrote:
+> I have merged a few PR's to trunk which eliminate hundreds of errors encountered with:
+> 
+> tox -e mypy
+> 
+> I think we can take several passes with more PR's to whack away all these mypy errors,
+> and turn on mypy as part of the default CI for Twisted.
+> 
+> I have seen a few errors like:
+> 
+> src/twisted/words/protocols/jabber/sasl_mechanisms.py:47:1: error: 'Anonymous' is missing following 'ISASLMechanism' interface members: getResponse.  [misc]
+>     class Anonymous(object):
+> src/twisted/words/protocols/jabber/sasl_mechanisms.py:61:1: error: 'Plain' is missing following 'ISASLMechanism' interface members: getResponse.  [misc]
+>     class Plain(object):
+> src/twisted/internet/_dumbwin32proc.py:110:1: error: 'Process' is missing following 'twisted.internet.interfaces.ITransport' interface members: getHost, getPeer.  [misc]
+>     class Process(_pollingfile._PollingTimer, BaseProcess):
+> src/twisted/internet/process.py:959:1: error: 'PTYProcess' is missing following 'twisted.internet.interfaces.ITransport' interface members: getHost, getPeer.  [misc]
+>     class PTYProcess(abstract.FileDescriptor, _BaseProcess):
+> src/twisted/internet/process.py:959:1: error: 'PTYProcess' is missing following 'IProcessTransport' interface members: closeChildFD, writeToChild.  [misc]
+>     class PTYProcess(abstract.FileDescriptor, _BaseProcess):
+> src/twisted/internet/base.py:504:1: error: 'ReactorBase' is missing following 'IReactorCore' interface members: run.  [misc]
+>     class ReactorBase(PluggableResolverMixin)
+> 
+> 
+> For a class to properly implement a Zope interface, is it mandatory that it  implement every method in that interface?
+> 
+> Yes.
+>  
+> 
+> If we modify the classes with mypy errors to properly implement these methods (even with no-ops) is that the correct
+> way to go?
+> 
+> Who does this serve?  I would say no, this is not correct.  If a type declares it implements an interface and it cannot provide useful implementations of every method/attribute, then it made a mistake in its declaration or the interface has the wrong methods/attributes.
+> 
+
+First of all, it's totally awesome that we're catching these problems with mypy!  Thank you to everyone who contributed to get this set up.
+
+I think that different errors probably indicate different problems. Without a lot of motivated consumers of this interface information, it's easy to slip up, and we have slipped up.  And without accurate interface information it's hard to be a discerning consumer!  So there's a bit of a chicken-and-egg problem here, and mypy will help us resolve that paradox, and let people really depend on these.
+
+To opine on the ones listed above specifically, in case this can be more readily generalized:
+
+Anonymous & Plain missing getResponse is probably something they can get away with due to the specifics of how SASL works with those specific mechanisms.  They should still provide an implementation, although it would be fine if it was one that simply raised an explanatory exception explaining why they don't expect to get called in their specific cases.
+PTYProcess and Process's missing attributes are just bugs.  I thought they were even already-filed bugs, but I was remembering this one: https://twistedmatrix.com/trac/ticket/4585.  There was also https://twistedmatrix.com/trac/ticket/6606 .  As I said: easy to screw this up without any way to consistently check; we've screwed it up in other ways in the past. We should implement all of these methods. 
+ReactorBase is another depressing artifact of our inheritance-obsessed initial design, which I hold out hope that we may recover from before my 50th birthday.  The idea here being that subclasses of ReactorBase should be implementing those interfaces, so it'll go ahead and declare them for you.  Now, ReactorBase probably just shouldn't be public in the first place, but this specific attribute of its declaration is simply wrong; it doesn't implement those interfaces and it should not say that it does.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200607/c3aca4f5/attachment-0001.htm>
+
+From glyph at twistedmatrix.com  Sun Jun  7 23:54:41 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Sun, 7 Jun 2020 22:54:41 -0700
+Subject: [Twisted-Python] log.callWithLogger not used - slows down
+ reactor?
+In-Reply-To: <7106598.EvYhyI6sBW@fpbarry>
+References: <2722953.e9J7NaK4W3@fpbarry>
+ <32F8EC6F-5425-402E-933D-61FA7E00BDC0@twistedmatrix.com>
+ <7106598.EvYhyI6sBW@fpbarry>
+Message-ID: <70FD42D4-C008-4CE2-9FC9-11328CD96DD0@twistedmatrix.com>
+
+> On Jun 3, 2020, at 2:51 AM, Barry Scott <barry.scott at forcepoint.com> wrote:
+> 
+> On Wednesday, 3 June 2020 08:07:37 BST Glyph wrote:
+>>> On Jun 2, 2020, at 4:54 AM, Barry Scott <barry.scott at forcepoint.com>
+>>> wrote:
+>>> 
+>>> I'm hunting down performance issue in our code and spotted this in
+>>> passing. As far I can tell nothing seems to need callWithLogger.
+>>> 
+>>> I ran our 6k+ tests with this patch applied and everything worked.
+>>> 
+>>> Does anything in the twisted world need it?
+>>> 
+>>> Barry
+>>> 
+>>> diff --git a/src/twisted/internet/pollreactor.py b/src/twisted/internet/
+>>> pollreactor.py
+>>> index 6db1660b9..6901e5c95 100644
+>>> --- a/src/twisted/internet/pollreactor.py
+>>> +++ b/src/twisted/internet/pollreactor.py
+>>> @@ -165,7 +165,7 @@ class PollReactor(posixbase.PosixReactorBase,
+>>> 
+>>> posixbase._PollLikeMixin):
+>>>                # Handles the infrequent case where one selectable's
+>>>                # handler disconnects another.
+>>>                continue
+>>> 
+>>> -            log.callWithLogger(selectable, _drdw, selectable, fd, event)
+>>> +            _drdw(selectable, fd, event)
+>>> 
+>>>    doIteration = doPoll
+>> 
+>> I think that we may have eliminated all the dependency on it.  Do your logs
+>> look any different with this change applied?  If you can demonstrate its
+>> impact on speed.twistedmatrix.com <http://speed.twistedmatrix.com/> maybe
+>> we can go ahead and do this.  The logger used to be far more dependent on
+>> this, but the "system" portion of the log message is now based more on who
+>> is doing the logging than what socket provoked the event (which is what
+>> this is tracking, effectively).
+> 
+> Curious, if its dead code why do you need a speed test? For your comment
+> it seems you planned to stop using this.
+
+Because we only may have eliminated the dependency on it :).  It's always safest not to change things, so it's good to have a clear repeatable demonstration of the benefit.  If you're sure that we have no dependencies on it, we can probably get rid of it without a super clear benchmark.
+
+> What is it I would need to do for a speed test?
+
+Commit some code to this repository: https://github.com/twisted-infra/twisted-benchmarks <https://github.com/twisted-infra/twisted-benchmarks>
+
+I am not sure how to get speed.twistedmatrix.com <http://speed.twistedmatrix.com/> to run on a branch, but we can figure it out :)
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200607/edbe135d/attachment.htm>
+
+From glyph at twistedmatrix.com  Mon Jun  8 01:04:29 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Mon, 8 Jun 2020 00:04:29 -0700
+Subject: [Twisted-Python] [RFC] Drop support for Python 3.5 sometime
+ after May 2021?
+In-Reply-To: <e68c7e7f-b889-19db-ac48-669dbc03d162@matrix.org>
+References: <CAG=rPVeM1ohNMTErKseTEkhNr6Eo5ZG8ioZFTODp05i06Egj2Q@mail.gmail.com>
+ <4ccc77f9-86f4-5745-b7f7-3758e458e499@atleastfornow.net>
+ <C0B2209F-7C5C-4D76-ABBC-DD6350AB625C@twistedmatrix.com>
+ <91b73cde-3bc9-42d0-b25e-11632d49f9f8@www.fastmail.com>
+ <7c42789c-f99f-423d-baa5-2e425c675591@www.fastmail.com>
+ <CAG=rPVdZPRGo0fjjMEBUHroO0p6X68DAx6WjtJcwzs24R0E8zQ@mail.gmail.com>
+ <E7A4CF5C-D3F1-4923-A54F-41ECF614E604@twistedmatrix.com>
+ <a76d43a0-1b65-b341-ea55-d870dd736c81@matrix.org>
+ <E33363C7-1C26-48D8-8D3D-5D6A79E88479@twistedmatrix.com>
+ <e68c7e7f-b889-19db-ac48-669dbc03d162@matrix.org>
+Message-ID: <A508384B-43C5-4EB6-9A8C-6FD555EAB890@twistedmatrix.com>
+
+
+
+> On May 28, 2020, at 8:31 AM, Erik Johnston <erik at matrix.org> wrote:
+> 
+> 
+> On 23/05/2020 06:39, Glyph wrote:
+>> 
+>>> On May 19, 2020, at 1:52 AM, Richard van der Hoff <richard at matrix.org <mailto:richard at matrix.org>> wrote:
+>>> 
+>>> On 16/05/2020 06:56, Glyph wrote:
+>>>> 
+>>>> 
+>>>>> On May 15, 2020, at 8:40 PM, Craig Rodrigues <rodrigc at crodrigues.org <mailto:rodrigc at crodrigues.org>> wrote:
+>>>>> 
+>>>>> Maybe it would be OK to do one more release of Twisted and announce that as the last release supporting Python 3.5, before
+>>>>> dropping support?  
+>>>> 
+>>>> Yeah; whenever we drop a Python version we should always support at least one more release, so that people have some notice before they lose access to the next set of security updates.
+>>>> 
+>>>> Any 3.5 users on this list who would want to postpone it longer than this?
+>>>> 
+>>> Sadly we have an important customer whose servers run debian oldstable, which means we need to stay compatible with 3.5 until we can persuade them to upgrade, and it's taken a couple of years to get them off python 2.7...
+>>> 
+>>> I'm not sure that should necessarily affect your plans, but I doubt we're alone in this situation.
+>>> 
+>> 
+>> I guess one thing I'm curious about is why your application would need to be installed along with the system Python on those OS versions?  It seems like a packaging strategy that ignored the fossilized versions that Debian packages with the system and just built its own Python would be more reliable and allow for upgrading at least most Python dependencies well beyond what the system would allow by policy.  Or, for that matter, why not just run in a Docker container?
+>> 
+>> Matrix is a pretty big user, and so in some sense I care about this specific case, but I also find the general question interesting, because I have difficulty reasoning about how long to support older versions of things in the modern application packaging environment where containers, virtualenvs, and associated tooling make it possible to effectively ignore the base environment. When & why do you have to pay attention to it?
+>> 
+>> -glyph
+> 
+> I believe in this case its a general desire to keep track of what packages are running and where they've come from. They basically trust that packages from official Debian repositories are probably safe from being tampered with, whereas random tarballs of code from the web are not safe (unless they're signed by someone they trust or whatever).
+> 
+I think this sounds like a misunderstanding of Debian's vetting process?  It's not like there's a ton of additional auditing that goes into packaging something.  There's definitely an authentication process for both Twisted and Python, although this attestation could be somewhat stronger and less centralized, PyPI does quite a bit of heavy lifting there.
+> Now, I think it would be possible to get a newer version of Python on their infrastructure if we needed, but I'm sure there would be hoops that would need to be jumped through and justifications given, etc, which would undoubtedly take some time. So really it just means extra faff for them and us, especially since we're only a small part of their overall infrastructure.
+> 
+It's worth noting that Python 3.5 itself is out of security support (per https://www.python.org/dev/peps/pep-0478/ <https://www.python.org/dev/peps/pep-0478/>) and it's not like Debian employs a team of Python security-support engineers to continue maintaining this dead branch.  If their infrastructure were to try to comply with various security standards such as PCI-DSS, you might bump into the need to upgrade to a newer version with available future patch releases anyway.
+> Then there is the fact that they're not unique. While oldstable is, well, old, its still very much supported and so there's going to be a bunch of "enterprise" (for want of a better term) customers who will still be using it, and we'll need to go through the faff each and every time, which is quite tedious. Come the Autumn when oldstable stops being supported (or at least, goes into LTS mode),
+> 
+You say "Autumn", but...  oldstable is supported for the purposes of migrating off of it... it's not really even supported by Debian proper.  To quote from https://wiki.debian.org/DebianOldStable <https://wiki.debian.org/DebianOldStable> :
+
+>>> The security team tries to support a stable distribution for about one year after the next stable distribution has been released, except when another stable distribution is released within this year. It is not possible to support three distributions; supporting two simultaneously is already difficult enough.
+
+According to https://wiki.debian.org/DebianBuster <https://wiki.debian.org/DebianBuster>, Buster was released on 2019-07-06, which means we've now got less than one month of even this small amount of support that is offered; i.e. the expectation from Debian's perspective is that they'd be done migrating off of oldstable by that point.  I guess https://wiki.debian.org/LTS <https://wiki.debian.org/LTS> is a separate project?
+> it might become easier to justify that it really is reasonable for us to require a newer version of Python (and that they should really really upgrade their debian version, and its their own fault that they haven't and have to deal with faff that comes from that).
+> 
+> This would also be easier if debian had newer versions of python in backports, or someone ran a semi-official package repository which had them, but as far as I can tell no one does for debian.
+> 
+> (Of course you can argue that all the above is a bit silly from a security perspective, especially when you start considering virtualenvs and the like, but I have some sympathy for their outlook even if it is a pain at times).
+> 
+It's a bit of a pet peeve of mine for reasons which are mostly covered by this blog post -https://alexgaynor.net/2015/mar/30/red-hat-open-source-community/ <https://alexgaynor.net/2015/mar/30/red-hat-open-source-community/>
+
+But it bugs me not just because of the expectation of free labor (we can refuse to support 3.5 if that is a point of contention, as you say) but because "security support" is a bit of a misnomer, especially in Debian's case where there's no commercial relationship and hence not much in the way of libability.
+
+Much to my chagrin I can't find the paper I remember reading about this right now, but, I believe these things are all true:
+
+Many non-"security" bugs are in fact security bugs that nobody has noticed you can exploit.
+Many "low-severity" or "un-exploiable" security bugs are in fact exploitable
+"supported" distros rarely take care to backport many patches for their software, and when they do, they often make undetected errors (like debian's infamous ssh bug) which are analyzed by far fewer security analysts than the upstream source code.
+
+So I feel like the folks making the decision to stick with these old "supported" distros are only getting half the story - sure, it won't break, but are they actually getting the security fixes that they think they are?  Debian's staff are stretched pretty thin as it is.
+> In terms of twisted dropping support of 3.5, I guess the question is to what extent do you want applications to be hassle free to deploy on the more "enterprise" style environment?
+> 
+One other confusion I have about these environments is why they want very-old Python but don't also want very-old Twisted.
+> Without having followed along with the thread my bias would be to keep support until stretch support is ended in the Autumn. Though if 3.5 support is holding things back a lot then I can completely understand dropping it sooner.
+> 
+This is somewhat moot, since I'd be pleasantly surprised if we managed to get another release out at all before September :).  But if this is your time frame then lagging your Twisted upgrade by one or two months doesn't seem like it would be worth us supporting this version for much longer.
+> (FWIW in Matrix/Synapse we take the view that we retain compat with old-but-supported dependencies, such as postgres,       until/unless it starts being too costly in terms of maintenance and opportunity costs)
+
+This is more or less the way I feel about Twisted, particularly around supporting old and weird kernels, because sometimes you really just can't control the environment you're being installed into and I don't want to make Twisted a blocker for that.  But supporting old Pythons, old service_identity modules, old OpenSSL's, etc, has been seeming more and more to me like a disservice to the community, because it facilitates the adoption of slow, insecure, dangerous deployment practices so we're not doing anyone any favors.
+
+Anyway thank you very much for providing this perspective.  I'm curious about how folks deploying ossified software like this think about its security profile, but it's good to know that the practice is still going strong.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200608/180b252f/attachment-0001.htm>
+
+From richard at matrix.org  Mon Jun  8 08:45:27 2020
+From: richard at matrix.org (Richard van der Hoff)
+Date: Mon, 8 Jun 2020 15:45:27 +0100
+Subject: [Twisted-Python] [RFC] Drop support for Python 3.5 sometime
+ after May 2021?
+In-Reply-To: <A508384B-43C5-4EB6-9A8C-6FD555EAB890@twistedmatrix.com>
+References: <CAG=rPVeM1ohNMTErKseTEkhNr6Eo5ZG8ioZFTODp05i06Egj2Q@mail.gmail.com>
+ <4ccc77f9-86f4-5745-b7f7-3758e458e499@atleastfornow.net>
+ <C0B2209F-7C5C-4D76-ABBC-DD6350AB625C@twistedmatrix.com>
+ <91b73cde-3bc9-42d0-b25e-11632d49f9f8@www.fastmail.com>
+ <7c42789c-f99f-423d-baa5-2e425c675591@www.fastmail.com>
+ <CAG=rPVdZPRGo0fjjMEBUHroO0p6X68DAx6WjtJcwzs24R0E8zQ@mail.gmail.com>
+ <E7A4CF5C-D3F1-4923-A54F-41ECF614E604@twistedmatrix.com>
+ <a76d43a0-1b65-b341-ea55-d870dd736c81@matrix.org>
+ <E33363C7-1C26-48D8-8D3D-5D6A79E88479@twistedmatrix.com>
+ <e68c7e7f-b889-19db-ac48-669dbc03d162@matrix.org>
+ <A508384B-43C5-4EB6-9A8C-6FD555EAB890@twistedmatrix.com>
+Message-ID: <f5364b4d-0383-e581-feb8-ffd13160f75a@matrix.org>
+
+
+On 08/06/2020 08:04, Glyph wrote:
+ > <a bunch of valid stuff>
+
+I'm going to start here by saying: I agree with almost all of what you 
+wrote, but at the end of the day, I don't get to determine our 
+customers' policies. You can try to explain to them why their policies 
+are misguided, but particularly when you're working with a large 
+organisation, change can be very slow. So you end up working around the 
+policy, whether you agree with it or not. In practical terms, that means 
+that for now at least we need to support Python 3.5.
+
+As Erik said, we certainly have no right to demand that Twisted continue 
+to support 3.5: indeed, if dropping support will deliver value to the 
+project, then I'd encourage you to go for it; and as you've already 
+said, the whole thing is probably moot anyway given the timescales we're 
+talking about.
+
+>> I believe in this case its a general desire to keep track of what 
+>> packages are running and where they've come from. They basically 
+>> trust that packages from official Debian repositories are probably 
+>> safe from being tampered with, whereas random tarballs of code from 
+>> the web are not safe (unless they're signed by someone they trust or 
+>> whatever).
+>>
+> I think this sounds like a misunderstanding of Debian's vetting 
+> process?  It's not like there's a ton of additional auditing that goes 
+> into packaging something.  There's definitely an authentication 
+> process for both Twisted and Python, although this attestation could 
+> be somewhat stronger and less centralized, PyPI does quite a bit of 
+> heavy lifting there.
+
+I think it's less that they think that Debian does extra vetting, and 
+more that, especially if you're managing whole fleets of servers, then 
+if everything runs the same version, it's easier to keep track of what 
+you need to upgrade when there's a "security" bug. And yes, there are 
+plenty of counterarguments to this, but that's the reasoning.
+
+>  1. Many non-"security" bugs are in fact security bugs that nobody has
+>     noticed you can exploit.
+>  2. Many "low-severity" or "un-exploiable" security bugs are in fact
+>     exploitable
+>  3. "supported" distros rarely take care to backport many patches for
+>     their software, and when they do, they often make undetected
+>     errors (like debian's infamous ssh bug) which are analyzed by far
+>     fewer security analysts than the upstream source code.
+>
+These are probably all true, but taken to their logical extreme, the 
+conclusion seems to be "you should always run the bleeding edge of all 
+software, to make sure you've got all the latest bug fixes". I don't 
+think you're really arguing for that, so the point is: we end up 
+nominating "stable" versions, and trying to make an assessment as to 
+which bugfixes are worth backporting. That latter part is a subjective 
+decision, and the question is who you trust to make it. You may not 
+trust Debian to make that decision on your behalf (with perfectly valid 
+reasons), but plenty of others do.
+> So I feel like the folks making the decision to stick with these old 
+> "supported" distros are only getting half the story - sure, it won't 
+> break, but are they /actually/ getting the security fixes that they 
+> think they are?  Debian's staff are stretched pretty thin as it is.
+
+A counterpoint here is that the Python in oldstable has had several 
+years of bugfixes, and of course it was the primary Debian-supported 
+version of Python for a good couple of years. Again, I know that 
+peoples' assessment of Debian's ability or competence varies, but I 
+don't think it's *unreasonable* to assume that by this point the worst 
+problems with that version of Python have been shaken out (and that if a 
+significant new problem arises, a fix will be made).
+
+>> In terms of twisted dropping support of 3.5, I guess the question is 
+>> to what extent do you want applications to be hassle free to deploy 
+>> on the more "enterprise" style environment?
+>>
+> One other confusion I have about these environments is why they want 
+> very-old Python but don't /also/ want very-old Twisted.
+
+Well, again, it comes down to fleet management, and responsibility for 
+"security". From the customer's point of view, they want to provide a 
+python interpreter which runs our application. So the Python interpreter 
+is their responsibility (hence: use Debian oldstable everywhere), 
+whereas the stuff running on it is ours. Plus, since there's only one 
+thing using Twisted in their network, it's inherently easier to maintain 
+a single version.
+
+(I also fear that there is a misguided belief that security 
+vulnerabilities are "worse" if they are in the Python interpreter, 
+because that runs native code, whereas Twisted can't possibly do 
+anything that bad because "interpreted language". I mention this only 
+for completeness, and fully realise it's nonsense.)
+
+> But supporting old Pythons, old service_identity modules, old 
+> OpenSSL's, etc, has been seeming more and more to me like a disservice 
+> to the community, because it facilitates the adoption of slow, 
+> insecure, dangerous deployment practices so we're not doing anyone any 
+> favors.
+
+Whilst I largely agree with the sentiment, I suspect it's a bit 
+idealistic to take this to an extreme.
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200608/c5ce45c4/attachment.htm>
+
+From trac at twistedmatrix.com  Sun Jun 14 00:05:17 2020
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 14 Jun 2020 06:05:17 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1592114717.0.9071770063781932751@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200614/61c3de9a/attachment.htm>
+
+From rodrigc at crodrigues.org  Mon Jun 15 21:32:10 2020
+From: rodrigc at crodrigues.org (Craig Rodrigues)
+Date: Mon, 15 Jun 2020 20:32:10 -0700
+Subject: [Twisted-Python] twistedchecker now uses pylint >= 2.4.4,
+ can we use type annotations in Twisted now?
+In-Reply-To: <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+Message-ID: <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+
+Thanks to Adi and Wilfredo who have reviewed my PR's.  Currently in trunk,
+I have eliminated hundreds of mypy
+errors through a combination of trivial fixes to code, adding type
+annotations, and adding special comments
+to turn off mypy errors in a few places.
+
+I have one more pending PR ( https://github.com/twisted/twisted/pull/1290 ) to
+turn on a mypy build in an Azure pipeline.
+In this run of *tox -e mypy* there are* 437* errors from mypy:
+
+https://dev.azure.com/twistedmatrix/twisted/_build/results?buildId=1904&view=logs&j=d78da089-4bf6-58fe-28a5-46635fd5b8d1&t=45ce7910-c28c-5e9a-4ee7-e041d314a5fc
+
+I think we can gradually whack these down to zero mypy errors, and turn
+mypy on as part of default CI for Twisted.
+
+--
+Craig
+
+On Wed, Apr 22, 2020 at 12:28 AM Glyph <glyph at twistedmatrix.com> wrote:
+
+>
+> The first step here, however, is to set up the CI infrastructure (tox,
+> etc) to run mypy so that we can ensure that as we start writing type hints,
+> we don't accidentally get any of them wrong and back ourselves into any
+> corners.  Mypy can catch a surprising number of bugs with just the implicit
+> type-checking it does on values that come from the standard library.  In
+> fact, if we do `mypy src/twisted` right now, and exclude the things that
+> would be fixed by adding in https://github.com/Shoobx/mypy-zope ("method
+> must have at least one argument" zope.interface definition errors) and
+> fixing up some simple type hints (has no attribute "skip") we still have
+> almost a thousand type errors that we should figure out a way to start
+> correcting or systematically skipping if they're false positives.  I
+> guarantee you there's at least one real bug in there though.
+>
+> As you know, I tend to be pretty cautious about sweeping changes to the
+> code that might make it harder to maintain on older versions - type hints
+> are an exception where I think it's absolutely worthwhile to go All In
+> early on.  But CI infrastructure for this stuff is a must-have and it might
+> be tricky to get set up initially.
+>
+> -glyph
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200615/5872b2c9/attachment.htm>
+
+From rodrigc at crodrigues.org  Mon Jun 15 21:43:11 2020
+From: rodrigc at crodrigues.org (Craig Rodrigues)
+Date: Mon, 15 Jun 2020 20:43:11 -0700
+Subject: [Twisted-Python] Question about FileDescriptor.loseConnection()
+ signature found by mypy
+Message-ID: <CAG=rPVcNYA_eyheUY02HGBF1SONG8xh9V-nYhUj-Z4WoXjQB0w@mail.gmail.com>
+
+In twisted.internet.abstract.FileDescriptor.loseConnection, the
+loseConnection method
+is defined like:
+
+    def loseConnection(self,
+_connDone=failure.Failure(main.CONNECTION_DONE)):
+
+while in twisted.internet._newtls.ConnectionMixin , we have:
+
+  def loseConnection(self):
+
+
+If I run *tox -e mypy*  in trunk, mypy complains with this:
+
+src/twisted/internet/tcp.py:204:1: error: Definition of
+"loseConnection" in base class "ConnectionMixin" is incompatible with
+definition in base class "FileDescriptor"  [misc]
+
+src/twisted/internet/tcp.py:527:1: error: Definition of
+"loseConnection" in base class "ConnectionMixin" is incompatible with
+definition in base class "FileDescriptor"  [misc]
+src/twisted/internet/tcp.py:780:1: error: Definition of
+"loseConnection" in base class "ConnectionMixin" is incompatible with
+definition in base class "FileDescriptor"  [misc]
+src/twisted/internet/tcp.py:789:1: error: Definition of
+"loseConnection" in base class "ConnectionMixin" is incompatible with
+definition in base class "FileDescriptor"  [misc]
+
+src/twisted/internet/unix.py:243:1: error: Definition of
+"loseConnection" in base class "ConnectionMixin" is incompatible with
+definition in base class "FileDescriptor"  [misc]
+src/twisted/internet/unix.py:431:1: error: Definition of
+"loseConnection" in base class "ConnectionMixin" is incompatible with
+definition in base class "FileDescriptor"  [misc]
+
+
+Do the signatures of loseConnection need to match in order for this to
+be a valid subclass?
+
+Is there any way to fix the code so that the mypy error goes away, or
+do we need to add a comment to turn off the mypy error here?
+
+
+--
+
+Craig
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200615/392a6a53/attachment.htm>
+
+From glyph at twistedmatrix.com  Tue Jun 16 02:08:20 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 16 Jun 2020 01:08:20 -0700
+Subject: [Twisted-Python] twistedchecker now uses pylint >= 2.4.4,
+ can we use type annotations in Twisted now?
+In-Reply-To: <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+Message-ID: <2A966FB1-7BC2-4EC0-BAAA-AB660C303C1A@twistedmatrix.com>
+
+Awesome, thanks for doing this work Craig, Adi, and Wilfredo!
+
+-g
+
+> On Jun 15, 2020, at 8:32 PM, Craig Rodrigues <rodrigc at crodrigues.org> wrote:
+> 
+> Thanks to Adi and Wilfredo who have reviewed my PR's.  Currently in trunk, I have eliminated hundreds of mypy
+> errors through a combination of trivial fixes to code, adding type annotations, and adding special comments 
+> to turn off mypy errors in a few places.
+> 
+> I have one more pending PR ( https://github.com/twisted/twisted/pull/1290 <https://github.com/twisted/twisted/pull/1290> ) to turn on a mypy build in an Azure pipeline.
+> In this run of tox -e mypy there are 437 errors from mypy:
+> 
+> https://dev.azure.com/twistedmatrix/twisted/_build/results?buildId=1904&view=logs&j=d78da089-4bf6-58fe-28a5-46635fd5b8d1&t=45ce7910-c28c-5e9a-4ee7-e041d314a5fc <https://dev.azure.com/twistedmatrix/twisted/_build/results?buildId=1904&view=logs&j=d78da089-4bf6-58fe-28a5-46635fd5b8d1&t=45ce7910-c28c-5e9a-4ee7-e041d314a5fc>
+> 
+> I think we can gradually whack these down to zero mypy errors, and turn mypy on as part of default CI for Twisted.
+> 
+> --
+> Craig
+> 
+> On Wed, Apr 22, 2020 at 12:28 AM Glyph <glyph at twistedmatrix.com <mailto:glyph at twistedmatrix.com>> wrote:
+> 
+> The first step here, however, is to set up the CI infrastructure (tox, etc) to run mypy so that we can ensure that as we start writing type hints, we don't accidentally get any of them wrong and back ourselves into any corners.  Mypy can catch a surprising number of bugs with just the implicit type-checking it does on values that come from the standard library.  In fact, if we do `mypy src/twisted` right now, and exclude the things that would be fixed by adding in https://github.com/Shoobx/mypy-zope <https://github.com/Shoobx/mypy-zope> ("method must have at least one argument" zope.interface definition errors) and fixing up some simple type hints (has no attribute "skip") we still have almost a thousand type errors that we should figure out a way to start correcting or systematically skipping if they're false positives.  I guarantee you there's at least one real bug in there though.
+> 
+> As you know, I tend to be pretty cautious about sweeping changes to the code that might make it harder to maintain on older versions - type hints are an exception where I think it's absolutely worthwhile to go All In early on.  But CI infrastructure for this stuff is a must-have and it might be tricky to get set up initially.
+> 
+> -glyph
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200616/8a2db561/attachment.htm>
+
+From glyph at twistedmatrix.com  Tue Jun 16 02:51:21 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 16 Jun 2020 01:51:21 -0700
+Subject: [Twisted-Python] Question about FileDescriptor.loseConnection()
+ signature found by mypy
+In-Reply-To: <CAG=rPVcNYA_eyheUY02HGBF1SONG8xh9V-nYhUj-Z4WoXjQB0w@mail.gmail.com>
+References: <CAG=rPVcNYA_eyheUY02HGBF1SONG8xh9V-nYhUj-Z4WoXjQB0w@mail.gmail.com>
+Message-ID: <7213DB6B-75D9-40E5-8EAD-50EF40895C2F@twistedmatrix.com>
+
+
+
+> On Jun 15, 2020, at 8:43 PM, Craig Rodrigues <rodrigc at crodrigues.org> wrote:
+> 
+> In twisted.internet.abstract.FileDescriptor.loseConnection, the loseConnection method
+> is defined like:
+> 
+>     def loseConnection(self, _connDone=failure.Failure(main.CONNECTION_DONE)):
+
+I think this signature might just be... wrong?  ITransport doesn't include it.  Does anything actually use this argument?
+
+-g
+
+
+
+From maarten at treewalker.org  Tue Jun 16 06:01:05 2020
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Tue, 16 Jun 2020 14:01:05 +0200
+Subject: [Twisted-Python] Question about FileDescriptor.loseConnection()
+ signature found by mypy
+In-Reply-To: <7213DB6B-75D9-40E5-8EAD-50EF40895C2F@twistedmatrix.com>
+References: <CAG=rPVcNYA_eyheUY02HGBF1SONG8xh9V-nYhUj-Z4WoXjQB0w@mail.gmail.com>
+ <7213DB6B-75D9-40E5-8EAD-50EF40895C2F@twistedmatrix.com>
+Message-ID: <2780642.VBXhubyLUj@hyperion>
+
+On Tuesday, 16 June 2020 10:51:21 CEST Glyph wrote:
+> > On Jun 15, 2020, at 8:43 PM, Craig Rodrigues
+> > <rodrigc at crodrigues.org> wrote:
+> > 
+> > In twisted.internet.abstract.FileDescriptor.loseConnection, the
+> > loseConnection method> 
+> > is defined like:
+> >     def loseConnection(self, 
+_connDone=failure.Failure(main.CONNECTION_DONE)):
+> I think this signature might just be... wrong?  ITransport doesn't
+> include it.  Does anything actually use this argument?
+
+I think this isn't actually an argument: the underscore in the name 
+suggests it is not part of the interface. What seems to be happening 
+here is that twisted.internet.abstract.FileDescriptor.loseConnection 
+defines a constant by putting it in an argument default value.
+
+A simple solution would be to replace it by a class-scope or module-
+scope constant.
+
+
+By the way, is it valid to wrap an exception that was never raised in a 
+Failure object? Because that is what happens here by reusing the single 
+_connDone instance. It seems Failure's implementation is prepared to 
+handle it, but its docstring doesn't mention it.
+
+Bye,
+		Maarten
+
+
+
+
+From patrick at cloke.us  Tue Jun 16 11:41:34 2020
+From: patrick at cloke.us (Patrick Cloke)
+Date: Tue, 16 Jun 2020 13:41:34 -0400
+Subject: [Twisted-Python] Question about FileDescriptor.loseConnection()
+ signature found by mypy
+In-Reply-To: <CAG=rPVcNYA_eyheUY02HGBF1SONG8xh9V-nYhUj-Z4WoXjQB0w@mail.gmail.com>
+References: <CAG=rPVcNYA_eyheUY02HGBF1SONG8xh9V-nYhUj-Z4WoXjQB0w@mail.gmail.com>
+Message-ID: <bb3d99d2-61f0-d0b2-d62b-5e605798b309@cloke.us>
+
+On 6/15/20 11:43 PM, Craig Rodrigues wrote:
+
+> In twisted.internet.abstract.FileDescriptor.loseConnection, the 
+> loseConnection method
+> is defined like:
+>
+>     def loseConnection(self, 
+> _connDone=failure.Failure(main.CONNECTION_DONE)):
+>
+> while in twisted.internet._newtls.ConnectionMixin , we have:
+>
+>   def loseConnection(self):
+>
+>
+> If I run *tox -e mypy*  in trunk, mypy complains with this:
+>
+> src/twisted/internet/tcp.py:204:1: error: Definition of "loseConnection" in base class "ConnectionMixin" is incompatible with definition in base class "FileDescriptor"  [misc]
+>
+> src/twisted/internet/tcp.py:527:1: error: Definition of "loseConnection" in base class "ConnectionMixin" is incompatible with definition in base class "FileDescriptor"  [misc]
+> src/twisted/internet/tcp.py:780:1: error: Definition of "loseConnection" in base class "ConnectionMixin" is incompatible with definition in base class "FileDescriptor"  [misc]
+> src/twisted/internet/tcp.py:789:1: error: Definition of "loseConnection" in base class "ConnectionMixin" is incompatible with definition in base class "FileDescriptor"  [misc]
+>
+> src/twisted/internet/unix.py:243:1: error: Definition of "loseConnection" in base class "ConnectionMixin" is incompatible with definition in base class "FileDescriptor"  [misc]
+> src/twisted/internet/unix.py:431:1: error: Definition of "loseConnection" in base class "ConnectionMixin" is incompatible with definition in base class "FileDescriptor"  [misc]
+> Do the signatures of loseConnection need to match in order for this to 
+> be a valid subclass?
+> Is there any way to fix the code so that the mypy error goes away, or 
+> do we need to add a comment to turn off the mypy error here?
+>
+Not directly related, but I ran into a similar issue [1] with the 
+"connectionLost" method in the HTTP2 code including an additional 
+parameter. In this case it seems to be used to pass around additional 
+state and follows a similar pattern (of the additional parameter being 
+prefixed with an underscore). I'll be curious what the proper way to 
+deal with this is!
+
+--Patrick
+
+[1]: https://github.com/twisted/twisted/pull/1265#issuecomment-641512616
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200616/02a14552/attachment.htm>
+
+From rodrigc at crodrigues.org  Tue Jun 16 12:00:05 2020
+From: rodrigc at crodrigues.org (Craig Rodrigues)
+Date: Tue, 16 Jun 2020 11:00:05 -0700
+Subject: [Twisted-Python] Question about FileDescriptor.loseConnection()
+ signature found by mypy
+In-Reply-To: <7213DB6B-75D9-40E5-8EAD-50EF40895C2F@twistedmatrix.com>
+References: <CAG=rPVcNYA_eyheUY02HGBF1SONG8xh9V-nYhUj-Z4WoXjQB0w@mail.gmail.com>
+ <7213DB6B-75D9-40E5-8EAD-50EF40895C2F@twistedmatrix.com>
+Message-ID: <CAG=rPVfMw-UBrVifMwpvQ-8ySopy9poh-axo3GbWgcWVe+r81w@mail.gmail.com>
+
+twisted.internet.abstract.FileDescriptor.loseConnection() was changed here
+in 2004:
+https://github.com/twisted/twisted/commit/081d393ab03da92d744d8fb2b5d77705662a0caa
+
+This change was done so long ago, but I think changing the signature like
+that was wrong.
+
+I took a guess at how to fix this and submitted this:
+
+https://github.com/twisted/twisted/pull/1292
+
+--
+Craig
+
+
+On Tue, Jun 16, 2020 at 1:52 AM Glyph <glyph at twistedmatrix.com> wrote:
+
+>
+>
+> > On Jun 15, 2020, at 8:43 PM, Craig Rodrigues <rodrigc at crodrigues.org>
+> wrote:
+> >
+> > In twisted.internet.abstract.FileDescriptor.loseConnection, the
+> loseConnection method
+> > is defined like:
+> >
+> >     def loseConnection(self,
+> _connDone=failure.Failure(main.CONNECTION_DONE)):
+>
+> I think this signature might just be... wrong?  ITransport doesn't include
+> it.  Does anything actually use this argument?
+>
+> -g
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200616/8afe07e1/attachment.htm>
+
+From rodrigc at crodrigues.org  Tue Jun 16 18:43:07 2020
+From: rodrigc at crodrigues.org (Craig Rodrigues)
+Date: Tue, 16 Jun 2020 17:43:07 -0700
+Subject: [Twisted-Python] mypy: class ThreadPool has workers redefined
+Message-ID: <CAG=rPVdeG6j5BZNS+X9xoQ5YBkj53FfHdi-+6hFJMiSk8aFypw@mail.gmail.com>
+
+While looking at these mypy logs:
+
+https://dev.azure.com/twistedmatrix/twisted/_build/results?buildId=1904&view=logs&j=d78da089-4bf6-58fe-28a5-46635fd5b8d1&t=45ce7910-c28c-5e9a-4ee7-e041d314a5fc
+
+I found an interesting one:
+
+src/twisted/python/threadpool.py:84:6: error: Name 'workers' already
+defined on line 44  [no-redef]
+
+
+Looking at: https://github.com/twisted/twisted/blob/trunk/src/twisted/python/threadpool.py,
+I see:
+
+    workers = 0
+
+    @property
+    def workers(self):
+
+
+What is the correct way to fix this?  Is deleting the workers variable correct?
+
+--
+
+Craig
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200616/a70dad24/attachment.htm>
+
+From hawkowl at atleastfornow.net  Fri Jun 19 05:37:21 2020
+From: hawkowl at atleastfornow.net (Amber Brown (hawkowl))
+Date: Fri, 19 Jun 2020 21:37:21 +1000
+Subject: [Twisted-Python] Changing supported configurations regarding
+ Unicode handling on Windows
+Message-ID: <7f1b79da-882a-2f10-5109-b35e0462ebfa@atleastfornow.net>
+
+Hi all,
+
+The past week or so, I noticed failures in the Azure Pipelines CI (see 
+https://github.com/twisted/twisted/pull/1278 for the ticket with them, 
+among others) that were due to Python + Windows falling apart on 
+mgorny's name. After some debugging, I ascertained:
+
+- The environment has Unicode strings in it (because environments are 
+Unicode on Windows)
+- but sys.stdout.encoding is cp1252 -- 
+https://www.python.org/dev/peps/pep-0528/ does not apply due to it being 
+a non-interactive console
+- One of the characters in the environment is not printable under 
+cp1252, which causes an exception.
+
+I think we should avoid running under ANSI-mode by default at all costs, 
+since it causes non-obvious bugs like this (`print(os.environ)` causing 
+an exception). This would also bring Windows in line with UNIX, where we 
+basically assume a non-UTF-8 locale is more or less broken by design and 
+we don't run the tests on it.
+
+It also seems like Windows is heading in the direction of having console 
+output be CP65001 (aka UTF-8), so I think this is a reasonable direction 
+to go in as well. [1] [2] [3]
+
+PEP-528 makes sys.stdout/sys.stdin use the W ("wide", aka UTF-16LE) 
+APIs, as it's assumed that a human is on the other side of the console. 
+For compatibility, it will encode Unicode to UTF-8, pass it to 
+WindowsConsoleIO, which will then decode it into UTF-16 and pass it to 
+the console, meaning that writing raw UTF-8 bytes to sys.stdout.buffer 
+works as you'd expect on Windows and UNIXes. We can enable UTF-8 text 
+output universally with the environment variable 
+`PYTHONIOENCODING=utf8:surrogateescape`. If a user wants ANSI output, 
+they can use the "PYTHONLEGACYWINDOWSSTDIO" environment to make Python 
+not perform the Unicode conversions for the console, so we could perhaps 
+use this too, if someone is SURE they want ANSI output.
+
+Python 3.7 has PEP-540's `-X utf8` mode, which also does this, more or 
+less, but in a nicer way (no environment variables).
+
+Python 3.5 doesn't seem to work with either of these options. Not sure 
+why. Maybe it's busted.
+
+So, due to this, I would like to propose the following:
+
+- On Windows, raising a deprecation warning when sys.stdout and 
+sys.stderr are not UTF-8 AND the environment variable 
+"PYTHONLEGACYWINDOWSSTDIO" is not set.
+- Declaring said environments unsupported and running our tests with -X 
+utf8/PYTHONIOENCODING=utf8 or PYTHONLEGACYWINDOWSSTDIO (which will 
+require some Unicode tests which fail because CP1252 is bad to be skipped).
+- After the deprecation period, start issuing loud RuntimeWarnings 
+saying that you're probably not doing the thing you want to be doing.
+
+Opinions?
+
+- Amber
+
+[1] 
+https://devblogs.microsoft.com/commandline/windows-command-line-unicode-and-utf-8-output-text-buffer/
+[2] 
+https://docs.microsoft.com/en-us/dotnet/api/system.text.encoding.default?view=netcore-3.1#the-default-property-on-net-core
+[3] 
+https://docs.microsoft.com/en-us/windows/uwp/design/globalizing/use-utf8-code-page
+
+
+From moshez at zadka.club  Fri Jun 19 22:51:21 2020
+From: moshez at zadka.club (Moshe Zadka)
+Date: Fri, 19 Jun 2020 21:51:21 -0700
+Subject: [Twisted-Python] Running tests with monkeytype
+Message-ID: <af39fd9c-4c21-495e-9a5a-b82482944f7a@www.fastmail.com>
+
+Hi all,
+
+If you want to get a first rough draft of types for mypy, has anyone tried running the tests under monkeytype[1]?
+
+Moshe Z.
+
+[1] https://monkeytype.readthedocs.io/en/stable/
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200619/f895db53/attachment.htm>
+
+From maarten at treewalker.org  Sat Jun 20 16:10:24 2020
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Sun, 21 Jun 2020 00:10:24 +0200
+Subject: [Twisted-Python] Running tests with monkeytype
+In-Reply-To: <af39fd9c-4c21-495e-9a5a-b82482944f7a@www.fastmail.com>
+References: <af39fd9c-4c21-495e-9a5a-b82482944f7a@www.fastmail.com>
+Message-ID: <9737313.b4M5aynErV@hyperion>
+
+On Saturday, 20 June 2020 06:51:21 CEST Moshe Zadka wrote:
+> Hi all,
+> 
+> If you want to get a first rough draft of types for mypy, has anyone
+> tried running the tests under monkeytype[1]?
+> 
+> Moshe Z.
+> 
+> [1] https://monkeytype.readthedocs.io/en/stable/
+
+That would be worth running in any case, if only as a reference.
+
+Whether it would be worth applying as-is, I'm not sure: monkeytype would 
+capture the concrete type passed to functions, while in the type 
+annotations we'd want to have Zope interfaces and abstract types 
+(Iterable etc) instead.
+
+With some scripted filtering, maybe we can apply part of monkeytype's 
+captured types automatically. We don't need to automate 100%; any 
+substantial amount will save a lot of manual work.
+
+
+Another thing we could do to automate annotation is extract the 
+documented types from the docstrings. For example by modifying pydoctor.
+
+Which also brings up the question: in the long term (*), do we want to 
+have both type annotations and types in the docstring? Or do we only 
+want to document types in docstrings if there is no exact annotations 
+possible in Python's type system?
+
+(*) Currently, pydoctor uses Python 3.6 style ("var: type") annotations 
+for variables, but it ignores annotations for functions and it ignores 
+type comments. Function annotations are on my to-do list, while type 
+comments are supported by Python 3.8's ast module. So eventually, all 
+annotations should end up in the output of pydoctor.
+
+Bye,
+		Maarten
+
+
+
+
+From twm at freecog.net  Sat Jun 20 17:01:37 2020
+From: twm at freecog.net (Tom Most)
+Date: Sat, 20 Jun 2020 16:01:37 -0700
+Subject: [Twisted-Python] Running tests with monkeytype
+In-Reply-To: <9737313.b4M5aynErV@hyperion>
+References: <af39fd9c-4c21-495e-9a5a-b82482944f7a@www.fastmail.com>
+ <9737313.b4M5aynErV@hyperion>
+Message-ID: <2de53393-5d4c-42ed-8fe3-1cca6ded9dd0@www.fastmail.com>
+
+On Sat, Jun 20, 2020, at 3:10 PM, Maarten ter Huurne wrote:
+> Which also brings up the question: in the long term (*), do we want to 
+> have both type annotations and types in the docstring? Or do we only 
+> want to document types in docstrings if there is no exact annotations 
+> possible in Python's type system?
+
+Let's definitely move to type annotations, since they are much more likely to be correct due to validation by MyPy.
+
+To start, we'll need to revise the Twisted coding standard [1] to permit type annotations instead of @type lines in the docstring. I think that we should suggest, but not require, annotation syntax to start. I filed a ticket [2] for this.
+
+---Tom
+
+[1]: https://twistedmatrix.com/documents/current/core/development/policy/coding-standard.html#docstrings
+[2]: https://twistedmatrix.com/trac/ticket/9859
+
+
+From trac at twistedmatrix.com  Sun Jun 21 00:05:16 2020
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 21 Jun 2020 06:05:16 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1592719516.97.7602228278108890446@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200621/5a89c60e/attachment.htm>
+
+From rodrigc at crodrigues.org  Sun Jun 21 23:18:54 2020
+From: rodrigc at crodrigues.org (Craig Rodrigues)
+Date: Sun, 21 Jun 2020 22:18:54 -0700
+Subject: [Twisted-Python] Running tests with monkeytype
+In-Reply-To: <2de53393-5d4c-42ed-8fe3-1cca6ded9dd0@www.fastmail.com>
+References: <af39fd9c-4c21-495e-9a5a-b82482944f7a@www.fastmail.com>
+ <9737313.b4M5aynErV@hyperion>
+ <2de53393-5d4c-42ed-8fe3-1cca6ded9dd0@www.fastmail.com>
+Message-ID: <CAG=rPVfhgi9tEmEGq7V6Fx68crQwwP5M+2tVxecZ4ehaw+8w-g@mail.gmail.com>
+
+On Sat, Jun 20, 2020 at 4:02 PM Tom Most <twm at freecog.net> wrote:
+
+>
+> Let's definitely move to type annotations, since they are much more likely
+> to be correct due to validation by MyPy.
+>
+> To start, we'll need to revise the Twisted coding standard [1] to permit
+> type annotations instead of @type lines in the docstring. I think that we
+> should suggest, but not require, annotation syntax to start. I filed a
+> ticket [2] for this.
+>
+>
+Revising the Twisted coding standard to permit (and even encourage) type
+annotations is a great idea.
+Using epydoc's @type tags in docstring was OK, but epydoc is not
+a tool that is universally used in the Python world.  At the time, using
+epydoc tags was the best that could be done.
+Type annotations are a first-level language feature, that is part of the
+core Python toolchain.  There seems to be growing support for type
+annotations from various tools, IDE's,
+Python libraries, and the core Python toolchain itself.
+
+--
+Craig
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200621/4a5a5a6b/attachment.htm>
+
+From glyph at twistedmatrix.com  Mon Jun 22 00:58:57 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Sun, 21 Jun 2020 23:58:57 -0700
+Subject: [Twisted-Python] Running tests with monkeytype
+In-Reply-To: <CAG=rPVfhgi9tEmEGq7V6Fx68crQwwP5M+2tVxecZ4ehaw+8w-g@mail.gmail.com>
+References: <af39fd9c-4c21-495e-9a5a-b82482944f7a@www.fastmail.com>
+ <9737313.b4M5aynErV@hyperion>
+ <2de53393-5d4c-42ed-8fe3-1cca6ded9dd0@www.fastmail.com>
+ <CAG=rPVfhgi9tEmEGq7V6Fx68crQwwP5M+2tVxecZ4ehaw+8w-g@mail.gmail.com>
+Message-ID: <1EBB8D90-5F91-43F9-AA28-646168AECE10@twistedmatrix.com>
+
+
+
+> On Jun 21, 2020, at 10:18 PM, Craig Rodrigues <rodrigc at crodrigues.org> wrote:
+> 
+> 
+> 
+> On Sat, Jun 20, 2020 at 4:02 PM Tom Most <twm at freecog.net <mailto:twm at freecog.net>> wrote:
+> 
+> Let's definitely move to type annotations, since they are much more likely to be correct due to validation by MyPy.
+> 
+> To start, we'll need to revise the Twisted coding standard [1] to permit type annotations instead of @type lines in the docstring. I think that we should suggest, but not require, annotation syntax to start. I filed a ticket [2] for this.
+> 
+> 
+> Revising the Twisted coding standard to permit (and even encourage) type annotations is a great idea.
+> Using epydoc's @type tags in docstring was OK, but epydoc is not
+> a tool that is universally used in the Python world.  At the time, using epydoc tags was the best that could be done.
+> Type annotations are a first-level language feature, that is part of the
+> core Python toolchain.  There seems to be growing support for type annotations from various tools, IDE's,
+> Python libraries, and the core Python toolchain itself.
+
+I'm 100% in favor of moving to type annotations exclusively and getting rid of @type from everywhere.
+
+In fact this has been the plan since 2017:
+
+https://github.com/twisted/pydoctor/issues/136 <https://github.com/twisted/pydoctor/issues/136>
+
+Getting that issue resolved is the only blocker at this point :)
+
+-g
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200621/ef1e4eea/attachment.htm>
+
+From glyph at twistedmatrix.com  Mon Jun 22 01:06:22 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Mon, 22 Jun 2020 00:06:22 -0700
+Subject: [Twisted-Python] Changing supported configurations regarding
+ Unicode handling on Windows
+In-Reply-To: <7f1b79da-882a-2f10-5109-b35e0462ebfa@atleastfornow.net>
+References: <7f1b79da-882a-2f10-5109-b35e0462ebfa@atleastfornow.net>
+Message-ID: <A696DDAF-CE3D-4493-A8BF-4C62F9641DDA@twistedmatrix.com>
+
+
+
+> On Jun 19, 2020, at 4:37 AM, Amber Brown (hawkowl) <hawkowl at atleastfornow.net> wrote:
+> 
+> Hi all,
+> 
+> The past week or so, I noticed failures in the Azure Pipelines CI (see https://github.com/twisted/twisted/pull/1278 for the ticket with them, among others) that were due to Python + Windows falling apart on mgorny's name.
+
+...
+
+> Opinions?
+
+This all sounds like a pretty good plan to me - please go ahead and do it ASAP!
+
+My only concern here is that setting up Twisted services on Windows can already be a bit fiddly, and I would almost rather generate potential mojibake by default than fail to run in a way which would be even harder to debug than it already is.  However, even if this is a valid concern, let's not block on it, but figure out a way to fix it after the immediate issue where folks with non-ascii letters in their names can't submit PRs.
+
+Thanks so much for investigating!
+
+-g
+
+
+
+From barry.scott at forcepoint.com  Mon Jun 22 05:04:05 2020
+From: barry.scott at forcepoint.com (Barry Scott)
+Date: Mon, 22 Jun 2020 12:04:05 +0100
+Subject: [Twisted-Python] Changing supported configurations regarding
+ Unicode handling on Windows
+In-Reply-To: <A696DDAF-CE3D-4493-A8BF-4C62F9641DDA@twistedmatrix.com>
+References: <7f1b79da-882a-2f10-5109-b35e0462ebfa@atleastfornow.net>
+ <A696DDAF-CE3D-4493-A8BF-4C62F9641DDA@twistedmatrix.com>
+Message-ID: <4543750.GXAFRqVoOG@fpbarry>
+
+On Monday, 22 June 2020 08:06:22 BST Glyph wrote:
+> > On Jun 19, 2020, at 4:37 AM, Amber Brown (hawkowl)
+> > <hawkowl at atleastfornow.net> wrote:
+> > 
+> > Hi all,
+> > 
+> > The past week or so, I noticed failures in the Azure Pipelines CI (see
+> > https://github.com/twisted/twisted/pull/1278 for the ticket with them,
+> > among others) that were due to Python + Windows falling apart on mgorny's
+> > name.
+> ...
+> 
+> > Opinions?
+
+I think this is down to a change in Python 3.8 on Windows that defaults
+opening files to use the Windows code page of the user, like cp1252.
+My guess is that there is a file being opened without an encoding='utf-8'.
+
+(I noticed this with modulefinder and fixed that for python 3.8)
+
+Barry
+
+> 
+> This all sounds like a pretty good plan to me - please go ahead and do it
+> ASAP!
+> 
+> My only concern here is that setting up Twisted services on Windows can
+> already be a bit fiddly, and I would almost rather generate potential
+> mojibake by default than fail to run in a way which would be even harder to
+> debug than it already is.  However, even if this is a valid concern, let's
+> not block on it, but figure out a way to fix it after the immediate issue
+> where folks with non-ascii letters in their names can't submit PRs.
+> 
+> Thanks so much for investigating!
+> 
+> -g
+> 
+> 
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+
+
+
+
+From rodrigc at crodrigues.org  Mon Jun 22 17:36:05 2020
+From: rodrigc at crodrigues.org (Craig Rodrigues)
+Date: Mon, 22 Jun 2020 16:36:05 -0700
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+Message-ID: <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+
+I have merged some more fixes for mypy to Twisted trunk branch.
+
+In trunk, you can run mypy with:
+
+*tox -e mypy*
+
+Currently this results in *171* errors, which is way down from >1000 errors
+a month ago.
+
+In addition, if you look at any new PR's there is a *Mypy Ubuntu* job
+running on Azure pipeline, which runs mypy.  Right now errors from this job
+are ignored and does not block the PR.  However, if we can get the mypy
+errors down to zero, we can make mypy status a blocker for the PR.
+
+--
+Craig
+
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200622/194f769a/attachment.htm>
+
+From rodrigc at crodrigues.org  Mon Jun 22 21:08:25 2020
+From: rodrigc at crodrigues.org (Craig Rodrigues)
+Date: Mon, 22 Jun 2020 20:08:25 -0700
+Subject: [Twisted-Python] Changing supported configurations regarding
+ Unicode handling on Windows
+In-Reply-To: <A696DDAF-CE3D-4493-A8BF-4C62F9641DDA@twistedmatrix.com>
+References: <7f1b79da-882a-2f10-5109-b35e0462ebfa@atleastfornow.net>
+ <A696DDAF-CE3D-4493-A8BF-4C62F9641DDA@twistedmatrix.com>
+Message-ID: <CAG=rPVfpS-m8Bw1D3hcqT2fN3TRcxcYYUYHqCo-zx320j+USLQ@mail.gmail.com>
+
+On Mon, Jun 22, 2020 at 12:08 AM Glyph <glyph at twistedmatrix.com> wrote:
+
+>
+> figure out a way to fix it after the immediate issue where folks with
+> non-ascii letters in their names can't submit PRs.
+>
+> Thanks so much for investigating!
+>
+>
+I worked with Michał Górny who helped me debug this.  When Michał submits
+a PR from his account https://github.com/mgorny, in the Azure Pipeline,
+the following environment variable gets set on the Windows builder running
+in Azure:
+
+BUILD_SOURCEVERSIONAUTHOR Michał Górny
+
+The presence of this single environment variable caused all sorts of CI
+failures.
+Even if Michał submitted a trivial linespace change, the CI would fail due
+to that environment variable.
+
+I submitted this PR which fixes things:
+https://github.com/twisted/twisted/pull/1302
+
+I was able to run that same patch under a PR created by Michał, and all the
+CI passed.
+
+--
+Craig
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200622/45db76a4/attachment.htm>
+
+From adi at roiban.ro  Tue Jun 23 06:34:55 2020
+From: adi at roiban.ro (Adi Roiban)
+Date: Tue, 23 Jun 2020 13:34:55 +0100
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+ <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+Message-ID: <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+
+Hi Craig,
+
+On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues <rodrigc at crodrigues.org>
+wrote:
+
+> I have merged some more fixes for mypy to Twisted trunk branch.
+>
+> In trunk, you can run mypy with:
+>
+> *tox -e mypy*
+>
+> Currently this results in *171* errors, which is way down from >1000
+> errors
+> a month ago.
+>
+> In addition, if you look at any new PR's there is a *Mypy Ubuntu* job
+> running on Azure pipeline, which runs mypy.  Right now errors from this job
+> are ignored and does not block the PR.  However, if we can get the mypy
+> errors down to zero, we can make mypy status a blocker for the PR.
+>
+>
+Thanks for working on this.
+
+Looking forward to have a real green mypy build.
+
+A general question: Why Twisted used Azure Devops and not GitHub actions?
+
+With Github Actions you can add a workload / pipeline with only GitHub
+access. There is no need for extra Azure permissions.
+
+I guess that with Github actions, if we run all the tests on
+Linux/Windows/MacOS we will very soon run out of time :)
+
+But maybe we can have the linters and other quick tests there.
+
+---
+Adi Roiban
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200623/91d7113e/attachment.htm>
+
+From glyph at twistedmatrix.com  Tue Jun 23 22:43:33 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 23 Jun 2020 21:43:33 -0700
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+ <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+ <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+Message-ID: <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+
+
+
+> On Jun 23, 2020, at 5:34 AM, Adi Roiban <adi at roiban.ro> wrote:
+> 
+> Hi Craig,
+> 
+> On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues <rodrigc at crodrigues.org <mailto:rodrigc at crodrigues.org>> wrote:
+> I have merged some more fixes for mypy to Twisted trunk branch.
+> 
+> In trunk, you can run mypy with:
+> 
+> tox -e mypy
+> 
+> Currently this results in 171 errors, which is way down from >1000 errors
+> a month ago.
+> 
+> In addition, if you look at any new PR's there is a Mypy Ubuntu job
+> running on Azure pipeline, which runs mypy.  Right now errors from this job
+> are ignored and does not block the PR.  However, if we can get the mypy
+> errors down to zero, we can make mypy status a blocker for the PR.
+> 
+> 
+> Thanks for working on this.
+> 
+> Looking forward to have a real green mypy build.
+> 
+> A general question: Why Twisted used Azure Devops and not GitHub actions?
+
+Azure Pipelines gave us substantially more parallel capacity than is available via Github Actions, which means we can make build statuses appear much sooner.  Plus they support more platforms.
+
+For what it's worth, this build should just be "mypy", not "mypy ubuntu"; there should never be any differences between mypy on different platforms since it's statically analyzing the code.  If there are, that sounds like it's mypy's problem, not ours, so it shouldn't be on our CI :).
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200623/ab4f0c6d/attachment.htm>
+
+From exarkun at twistedmatrix.com  Wed Jun 24 06:48:02 2020
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Wed, 24 Jun 2020 08:48:02 -0400
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+ <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+ <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+ <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+Message-ID: <CAEeXt4NH0uewveAhggqRuO4G4_a0fTSE5TZk_9ANHbPJ8vOy6A@mail.gmail.com>
+
+On Wed, Jun 24, 2020 at 12:44 AM Glyph <glyph at twistedmatrix.com> wrote:
+
+>
+>
+> On Jun 23, 2020, at 5:34 AM, Adi Roiban <adi at roiban.ro> wrote:
+>
+> Hi Craig,
+>
+> On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues <rodrigc at crodrigues.org>
+> wrote:
+>
+>> I have merged some more fixes for mypy to Twisted trunk branch.
+>>
+>> In trunk, you can run mypy with:
+>>
+>> *tox -e mypy*
+>>
+>> Currently this results in *171* errors, which is way down from >1000
+>> errors
+>> a month ago.
+>>
+>> In addition, if you look at any new PR's there is a *Mypy Ubuntu* job
+>> running on Azure pipeline, which runs mypy.  Right now errors from this
+>> job
+>> are ignored and does not block the PR.  However, if we can get the mypy
+>> errors down to zero, we can make mypy status a blocker for the PR.
+>>
+>>
+> Thanks for working on this.
+>
+> Looking forward to have a real green mypy build.
+>
+> A general question: Why Twisted used Azure Devops and not GitHub actions?
+>
+>
+> Azure Pipelines gave us substantially more parallel capacity than is
+> available via Github Actions, which means we can make build statuses appear
+> much sooner.  Plus they support more platforms.
+>
+
+Does Twisted have a special deal with Azure Pipelines?  Or is the use of
+past-tense in this sentence intentional? :)  Or are the docs for the
+respective platforms wrong/misleading?
+
+https://docs.microsoft.com/en-us/azure/devops/pipelines/licensing/concurrent-jobs?view=azure-devops
+says
+free-tier public projects get 10 parallel jobs.
+
+https://help.github.com/en/actions/getting-started-with-github-actions/about-github-actions#usage-limits
+says
+free tier projects get 20 parallel jobs.
+
+(Of course this says nothing about the number of supported platforms.)
+
+Jean-Paul
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200624/d77b2b37/attachment.htm>
+
+From glyph at twistedmatrix.com  Wed Jun 24 13:34:02 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Wed, 24 Jun 2020 12:34:02 -0700
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <CAEeXt4NH0uewveAhggqRuO4G4_a0fTSE5TZk_9ANHbPJ8vOy6A@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+ <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+ <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+ <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+ <CAEeXt4NH0uewveAhggqRuO4G4_a0fTSE5TZk_9ANHbPJ8vOy6A@mail.gmail.com>
+Message-ID: <7E66009C-D971-4F16-8883-5BF1E0FF59EC@twistedmatrix.com>
+
+
+
+> On Jun 24, 2020, at 5:48 AM, Jean-Paul Calderone <exarkun at twistedmatrix.com> wrote:
+> 
+> On Wed, Jun 24, 2020 at 12:44 AM Glyph <glyph at twistedmatrix.com <mailto:glyph at twistedmatrix.com>> wrote:
+> 
+> 
+>> On Jun 23, 2020, at 5:34 AM, Adi Roiban <adi at roiban.ro <mailto:adi at roiban.ro>> wrote:
+>> 
+>> Hi Craig,
+>> 
+>> On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues <rodrigc at crodrigues.org <mailto:rodrigc at crodrigues.org>> wrote:
+>> I have merged some more fixes for mypy to Twisted trunk branch.
+>> 
+>> In trunk, you can run mypy with:
+>> 
+>> tox -e mypy
+>> 
+>> Currently this results in 171 errors, which is way down from >1000 errors
+>> a month ago.
+>> 
+>> In addition, if you look at any new PR's there is a Mypy Ubuntu job
+>> running on Azure pipeline, which runs mypy.  Right now errors from this job
+>> are ignored and does not block the PR.  However, if we can get the mypy
+>> errors down to zero, we can make mypy status a blocker for the PR.
+>> 
+>> 
+>> Thanks for working on this.
+>> 
+>> Looking forward to have a real green mypy build.
+>> 
+>> A general question: Why Twisted used Azure Devops and not GitHub actions?
+> 
+> Azure Pipelines gave us substantially more parallel capacity than is available via Github Actions, which means we can make build statuses appear much sooner.  Plus they support more platforms.
+> 
+> Does Twisted have a special deal with Azure Pipelines?
+
+Yes.  They set it up for us and boosted our capacity at PyCon 2019.
+
+> Or is the use of past-tense in this sentence intentional? :)
+
+Also yes :).  I am not aware of any changes to the default capacity of either offering since then and now, so I wanted to be clear that this was a decision that happened in the past.
+
+> Or are the docs for the respective platforms wrong/misleading?
+
+I'm not sure what our total capacity is, I think it's 30, but I don't know how to check.  I'm sure these are right though.
+
+> https://docs.microsoft.com/en-us/azure/devops/pipelines/licensing/concurrent-jobs?view=azure-devops <https://docs.microsoft.com/en-us/azure/devops/pipelines/licensing/concurrent-jobs?view=azure-devops> says free-tier public projects get 10 parallel jobs.
+> 
+> https://help.github.com/en/actions/getting-started-with-github-actions/about-github-actions#usage-limits <https://help.github.com/en/actions/getting-started-with-github-actions/about-github-actions#usage-limits> says free tier projects get 20 parallel jobs.
+> 
+> (Of course this says nothing about the number of supported platforms.)
+> 
+> Jean-Paul
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200624/52939541/attachment.htm>
+
+From sda at fstab.net  Wed Jun 24 13:45:09 2020
+From: sda at fstab.net (Kyle Altendorf)
+Date: Wed, 24 Jun 2020 15:45:09 -0400
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+ <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+ <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+ <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+Message-ID: <1addecd4dfd65ef523e2acde8b0d4bb8@fstab.net>
+
+> On 2020-06-24 00:43, Glyph wrote:
+> 
+> > On Jun 23, 2020, at 5:34 AM, Adi Roiban <adi at roiban.ro> wrote:
+> >
+> > Hi Craig,
+> >
+> > On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues <rodrigc at crodrigues.org> wrote:
+> > I have merged some more fixes for mypy to Twisted trunk branch.
+> >
+> > In trunk, you can run mypy with:
+> >
+> > tox -e mypy
+> >
+> > Currently this results in 171 errors, which is way down from >1000 errors
+> > a month ago.
+> >
+> > In addition, if you look at any new PR's there is a Mypy Ubuntu job
+> > running on Azure pipeline, which runs mypy.  Right now errors from this job
+> > are ignored and does not block the PR.  However, if we can get the mypy
+> > errors down to zero, we can make mypy status a blocker for the PR.
+> >
+> > Thanks for working on this.
+> >
+> > Looking forward to have a real green mypy build.
+> >
+> > A general question: Why Twisted used Azure Devops and not GitHub actions?
+> 
+> Azure Pipelines gave us substantially more parallel capacity than is 
+> available via Github Actions, which means we can make build statuses 
+> appear much sooner.  Plus they support more platforms.
+
+Just noticed we don't actually link to Azure from the readme.  Presently 
+we have 14 builds there so within the tense pickiness :] we don't get 
+any benefit (yet).
+
+I'm curious though, what additional platforms does Azure get us?
+
+
+From glyph at twistedmatrix.com  Wed Jun 24 13:50:14 2020
+From: glyph at twistedmatrix.com (Glyph)
+Date: Wed, 24 Jun 2020 12:50:14 -0700
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <1addecd4dfd65ef523e2acde8b0d4bb8@fstab.net>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+ <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+ <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+ <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+ <1addecd4dfd65ef523e2acde8b0d4bb8@fstab.net>
+Message-ID: <20B5A893-E56F-4C5D-9763-BE8E5A990DEB@twistedmatrix.com>
+
+
+
+> On Jun 24, 2020, at 12:45 PM, Kyle Altendorf <sda at fstab.net> wrote:
+> 
+>> On 2020-06-24 00:43, Glyph wrote:
+>> > On Jun 23, 2020, at 5:34 AM, Adi Roiban <adi at roiban.ro> wrote:
+>> >
+>> > Hi Craig,
+>> >
+>> > On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues <rodrigc at crodrigues.org> wrote:
+>> > I have merged some more fixes for mypy to Twisted trunk branch.
+>> >
+>> > In trunk, you can run mypy with:
+>> >
+>> > tox -e mypy
+>> >
+>> > Currently this results in 171 errors, which is way down from >1000 errors
+>> > a month ago.
+>> >
+>> > In addition, if you look at any new PR's there is a Mypy Ubuntu job
+>> > running on Azure pipeline, which runs mypy.  Right now errors from this job
+>> > are ignored and does not block the PR.  However, if we can get the mypy
+>> > errors down to zero, we can make mypy status a blocker for the PR.
+>> >
+>> > Thanks for working on this.
+>> >
+>> > Looking forward to have a real green mypy build.
+>> >
+>> > A general question: Why Twisted used Azure Devops and not GitHub actions?
+>> Azure Pipelines gave us substantially more parallel capacity than is available via Github Actions, which means we can make build statuses appear much sooner.  Plus they support more platforms.
+> 
+> Just noticed we don't actually link to Azure from the readme.  Presently we have 14 builds there so within the tense pickiness :] we don't get any benefit (yet).
+
+If 3 PRs are building at the same time, we see a benefit.
+
+> I'm curious though, what additional platforms does Azure get us?
+
+Oh, never mind! Last I was investigating this Actions was Linux-only; looks like they've really improved a lot!
+
+-g
+
+From hawkowl at atleastfornow.net  Wed Jun 24 17:26:26 2020
+From: hawkowl at atleastfornow.net (Amber Brown (hawkowl))
+Date: Thu, 25 Jun 2020 09:26:26 +1000
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <20B5A893-E56F-4C5D-9763-BE8E5A990DEB@twistedmatrix.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+ <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+ <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+ <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+ <1addecd4dfd65ef523e2acde8b0d4bb8@fstab.net>
+ <20B5A893-E56F-4C5D-9763-BE8E5A990DEB@twistedmatrix.com>
+Message-ID: <a8d11612-c19b-2400-b6c1-9b3269708f57@atleastfornow.net>
+
+On 25/6/20 5:50 am, Glyph wrote:
+> 
+> 
+>> On Jun 24, 2020, at 12:45 PM, Kyle Altendorf <sda at fstab.net> wrote:
+>>
+>>> On 2020-06-24 00:43, Glyph wrote:
+>>>> On Jun 23, 2020, at 5:34 AM, Adi Roiban <adi at roiban.ro> wrote:
+>>>>
+>>>> Hi Craig,
+>>>>
+>>>> On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues <rodrigc at crodrigues.org> wrote:
+>>>> I have merged some more fixes for mypy to Twisted trunk branch.
+>>>>
+>>>> In trunk, you can run mypy with:
+>>>>
+>>>> tox -e mypy
+>>>>
+>>>> Currently this results in 171 errors, which is way down from >1000 errors
+>>>> a month ago.
+>>>>
+>>>> In addition, if you look at any new PR's there is a Mypy Ubuntu job
+>>>> running on Azure pipeline, which runs mypy.  Right now errors from this job
+>>>> are ignored and does not block the PR.  However, if we can get the mypy
+>>>> errors down to zero, we can make mypy status a blocker for the PR.
+>>>>
+>>>> Thanks for working on this.
+>>>>
+>>>> Looking forward to have a real green mypy build.
+>>>>
+>>>> A general question: Why Twisted used Azure Devops and not GitHub actions?
+>>> Azure Pipelines gave us substantially more parallel capacity than is available via Github Actions, which means we can make build statuses appear much sooner.  Plus they support more platforms.
+>>
+>> Just noticed we don't actually link to Azure from the readme.  Presently we have 14 builds there so within the tense pickiness :] we don't get any benefit (yet).
+> 
+> If 3 PRs are building at the same time, we see a benefit.
+> 
+>> I'm curious though, what additional platforms does Azure get us?
+> 
+> Oh, never mind! Last I was investigating this Actions was Linux-only; looks like they've really improved a lot!
+> 
+> -g
+
+IIRC, they share infrastructure now, due to the GitHub-Microsoft thing.
+
+- Amber
+
+
+From ian at haywood.id.au  Thu Jun 25 02:50:07 2020
+From: ian at haywood.id.au (Ian Haywood)
+Date: Thu, 25 Jun 2020 18:50:07 +1000
+Subject: [Twisted-Python] new code: 3.5 or 3.6?
+Message-ID: <878f3ef3-68b3-4c93-9d44-07ce9d5db1c7@haywood.id.au>
+
+I've followed the discussion re 3.6 and type annotations, but evidently 
+not closely enough
+
+when writing new code for twisted today, can we use 3.6 features or is 
+3.5 still required? (it's actually a library feature enum.IntFlag I'm 
+curious about, not type annotations)
+
+Ian
+
+
+From adi at roiban.ro  Thu Jun 25 06:18:04 2020
+From: adi at roiban.ro (Adi Roiban)
+Date: Thu, 25 Jun 2020 13:18:04 +0100
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <CAEeXt4NH0uewveAhggqRuO4G4_a0fTSE5TZk_9ANHbPJ8vOy6A@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <4F554B45-897C-4209-845C-48721584EE0E@twistedmatrix.com>
+ <CAG=rPVcnJDoFWFuT+kViPQ33-Z-CLvT1eZMnF6FVEos08jBG2g@mail.gmail.com>
+ <CAG=rPVdt5UxfE+a+vk9Om8QbK-Ey4PBh2CE+YRkJx9wEGaq_qg@mail.gmail.com>
+ <CAFycZ9fc=mXZ=qyMbeWWN_Zb3s6qriUun85HRYs6DXoHf-Q3CQ@mail.gmail.com>
+ <8D9658BC-B2ED-45E4-ABC6-6CA04C6D9A0B@twistedmatrix.com>
+ <CAEeXt4NH0uewveAhggqRuO4G4_a0fTSE5TZk_9ANHbPJ8vOy6A@mail.gmail.com>
+Message-ID: <CAFycZ9ce9Z-53i2g8G7O+yjv0tJ2-jV6WJy9X_Xa2oUcQr5ncg@mail.gmail.com>
+
+On Wed, 24 Jun 2020 at 13:48, Jean-Paul Calderone <exarkun at twistedmatrix.com>
+wrote:
+
+> On Wed, Jun 24, 2020 at 12:44 AM Glyph <glyph at twistedmatrix.com> wrote:
+>
+>>
+>>
+>> On Jun 23, 2020, at 5:34 AM, Adi Roiban <adi at roiban.ro> wrote:
+>>
+>> Hi Craig,
+>>
+>> On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues <rodrigc at crodrigues.org>
+>> wrote:
+>>
+>>> I have merged some more fixes for mypy to Twisted trunk branch.
+>>>
+>>> In trunk, you can run mypy with:
+>>>
+>>> *tox -e mypy*
+>>>
+>>> Currently this results in *171* errors, which is way down from >1000
+>>> errors
+>>> a month ago.
+>>>
+>>> In addition, if you look at any new PR's there is a *Mypy Ubuntu* job
+>>> running on Azure pipeline, which runs mypy.  Right now errors from this
+>>> job
+>>> are ignored and does not block the PR.  However, if we can get the mypy
+>>> errors down to zero, we can make mypy status a blocker for the PR.
+>>>
+>>>
+>> Thanks for working on this.
+>>
+>> Looking forward to have a real green mypy build.
+>>
+>> A general question: Why Twisted used Azure Devops and not GitHub actions?
+>>
+>>
+>> Azure Pipelines gave us substantially more parallel capacity than is
+>> available via Github Actions, which means we can make build statuses appear
+>> much sooner.  Plus they support more platforms.
+>>
+>
+> Does Twisted have a special deal with Azure Pipelines?  Or is the use of
+> past-tense in this sentence intentional? :)  Or are the docs for the
+> respective platforms wrong/misleading?
+>
+>
+> https://docs.microsoft.com/en-us/azure/devops/pipelines/licensing/concurrent-jobs?view=azure-devops says
+> free-tier public projects get 10 parallel jobs.
+>
+>
+> https://help.github.com/en/actions/getting-started-with-github-actions/about-github-actions#usage-limits says
+> free tier projects get 20 parallel jobs.
+>
+> (Of course this says nothing about the number of supported platforms.)
+>
+>
+My understanding is that GitHub actions are free for public repositories.
+
+My suggestion is to use Azure Pipelines and Travis for the main trial tests
+and use Circle-CI or GitHub Actions for the other tests.
+GitHub Actions has a nice integration with a GitHub PR and you can check
+the results without having to navigate to a different page.
+And with GitHub actions you can add any new workflow without extra
+permission to  Azure Devop.
+
+With GitHub actions for free and available on LInux/Windows/macOS , I am
+not sure if keeping Circle-Ci makes sense.
+
+-- 
+Adi Roiban
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200625/15ec91f1/attachment.htm>
+
+From maarten at treewalker.org  Thu Jun 25 11:28:34 2020
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Thu, 25 Jun 2020 19:28:34 +0200
+Subject: [Twisted-Python] mypy integrated with CI for twisted
+In-Reply-To: <CAFycZ9ce9Z-53i2g8G7O+yjv0tJ2-jV6WJy9X_Xa2oUcQr5ncg@mail.gmail.com>
+References: <CAG=rPVdtVyL8di8wPndfTKcPTx268vsRp6RUzDJ02+yzeqNcBg@mail.gmail.com>
+ <CAEeXt4NH0uewveAhggqRuO4G4_a0fTSE5TZk_9ANHbPJ8vOy6A@mail.gmail.com>
+ <CAFycZ9ce9Z-53i2g8G7O+yjv0tJ2-jV6WJy9X_Xa2oUcQr5ncg@mail.gmail.com>
+Message-ID: <2659016.dByF2puR5e@hyperion>
+
+On Thursday, 25 June 2020 14:18:04 CEST Adi Roiban wrote:
+> On Wed, 24 Jun 2020 at 13:48, Jean-Paul Calderone
+> <exarkun at twistedmatrix.com>
+> wrote:
+> > On Wed, Jun 24, 2020 at 12:44 AM Glyph <glyph at twistedmatrix.com> 
+wrote:
+> >> On Jun 23, 2020, at 5:34 AM, Adi Roiban <adi at roiban.ro> wrote:
+> >> 
+> >> Hi Craig,
+> >> 
+> >> On Tue, 23 Jun 2020 at 00:36, Craig Rodrigues
+> >> <rodrigc at crodrigues.org>>> 
+> >> wrote:
+> >>> I have merged some more fixes for mypy to Twisted trunk branch.
+> >>> 
+> >>> In trunk, you can run mypy with:
+> >>> 
+> >>> *tox -e mypy*
+> >>> 
+> >>> Currently this results in *171* errors, which is way down from
+> >>> >1000
+> >>> errors
+> >>> a month ago.
+> >>> 
+> >>> In addition, if you look at any new PR's there is a *Mypy Ubuntu*
+> >>> job
+> >>> running on Azure pipeline, which runs mypy.  Right now errors from
+> >>> this job
+> >>> are ignored and does not block the PR.  However, if we can get the
+> >>> mypy errors down to zero, we can make mypy status a blocker for
+> >>> the PR.>> 
+> >> Thanks for working on this.
+> >> 
+> >> Looking forward to have a real green mypy build.
+> >> 
+> >> A general question: Why Twisted used Azure Devops and not GitHub
+> >> actions?
+> >> 
+> >> 
+> >> Azure Pipelines gave us substantially more parallel capacity than
+> >> is
+> >> available via Github Actions, which means we can make build
+> >> statuses appear much sooner.  Plus they support more platforms.
+> > 
+> > Does Twisted have a special deal with Azure Pipelines?  Or is the
+> > use of past-tense in this sentence intentional? :)  Or are the docs
+> > for the respective platforms wrong/misleading?
+> > 
+> > 
+> > https://docs.microsoft.com/en-us/azure/devops/pipelines/licensing/co
+> > ncurrent-jobs?view=azure-devops says free-tier public projects get
+> > 10 parallel jobs.
+> > 
+> > 
+> > https://help.github.com/en/actions/getting-started-with-github-actio
+> > ns/about-github-actions#usage-limits says free tier projects get 20
+> > parallel jobs.
+> > 
+> > (Of course this says nothing about the number of supported
+> > platforms.)
+> My understanding is that GitHub actions are free for public
+> repositories.
+> 
+> My suggestion is to use Azure Pipelines and Travis for the main trial
+> tests and use Circle-CI or GitHub Actions for the other tests.
+> GitHub Actions has a nice integration with a GitHub PR and you can
+> check the results without having to navigate to a different page.
+> And with GitHub actions you can add any new workflow without extra
+> permission to  Azure Devop.
+> 
+> With GitHub actions for free and available on LInux/Windows/macOS , I
+> am not sure if keeping Circle-Ci makes sense.
+
+One problem with the Circle CI runs for Twisted that I ran into recently 
+is that it won't let me view the results of runs unless I grant it a 
+bunch of permissions it doesn't need, including read/write access to all 
+my repositories.
+
+Since that is an unnecessary security risk, I refused, but that does 
+mean that I can't view some of the CI results, which is a pain when one 
+of those checks fails.
+
+Bye,
+		Maarten
+
+
+
+
+From twm at freecog.net  Fri Jun 26 00:20:25 2020
+From: twm at freecog.net (Tom Most)
+Date: Thu, 25 Jun 2020 23:20:25 -0700
+Subject: [Twisted-Python] new code: 3.5 or 3.6?
+In-Reply-To: <878f3ef3-68b3-4c93-9d44-07ce9d5db1c7@haywood.id.au>
+References: <878f3ef3-68b3-4c93-9d44-07ce9d5db1c7@haywood.id.au>
+Message-ID: <c9931cfb-240a-45ec-a428-183a8a715727@www.fastmail.com>
+
+On Thu, Jun 25, 2020, at 1:50 AM, Ian Haywood wrote:
+> when writing new code for twisted today, can we use 3.6 features or is 
+> 3.5 still required? (it's actually a library feature enum.IntFlag I'm 
+> curious about, not type annotations)
+
+We'll drop Python 3.5 after the next release, so for now we have to avoid 3.6 features. This policy may vary for other Twisted projects, though --- Klein has already dropped 3.5 support, while Treq still supports 2.7 for now.
+
+---Tom
+
+
+From ian at haywood.id.au  Sat Jun 27 00:47:14 2020
+From: ian at haywood.id.au (Ian Haywood)
+Date: Sat, 27 Jun 2020 16:47:14 +1000
+Subject: [Twisted-Python] composition VS. inheritance
+Message-ID: <e3d4c273-c151-93ff-2e8b-fd97c1e12d12@haywood.id.au>
+
+In smb I have a SMBPacketReceiver that inherits from t.i.p.Protocol, it 
+breaks the incoming TCP stream into logical packets (the analogue of 
+LineReceiver in line-based protocols).
+
+I then subclass SMBPacketReceiver to SMBProtocol which does a lot of the 
+"heavy lifting" analyzing incoming packets.
+
+I've been told in code review to use composition instead of inheritance, 
+which is fine in a general sense but I have difficulty applying to 
+twisted-specific tasks.
+
+1. how to do Factory.buildProtocol? It has to return a t.i.p.Protocol, 
+but with composition the Protocol object is a private variable of 
+SMBPacketReceiver, in turn a private variable of SMBProtocol.
+
+2. what to do instead of overriding Protocol.dataReceived and access 
+incoming data if not allowed to subclass it?
+
+Now  its not that I cant think of workarounds to these two problems, but 
+they're ugly
+
+Is there some recent twisted code using composition that I can look at?
+
+
+Ian
+
+
+From trac at twistedmatrix.com  Sun Jun 28 00:05:20 2020
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 28 Jun 2020 06:05:20 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1593324320.62.7523175330814620715@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200628/fe1056a0/attachment.htm>
+
+From colin.dunklau at gmail.com  Sun Jun 28 00:48:16 2020
+From: colin.dunklau at gmail.com (Colin Dunklau)
+Date: Sun, 28 Jun 2020 08:48:16 +0200
+Subject: [Twisted-Python] composition VS. inheritance
+In-Reply-To: <e3d4c273-c151-93ff-2e8b-fd97c1e12d12@haywood.id.au>
+References: <e3d4c273-c151-93ff-2e8b-fd97c1e12d12@haywood.id.au>
+Message-ID: <CAMTx_3DVYTDe0XQrRe_hJ4OXKGHovBCuECusEz7=oJPzEm=gcQ@mail.gmail.com>
+
+On Sat, Jun 27, 2020 at 8:48 AM Ian Haywood <ian at haywood.id.au> wrote:
+
+> In smb I have a SMBPacketReceiver that inherits from t.i.p.Protocol, it
+> breaks the incoming TCP stream into logical packets (the analogue of
+> LineReceiver in line-based protocols).
+>
+> I then subclass SMBPacketReceiver to SMBProtocol which does a lot of the
+> "heavy lifting" analyzing incoming packets.
+>
+> I've been told in code review to use composition instead of inheritance,
+> which is fine in a general sense but I have difficulty applying to
+> twisted-specific tasks.
+>
+> 1. how to do Factory.buildProtocol? It has to return a t.i.p.Protocol,
+> but with composition the Protocol object is a private variable of
+> SMBPacketReceiver, in turn a private variable of SMBProtocol.
+>
+> 2. what to do instead of overriding Protocol.dataReceived and access
+> incoming data if not allowed to subclass it?
+>
+> Now  its not that I cant think of workarounds to these two problems, but
+> they're ugly
+>
+> Is there some recent twisted code using composition that I can look at?
+
+
+Hi Ian,
+
+Unfortunately we're stuck with inheritance in Twisted. Its developers made
+the decision (nearly two decades ago?) to use inheritance (hindsight is
+20/20 and all that) and that's permeated through the majority of the
+codebase. It's quite difficult to even *imagine* a Twisted without it, let
+alone make the necessary (huge and almost certainly breaking) changes to
+shift to a composition-oriented design. The good news is that while you're
+stuck with inheritance for interacting with the Twisted parts, you're free
+to do whatever you want outside of that.
+
+I suggest jumping out of the inheritance world as soon as possible; instead
+of having a SMBProtocol inherit from SMBPacketReceiver, make the initial
+Protocol subclass as general as possible -- maybe make it just deal with
+framing. Then you wired the protocol up with some object(s) that the
+protocol interacts with (and interacts with the protocol), and you have
+your inheritance escape hatch.
+
+I've been playing with this idea on infobob's functional tests, and will
+probably use it in the long-due refactor of infobob's code itself:
+
+- ComposedIRCController
+https://github.com/pound-python/infobob/blob/7d6cc51bd6aeba735c6fb081cf042d1157fbc6ca/functional-tests/clients.py#L48
+- _ComposedIRCClient subclass
+https://github.com/pound-python/infobob/blob/7d6cc51bd6aeba735c6fb081cf042d1157fbc6ca/functional-tests/clients.py#L425
+
+- _IRCClientState
+https://github.com/pound-python/infobob/blob/7d6cc51bd6aeba735c6fb081cf042d1157fbc6ca/functional-tests/clients.py#L376
+
+The protocol _ComposedIRCClient (an IRCClient subclass) deals with the
+irritating bits of IRC and tells its attached _IRCClientState instance
+about incoming protocol events (messages, joins, parts, etc). The protocol
+is itself wrapped by ComposedIRCController which is the main interface for
+other code to initiate actions which ultimately end up in a method call on
+the protocol.
+
+I hope that helps trigger some ideas in your head :)
+
+Colin
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20200628/faaeb58e/attachment.htm>
+
+From barry.scott at forcepoint.com  Tue Jun 30 09:41:24 2020
+From: barry.scott at forcepoint.com (Barry Scott)
+Date: Tue, 30 Jun 2020 16:41:24 +0100
+Subject: [Twisted-Python] composition VS. inheritance
+In-Reply-To: <e3d4c273-c151-93ff-2e8b-fd97c1e12d12@haywood.id.au>
+References: <e3d4c273-c151-93ff-2e8b-fd97c1e12d12@haywood.id.au>
+Message-ID: <4577023.31r3eYUQgx@fpbarry>
+
+On Saturday, 27 June 2020 07:47:14 BST Ian Haywood wrote:
+> In smb I have a SMBPacketReceiver that inherits from t.i.p.Protocol, it 
+> breaks the incoming TCP stream into logical packets (the analogue of 
+> LineReceiver in line-based protocols).
+> 
+> I then subclass SMBPacketReceiver to SMBProtocol which does a lot of the 
+> "heavy lifting" analyzing incoming packets.
+> 
+> I've been told in code review to use composition instead of inheritance, 
+> which is fine in a general sense but I have difficulty applying to 
+> twisted-specific tasks.
+> 
+> 1. how to do Factory.buildProtocol? It has to return a t.i.p.Protocol, 
+> but with composition the Protocol object is a private variable of 
+> SMBPacketReceiver, in turn a private variable of SMBProtocol.
+> 
+> 2. what to do instead of overriding Protocol.dataReceived and access 
+> incoming data if not allowed to subclass it?
+> 
+> Now  its not that I cant think of workarounds to these two problems, but 
+> they're ugly
+> 
+> Is there some recent twisted code using composition that I can look at?
+
+Have a look at the twisted code that handles HTTP. It switches from line handling for
+the headers to body handing in we either 1 block or chunked encoding.
+
+I think that matches what you are up to.
+
+Barry
+
+> 
+> 
+> Ian
+> 
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+> 
+
+
+
+
+
+From meejah at meejah.ca  Tue Jun 30 13:26:05 2020
+From: meejah at meejah.ca (meejah)
+Date: Tue, 30 Jun 2020 23:26:05 +0400
+Subject: [Twisted-Python] composition VS. inheritance
+In-Reply-To: <e3d4c273-c151-93ff-2e8b-fd97c1e12d12@haywood.id.au> (Ian
+ Haywood's message of "Sat, 27 Jun 2020 16:47:14 +1000")
+References: <e3d4c273-c151-93ff-2e8b-fd97c1e12d12@haywood.id.au>
+Message-ID: <86tuys8ieq.fsf@atlantis.meejah.ca>
+
+
+As others have pointed out, you're stuck with a certain amount of
+inheritance to use Twisted. However, this can be fairly minimal. For new
+code trying to follow a "sans-io" approach is good too. The go-to
+example of this for Twisted is Hyper/H2 and its integration into Twisted
+Web for HTTP2 support.
+
+For nearly every protocol you have similar pieces: framing, parsing, a
+state-machine and some way to send and receive bytes ("do I/O").
+
+Keeping these separate has a lot of value. The only part of the above
+where you "need to use inheritance" is the I/O part ("because
+Twisted"). You don't even technically need to "subclass" because you
+could just implement the right interfaces .. but in practice, you
+subclass Protocol.
+
+However, you can keep this looking like "just a shim":
+
+    class Shim(Protocol):
+
+        def connectionMade(self):
+            # self.transport is valid now
+            self._framing.startup()
+
+        def dataReceived(self, data):
+            self._framing.feed_data(data)
+
+        def connectionLost(self, reason):
+            self._framing.shutdown()
+
+(This is just one sort of suggestion / psuedo-code here). So your
+"framing" object collects bytes and when it has "a message" it can pass
+it along to the parser which validates it and turns it into a thing that
+it can pass along to the state-machine. All the state-machine needs is
+some way to indicate "I have messages to send" (e.g. a callback?) which
+is turned into bytes and you call "shim_instance.transport.write()" with
+those bytes.
+
+So all those "other" pieces can be written without inheritance. At least
+the parser and serializer can probably just be functions.
+
+I recently wrote a relatively simple protocol to try this "sans-io" style
+and was happy to start with the state-machine (using Automat). This
+forced some good decisions. Then I worked outwards to the "more boring"
+bits (framing and serialization/parsing).
+
+(Hmm, this should almost just be a blog-post maybe ;)
+
+-- 
+meejah
+
+

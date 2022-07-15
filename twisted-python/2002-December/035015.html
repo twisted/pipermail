@@ -1,0 +1,148 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] intermittent test failures: fixed
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20intermittent%20test%20failures%3A%20fixed&In-Reply-To=%3C20021231.113512.48827462.warner%40lothar.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035017.html">
+   <LINK REL="Next"  HREF="035022.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] intermittent test failures: fixed</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20intermittent%20test%20failures%3A%20fixed&In-Reply-To=%3C20021231.113512.48827462.warner%40lothar.com%3E"
+       TITLE="[Twisted-Python] intermittent test failures: fixed">warner at lothar.com
+       </A><BR>
+    <I>Tue Dec 31 12:35:12 MST 2002</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035017.html">[Twisted-Python] Python and Win32 command execution
+</A></li>
+        <LI>Next message (by thread): <A HREF="035022.html">[Twisted-Python] twisted.protocols.dict update
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35015">[ date ]</a>
+              <a href="thread.html#35015">[ thread ]</a>
+              <a href="subject.html#35015">[ subject ]</a>
+              <a href="author.html#35015">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi all..
+
+I spent some time yesterday looking into the intermittent test failures in
+test_tcp and test_threadpool. These failures only occurred when the full
+test suite was run (./admin/runtests -v -t), not when test_tcp was run by
+itself (./admin/runtests -v -t twisted.test.test_tcp). I finally figured out
+what was happening and wanted to share my findings to help others track down
+future problems.
+
+ Early in the test sequence, test_woven did some kind of session/login
+ thing. One particular test case was verifying an Unauthorized response,
+ which involved creating a Deferred that was then .errback()'ed. However,
+ there was no errback handler added to the Deferred.
+
+ Inside that test, web.guard started a 60 second session timeout, with a
+ callLater() function that referenced that Deferred (or an object holding
+ it).
+
+ test_woven finishes. The timer is still running. The Deferred (with pending
+ error) is still alive, since the callLater timer prevents it from being
+ garbage-collected.
+
+ Other test cases run.
+
+ [60 seconds pass]
+
+ Some other innocent test case is running, depending upon the speed of the
+ machine. On my CPU, it was usually test_tcp.
+
+ During some call to reactor.iterate, the web.guard session timer expires,
+ the callback does whatever callbacky things it likes, and an object gets
+ freed. That leads to the Deferred being freed. The Deferred has a pending
+ error but no .errback handler. Deferred.__del__ does log.msg() with the
+ &quot;Unhandled error in Deferred&quot; message, and log.err() with the
+ &quot;Unauthorized&quot; Failure object that wanted an .errback but had none.
+ log.err() puts the message in the error queue. log.msg() goes into the
+ test.log file, but not into the error queue.
+
+ test_tcp finishes without problem, but unittest.py looks in the error queue
+ and sees the Failure. It adds the traceback of the Failure (which is the
+ call trace leading up to the creation of the Unauthorized exception, which
+ is in web.guard, and doesn't mention test_woven at all) to the error
+ results of the test.
+
+ test_tcp is flunked, and as explanation unittest.py emits the error results
+ (the Unauthorized exception and the web.guard stack trace)
+
+The basic issue is timers that &quot;leak&quot; over from one unit test to another.
+Unit tests are supposed to be isolated from each other, but if one test
+changes the state of the reactor (by adding timers or establishing listenTCP
+ports) without cleaning it up when it finishes, that state can affect other
+tests.
+
+This is not always obvious, as several modules create timers internally.
+This is very convenient, and works fine in normal applications. It is only
+in the unit tests where it causes a problem.
+
+I've added IReactorTime.getDelayedCalls() as a reactor-portable way to
+retrieve the list of pending callLater() timers, and changed unittest.py to
+cancel all pending timers between test cases. This succeeded in moving the
+failure back to the test that caused it. I've also added a warning message
+(which goes into test.log) that indicates when a test leaves timers running
+after it completes. There are a handful that do; most are benign but should
+probably be cleaned up. This warning message may turn into a test failure
+someday.
+
+Some tools I used to track this down, in case they prove useful to others:
+
+ added code to Deferred and DelayedCall to record the stack track when they
+ are created, then print them in __repr__ or added to the &quot;unhandled error
+ in deferred&quot; Failure. The traceback of creation is often more useful than
+ the traceback of .callback, .errback, or timer execution.
+
+ added .extra attribute to Failures, insert its contents in the traceback.
+ I used this to display the Deferred-creation traceback.
+
+
+There are still a few issues: I need to implement getDelayedCalls for the
+cReactor, and my unit test for getDelayedCalls is stymied by a recurring
+timer created when the 'popsicle' module is imported, but in general it
+seems to make the unit test suite behave sensibly (no more intermittent
+failures).
+
+
+cheers,
+ -Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035017.html">[Twisted-Python] Python and Win32 command execution
+</A></li>
+	<LI>Next message (by thread): <A HREF="035022.html">[Twisted-Python] twisted.protocols.dict update
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35015">[ date ]</a>
+              <a href="thread.html#35015">[ thread ]</a>
+              <a href="subject.html#35015">[ subject ]</a>
+              <a href="author.html#35015">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

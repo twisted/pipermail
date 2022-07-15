@@ -1,0 +1,154 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Howto: use Trial to unit test an XML-RPC server
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Howto%3A%20use%20Trial%20to%20unit%20test%20an%20XML-RPC%20server&In-Reply-To=%3Cfuat7s%24eo2%241%40ger.gmane.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="050026.html">
+   <LINK REL="Next"  HREF="050024.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Howto: use Trial to unit test an XML-RPC server</H1>
+    <B>Don Dwiggins</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Howto%3A%20use%20Trial%20to%20unit%20test%20an%20XML-RPC%20server&In-Reply-To=%3Cfuat7s%24eo2%241%40ger.gmane.org%3E"
+       TITLE="[Twisted-Python] Howto: use Trial to unit test an XML-RPC server">ddwiggins at advpubtech.com
+       </A><BR>
+    <I>Fri Apr 18 13:36:26 MDT 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="050026.html">[Twisted-Python] Using different cursor types with	psycopg+twisted.enterprise.adbapi?
+</A></li>
+        <LI>Next message (by thread): <A HREF="050024.html">[Twisted-Python] Howto: use Trial to unit test an XML-RPC server
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#50022">[ date ]</a>
+              <a href="thread.html#50022">[ thread ]</a>
+              <a href="subject.html#50022">[ subject ]</a>
+              <a href="author.html#50022">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I'm offering the following as an experience report and a draft of a 
+howto article:
+-----------------------------
+I've been developing an XML-RPC server using Twisted, and unit testing 
+it with the distribution unittest, with each test connecting as a client 
+and exercising a particular method.  I ran into a problem, however:
+
+My server is essentially a special-purpose front end to a database, 
+providing limited access to it.  Some of the server methods modify the 
+database (I'm using adbapi for DB access).  For unit testing purposes, I 
+want each test to leave the test database unchanged when it's done.  In 
+unit testing stored procedures, for example, I create a connection in 
+SetUp, use it in the test function to send a SQL &quot;exec&quot;, and do a 
+rollback in TearDown.  Nice and easy, since I'm using the same 
+connection throughout.  In testing my server, however, I don't have 
+access to the connection it used to access the database (and in fact 
+shouldn't have, since my unit test functions are just clients to the 
+server, and know nothing of the database itself).
+
+This led me to the following approach, using Twisted's Trial extension 
+of unittest.  I converted my unittest module to be run under Trial, as 
+follows: rather than running the server, the test module imports the 
+server module, giving it access to the XMLRPC class itself, and the 
+ability to directly call its methods.  Since the server's methods return 
+Deferreds, it's easy enough to call a method, then attach a callback to 
+it that does the checking of its results.  Here's an example:
+-------------
+import MyServer
+
+class MyServerTests(unittest.TestCase)
+     def setUp(self):
+         # Instantiate object to be tested here
+         self.srvr = MyServer.XMLRPCServer()
+
+     def testFrobulate(self):
+         d = self.srvr.xmlrpc_frobulate(theFrobulatee)
+         def checkResult(info):
+	    # Test that the frobulation occurred correctly
+             pass
+         d.addCallback(checkFrobulation)
+
+     def checkFrobulation(self, resultOfFrobulation):
+         # Test whether it turned out OK
+--------------
+This works beautifully when frobulate doesn't modify the database; when 
+it does, however, I have the same problem as before: the actual 
+connection used is hidden in the guts of adbapi.
+
+For this case, I changed the coding a bit to allow testing.  Rather than 
+ConnectionPool.runQuery(), I use .runInteraction(), passing a function 
+that expects a DBAPI cursor as its first argument (when running in the 
+server, the function will be called in the context of a subthread).  The 
+code in the server module then looks like this (I'm running on Py 2.4):
+-------------
+     @defer.deferredGenerator
+     def xmlrpc_frobulate(theVictim):
+         frobInProgress = defer.waitForDeferred(
+             self._dbpool.runInteraction(
+                 self.frobulateInteraction, theVictim) )
+         yield frobInProgress
+         didItWork = frobInProgress.getResult()
+         yield didItWork
+         return
+
+     def frobulateInteraction(self, cursor, theVictim):
+         cursor.execute(&quot;exec FrobulateOn &quot; + theVictim)
+         # Check the results, return True or False
+--------------
+Now, in the unit test, I can call self.srvr.frobulateInteraction like this:
+-------------
+     def testFrobulate(self):
+         self.cursor = self.connection.cursor()
+         d = self.srvr.frobulateInteraction(self.cursor,
+                                            self.theFrobulatee)
+         def checkResult(info):
+	    # Test that the frobulation occurred correctly
+             pass
+         d.addCallback(checkFrobulation)
+-------------
+Now, since frobulateInteraction is using the connection from SetUp, the 
+rollback in TearDown will restore the state of the DB.
+
+In effect, by going &quot;under the covers&quot; of the server, I'm bypassing the 
+parts of the server that are supplied by Twisted, and focusing on the 
+code that I've written, which is exactly what I wanted to test.
+
+Feedback solicited...
+
+-- 
+Don Dwiggins
+Advanced Publishing Technology
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="050026.html">[Twisted-Python] Using different cursor types with	psycopg+twisted.enterprise.adbapi?
+</A></li>
+	<LI>Next message (by thread): <A HREF="050024.html">[Twisted-Python] Howto: use Trial to unit test an XML-RPC server
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#50022">[ date ]</a>
+              <a href="thread.html#50022">[ thread ]</a>
+              <a href="subject.html#50022">[ subject ]</a>
+              <a href="author.html#50022">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,220 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] integrating inotify into a protocol
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20integrating%20inotify%20into%20a%20protocol&In-Reply-To=4D92FC9B.2090807%40imperial.ac.uk">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004626.html">
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] integrating inotify into a protocol</H1>
+    <B>Jason Pepas</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20integrating%20inotify%20into%20a%20protocol&In-Reply-To=4D92FC9B.2090807%40imperial.ac.uk"
+       TITLE="[Twisted-web] integrating inotify into a protocol">cell at phunware.com
+       </A><BR>
+    <I>Wed Mar 30 17:06:32 EDT 2011</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004626.html">[Twisted-web] integrating inotify into a protocol
+</A></li>
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4627">[ date ]</a>
+              <a href="thread.html#4627">[ thread ]</a>
+              <a href="subject.html#4627">[ subject ]</a>
+              <a href="author.html#4627">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Phil, that's a huge help, thanks so much for pointing me in the right
+direction.  The notion of the factory being persistent and &quot;owning&quot; a
+protocol for each connection was what I needed to wrap my head around
+the problem.
+
+In fact, when I thought about it some more, I realized that the
+factory should &quot;own&quot; the inotify watcher.  This then makes it
+straightforward for the factory to pass in its instance method as
+inotify's callback.
+
+I've implemented your suggestions and retooled my &quot;Echo&quot; example as
+&quot;TmpTell&quot; (attached).  When you run it, it creates several persistent
+clients (one for each port number listed on the command line).  Then,
+each time a file is created in /tmp, each client tells its server
+about the new file.
+
+here's an example usage.
+
+first, start up a &quot;server&quot;
+
+
+ $ socat - tcp4-listen:1234
+
+
+and another:
+
+
+ $ socat - tcp4-listen:1235
+
+
+now start up tmptell:
+
+
+ $ python tmptell.py 1234 1235
+ calling TmpTellClientFactory.__init__
+ calling TmpTellClientFactory.startFactory
+ calling TmpTellClientFactory.startedConnecting
+ calling TmpTellClientFactory.startedConnecting
+ calling TmpTellClientFactory.buildProtocol
+ calling TmpTell.__init__
+ calling TmpTellClientFactory.buildProtocol
+ calling TmpTell.__init__
+
+
+finally, in a third terminal, run 'mktemp':
+
+
+ $ mktemp
+ /tmp/tmp.1xtuY16NKr
+
+
+you will then see this additional output in the tmptell terminal:
+
+
+ calling TmpTellClientFactory.inotifyEventHappened
+ calling TmpTell.announceNewFile
+ calling TmpTell.announceNewFile
+
+
+and your &quot;servers&quot; will look like this:
+
+
+ $ socat - tcp4-listen:1234
+ new file created at FilePath('/tmp/tmp.1xtuY16NKr')
+
+ $ socat - tcp4-listen:1235
+ new file created at FilePath('/tmp/tmp.1xtuY16NKr')
+
+
+if you kill one of the servers with CTRL+c, you see this in the
+tmptell terminal:
+
+
+ calling TmpTell.connectionLost
+ calling TmpTellClientFactory.removeProtocolObject
+ calling TmpTellClientFactory.clientConnectionLost
+
+
+and now we run mktemp a second time:
+
+
+ $ mktemp
+ /tmp/tmp.L5EeFSdXRJ
+
+
+and now tmptell correctly calls announceNewFile just once, instead of twice:
+
+
+ calling TmpTellClientFactory.inotifyEventHappened
+ calling TmpTell.announceNewFile
+
+
+and the server we didn't kill looks like this now:
+
+
+ $ socat - tcp4-listen:1235
+ new file created at FilePath('/tmp/tmp.1xtuY16NKr')
+ new file created at FilePath('/tmp/tmp.L5EeFSdXRJ')
+
+
+Thanks again Phil, I think I've got it now!
+
+-jason
+-------------- next part --------------
+from twisted.internet.protocol import Protocol, ClientFactory
+from sys import stdout
+
+
+class TmpTell(Protocol):
+    def __init__(self, factory):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.factory = factory
+
+    def announceNewFile(self, watch_obj, path, mask):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.transport.write(&quot;new file created at %s\n&quot; % path)
+
+    def connectionLost(self, reason):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.factory.removeProtocolObject(self)
+
+
+class TmpTellClientFactory(ClientFactory):
+    def __init__(self, path, mask):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.protocol_objects = []
+        self.watch_path = filepath.FilePath(path)
+        self.watch_mask = mask
+        self.notifier = inotify.INotify()
+
+    def startFactory(self):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.notifier.startReading()
+        self.notifier.watch(self.watch_path, mask=self.watch_mask, callbacks=[self.inotifyEventHappened])
+
+    def startedConnecting(self, connector):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+
+    def buildProtocol(self, addr):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        new_protocol_object = TmpTell(factory=self)
+        self.protocol_objects.append(new_protocol_object)
+        return new_protocol_object
+
+    def inotifyEventHappened(self, watch_obj, path, mask):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        for p in self.protocol_objects:
+            p.announceNewFile(watch_obj, path, mask)
+
+    def clientConnectionLost(self, connector, reason):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+
+    def clientConnectionFailed(self, connector, reason):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+
+    def removeProtocolObject(self, dead_protocol_object):
+        print &quot;calling %s.%s&quot; % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.protocol_objects.remove(dead_protocol_object)
+
+if __name__ == &quot;__main__&quot;:
+    from twisted.internet import reactor, inotify
+    from twisted.python import filepath
+    import sys
+    factory = TmpTellClientFactory('/tmp', inotify.IN_CREATE)
+    for port in sys.argv[1:]:
+        reactor.connectTCP(&quot;localhost&quot;, int(port), factory)
+    reactor.run()
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004626.html">[Twisted-web] integrating inotify into a protocol
+</A></li>
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4627">[ date ]</a>
+              <a href="thread.html#4627">[ thread ]</a>
+              <a href="subject.html#4627">[ subject ]</a>
+              <a href="author.html#4627">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

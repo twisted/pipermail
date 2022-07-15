@@ -1,0 +1,66 @@
+Index: nevow/test/test_appserver.py
+===================================================================
+--- nevow/test/test_appserver.py	(revision 18026)
++++ nevow/test/test_appserver.py	(working copy)
+@@ -94,6 +94,7 @@
+             lambda : self.fail(),
+             asserterr)
+ 
++from twisted.internet import defer
+ 
+ class TestSiteAndRequest(testutil.TestCase):
+     def renderResource(self, resource, path):
+@@ -130,6 +131,19 @@
+         return self.renderResource(Res1(), 'bar').addCallback(
+             lambda result: self.assertEquals(result, 'world'))
+ 
++    def test_connectionLost(self):
++        d = defer.Deferred()
++        class Res(Render):
++            def renderHTTP(self, ctx):
++                return d
++        s = appserver.NevowSite(Res())
++        r = appserver.NevowRequest(testutil.FakeChannel(s), True)
++        r.path = 'boo'
++        r.process()
++        r.connectionLost(Exception('Just Testing'))
++        d.callback('finished')
++
++
+ from twisted.internet import protocol, address
+ 
+ class FakeTransport(protocol.FileWrapper):
+Index: nevow/appserver.py
+===================================================================
+--- nevow/appserver.py	(revision 18026)
++++ nevow/appserver.py	(working copy)
+@@ -120,7 +120,13 @@
+     def __init__(self, *args, **kw):
+         server.Request.__init__(self, *args, **kw)
+         tpc.Componentized.__init__(self)
++        self._lostConnection = False
+ 
++        def flagLostConnection(err):
++            self._lostConnection = True
++
++        self.notifyFinish().addErrback(flagLostConnection)
++
+     def process(self):
+         # extra request parsing
+         if self.method == 'POST':
+@@ -173,10 +179,13 @@
+         self.deferred.callback("")
+ 
+     def finishRequest( self, success ):
+-        server.Request.finish(self)
++        if not self._lostConnection:
++            server.Request.finish(self)
+ 
+     def _cbFinishRender(self, html, ctx):
+-        if isinstance(html, str):
++        if self._lostConnection:
++            pass
++        elif isinstance(html, str):
+             self.write(html)
+             self.finishRequest(  True )
+         elif html is errorMarker:

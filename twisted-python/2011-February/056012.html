@@ -1,0 +1,219 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Conch SFTP client help
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Conch%20SFTP%20client%20help&In-Reply-To=%3CAANLkTinwMBwe1Qi-wBktwp3UgUk6%2BjTWzkCS7fJXK0x3%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="056011.html">
+   <LINK REL="Next"  HREF="056014.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Conch SFTP client help</H1>
+    <B>Brad Milne</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Conch%20SFTP%20client%20help&In-Reply-To=%3CAANLkTinwMBwe1Qi-wBktwp3UgUk6%2BjTWzkCS7fJXK0x3%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Conch SFTP client help">brad.milne at devx.runthered.com
+       </A><BR>
+    <I>Tue Feb  8 14:00:05 MST 2011</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="056011.html">[Twisted-Python] Adbapi docs
+</A></li>
+        <LI>Next message (by thread): <A HREF="056014.html">[Twisted-Python] Conch SFTP client help
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56012">[ date ]</a>
+              <a href="thread.html#56012">[ thread ]</a>
+              <a href="subject.html#56012">[ subject ]</a>
+              <a href="author.html#56012">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi all
+
+I've looked around for SFTP client doco, but it's come up pretty thin on the
+ground. I've seen <A HREF="http://twistedmatrix.com/trac/wiki/TwistedConch">http://twistedmatrix.com/trac/wiki/TwistedConch</A> and
+everything under it. With it I've been able to connect via SSH to a server
+and run a command (*a la* the 'cat' example from tutorial page and from
+sshsimpleclient.py&lt;<A HREF="http://twistedmatrix.com/documents/current/conch/examples/sshsimpleclient.py">http://twistedmatrix.com/documents/current/conch/examples/sshsimpleclient.py</A>&gt;
+).
+
+On the other hand, plenty of posts recommend checking out cftp.py in
+scripts/. That uses the FileTransferClient, and appears to be more along the
+lines of what is needed for a persistent SFTP connection and file transfers.
+
+What seems to be happening with the below is that the connection is being
+created OK, but I haven't been able to utilise the _remoteGlob method (taken
+from cftp.py). It simply hangs.
+
+My sandbox code is below.
+
+Any help greatly appreciated.
+Brad
+
+&lt;code&gt;
+import os
+from twisted.python import failure
+from twisted.internet import reactor, protocol, defer
+from twisted.conch.ssh import transport, connection, userauth, channel,
+common, filetransfer
+import logging
+from twisted.python import log
+import sys
+
+class SimpleTransport(transport.SSHClientTransport):
+    def verifyHostKey(self, hostKey, fingerprint):
+        print 'host key fingerprint: %s' % fingerprint
+        return defer.succeed(1)
+
+    def connectionSecure(self):
+        '''
+        called when the encryption is set up and other services can be run
+        '''
+        self.requestService(SimpleUserAuth(USERNAME,SimpleConnection()))
+
+class SimpleConnection(connection.SSHConnection):
+    def serviceStarted(self):
+        self.openChannel(SSHSession())
+
+class SimpleUserAuth(userauth.SSHUserAuthClient):
+    def getPassword(self):
+        return defer.succeed(PASS)
+
+class SSHSession(channel.SSHChannel):
+    '''
+    Things to do within the active SSH session.
+    '''
+    name = 'session'
+
+    def __init__(self, interface_handler=None, *args, **kwargs):
+        channel.SSHChannel.__init__(self, *args, **kwargs)
+        self.interface_handler = interface_handler or SftpClient(self)
+
+    def channelOpen(self, ignoredData):
+        self.data = ''
+        # Create an sftp connection (stays open)
+        d = self.conn.sendRequest(self, 'subsystem', common.NS('sftp'),
+wantReply=1)
+        d.addCallback(self._cbSubsystem)
+
+    def _cbSubsystem(self, result):
+        self.interface_handler.getDirectoryContents('/tmp')
+
+    def closeReceived(self):
+        logging.info('remote side closed %s' % self)
+        self.conn.sendClose(self)
+        reactor.stop()
+
+class SftpClient(object):
+
+    def __init__(self, transport, *args, **kwargs):
+        super(SftpClient, self).__init__(*args, **kwargs)
+        self.transport = transport
+        self._client = filetransfer.FileTransferClient()
+
+    @property
+    def client(self):
+        if not self._client.connected:
+            self._client.makeConnection(self.transport)
+            logging.debug(&quot;Made 'connection' with transport class&quot;)
+        return self._client
+
+    def getDirectoryContents(self, path):
+        d = self._remoteGlob(path)
+
+        def gotit(files):
+            print &quot;Got %s: %s&quot; % (type(files), files)
+        d.addCallback(gotit)
+        return d
+
+    # Accessory methods.
+    # These are stolen from twisted.conch.scripts.cftp.py. We can't
+    # import that module as it contains unix-dependent imports.
+    def _remoteGlob(self, fullPath):
+        logging.debug('looking up %s' % fullPath)
+        head, tail = os.path.split(fullPath)
+        if '*' in tail or '?' in tail:
+            glob = 1
+        else:
+            glob = 0
+        if tail and not glob: # could be file or directory
+            # try directory first
+            logging.debug(&quot;Opening dir&quot;)
+            d = self.client.openDirectory(fullPath)
+            d.addCallback(self._cbOpenList, '')
+            d.addErrback(self._ebNotADirectory, head, tail)
+        else:
+            d = self.client.openDirectory(head)
+            d.addCallback(self._cbOpenList, tail)
+        return d
+
+    def _cbOpenList(self, directory, glob):
+        logging.debug(&quot;Got dir&quot;)
+        files = []
+        d = directory.read()
+        d.addBoth(self._cbReadFile, files, directory, glob)
+        return d
+
+    def _ebNotADirectory(self, reason, path, glob):
+        logging.debug(&quot;Not a dir&quot;)
+        d = self.client.openDirectory(path)
+        d.addCallback(self._cbOpenList, glob)
+        return d
+
+    def _cbReadFile(self, files, l, directory, glob):
+        logging.debug(&quot;Reading file&quot;)
+        if not isinstance(files, failure.Failure):
+            if glob:
+                raise NotImplementedError(&quot;don't have fnmatch available to
+use on Windows so have commented this bit out&quot;)
+#                l.extend([f for f in files if fnmatch.fnmatch(f[0], glob)])
+            else:
+                l.extend(files)
+            d = directory.read()
+            d.addBoth(self._cbReadFile, l, directory, glob)
+            return d
+        else:
+            reason = files
+            reason.trap(EOFError)
+            directory.close()
+            return l
+
+if __name__=='__main__':
+    protocol.ClientCreator(reactor, SimpleTransport).connectTCP(HOST, 22)
+    log.startLogging(sys.stdout, setStdout=0)
+    reactor.run()
+
+&lt;/code&gt;
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20110209/af455516/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="056011.html">[Twisted-Python] Adbapi docs
+</A></li>
+	<LI>Next message (by thread): <A HREF="056014.html">[Twisted-Python] Conch SFTP client help
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56012">[ date ]</a>
+              <a href="thread.html#56012">[ thread ]</a>
+              <a href="subject.html#56012">[ subject ]</a>
+              <a href="author.html#56012">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

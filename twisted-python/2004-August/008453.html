@@ -1,0 +1,138 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] ENOBUF and Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20ENOBUF%20and%20Twisted&In-Reply-To=4126FECF.4090205%40divmod.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="008452.html">
+   <LINK REL="Next"  HREF="008454.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] ENOBUF and Twisted</H1>
+    <B>James Y Knight</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20ENOBUF%20and%20Twisted&In-Reply-To=4126FECF.4090205%40divmod.com"
+       TITLE="[Twisted-Python] ENOBUF and Twisted">foom at fuhm.net
+       </A><BR>
+    <I>Sat Aug 21 15:56:11 EDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="008452.html">[Twisted-Python] ENOBUF and Twisted
+</A></li>
+        <LI>Next message: <A HREF="008454.html">[Twisted-Python] ENOBUF and Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8453">[ date ]</a>
+              <a href="thread.html#8453">[ thread ]</a>
+              <a href="subject.html#8453">[ subject ]</a>
+              <a href="author.html#8453">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Aug 21, 2004, at 3:50 AM, Jp Calderone wrote:
+&gt;<i>  How many clients are we talking about?  A bit of investigation leads 
+</I>&gt;<i> me to believe this can be caused by reaching the maximum number of 
+</I>&gt;<i> open sockets.  Having unreliable connections can exacerbate this, 
+</I>&gt;<i> since TIME_WAIT sockets are counted towards the limit (Windows NT 4.0 
+</I>&gt;<i> seems to leave sockets in this state for 4 minutes).
+</I>&gt;<i>
+</I>&gt;<i>   Twisted should still probably handle it, but if this is the true 
+</I>&gt;<i> cause, it should be handled in a fashion similar to errors from 
+</I>&gt;<i> accept(), possibly (a better understanding of the problem is probably 
+</I>&gt;<i> still required).
+</I>
+I don't think that's the case, or rather, it is the case for accept() 
+but not write().
+
+ From my understanding, ENOBUF on send() could come about because there 
+is a limit on the amount of kernel buffer space a process is allowed to 
+consume and a previous send() call consumed it all, after select() said 
+there was space remaining. Thus, there was no space for this write to 
+proceed, and the kernel returned that error. I believe it should be 
+treated as a transient error, and the send retried later. So, it should 
+go in the same case as EWOULDBLOCK.
+
+However, from the original description, it sounds like perhaps there 
+may be some byte limit over which you cannot even attempt to write. 
+This makes some amount of sense -- the kernel doesn't want to have to 
+copy a gigantic buffer into kernel space just to discard most of it. 
+So, how about: self.socket.send(buffer(data, 0, 65535)). I'm not sure 
+if that's necessary or not.
+
+Apparently accept() can also return ENOBUFS, for the same kinds of 
+reasons, and should also be treated as a transient error. I suspect 
+EMFILE and ENFILE should also be handled the same way. But that's a 
+separate issue.
+
+Screwtape (I guess that's probably not your real name, but you don't 
+seem to have given a real name),
+Can you try this patch and see if it fixes the problem? It assumes 
+you'll always be able to send a 64K buffer *eventually*, which I hope 
+is the case. If you could also try it with just the &quot;or se.args[0] == 
+ENOBUFS&quot;, and not the buffer(.., 0, 65535), that'd also be appreciated.
+
+
+James
+
+Index: twisted/internet/tcp.py
+===================================================================
+--- twisted/internet/tcp.py     (revision 11325)
++++ twisted/internet/tcp.py     (working copy)
+@@ -58,6 +58,7 @@
+      EISCONN     = 10056
+      ENOTCONN    = 10057
+      EINTR       = 10004
++    from errno import WSAENOBUFS as ENOBUFS
+  elif os.name != 'java':
+      from errno import EPERM
+      from errno import EINVAL
+@@ -68,6 +69,7 @@
+      from errno import EISCONN
+      from errno import ENOTCONN
+      from errno import EINTR
++    from errno import ENOBUFS
+  from errno import EAGAIN
+
+  # Twisted Imports
+@@ -262,11 +264,11 @@
+          (which is negative)
+          &quot;&quot;&quot;
+          try:
+-            return self.socket.send(data)
++            return self.socket.send(buffer(data, 0, 65535))
+          except socket.error, se:
+              if se.args[0] == EINTR:
+                  return self.writeSomeData(data)
+-            elif se.args[0] == EWOULDBLOCK:
++            elif se.args[0] == EWOULDBLOCK or se.args[0] == ENOBUFS:
+                  return 0
+              else:
+                  return main.CONNECTION_LOST
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="008452.html">[Twisted-Python] ENOBUF and Twisted
+</A></li>
+	<LI>Next message: <A HREF="008454.html">[Twisted-Python] ENOBUF and Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8453">[ date ]</a>
+              <a href="thread.html#8453">[ thread ]</a>
+              <a href="subject.html#8453">[ subject ]</a>
+              <a href="author.html#8453">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,115 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] LoopingCall.withCount countCallable called	with 0
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20LoopingCall.withCount%20countCallable%20called%0A%09with%200&In-Reply-To=%3C7F261C23-3DCA-4CA9-BF01-37C767E59988%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="029316.html">
+   <LINK REL="Next"  HREF="061784.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] LoopingCall.withCount countCallable called	with 0</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20LoopingCall.withCount%20countCallable%20called%0A%09with%200&In-Reply-To=%3C7F261C23-3DCA-4CA9-BF01-37C767E59988%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] LoopingCall.withCount countCallable called	with 0">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue Mar 24 16:18:38 MDT 2015</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="029316.html">[Twisted-Python] LoopingCall.withCount countCallable called with 0
+</A></li>
+        <LI>Next message (by thread): <A HREF="061784.html">[Twisted-Python] LoopingCall.withCount countCallable called	with 0
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#61779">[ date ]</a>
+              <a href="thread.html#61779">[ thread ]</a>
+              <a href="subject.html#61779">[ subject ]</a>
+              <a href="author.html#61779">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Mar 24, 2015, at 2:49 AM, Dario Vinella &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">d.vinella at gmail.com</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Hi all,
+</I>&gt;<i> 
+</I>&gt;<i> I found an odd behavior using a LoopingCall.withCount with a very small interval (0.02 sec): sometimes the countCallable is called with 0 as argument and it looks like the now - _realLastTime is smaller than the looping interval.
+</I>
+So, this can definitely happen if time goes backwards, but it has to go backwards between the time that the reactor starts executing timed calls and the time that LoopingCall looks at the timestamp to compute what the value passed to withCount should be.  If it were smaller than the LoopingCall's time-to-run 
+
+&gt;<i> Here you can find the very simple code I use to reproduce the &quot;anomaly&quot;, with a main loopingCall and another one that prints its internals
+</I>&gt;<i> 
+</I>&gt;<i> <A HREF="https://gist.github.com/dvinella/31d94f9dd0e47586658d">https://gist.github.com/dvinella/31d94f9dd0e47586658d</A> &lt;<A HREF="https://gist.github.com/dvinella/31d94f9dd0e47586658d">https://gist.github.com/dvinella/31d94f9dd0e47586658d</A>&gt;
+</I>
+An even more straightforward way to figure out if it's a problem with your machine would be this:
+
+import time
+from itertools import count
+
+then = time.time()
+for ever in count():
+    now = time.time()
+    print(&quot;{},{}&quot;.format(ever, (now - then) * 10e6))
+    then = now
+
+It would be good to look at how many of these numbers are negative.
+
+&gt;<i> and here an extract of the logs it produces
+</I>&gt;<i> 
+</I>&gt;<i> <A HREF="https://gist.github.com/dvinella/8cfdce0b9f5fdda7b375">https://gist.github.com/dvinella/8cfdce0b9f5fdda7b375</A> &lt;<A HREF="https://gist.github.com/dvinella/8cfdce0b9f5fdda7b375">https://gist.github.com/dvinella/8cfdce0b9f5fdda7b375</A>&gt;
+</I>&gt;<i> 
+</I>&gt;<i> The doc for the withCount states that the argument should be normally 1, higher if the reactor blocks for some reason, but it doesn't say anything about 0.
+</I>&gt;<i> The beahavior is quite misleading since the loop seems to anticipate the interval timeout, saying &quot;I've been called, but I should have not been called&quot;
+</I>
+That seems right.  I think there's a real problem here, since physical clocks do just fail, and sometimes NTP slew has to happen.  LoopingCall.withCount has a clear opportunity to notice that time has gone backwards, and can just skip that call.  This is assuming that time has gone backwards by a tiny amount for a brief period of time, though, and does not address the more complex issue of &quot;the clock was set some significant distance into the past&quot;.  LoopingCall still isn't going to be able to deal with large amounts of clock drift, we'd need a monotonic version for that :).
+
+&gt;<i> I must add that the anomaly doesn't appear right at the start, but after tens of seconds, mostly when the system is under medium/heavy load.
+</I>
+Even seriously broken clocks don't go backwards a lot. ;-)
+
+&gt;<i> So is it only a documentation issue for an exceptional case, due to timers imprecision, that should be handled at higher levels, or is it a real issue?
+</I>
+I think it's a real issue.
+
+The point of withCount is supposed to be that it keeps track of how far into a sequence you should advance, for example, into the frames of an animation.  If your callback advances by N frames each time it's called, it's supposed to be up-to-date with &quot;real time&quot;.
+
+Assuming that the reason time is going backwards is that your ntp daemon is correcting your clock, every time withCount's callback gets called with 0, _realLastTime gets updated, which means that the &quot;frame&quot; we should have advanced is simply lost, and it will slowly fall behind real time each time this happens.
+
+So while the calls with 0 themselves are a minor annoyance, they are a symptom of a problem that makes it impossible for LoopingCall to do its job properly in some cases, and should definitely be fixed.
+
+Thanks for reporting!  Can you open a ticket?
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20150324/b19af633/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="029316.html">[Twisted-Python] LoopingCall.withCount countCallable called with 0
+</A></li>
+	<LI>Next message (by thread): <A HREF="061784.html">[Twisted-Python] LoopingCall.withCount countCallable called	with 0
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#61779">[ date ]</a>
+              <a href="thread.html#61779">[ thread ]</a>
+              <a href="subject.html#61779">[ subject ]</a>
+              <a href="author.html#61779">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

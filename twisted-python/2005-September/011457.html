@@ -1,0 +1,128 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: GUI responsiveness
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20GUI%20responsiveness&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="011459.html">
+   <LINK REL="Next"  HREF="011458.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: GUI responsiveness</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20GUI%20responsiveness&In-Reply-To="
+       TITLE="[Twisted-Python] Re: GUI responsiveness">warner at lothar.com
+       </A><BR>
+    <I>Thu Sep 15 15:32:50 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="011459.html">[Twisted-Python] application shutdown and control-C
+</A></li>
+        <LI>Next message: <A HREF="011458.html">[Twisted-Python] Re: GUI responsiveness
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11457">[ date ]</a>
+              <a href="thread.html#11457">[ thread ]</a>
+              <a href="subject.html#11457">[ subject ]</a>
+              <a href="author.html#11457">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Nicola Larosa &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nico at tekNico.net</A>&gt; writes:
+&gt;<i>
+</I>&gt;<i> Is there going to be any facility, in newpb, for splitting up
+</I>&gt;<i> (de)serialization in small chunks?
+</I>
+Yes, for serialization of custom classes. The serialization process can be
+throttled by either the network side (producer/consumer style) or by the
+serializer side.
+
+Each &quot;Slicer&quot; object is responsible for turning a single object into either
+low-level tokens (numbers and strings) or other Slicable objects. The 'slice'
+method is actually a generator, expected to yield a series of smaller
+objects. If it yields a Deferred, it will not be prodded again until that
+Deferred fires. The outbound side of the PB connection will be stalled until
+that object resumes serialization. (I'm considering an extension that would
+let you have multiple serialization contexts running in parallel over a
+single connection: if implemented, this deferred-serialization would not
+stall the connection.. on the other hand methods could be invoked
+out-of-order, which might be a problem).
+
+You could also register a Slicer adapter to handle existing classes (or
+conceivably for built-in types, like 'list', although I'm not sure that
+actually works right now), so you could have a ListSlicer which does
+something like:
+
+ def slice(self):
+  ITEMLIMIT = 10
+  for i in range(0, len(self.original), ITEMLIMIT):
+    for j in range(i, min(len(self.original),i+ITEMLIMIT)):
+      yield self.original[j]
+    d = defer.Deferred()
+    reactor.callLater(0, d.callback, None)
+    yield d
+
+to limit how much gets serialized before giving up control for a turn. (of
+course, this control may be too coarse to achieve what you want, if some of
+the items are ints and some are big monster nested classes.. ideally you
+would pay attention to the elapsed time or CPU cycles or pending workload or
+something and just yield the Deferred when you need to).
+
+
+I don't currently have anything in place for the deserialization side.
+Unslicer objects have their receiveChild() method called repeatedly with
+low-level tokens as they arrive off the wire, until you run out. Each time
+read() returns a buffer of data, the Unslicer does as much work as it can
+before returning.
+
+This means you're naturally limited by the network speed. Unlike Slicers, the
+Unslicers can only be throttled by the network side. I suspect you would need
+to have a pretty fast pipe, saturated with inbound data, and a pretty slow
+(or overloaded) CPU, before you would see a problem with this. If someone
+thinks it is important, we could probably allow receiveChild() to return a
+Deferred that means &quot;stop reading from the socket until this Deferred fires&quot;,
+which might be useful.
+
+It might also be useful to add some code to the end of dataReceived() (right
+after it has finished processing everything in the buffer) to do
+transport.stopReading() (and arrange for it to be started again later) if not
+enough other work had been done recently. I suspect this is a bit too much to
+squeeze into PB: if receive-side CPU time is really a problem, we need a more
+generalized way to handle this. In a previous life, where I implemented a
+Reactor in C instead of python, I built some priority-queue/round-robin/WFQ
+stuff into it, to reassure some fellow developers who were concerned about
+things like traffic on one socket swamping all the others, and who would have
+really preferred some full-blown real-time guarantees. I'm hesitant to drag
+this sort of thing into Twisted, but if there's enough of a demand for it
+(and someone can show actual problems with the existing approach), then maybe
+it'd be worth investigating.
+
+cheers,
+ -Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="011459.html">[Twisted-Python] application shutdown and control-C
+</A></li>
+	<LI>Next message: <A HREF="011458.html">[Twisted-Python] Re: GUI responsiveness
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11457">[ date ]</a>
+              <a href="thread.html#11457">[ thread ]</a>
+              <a href="subject.html#11457">[ subject ]</a>
+              <a href="author.html#11457">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

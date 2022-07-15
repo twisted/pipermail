@@ -1,0 +1,174 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Why do I get an AlreadyCalledError?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Why%20do%20I%20get%20an%20AlreadyCalledError%3F&In-Reply-To=B032864B-BD17-4DAD-ACB7-B32B9DA34C81%40me.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="019253.html">
+   <LINK REL="Next"  HREF="019255.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Why do I get an AlreadyCalledError?</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Why%20do%20I%20get%20an%20AlreadyCalledError%3F&In-Reply-To=B032864B-BD17-4DAD-ACB7-B32B9DA34C81%40me.com"
+       TITLE="[Twisted-Python] Why do I get an AlreadyCalledError?">exarkun at divmod.com
+       </A><BR>
+    <I>Sat Feb 28 09:16:30 EST 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="019253.html">[Twisted-Python] Why do I get an AlreadyCalledError?
+</A></li>
+        <LI>Next message: <A HREF="019255.html">[Twisted-Python] Why do I get an AlreadyCalledError?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19254">[ date ]</a>
+              <a href="thread.html#19254">[ thread ]</a>
+              <a href="subject.html#19254">[ subject ]</a>
+              <a href="author.html#19254">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sat, 28 Feb 2009 13:21:06 +0000, Conrad Winchester &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">conradwinchester at me.com</A>&gt; wrote:
+&gt;<i>Hi all,
+</I>&gt;<i>
+</I>&gt;<i>I  am writing a restful twisted (8.1.0) server and am trying to return 
+</I>&gt;<i>useful error statuses from requests. The problem is that even  following the 
+</I>&gt;<i>documentation extremely carefully I am getting an  AlreadyCalled Error every 
+</I>&gt;<i>time I generate a failure. Here is my main  class (leaving out code that I 
+</I>&gt;<i>feel is not relevant to the question:
+</I>&gt;<i>
+</I>&gt;<i>from xml.dom import minidom
+</I>&gt;<i>from twisted.web import server, resource
+</I>&gt;<i>
+</I>&gt;<i>from FWGException import FWGException
+</I>&gt;<i>
+</I>&gt;<i>class DeferredPostHandler(resource.Resource,minidom.Document):
+</I>&gt;<i>
+</I>&gt;<i>     NOT_IMPLEMENTED = 501
+</I>&gt;<i>     BAD_REQUEST = 400
+</I>&gt;<i>
+</I>&gt;<i>     def writeError(self, failure, request, *args, **kw):
+</I>&gt;<i>         failure.trap(FWGException)
+</I>&gt;<i>         request.setResponseCode(self.errorCode)
+</I>&gt;<i>         request.write(&quot;Error handling request: %s&quot; % 
+</I>&gt;<i>failure.getErrorMessage())
+</I>&gt;<i>         request.finish()
+</I>&gt;<i>
+</I>&gt;<i>     def writeResult(self, result, request, *args, **kw):
+</I>&gt;<i>         self.writexml(request)
+</I>&gt;<i>         request.finish()
+</I>&gt;<i>
+</I>&gt;<i>     def render_GET(self, request):
+</I>&gt;<i>         self.process=self.db.runInteraction(self.processForm,request)
+</I>
+I think that self.db is a ConnectionPool instance.  This means that here,
+you're starting self.processForm in a thread.  I'm not sure if this is
+the reason you're having difficulties, but it may be.  See below.
+
+&gt;<i>         self.process.addCallbacks(self.writeResult, self.writeError, 
+</I>&gt;<i>[request], {}, [request], {})
+</I>&gt;<i>         return server.NOT_DONE_YET
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>I have a handler that extends this
+</I>&gt;<i>
+</I>&gt;<i>from DeferredPostHandler import DeferredPostHandler
+</I>&gt;<i>from twisted.web import http
+</I>&gt;<i>from twisted.python.failure import Failure
+</I>&gt;<i>from FWGException import FWGException
+</I>&gt;<i>
+</I>&gt;<i>class CollectionAdminHandler(DeferredPostHandler):
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self, task, db, config):
+</I>&gt;<i>         DeferredPostHandler.__init__(self,db)
+</I>&gt;<i>         self.config = config
+</I>&gt;<i>         self.task = task
+</I>&gt;<i>         self.errorCode = http.OK
+</I>&gt;<i>
+</I>&gt;<i>     def processForm(self, cursor, request):
+</I>&gt;<i>
+</I>&gt;<i>         if self.task == 'add':
+</I>&gt;<i>             self.addCollection(cursor, request)
+</I>&gt;<i>
+</I>&gt;<i>         elif self.task == 'delete':
+</I>&gt;<i>             self.deleteCollection(cursor, request)
+</I>&gt;<i>
+</I>&gt;<i>         else:
+</I>&gt;<i>             self.errorCode = DeferredPostHandler.NOT_IMPLEMENTED
+</I>&gt;<i>             fail = Failure(FWGException(&quot;Unsupported Task&quot;))
+</I>&gt;<i>             self.process.errback(fail)
+</I>
+Here you're creating a Failure and errbacking a Deferred in a thread, since
+processForm is running in a thread.  This isn't allowed.  Twisted APIs are
+generally not safe to be called in any thread except the reactor thread.
+
+&gt;<i>
+</I>&gt;<i>     def addCollection(self, cursor, request):
+</I>&gt;<i>         fail = None
+</I>&gt;<i>         if self.isValidAddRequest(request):
+</I>&gt;<i>             pass
+</I>&gt;<i>         else:
+</I>&gt;<i>             self.errorCode = DeferredPostHandler.BAD_REQUEST
+</I>&gt;<i>             fail = Failure(FWGException(&quot;Missing Parameter&quot;))
+</I>&gt;<i>
+</I>&gt;<i>         if fail:
+</I>&gt;<i>             self.process.errback(fail);
+</I>
+Likewise here.
+
+&gt;<i>
+</I>&gt;<i>     def deleteCollection(self, cursor, request):
+</I>&gt;<i>         print 'Delete Collection'
+</I>&gt;<i>
+</I>&gt;<i>     def isValidAddRequest(self, request):
+</I>&gt;<i>         return 'title' in request.args and 'category' in request.args  and 
+</I>&gt;<i>'date' in request.args
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>Unfortunately whenever I call
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>self.process.errback(fail)
+</I>&gt;<i>
+</I>
+To remove the incorrect calls to Twisted APIs from a thread, you should
+probably just raise an exception where you're currently errbacking that
+Deferred.  In render_GET, or in writeError, you can handle the failure
+which will result from that.
+
+Ah, and now I see your problem.  self.process is the Deferred returned
+by runInteraction.  You're not supposed to errback that Deferred (or
+callback it either).  A pretty good rule of thumb is that if you create
+a Deferred, then you get to fire it.  In this case, runInteraction is
+creating it, so runInteraction gets to fire it.  runInteraction will
+fire it with the result of processForm, so that's why you get the error.
+You're firing that Deferred and runInteraction is firing it.
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="019253.html">[Twisted-Python] Why do I get an AlreadyCalledError?
+</A></li>
+	<LI>Next message: <A HREF="019255.html">[Twisted-Python] Why do I get an AlreadyCalledError?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19254">[ date ]</a>
+              <a href="thread.html#19254">[ thread ]</a>
+              <a href="subject.html#19254">[ subject ]</a>
+              <a href="author.html#19254">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

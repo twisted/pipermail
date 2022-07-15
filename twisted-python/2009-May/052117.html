@@ -1,0 +1,345 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Consistent interfaces to asynchronous	partially-available services	using	Deferreds and state	machines (was Re: Another approach to allowing	__init__ to	work with Deferreds)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Consistent%20interfaces%20to%20asynchronous%0A%09partially-available%20services%09using%09Deferreds%20and%20state%0A%09machines%20%28was%20Re%3A%20Another%20approach%20to%20allowing%09__init__%20to%0A%09work%20with%20Deferreds%29&In-Reply-To=%3C20090512075020.12555.1526761106.divmod.xquotient.11469%40weber.divmod.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="052116.html">
+   <LINK REL="Next"  HREF="052118.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Consistent interfaces to asynchronous	partially-available services	using	Deferreds and state	machines (was Re: Another approach to allowing	__init__ to	work with Deferreds)</H1>
+    <B>glyph at divmod.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Consistent%20interfaces%20to%20asynchronous%0A%09partially-available%20services%09using%09Deferreds%20and%20state%0A%09machines%20%28was%20Re%3A%20Another%20approach%20to%20allowing%09__init__%20to%0A%09work%20with%20Deferreds%29&In-Reply-To=%3C20090512075020.12555.1526761106.divmod.xquotient.11469%40weber.divmod.com%3E"
+       TITLE="[Twisted-Python] Consistent interfaces to asynchronous	partially-available services	using	Deferreds and state	machines (was Re: Another approach to allowing	__init__ to	work with Deferreds)">glyph at divmod.com
+       </A><BR>
+    <I>Tue May 12 01:50:20 MDT 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="052116.html">[Twisted-Python] Another approach to allowing __init__ to	work	with Deferreds
+</A></li>
+        <LI>Next message (by thread): <A HREF="052118.html">[Twisted-Python] Consistent interfaces to	asynchronous	partially-available services	using	Deferreds and	state	machines (was Re: Another approach to allowing	__init__	to	work with Deferreds)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52117">[ date ]</a>
+              <a href="thread.html#52117">[ thread ]</a>
+              <a href="subject.html#52117">[ subject ]</a>
+              <a href="author.html#52117">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On 11 May, 04:19 pm, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">terry.jones at gmail.com</A> wrote:
+&gt;<i>I posted to this list back in Nov 2008 with subject:
+</I>&gt;<i>A Python metaclass for Twisted allowing __init__ to return a Deferred
+</I>
+Let me try rephrasing your use-case here, for two reasons: one, I want 
+to make sure I fully understand it, and two, I feel like the language 
+this is couched in (hacks about __init__ and Deferreds and 
+metaclass/mixin/decorator [ab]use) are detracting from the real core 
+use-case here.  I think I've experienced the problem you're experiencing 
+a number of times, I've just never tried to solve it the way you're 
+describing :).
+
+You have a utility object which you want to create immediately and make 
+immediately available to various pieces of calling code.  However, an 
+instance of this class represents a shared interface to an external, 
+asynchronous resource, to which you must establish a connection, and so 
+you don't immediately have a connection when the class is created.
+
+However, you want to contain all this complexity behind a nice facade, 
+and tell all the callers &quot;just call these (Deferred-returning) methods 
+and you will get sensible results no matter what state the connection is 
+in&quot;.
+
+If my assessment of your use-case is flawed, please say so - but 
+regardless, I think the problem I'm describing is a pretty common one in 
+the Twisted universe.  I'm going to write up some thoughts and critique 
+your approach in that context even if I might not be responding to your 
+requirements exactly, since I think it will possibly be helpful to 
+others anyway.
+
+To skip ahead to the end: the answer is that you want a state-machine. 
+And it is quite sad to me that Twisted doesn't have a nice, standard, 
+full-featured state-machine class that we use for everything like this, 
+because members of the Twisted team have implemented at least half a 
+dozen of these, probably a lot more, in various applications.  I am like 
+90% sure that there's a ticket in the tracker for this, but I couldn't 
+find it by searching around a bit.  I hope exarkun or jml or radix will 
+have a better memory of this than I do.
+&gt;<i>The various approaches we took back then all boiled down to waiting for 
+</I>&gt;<i>a
+</I>&gt;<i>deferred to fire before the class instance was fully ready to use. When
+</I>&gt;<i>that happened, you had your instance and could call its methods.
+</I>
+... and obviously, in the context I'm presenting, that is bad, because 
+we don't want partially-initialized instances of the class floating 
+around.
+
+The main thrust of most of the counter-proposals (especially mine) was 
+actually that the partially-initialized class should *not* be available 
+to any calling code until it was fully-initialized; calling code should 
+only have gotten a reference to the Deferred.
+
+IMHO the thing that Drew suggests where you create an instance, then add 
+callbacks to a Deferred *on* that instance before you start using that 
+instance, is a bit of a Twisted antipattern.  For one thing, you can 
+easily lose track of the contract of the Deferred; you don't really know 
+what your callback is going to be getting if multiple callers access 
+that attribute at different times, and for another, it's sort of the 
+async equivalent of
+
+    f = Foo()
+    f.noOkayReallyInitializeIt()
+    f.doSomething()
+
+whereas what I was trying to suggest in the previous thread is more 
+like:
+
+    f = Foo.giveMeAFullyInitializedFoo()
+    f.doSomething()
+
+where giveMeAFullyInitializedFoo() looks like:
+
+    @classmethod
+    def giveMeAFullyInitializedFoo(cls):
+        self = cls()
+        self._noOkayReallyInitializeIt()
+        # note that was private!  let's not expose implementation 
+details!
+        return self
+
+But, although I still think this is generally good practice, it doesn't 
+solve the underlying problem I think you're really getting at: 
+consistency and convenience in the face of Deferred-ness.  Applications 
+have to handle Deferreds from the connection's methods anyway, and 
+there's no reason to force them to all have code to handle at least two 
+(one for the connection, one for the actual application-level message), 
+where one would do fine.
+
+(In fact, when you look at it like that, it's not really a problem about 
+Deferreds at all: this would be a problem if applications all had to 
+blockingly call maybeConnectIfYoureNotConnectedYet() themselves and 
+properly handle all the errors it might produce.)
+&gt;<i>Anyway.... fast forward 6 months and I've hit the same problem again. 
+</I>&gt;<i>It's
+</I>&gt;<i>with existing code, in which I would like an __init__ to call something
+</I>&gt;<i>that (now, due to changes elsewhere) returns a deferred. So I started
+</I>&gt;<i>thinking again, and came up with a much cleaner way to do the alternate
+</I>&gt;<i>approach via a class mixin:
+</I>
+I think I like this a bit better than your earlier approaches.  It's 
+automatic, its semantics are pretty clear, and it doesn't require any 
+abuse of __init__'s implicit contract; your instance *is* in a fully 
+valid state when it's created, it's just a different state than the 
+state that it's in later.  However, you can still call all the same 
+methods and get the same results.
+
+It still has one major flaw given your earlier example of a database 
+connection (as I described above): it doesn't handle errors very well.
+
+In particular - and this is why you really need a state machine - it 
+doesn't handle the case where errors start happening *later*.
+
+It's also got a few implementation issues that you might not be aware of 
+though - and you seem to appreciate a lot of detail in these responses, 
+so I'll just look at it line by line, code-review style.
+
+I apologize in advance if this sounds like I'm being hypercritical - I 
+realize you may have omitted certain details to keep this brief for 
+discussion and so may have been aware of most of these problems.  Again, 
+even if you fully understood all of these details I am sure there are 
+many readers who didn't though :).
+&gt;<i>    from twisted.internet import defer
+</I>&gt;<i>
+</I>&gt;<i>    class deferredInitMixin(object):
+</I>&gt;<i>        def wrap(self, d, *wrappedMethods):
+</I>
+Just as a point of convenience, I would have automatically determined 
+this list of method names by using a decorator or something.  Having it 
+as a static list in the method invocation seems to me like it would be 
+very easy to forget to add or remove a method from the list, and it 
+would make diffs that touched a user of this class always have two hunks 
+for adding a method; one at the method definition site, one at the call 
+to wrap().
+
+Also, it's not really clear to me how cooperative invocations of wrap() 
+are meant to work with inheritance.  Using a decorator on methods which 
+were intended to be deferred wouldn't fully solve that problem (you've 
+still got to sort out what order methods get restored in, or if there 
+are multiple calls to wrap() in different places in the inheritance tree 
+which methods go with which Deferreds) but it would at least provide a 
+convenient starting place to put that information.
+&gt;<i>            self.waiting = []
+</I>&gt;<i>            self.stored = {}
+</I>
+I'd make these attributes private if I were you.  I am pretty sure that 
+you don't ever want application code poking around in there :).
+&gt;<i>            def restore(_):
+</I>&gt;<i>                for method in self.stored:
+</I>&gt;<i>                    setattr(self, method, self.stored[method])
+</I>
+The reference you're cleaning up here has some edge-cases.  For example, 
+if some other code comes along and grabs what it thinks is a regular 
+bound method from your instance, and then invokes it after the Deferred 
+has completed, it will still have the original method.
+
+Because of this, and issues like it, it's often better to have a 
+decorator which works more like a regular method, and changes the 
+behavior of the method rather than dynamically replacing the method on 
+the instance.
+
+There are also some less severe, but potentially very confusing issues 
+with making every instance of your class always participate in a 
+bazillion circular references.  By itself, this isn't really worth 
+worrying about (Python added a garbage collector for a reason, after 
+all) but it has historically been problematic in areas like making 
+debugging memory leaks tricky.  Especially when the circular references 
+run through stack frames which refer to Deferreds :).  So if you do 
+dynamically replace a method on a class, it's better to clean it up with 
+delattr() than a subsequent setattr().
+&gt;<i>                for d in self.waiting:
+</I>&gt;<i>                    d.callback(None)
+</I>&gt;<i>
+</I>&gt;<i>            def makeWrapper(method):
+</I>&gt;<i>                def wrapper(*args, **kw):
+</I>&gt;<i>                    d = defer.Deferred()
+</I>&gt;<i>                    d.addCallback(lambda _: self.stored[method](*args, 
+</I>&gt;<i>**kw))
+</I>&gt;<i>                    self.waiting.append(d)
+</I>&gt;<i>                    return d
+</I>&gt;<i>                return wrapper
+</I>
+This wrapper doesn't preserve function metadata, so repr()s are going to 
+look weird and certain kinds of introspection will break.  Granted, you 
+probably don't care about pickling this class, but again, it makes 
+debugging tricky when it looks like every method you're calling 
+everywhere is actually called 'wrapper'. 
+twisted.python.util.mergeFunctionMetadata has an implementation of the 
+dance required to do this (and I think some other decorator libraries 
+have cuter / easier to use implementations of the same thing, this 
+problem is not unique to Twisted).
+&gt;<i>            for method in wrappedMethods:
+</I>&gt;<i>                self.stored[method] = getattr(self, method)
+</I>&gt;<i>                setattr(self, method, makeWrapper(method))
+</I>
+&gt;<i>            d.addCallback(restore)
+</I>
+Here, on the final line, we come to the more serious problem of this 
+approach: there's no error handling.  If the underlying Deferred 
+encounters an errback, then all methods of this class will forever 
+return Deferreds that never fire.
+
+Of course you could chalk up a failed connect Deferred to a failed 
+startup and just reboot the process, but that pollutes your callers with 
+knowledge of whether they're calling methods during startup.  More 
+importantly and realistically though - there's something that happens 
+*later* which is never covered.  What happens when we *lose* the 
+connection to the database?  Assuming a sensible underlying interface, 
+everybody starts getting errbacked Deferreds, but in most systems like 
+this you want some recovery facility.  And then you're not talking about 
+just interesting behavior of __init__, but potentially of every method 
+on the entire class.
+
+As I mentioned above, we've implemented this mechanism in other 
+projects.  One of them is Axiom.  Axiom has a batch-processing service 
+which is a process pool that starts on demand, and tries to present a 
+consistent interface to its callers regardless of what state the actual 
+processes are in.  (This was written in no small part because we were 
+using libraries which were flaky and unreliable and wanted to isolate 
+their usage behind a nice facade which wouldn't freak out if they 
+segfaulted.)
+
+You can see a usage of our library here, which I believe meshes with 
+your use-case:
+
+<A HREF="http://divmod.org/trac/browser/trunk/Axiom/axiom/batch.py?rev=15165#L709">http://divmod.org/trac/browser/trunk/Axiom/axiom/batch.py?rev=15165#L709</A>
+
+What you see there is a &quot;mode&quot; being defined - i.e. custom behavior of a 
+set of methods - for the &quot;starting&quot; state.  You'll notice there's a 
+&quot;waitingForProcess&quot; list, which implements a similar pattern to the one 
+you described above.  And you can see a detailed description of all the 
+states in the docstring:
+
+<A HREF="http://divmod.org/trac/browser/trunk/Axiom/axiom/batch.py?rev=15165#L709">http://divmod.org/trac/browser/trunk/Axiom/axiom/batch.py?rev=15165#L709</A>
+
+The library being used is here:
+
+<A HREF="http://divmod.org/trac/browser/trunk/Epsilon/epsilon/modal.py?rev=6111">http://divmod.org/trac/browser/trunk/Epsilon/epsilon/modal.py?rev=6111</A>
+
+and since the batch-processor example is pretty involved and is doing a 
+ton of other stuff, it behooves me to provide a simplified example which 
+demonstrates how the simplest example of this pattern might be 
+implemented.  I was originally going to include it inline here, but it 
+turned out to be &gt;100 lines of code to get the whole idea across, so I 
+put it up here:
+
+    <A HREF="http://divmod.org/trac/browser/sandbox/glyph/modality.py?rev=17275">http://divmod.org/trac/browser/sandbox/glyph/modality.py?rev=17275</A>
+
+This is still missing a lot of details, like for example handling truly 
+failed connections (i.e. invalid credentials), timeouts and backoff, 
+redirects, etc.  Still, I hope it's somewhat obvious how you would add 
+additional methods beyond &quot;bork()&quot; to that example.
+
+It would be possible, I think, to implement a layer on top of 
+epsilon.modal which would provide this pattern exactly so that you just 
+need to plug in your retransmission and connection rules rather than 
+doing it for every different application and protocol; that would be 
+really cool.
+
+epsilon.modal is missing a few useful features, and has a few bugs.  I'm 
+hoping that by drawing attention to it we can get some contributions 
+from people who are enthusiastic about abstractions like this (hi, 
+Terry! ;-)) and perhaps get it folded into Twisted proper, where we 
+might be able to use it to eliminate some duplication in places like 
+twisted.protocols.basic, since protocol parsing is also a state-machine 
+based thing.
+&gt;<i>You use it as in the class Test below:
+</I>
+(snipped example usage since I think that was all pretty clear)
+&gt;<i>I quite like this approach. (...) It's nice because you don't reply 
+</I>&gt;<i>with an error and there's
+</I>&gt;<i>no need for locking or other form of coordination - the work you need 
+</I>&gt;<i>done
+</I>&gt;<i>is already in progress, so you get back a fresh deferred and everything
+</I>&gt;<i>goes swimmingly.
+</I>
+IMHO this is a very important property.  The high-level abstract API 
+should really have fewer failure modes and differing states for its 
+callers to know about than the lower-level one - really that's the whole 
+point :-).
+&gt;<i>Comments welcome / wanted.
+</I>
+Enough comments for you? ;-)
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="052116.html">[Twisted-Python] Another approach to allowing __init__ to	work	with Deferreds
+</A></li>
+	<LI>Next message (by thread): <A HREF="052118.html">[Twisted-Python] Consistent interfaces to	asynchronous	partially-available services	using	Deferreds and	state	machines (was Re: Another approach to allowing	__init__	to	work with Deferreds)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52117">[ date ]</a>
+              <a href="thread.html#52117">[ thread ]</a>
+              <a href="subject.html#52117">[ subject ]</a>
+              <a href="author.html#52117">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

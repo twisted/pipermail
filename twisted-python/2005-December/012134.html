@@ -1,0 +1,220 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] RE: waiting on transport return
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20RE%3A%20waiting%20on%20transport%20return&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="012144.html">
+   <LINK REL="Next"  HREF="012135.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] RE: waiting on transport return</H1>
+    <B>jmbenski at micron.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20RE%3A%20waiting%20on%20transport%20return&In-Reply-To="
+       TITLE="[Twisted-Python] RE: waiting on transport return">jmbenski at micron.com
+       </A><BR>
+    <I>Fri Dec  9 11:03:52 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="012144.html">[Twisted-Python] twisted performance
+</A></li>
+        <LI>Next message: <A HREF="012135.html">[Twisted-Python] RE: waiting on transport return
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12134">[ date ]</a>
+              <a href="thread.html#12134">[ thread ]</a>
+              <a href="subject.html#12134">[ subject ]</a>
+              <a href="author.html#12134">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I'm not trying to bump my question, but if someone could tell me if I'm just being stupid and missing something with this code or that it isn't possible to do what I need with a spawned process?  If I know it isn't possible, I can just continue down the path I am.  It's not too much of a pain, but it just feels...wrong.
+
+ 
+
+Thanks,
+
+ 
+
+Jon
+
+ 
+
+-----Original Message-----
+From: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A> [mailto:<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>] On Behalf Of jmbenski
+Sent: Tuesday, December 06, 2005 7:58 PM
+To: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python at twistedmatrix.com</A>
+Subject: [Twisted-Python] RE: waiting on transport return
+
+ 
+
+            Ok, I need some help to write some code using deferred's the way they were meant, not the way I've bastardized them.
+
+ 
+
+My framework...
+
+ 
+
+I have a client that will connect to a server and MAINTAIN that connection.  I can't create a protocol factory.  The server and the client communicate commands through stdin and stdout.  I need to write my commands to the server and wait for the response in some cases.
+
+ 
+
+I've setup a system that passes a deferred chain to my process protocol and once my process knows that the data it needs is received it will kick off the deferred chain that happens after that response.  This seems backwards.  From my reading and understanding of deferreds, they should bubble down and not have to be pushed up.  How do I handle the case of some protocol command kicking off the rest of a deferred chain or of passing back a deferred, so that I can add to it the things that need to run?
+
+ 
+
+class SyncManagerProtocol(protocol.ProcessProtocol):
+
+    def __init__(self ):
+
+        self.dataStore = &quot;&quot;
+
+        ##queue that holds the commands 
+
+        self.cmdQueue = list()
+
+        ##queue that holds the callback function to call once the call returns
+
+        self.deferredQueue = list()
+
+           
+
+    def outReceived(self, data):
+
+        
+
+        if len(self.cmdQueue) &gt; 0:
+
+            ##take the data and shove it into our internal store
+
+            self.dataStore += data
+
+            ##determine what is good data
+
+            cmd = self.cmdQueue[0]
+
+            ##look for the command the is next in the queue.  grab all the return data
+
+            ##between the command block.
+
+            ##      syncCmd {
+
+            ##      return data goes here
+
+            ##      } syncCmd
+
+            cmdBlock = r&quot;%s {(?P&lt;cmd&gt;.*)} %s(?P&lt;rest&gt;.*)&quot; % (cmd, cmd)
+
+            errBlock = r&quot;invalid {(?P&lt;errMsg&gt;.*)}&quot;
+
+    
+
+            cmdMatch = re.compile( cmdBlock, re.S ).search( self.dataStore )           
+
+ 
+
+            if cmdMatch:
+
+                ##set the rest of the data to the dataStore.  This clears out the current contents
+
+                ##but keeps any extra data that may be coming in from the next command
+
+                self.dataStore = cmdMatch.group( &quot;rest&quot; )
+
+                ##clean up this command
+
+                self.commandComplete( cmdMatch.group(&quot;cmd&quot;).lstrip() )
+
+    
+
+    ##This is called if all the data we need has been returned.                   
+
+    def commandComplete(self, cmdData):
+
+        ##pop this command since we are done with it
+
+        self.cmdQueue.pop(0)
+
+        ##pop the deferred that matches this command
+
+        deferred = self.deferredQueue.pop(0)        
+
+        ##pass the results to the deferred
+
+        deferred.callback( cmdData )
+
+    
+
+    ##interface to the process that sends a command to execute
+
+    def sendCommand( self, cmd, args, deferred ):       
+
+        ##store the command in the queue, so we can check it when we get data
+
+        self.cmdQueue.append( cmd )
+
+        ##store the deferred in the queue that we need to run when this command has been completed
+
+        self.deferredQueue.append( deferred )
+
+        ##write out command to the process
+
+        cmd = cmd + &quot; &quot; + args + &quot;\n&quot;
+
+        self.transport.write( cmd )
+
+ 
+
+ 
+
+ 
+
+##   This code is my client interface class to the server that holds the processProtocol instance.   ##
+
+ 
+
+ 
+
+#setup a command that will handle errors or good data
+
+d = defer.Deferred().addCallback( self.handleThisCommand )
+
+#run the calling function handler that will handle an error or returned data.  This will allow something like a GUI to process data that will now be available
+
+d.addCallback( self.theRestOfTheCommands )
+
+cmd = &quot;some command goes here&quot;
+
+self.processProtocol.sendCommand( &quot;syncCmd&quot;, cmd, d)
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20051209/ffb371f3/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20051209/ffb371f3/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="012144.html">[Twisted-Python] twisted performance
+</A></li>
+	<LI>Next message: <A HREF="012135.html">[Twisted-Python] RE: waiting on transport return
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12134">[ date ]</a>
+              <a href="thread.html#12134">[ thread ]</a>
+              <a href="subject.html#12134">[ subject ]</a>
+              <a href="author.html#12134">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

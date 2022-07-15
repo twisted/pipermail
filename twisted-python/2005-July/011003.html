@@ -1,0 +1,188 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] threadedselectreactor - shutting down the	foreign event loop
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20threadedselectreactor%20-%20shutting%20down%20the%0A%09foreign%20event%20loop&In-Reply-To=200507181054.57558.tdickenson%40devmail.geminidataloggers.co.uk">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="011002.html">
+   <LINK REL="Next"  HREF="011004.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] threadedselectreactor - shutting down the	foreign event loop</H1>
+    <B>Bob Ippolito</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20threadedselectreactor%20-%20shutting%20down%20the%0A%09foreign%20event%20loop&In-Reply-To=200507181054.57558.tdickenson%40devmail.geminidataloggers.co.uk"
+       TITLE="[Twisted-Python] threadedselectreactor - shutting down the	foreign event loop">bob at redivi.com
+       </A><BR>
+    <I>Mon Jul 18 06:43:25 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="011002.html">[Twisted-Python] threadedselectreactor - shutting down the foreign	event loop
+</A></li>
+        <LI>Next message: <A HREF="011004.html">[Twisted-Python] threadedselectreactor - shutting down the	foreign event loop
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11003">[ date ]</a>
+              <a href="thread.html#11003">[ thread ]</a>
+              <a href="subject.html#11003">[ subject ]</a>
+              <a href="author.html#11003">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Jul 17, 2005, at 11:54 PM, Toby Dickenson wrote:
+
+&gt;<i> Im looking at moving my PyQt app to threadedselectreactor.  
+</I>&gt;<i> Previously I was
+</I>&gt;<i> keeping twisted and Qt in seperate threads. Avoiding the need to  
+</I>&gt;<i> cross that
+</I>&gt;<i> thread boundary has been a great simplification, but Im having some  
+</I>&gt;<i> problems
+</I>&gt;<i> relating to the shutdown of my foreign event loop.
+</I>&gt;<i>
+</I>&gt;<i> The examples such as
+</I>&gt;<i> <A HREF="http://svn.twistedmatrix.com/cvs/trunk/doc/core/examples/">http://svn.twistedmatrix.com/cvs/trunk/doc/core/examples/</A> 
+</I>&gt;<i> threadedselect/pygamedemo.py?view=auto&amp;rev=13596
+</I>&gt;<i> handle this by:
+</I>&gt;<i> a. Calling reactor.stop() when there is a GUI shutdown request,
+</I>&gt;<i> b. Using reactor.addSystemEventTrigger to shut down the foreign  
+</I>&gt;<i> event loop
+</I>&gt;<i> after reactor shutdown.
+</I>
+This is currently the only supported and recommended way.
+
+&gt;<i> That approach seems untenable for me, for several reasons:
+</I>&gt;<i> 1. Too invasive. I dont want to pollute Qt code with Twisted details.
+</I>&gt;<i> 2. If my app is runing as a COM server then Pythoncom handles the  
+</I>&gt;<i> main loop,
+</I>&gt;<i> not Qt. More pollution.
+</I>&gt;<i> 3. The reactor doesnt get shutdown if the foreign event loop shuts  
+</I>&gt;<i> down for
+</I>&gt;<i> some other reason. This leads to deadlocks when the threading  
+</I>&gt;<i> module tries to
+</I>&gt;<i> join the threads managed by the threadpool module, because the  
+</I>&gt;<i> threadpool
+</I>&gt;<i> does know to close those threads.
+</I>
+1. I guess that's too bad, then.  It's less invasive than the  
+alternatives (using an event-loop specific reactor, managing threads  
+yourself).  It's also really the only reliable and correct way to do  
+it, see below.
+
+2. Each different style of foreign event loop is going to need a  
+different waker function and shutdown code.  That's life.  There is  
+no happy magical cross-platform-toolkit-API to solve this problem.   
+It's amazing that threadedselectreactor can do what it does so  
+generically with just two minor integration hooks.  In the same way  
+your application can start up in two different modes, you're going to  
+need different Twisted integration code.
+
+3. The &quot;pollution&quot; is really quite minimal, you add a couple lines to  
+defer shutdown of the foreign event loop until the reactor is has  
+properly shut down.  If the foreign event loop shuts down out of your  
+control, you probably have other issues.
+
+&gt;<i> Im having moderate success with the following alternative structure  
+</I>&gt;<i> which
+</I>&gt;<i> closes the reactor *after* whatever foreign event loop has exited,  
+</I>&gt;<i> but it
+</I>&gt;<i> feels like I am relying on undocumented reactor implementation  
+</I>&gt;<i> accidents
+</I>&gt;<i> here:
+</I>
+You are relying on exactly implementation accidents here.  Even with  
+the implementation accidents that make it appear to work, your  
+proposed alternative has edge cases that will be rare and impossible  
+to reproduce (yay threads).
+
+&gt;<i> from twisted.internet.threadedselectreactor import install as  
+</I>&gt;<i> twisted_install
+</I>&gt;<i> reactor = twisted_install()
+</I>&gt;<i> reactor.interleave(trigger)
+</I>&gt;<i> try:
+</I>&gt;<i>         my_event_loop_in_here()
+</I>&gt;<i> finally:
+</I>&gt;<i>     # Request that the reactor stops itself. Internally the
+</I>&gt;<i>         # reactor uses self.callLater, so shutdown is not complete
+</I>&gt;<i>         # when this method returns.
+</I>&gt;<i>         reactor.stop()
+</I>&gt;<i>         # One call to reactor.iterate is sufficient to complete
+</I>&gt;<i>         # All reactor shutdown events.
+</I>&gt;<i>         reactor.iterate()
+</I>&gt;<i>         # Reactor is now fully shutdown
+</I>&gt;<i>
+</I>&gt;<i> Is there a better approach?
+</I>
+The problem is that the waker function (trigger in the above) can be  
+called at any time -- and it's always called from another thread.  In  
+order to shut down the reactor properly, the waker function needs to  
+continue to work for the duration of shutdown.  reactor.stop() can  
+take many runloop iterations to complete, as it can involve arbitrary  
+deferreds and even new network I/O.  If the foreign event loop has  
+shut down already, it probably won't work, and you won't be able to  
+do a proper shutdown.
+
+It's possible, I guess, use a proxy for the waker function that uses  
+a thread lock so that you can reliably swap out the real waker at the  
+right time.  However, you must somehow acquire that lock before your  
+foreign event loop has shut down (which is of the same level of  
+invasiveness as the recommended solution!) so that it will block the  
+proxy call until a new waker is installed.  In the finally clause,  
+you'd install a new trivial waker (the apply function would work) and  
+release that lock so that any pending calls would complete.
+
+With any naive solution, it's possible for a message between the  
+threadedselectreactor's worker thread and the main thread could get  
+lost, and then you have a reactor that is in an undefined state.  The  
+waker function must work, or else the reactor won't.
+
+Note that your above code has another problem: it calls  
+reactor.interleave too early.  For the same reason you will have edge  
+cases during shutdown, you can (in some circumstances) have edge  
+cases during startup if the waker function does not work properly  
+before you have entered the foreign event loop!  Note that in all of  
+the examples, reactor.interleave(...) is called while the foreign  
+event loop has already begun (yay threads, again).
+
+&gt;<i> Should something like my finally block be included as a method of
+</I>&gt;<i> threadedselectreactor?
+</I>
+I doubt it, it's not really possible to make a correct one that's  
+generic.  At least, I can't think of any correct way.  Correct  
+patches accepted :)
+
+&gt;<i> Is it right for reactor.stop to return before the shutdown is  
+</I>&gt;<i> complete?
+</I>
+Yes, always, even with the traditional reactors!  The reactor can not  
+nest itself, nor can multiple reactors be used in the same process,  
+so it wouldn't be possible for reactor.stop() to work correctly if it  
+blocked.
+
+-bob
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="011002.html">[Twisted-Python] threadedselectreactor - shutting down the foreign	event loop
+</A></li>
+	<LI>Next message: <A HREF="011004.html">[Twisted-Python] threadedselectreactor - shutting down the	foreign event loop
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11003">[ date ]</a>
+              <a href="thread.html#11003">[ thread ]</a>
+              <a href="subject.html#11003">[ subject ]</a>
+              <a href="author.html#11003">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

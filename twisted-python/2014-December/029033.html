@@ -1,0 +1,107 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Tubes!
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Tubes%21&In-Reply-To=%3C33AFD868-F24B-45DC-908C-E5850C19A9A0%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="029032.html">
+   <LINK REL="Next"  HREF="061495.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Tubes!</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Tubes%21&In-Reply-To=%3C33AFD868-F24B-45DC-908C-E5850C19A9A0%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Tubes!">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Thu Dec 11 16:47:18 MST 2014</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="029032.html">[Twisted-Python] ANN: Eliot 0.6: Logging for Complex &amp; Distributed	Systems
+</A></li>
+        <LI>Next message (by thread): <A HREF="061495.html">[Twisted-Python] Tubes!
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29033">[ date ]</a>
+              <a href="thread.html#29033">[ thread ]</a>
+              <a href="subject.html#29033">[ subject ]</a>
+              <a href="author.html#29033">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Jul 10, 2014, at 21:32, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A> wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Tubes have been largely Glyph's effort (though a lot of people have contributed in one way or another).  And a large effort it's been. Development is proceeding in a Twisted branch and comes to over three thousand lines of additions so far.
+</I>&gt;<i> 
+</I>&gt;<i> Given the large size of the implementation and the long time that this effort has been underway (I remember the Twisted meetup at the Rackspace offices that *I* attended when I was visiting SF... a year and a half ago... at which point tubes wasn't exactly a brand new project) I'd like to re-raise the idea that the best next step for the project is to see some distribution in its *current* state.
+</I>
+When Jean-Paul originally wrote this message, I strongly disagreed.
+
+In the intervening six months, I've been working on Tubes on and off.  In the last couple of weeks, I've had a bit of time to make a concerted effort to improve the branch, and it is starting to approach something like a finished state: there is still a lot of polish necessary, but as I've tested them against more and more use-cases, the core abstractions seem to be holding up rather well, and several rounds of increasingly elaborate use-cases did not result in any big rewrites or mystifying un-debuggable re-entrancy scenarios in the implementation.
+
+One change Thomas Herv&#233; assisted me in making today was to remove Deferred support from the core of &quot;tube&quot; itself, and instead factor it out into a separate module.  Interested readers may find that module here:
+
+&lt;<A HREF="https://github.com/twisted/twisted/blob/tubes-1956-8/twisted/tubes/undefer.py">https://github.com/twisted/twisted/blob/tubes-1956-8/twisted/tubes/undefer.py</A>&gt;
+
+It's not finished (mostly it needs testing for errbacks and the addition of yielding non-Deferred values).
+
+This change radically simplifies the conceptual model around consuming asynchronous results within the implementation. If you want to deal with results instead of Deferreds, you just create this tube that turns Deferreds into their results - the only special-casing inside tube itself is a special value that says &quot;when you yield this, don't actually emit an output to the next drain in the series&quot;.
+
+Another thing that this change does is illustrate the fact that literally nothing in the core part of Tubes has come to depend on Twisted - and indeed, as the factoring has improved over time, the coupling between Twisted and the core Tubes abstraction has become looser and looser.  This is a very good thing architecturally.  Examining the few remaining points of coupling, there are pretty much only two: twisted's logging serves as the global error-handler hook (which can be easily changed to a simple bootstrapping API) and the use of Failure as the &quot;reason&quot; parameter to the .flowStopped and .stopped methods.  This was copied from IProtocol, of course, but I think that upon reflection it is a bad idea.  Failure, even at its best, is simply an abstraction over exception-as-raised.  For Deferreds, this makes sense; asynchronous errors are similar to, and may be directly caused by, code raising an unexpected exception.  However, although Tubes are analogous, a raised exception is an anomalous way for a flow to terminate, and I think the right thing to do there is actually to unconditionally log the exception, passing only a token value saying &quot;application error&quot; into the flowStopped method itself; the main use-case for the &quot;reason&quot; parameter is to distinguish between subtly different protocol conditions which may cause a connection termination; it's not an appropriate place to start handling unexpected exceptions.  (When I have written code that does this using Twisted the inevitable result is an exception whose traceback disappears mysteriously and makes debugging a pain.)
+
+To sum up, the more this abstraction decouples from other things within Twisted, the more it becomes depended upon rather than itself doing the depending, the cleaner, simpler, and easier to use it gets.
+
+So now I think I was wrong.  I now agree with Jean-Paul, and in fact the pendulum of my opinion has swung a bit farther in the other direction.  Not only should Tubes be released independently, I think they are a lower-level library that Twisted should eventually depend on.  This library could just as easily have adapters for other loops, like tornado and asyncio, as well as providing potentially interesting support for doing things like eventually replacing Deferreds - see for example &lt;<A HREF="https://pypi.python.org/pypi/effect">https://pypi.python.org/pypi/effect</A>&gt;.
+
+So rather than have a single &quot;tubes&quot; package, I think I will break the branch into two pieces:
+
+The &quot;tubes&quot; package itself, which will have no external dependencies and will pretty much just be buffer-management, fan-in, fan-out, buffering, throttling, filtering, routing, and framing-protocol code, intended to remain separate for the long term.  This will probably mean some small amount of code duplication between LineReceiver et. al. and tubes.framing, but that seems fine to me.
+
+The &quot;twisted+tubes&quot; package, perhaps named &quot;helical&quot; (since that is (A) an adjective that describes something which is (B) twisted and (C) also a tube), that depends on tubes and twisted, includes the integration points for endpoint, deferreds, and protocol, and which may be suitable for merging into Twisted later.
+
+I'm traveling at the moment and might not have much time to work on this in the coming week, so if anyone wants to comment on these plans you have plenty of time :-).
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20141212/dde765e7/attachment.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20141212/dde765e7/attachment.html</A>&gt;
+</PRE>
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="029032.html">[Twisted-Python] ANN: Eliot 0.6: Logging for Complex &amp; Distributed	Systems
+</A></li>
+	<LI>Next message (by thread): <A HREF="061495.html">[Twisted-Python] Tubes!
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29033">[ date ]</a>
+              <a href="thread.html#29033">[ thread ]</a>
+              <a href="subject.html#29033">[ subject ]</a>
+              <a href="author.html#29033">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

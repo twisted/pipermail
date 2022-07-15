@@ -1,0 +1,1072 @@
+From maarten at treewalker.org  Wed Oct  1 07:31:13 2008
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Wed Oct  1 07:31:53 2008
+Subject: [Twisted-web] Session class
+Message-ID: <200810011331.23624.maarten@treewalker.org>
+
+Hi,
+
+I was looking at twisted.web.server.Session recently and the way session 
+timeouts work.
+
+The values of sessionCheckTime and sessionTimeout are not tied together in 
+any way. This means that if you increase the sessionTimeout, session expiry 
+is checked uncessarily often (although one check per 30 minutes is not 
+likely to become a performance problem). In the opposite case, sessions 
+with a short sessionTimeout will not be expired faster than the 
+sessionCheckTime.
+
+The Request.getSession() method does not check whether the session has 
+already expired. Also, it calls Session.touch(), so if the session was past 
+its sessionTimeout but before the sessionCheckTime, it will be revived.
+
+None of this is a critical problem, but it does feel a bit strange. Is the 
+current design motivated by something I haven't understood yet, or is it 
+something that works well enough in typical use even though it has some 
+unexpected special cases?
+
+
+While reading the implementation of Session, I was wondering about the 
+security aspects of it.
+
+Currently, Request.getSession() returns a cookie that is not marked as 
+secure, even if the request was made over HTTPS. This means that for 
+example someone in control of a WiFi access point can trick the browser 
+into sending the session cookie unencrypted. Is this indeed the case? And 
+if so, what is the way to fix it: should people requiring secure cookies 
+avoid the Session class, or should a notion of a "secure session" be added 
+to the Session class?
+
+I was also wondering about the session UID. This UID is generated from a 
+random number (from Python's Mersenne Twister) and a counter. Then an MD5 
+sum is computed over the string representation of both. If the same Python 
+process uses the same random generator (global instance from the "random" 
+module) for outputting non-hashed values as well, an attacker would be able 
+to learn the current state of the random generator and predict the next 
+random number. Since the counter is also predictable, guessing the next 
+session UID would be simple.
+
+Is the UID intended to be secure, or is it only intended to have a low 
+chance of collisions with other UIDs?
+
+If it is intended to be secure, one way of fixing it would be to use a 
+secure random generator for generating the UID. However, secure random 
+generators depend on external entropy, which might take some time to 
+acquire. This would make the UID generation a potentially blocking 
+operation, which would require Request.getSession() to return the session 
+via a deferred instead of directly.
+
+A possible way to reduce UID predictability is to instantiate a random 
+generator which is used only for creating UIDs, instead of using a shared 
+instance. Since all outputs based on these random numbers are hashed, it 
+will be much harder to predict the state of the random generator. My crypto 
+knowledge is not sufficient though to say whether this would make it secure 
+or just less insecure.
+
+Bye,
+		Maarten
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 194 bytes
+Desc: This is a digitally signed message part.
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20081001/3ba8aaf2/attachment.pgp
+From glyph at divmod.com  Wed Oct  1 13:38:04 2008
+From: glyph at divmod.com (glyph@divmod.com)
+Date: Wed Oct  1 13:33:11 2008
+Subject: [Twisted-web] Session class
+In-Reply-To: <200810011331.23624.maarten@treewalker.org>
+References: <200810011331.23624.maarten@treewalker.org>
+Message-ID: <20081001173804.31635.411247414.divmod.xquotient.836@weber.divmod.com>
+
+On 11:31 am, maarten@treewalker.org wrote:
+>None of this is a critical problem, but it does feel a bit strange. Is 
+>the
+>current design motivated by something I haven't understood yet, or is 
+>it
+>something that works well enough in typical use even though it has some
+>unexpected special cases?
+
+Most likely the latter.  twisted.web.server.Session was designed years 
+and years ago, before anyone involved in Twisted really had any idea how 
+the web worked.  It turns out that it works okay for a lot of cases, but 
+it could definitely be a lot better.
+
+It sounds like you've got lots of very specific ideas for making it 
+better.  I very much doubt that you're misunderstanding it; please 
+search around the tracker at <http://twistedmatrix.com/trac/> and find 
+existing tickets that describe some of these issues (there are bound to 
+be a few) and feel free to file some new ones.  Patches (with tests, of 
+course) would be very much appreciated.
+
+From maarten at treewalker.org  Fri Oct  3 07:01:06 2008
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Fri Oct  3 07:01:47 2008
+Subject: [Twisted-web] Session class
+In-Reply-To: <20081001173804.31635.411247414.divmod.xquotient.836@weber.divmod.com>
+References: <200810011331.23624.maarten@treewalker.org>
+	<20081001173804.31635.411247414.divmod.xquotient.836@weber.divmod.com>
+Message-ID: <200810031301.21108.maarten@treewalker.org>
+
+On Wednesday 01 October 2008, glyph@divmod.com wrote:
+> On 11:31 am, maarten@treewalker.org wrote:
+> >None of this is a critical problem, but it does feel a bit strange. Is
+> >the
+> >current design motivated by something I haven't understood yet, or is
+> >it
+> >something that works well enough in typical use even though it has some
+> >unexpected special cases?
+>
+> Most likely the latter.  twisted.web.server.Session was designed years
+> and years ago, before anyone involved in Twisted really had any idea how
+> the web worked.  It turns out that it works okay for a lot of cases, but
+> it could definitely be a lot better.
+>
+> It sounds like you've got lots of very specific ideas for making it
+> better.  I very much doubt that you're misunderstanding it; please
+> search around the tracker at <http://twistedmatrix.com/trac/> and find
+> existing tickets that describe some of these issues (there are bound to
+> be a few) and feel free to file some new ones.  Patches (with tests, of
+> course) would be very much appreciated.
+
+I looked for tickets describing these issues, and while I found a few that 
+describe related issues, I did not find any that describe the same issues. 
+Therefore, I entered two new tickets about session expiry:
+
+  Session expiry check frequency should be based on sessionTimeout
+  http://twistedmatrix.com/trac/ticket/3457
+
+  Expired session can be revived
+  http://twistedmatrix.com/trac/ticket/3458
+
+While writing the first ticket, I realized that I was mixing up session 
+expiry and session cleanup. Expiry is when the session timeout occurs, 
+while cleanup is when the session object is removed. The implementation 
+also mixes up these concepts though: the callbacks registered with 
+notifyOnExpire() are called on cleanup, not on expiry.
+
+It might be possible to fix 3457 in such a way that 3458 would be fixed as 
+well without extra effort: if expired sessions are immediately cleaned up, 
+it is not possible for an expired session to be revived, since it is simply 
+no longer around.
+
+I also wrote a ticket about the UIDs generation:
+
+  Session UID might be predictable
+  http://twistedmatrix.com/trac/ticket/3460
+
+The most important question in this ticket is whether the session UID is 
+indeed supposed to be unpredictable, or whether it is good enough if the 
+UID is unique. Can someone please answer that?
+
+And finally a ticket about session cookies and HTTPS:
+
+  Use secure session cookie when connection is secure
+  http://twistedmatrix.com/trac/ticket/3461
+
+Bye,
+		Maarten
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 194 bytes
+Desc: This is a digitally signed message part.
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20081003/72b021c2/attachment.pgp
+From exarkun at divmod.com  Fri Oct  3 10:38:53 2008
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Oct  3 10:39:08 2008
+Subject: [Twisted-web] Session class
+In-Reply-To: <200810031301.21108.maarten@treewalker.org>
+Message-ID: <20081003143853.29191.664841511.divmod.quotient.33328@ohm>
+
+On Fri, 3 Oct 2008 13:01:06 +0200, Maarten ter Huurne <maarten@treewalker.org> wrote:
+> [snip]
+>
+>I looked for tickets describing these issues, and while I found a few that
+>describe related issues, I did not find any that describe the same issues.
+>Therefore, I entered two new tickets about session expiry:
+>
+>  Session expiry check frequency should be based on sessionTimeout
+>  http://twistedmatrix.com/trac/ticket/3457
+>
+>  Expired session can be revived
+>  http://twistedmatrix.com/trac/ticket/3458
+>
+>While writing the first ticket, I realized that I was mixing up session
+>expiry and session cleanup. Expiry is when the session timeout occurs,
+>while cleanup is when the session object is removed. The implementation
+>also mixes up these concepts though: the callbacks registered with
+>notifyOnExpire() are called on cleanup, not on expiry.
+>
+>It might be possible to fix 3457 in such a way that 3458 would be fixed as
+>well without extra effort: if expired sessions are immediately cleaned up,
+>it is not possible for an expired session to be revived, since it is simply
+>no longer around.
+>
+>I also wrote a ticket about the UIDs generation:
+>
+>  Session UID might be predictable
+>  http://twistedmatrix.com/trac/ticket/3460
+>
+>The most important question in this ticket is whether the session UID is
+>indeed supposed to be unpredictable, or whether it is good enough if the
+>UID is unique. Can someone please answer that?
+>
+>And finally a ticket about session cookies and HTTPS:
+>
+>  Use secure session cookie when connection is secure
+>  http://twistedmatrix.com/trac/ticket/3461
+>
+
+Thanks a lot for filing these issues, Maarten.
+
+Jean-Paul
+
+From george at ringdevelopment.com  Fri Oct  3 13:27:57 2008
+From: george at ringdevelopment.com (George Pauly)
+Date: Fri Oct  3 13:27:17 2008
+Subject: [Twisted-web] Session class
+In-Reply-To: <200810031301.21108.maarten@treewalker.org>
+References: <200810011331.23624.maarten@treewalker.org>
+	<20081001173804.31635.411247414.divmod.xquotient.836@weber.divmod.com>
+	<200810031301.21108.maarten@treewalker.org>
+Message-ID: <1223054877.5174.76.camel@localhost.localdomain>
+
+Maarten,
+
+There are a couple  of things I don't understand about Site._mkuid() 
+
+IANAC (I am not a cryptographer).
+
+Md5 collisions are rare, but (I guess) might theoretically happen
+depending on length of input.  Does appending the counter to the random
+output with an underscore change the statistics of collision?  
+
+Alternatively, perhaps the counter is used as a salt?  If so, the salt
+does not seem _very_ secret in this case.  If a sufficiently strong
+random number is used a salt would seem unnecessary.  
+
+I've looked at some python code for session keys (Django, something on
+activestate that might be Zope code) and they hash together various
+things, but not counters.
+
+I've generated session keys by appending plain-text counters (with an
+offset) to random hashes.  This guarantees uniqueness & is handy because
+it is human readable & you can quickly see how many sessions have been
+used since initiation.  Of course, the counter value might be sensitive
+information in some situations.  An encrypted counter might be helpful,
+if the object is to have a session key that is guaranteed random and
+unique.  Or you could just check to see if the key was in use, ala
+Django, and leave off the counter altogether.
+
+One idea from this code (http://code.activestate.com/recipes/52252/) :
+
+
+> 
+> # create a unique session id
+> # input - string to use as part of the data used to create the session key.
+> #         Although not required, it is best if this includes some unique 
+> #         data from the site, such as it's IP address or other environment 
+> #         information.  For ZOPE applications, pass in the entire ZOPE "REQUEST"
+> #         object.
+> def makeSessionId(st):
+> 	import md5, time, base64
+> 	m = md5.new()
+> 	m.update('this is a test of the emergency broadcasting system')
+> 	m.update(str(time.time()))
+> 	m.update(str(st))
+> 	return string.replace(base64.encodestring(m.digest())[:-3], '/', '$'
+> )
+
+
+is to pass in environment info to defend against hijacking.  I've used a
+very similar method in a stateless (on the server, for cgi) session key
+using several environment vars and a salt.  This code does not seem to
+worry about uniqueness (may be OK, I'm not sure).
+
+
+-George
+
+
+On Fri, 2008-10-03 at 13:01 +0200, Maarten ter Huurne wrote:
+-- 
+George Pauly
+Ring Development
+www.ringdevelopment.com
+
+
+From maarten at treewalker.org  Fri Oct  3 20:13:13 2008
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Fri Oct  3 20:13:41 2008
+Subject: [Twisted-web] Session class
+In-Reply-To: <1223054877.5174.76.camel@localhost.localdomain>
+References: <200810011331.23624.maarten@treewalker.org>
+	<200810031301.21108.maarten@treewalker.org>
+	<1223054877.5174.76.camel@localhost.localdomain>
+Message-ID: <200810040213.22914.maarten@treewalker.org>
+
+On Friday 03 October 2008, George Pauly wrote:
+
+> There are a couple  of things I don't understand about Site._mkuid()
+>
+> IANAC (I am not a cryptographer).
+>
+> Md5 collisions are rare, but (I guess) might theoretically happen
+> depending on length of input.  Does appending the counter to the random
+> output with an underscore change the statistics of collision?
+
+The random() function returns a 53-bit float, while the MD5 hash is 128-bit, 
+so I think combining the random number with something else does decrease 
+the chance of collisions. However, it would probably be safer to ask the 
+random generator to produce more bits.
+
+> Alternatively, perhaps the counter is used as a salt?  If so, the salt
+> does not seem _very_ secret in this case.  If a sufficiently strong
+> random number is used a salt would seem unnecessary.
+
+I think the idea is that the random number by itself is already 
+unpredictable enough. But hashing more data will never make it easier to 
+recover the random number and might make it harder, if I understand MD5 
+correctly.
+
+> I've looked at some python code for session keys (Django, something on
+> activestate that might be Zope code) and they hash together various
+> things, but not counters.
+>
+> I've generated session keys by appending plain-text counters (with an
+> offset) to random hashes.  This guarantees uniqueness & is handy because
+> it is human readable & you can quickly see how many sessions have been
+> used since initiation.  Of course, the counter value might be sensitive
+> information in some situations.  An encrypted counter might be helpful,
+> if the object is to have a session key that is guaranteed random and
+> unique.  Or you could just check to see if the key was in use, ala
+> Django, and leave off the counter altogether.
+
+You can check whether there is already an active session with the newly 
+generated UID, but if you want to know for sure whether or not there is an 
+expired session with the newly generated UID, you'd have to remember all 
+UIDs you ever handed out.
+
+> One idea from this code (http://code.activestate.com/recipes/52252/) :
+> > # create a unique session id
+> > # input - string to use as part of the data used to create the session
+> > key. #         Although not required, it is best if this includes some
+> > unique #         data from the site, such as it's IP address or other
+> > environment #         information.  For ZOPE applications, pass in the
+> > entire ZOPE "REQUEST" #         object.
+> > def makeSessionId(st):
+> > 	import md5, time, base64
+> > 	m = md5.new()
+> > 	m.update('this is a test of the emergency broadcasting system')
+> > 	m.update(str(time.time()))
+> > 	m.update(str(st))
+> > 	return string.replace(base64.encodestring(m.digest())[:-3], '/', '$'
+> > )
+
+I don't know exactly what is in a ZOPE request object, but it's likely to be 
+predictable. A constant string is impossible to mispredict. And the time 
+might not predictable exactly, but if the uncertainty is small enough to 
+make brute forcing it feasible, it's also relatively predictable. A hash of 
+predictable things is itself predictable.
+
+The Twisted session UID uses a random number generator which is seeded from 
+a secure random generator (if the OS has one). So assuming the secure 
+random generator does its job well, the initial session UID cannot be 
+predicted. However, from that point on the random generator is completely 
+deterministic, which means that someone who can discover its internal state 
+can generate the same numbers.
+
+The problem is that the current implementation uses Python's shared random 
+generator instance, which might be used for other purposes as well and some 
+applications might leak too many hints about the internal state of this 
+shared generator. Although this is not very likely to happen, it is 
+possible and could be avoided by allocating a dedicated generator just for 
+session UIDs.
+
+> is to pass in environment info to defend against hijacking.  I've used a
+> very similar method in a stateless (on the server, for cgi) session key
+> using several environment vars and a salt.  This code does not seem to
+> worry about uniqueness (may be OK, I'm not sure).
+
+If collisions are rare enough that the chance of one occurring during the 
+lifetime of the application is neglible, that's close enough to unique for 
+practical purposes.
+
+Bye,
+		Maarten
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 194 bytes
+Desc: This is a digitally signed message part.
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20081004/9829bb50/attachment.pgp
+From wthie at thiengineering.ch  Tue Oct  7 13:18:23 2008
+From: wthie at thiengineering.ch (Werner Thie)
+Date: Tue Oct  7 13:19:17 2008
+Subject: [Twisted-web] Athena & browser 2-connection limit
+In-Reply-To: <1ff309e60809160930u70f60fa1n6ff80b05b7f04bef@mail.gmail.com>
+References: <1ff309e60809151123h518d1029w8004123185427aa1@mail.gmail.com>	<48CF5B6C.7030405@thiengineering.ch>	<20080916102200.GA23508@mithrandi.net>	<48CFC50A.5070503@thiengineering.ch>
+	<1ff309e60809160930u70f60fa1n6ff80b05b7f04bef@mail.gmail.com>
+Message-ID: <48EB99DF.3070500@thiengineering.ch>
+
+May I pick up this particular problem and its proposed solution up again:
+
+In
+
+Nevow.Athena.bootstrap = function (pageClassName, clientID) {
+     var self = this;
+     var pageClass = Divmod.namedAny(pageClassName);
+     self.page = pageClass(clientID, Nevow.Athena._createMessageDelivery);
+     self.page.bindEvents(window);
+
+     Divmod.Runtime.theRuntime.addLoadEvent(function transportStartup() {
+             Divmod.debug("transport", "starting up");
+             self.page.deliveryChannel.start();
+             Divmod.debug("transport", "started up");
+
+             Divmod.debug("widget", "Instantiating live widgets");
+             Nevow.Athena.Widget._pageLoaded = true;
+             Nevow.Athena.Widget._instantiateWidgets();
+             Divmod.debug("widget", "Finished instantiating live widgets");
+						window.document.body.onbeforeunload = window.onbeforeunload;
+         });
+};
+
+window.onbeforeunload gets assigned a callstack with bindEvents(window). 
+Odd though that the debugger shows the property still as null in IE when 
+stopping after bindEvents. The post on bustedmug
+http://bustedmug.blogspot.com/2007/01/onbeforeunload-ie7-assigning-event.html
+and some debugging revealed that at least under IE7 
+window.onbeforeunload cannot be assigned to until window.document.body 
+exists.
+
+Adding the really odd assigment
+
+window.document.body.onbeforeunload = window.onbeforeunload;
+
+in the function transportStartup sets up everything perfectly for the IE 
+browsers, does not disturb the other browsers tested, triggers the 
+onbeforeunload reliably and refresh ad lib is possible with all tested 
+browsers given down below, the lockups on the IE family are gone.
+
+Tested calculator example with
+Firefox 2.0.0.14
+Firefox 3.03
+Chrome Build 2200
+Safari 3.1.2
+Opera 9.24
+IE6.0.2800
+IE7.0.5730
+IE8.0.6001 (Beta)
+
+How shall I proceed?
+Was there a ticket opened by Harald Bl?tand?
+
+Thanks, Werner
+
+Harald Bl?tand wrote:
+> 
+> 
+> On Tue, Sep 16, 2008 at 4:39 PM, Werner Thie <wthie@thiengineering.ch> 
+> wrote:
+> 
+>     There are some post revolving around onbeforeunload/IE7 and a quick
+>     debugging session shows that no code is ever executed for
+>     onbeforeunload with IE.
+> 
+>          
+> 
+> I came up with the following some months ago. Since then, we're not 
+> seeing the problem on IE6 or 7. Would be interested in hearing whether 
+> it works for you. (Would have entered it as a Divmod ticket, but can't 
+> seem to find a way to create one, nor to create an account...)
+>  
+> Harald
+>  
+> ------------------------------------------------------------------------------------------------------------------------
+> Here's what I've changed in the 0.9.31 JS code:
+>  
+> ------------------ Nevow/Athena/__init__.js (2 additions) 
+> --------------------------
+> Nevow.Athena.Widget._initialize = function() {
+>     Divmod.debug("widget", "Instantiating live widgets");
+>     Nevow.Athena.Widget._pageLoaded = true;
+>     // With the next line, sendCloseMessage will get called in IE. // Harald
+>     Divmod.Base.addUnLoadEvent(Nevow.Athena.page.deliveryChannel); // Harald
+>     Nevow.Athena.Widget._instantiateWidgets();
+>     Divmod.debug("widget", "Finished instantiating live widgets");
+> };
+> Nevow.Athena.bootstrap = function (pageClassName, clientID) {
+>     var self = this;
+>     var pageClass = Divmod.namedAny(pageClassName);
+>     self.page = pageClass(clientID, Nevow.Athena._createMessageDelivery);
+>     Nevow.Athena.page = self.page;                                // Harald
+>     self.page.bindEvents(window);
+>     .....
+>  
+> ------------------ Divmod/Base.js (1 added function at the end) 
+> --------------------------
+> Divmod.Base.addUnLoadEvent = function(channel) {
+>     /***
+>         Harald's desperate try to get IE page refresh to work...
+>     ***/
+>     window.attachEvent("onunload", function (e) 
+> {channel.sendCloseMessage();});
+> };
+> Divmod.Base.jsonRegistry = Divmod.Base.AdapterRegistry();
+>  
+> I'm not used to this coding style, so it's a bit of trial & error. 
+> Anyway, before, sendCloseMessage would _not_ be called; now it is, and I 
+> can refresh ad lib on IE 6.and 7.
+>  
+> 
+> 
+> ------------------------------------------------------------------------
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+From kozneb at gmail.com  Tue Oct  7 15:03:44 2008
+From: kozneb at gmail.com (=?UTF-8?Q?Harald_Bl=C3=A5tand?=)
+Date: Tue Oct  7 15:03:49 2008
+Subject: [Twisted-web] Athena & browser 2-connection limit
+In-Reply-To: <48EB99DF.3070500@thiengineering.ch>
+References: <1ff309e60809151123h518d1029w8004123185427aa1@mail.gmail.com>
+	<48CF5B6C.7030405@thiengineering.ch>
+	<20080916102200.GA23508@mithrandi.net>
+	<48CFC50A.5070503@thiengineering.ch>
+	<1ff309e60809160930u70f60fa1n6ff80b05b7f04bef@mail.gmail.com>
+	<48EB99DF.3070500@thiengineering.ch>
+Message-ID: <1ff309e60810071203u722b0c56i25ed988589d417c1@mail.gmail.com>
+
+T24gVHVlLCBPY3QgNywgMjAwOCBhdCA3OjE4IFBNLCBXZXJuZXIgVGhpZSA8d3RoaWVAdGhpZW5n
+aW5lZXJpbmcuY2g+IHdyb3RlOgoKPiBNYXkgSSBwaWNrIHVwIHRoaXMgcGFydGljdWxhciBwcm9i
+bGVtIGFuZCBpdHMgcHJvcG9zZWQgc29sdXRpb24gdXAgYWdhaW46Cj4KPiBXYXMgdGhlcmUgYSB0
+aWNrZXQgb3BlbmVkIGJ5IEhhcmFsZCBCbMOldGFuZD8KPgo+ClllczogaHR0cDovL2Rpdm1vZC5v
+cmcvdHJhYy90aWNrZXQvMjczMSAuCgooVGhlIFN1YmplY3Qgb2YgdGhpcyB0aHJlYWQgaGFzIGJl
+Y29tZSBhIGxpdHRsZSBtaXNsZWFkaW5nLikKCkhhcmFsZAotLS0tLS0tLS0tLS0tLSBuZXh0IHBh
+cnQgLS0tLS0tLS0tLS0tLS0KQW4gSFRNTCBhdHRhY2htZW50IHdhcyBzY3J1YmJlZC4uLgpVUkw6
+IGh0dHA6Ly90d2lzdGVkbWF0cml4LmNvbS9waXBlcm1haWwvdHdpc3RlZC13ZWIvYXR0YWNobWVu
+dHMvMjAwODEwMDcvYWQ2OWVmOGUvYXR0YWNobWVudC5odG0K
+From federicotom at yahoo.it  Tue Oct  7 16:55:26 2008
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Tue Oct  7 16:56:05 2008
+Subject: [Twisted-web] multiple sessions on same host:port
+Message-ID: <48EBCCBE.10500@yahoo.it>
+
+Hello,
+
+I'm wondering about the chance to create multiple sessions with guard,
+on the same host:port.
+
+The idea is: i set up an apache proxy that, depending on the first
+segment of the url requested (/foo or /bar, for example) will forward
+client requests on different twisted-nevow applications, running behind.
+
+Now, it seems to be a good idea, because the root resource associated
+with each request will depend on the first segment.
+
+The problem is: each twisted-nevow application will want to create a
+cookie to handle the session. Being these cookies related to the same
+host:port, the different twisted-nevow applications will be in conflict,
+maybe overwriting the cookies created by their friends.
+
+Is this correct? Or cookies depend on the url? Are browsers aligned on
+cookies handling? Or is it possible to expect a different behaviour from
+different clients?
+
+-- 
+efphe
+Today is Setting Orange, the 61st day of Bureaucracy in the YOLD 3174
+
+From karnaugh at karnaugh.za.net  Tue Oct  7 17:20:24 2008
+From: karnaugh at karnaugh.za.net (Colin Alston)
+Date: Tue Oct  7 17:21:11 2008
+Subject: [Twisted-web] multiple sessions on same host:port
+In-Reply-To: <48EBCCBE.10500@yahoo.it>
+References: <48EBCCBE.10500@yahoo.it>
+Message-ID: <48EBD298.8050505@karnaugh.za.net>
+
+On 2008/10/07 10:55 PM Federico Tomassini wrote:
+> The problem is: each twisted-nevow application will want to create a
+> cookie to handle the session. Being these cookies related to the same
+> host:port, the different twisted-nevow applications will be in conflict,
+> maybe overwriting the cookies created by their friends.
+
+I'm not sure I agree with your deployment idea. Why not just link 
+these applications off the same process instead of complicating it 
+behind Apache?
+
+Regardless of the reasons for that (I'm sure you have some) it's 
+perfectly possible to override the cookie created for Guard. It should 
+be easy to add a prefix for each if you override the SessionWrapper 
+object. From looking at it though, the actual session key is a 
+randomised hash not at all based on the hostname or port so it will 
+not conflict between different guarded instances. Logically this is a 
+good design because nothing stops you from having numerous different 
+guard instances in one app.
+
+Read the source :)
+
+From federicotom at yahoo.it  Tue Oct  7 17:41:49 2008
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Tue Oct  7 17:42:59 2008
+Subject: [Twisted-web] multiple sessions on same host:port
+In-Reply-To: <48EBD298.8050505@karnaugh.za.net>
+References: <48EBCCBE.10500@yahoo.it> <48EBD298.8050505@karnaugh.za.net>
+Message-ID: <48EBD79D.5030300@yahoo.it>
+
+Colin Alston wrote:
+> On 2008/10/07 10:55 PM Federico Tomassini wrote:
+>> The problem is: each twisted-nevow application will want to create a
+>> cookie to handle the session. Being these cookies related to the same
+>> host:port, the different twisted-nevow applications will be in conflict,
+>> maybe overwriting the cookies created by their friends.
+> 
+> I'm not sure I agree with your deployment idea. Why not just link these
+> applications off the same process instead of complicating it behind Apache?
+
+The architectural problem is: different logins have to raise different
+resources. On the same fqdn, because we use a SSL certificate for it.
+
+For now, we are using different ports and different nevow application
+behind each port. Now, we have the need to serve multiple applications
+not only the same host, but also on the same port.
+
+What do you mean with "link these applications off the same process"?
+Is your idea compatible with these needs?
+
+> 
+> Regardless of the reasons for that (I'm sure you have some) it's
+> perfectly possible to override the cookie created for Guard. It should
+> be easy to add a prefix for each if you override the SessionWrapper
+> object. From looking at it though, the actual session key is a
+> randomised hash not at all based on the hostname or port so it will not
+> conflict between different guarded instances. Logically this is a good
+> design because nothing stops you from having numerous different guard
+> instances in one app.
+> 
+> Read the source :)
+
+waiting for an answer i was doing this: reading SessionWrapper sources.
+
+Yes, cookieKey seems to be there for this purpose and, when it's not
+specified during SessionWrapper initialization, it's a random hash.
+
+That seems to solve my problem: i need only to complicate apache,
+proxy-ing requests (depending on the first segments) and redirecting
+them to different applications.
+
+-- 
+efphe
+Today is Setting Orange, the 61st day of Bureaucracy in the YOLD 3174
+
+From wthie at thiengineering.ch  Wed Oct  8 03:21:13 2008
+From: wthie at thiengineering.ch (Werner Thie)
+Date: Wed Oct  8 03:21:53 2008
+Subject: [Twisted-web] Athena IE lockup on page refresh
+In-Reply-To: <1ff309e60810071203u722b0c56i25ed988589d417c1@mail.gmail.com>
+References: <1ff309e60809151123h518d1029w8004123185427aa1@mail.gmail.com>	<48CF5B6C.7030405@thiengineering.ch>	<20080916102200.GA23508@mithrandi.net>	<48CFC50A.5070503@thiengineering.ch>	<1ff309e60809160930u70f60fa1n6ff80b05b7f04bef@mail.gmail.com>	<48EB99DF.3070500@thiengineering.ch>
+	<1ff309e60810071203u722b0c56i25ed988589d417c1@mail.gmail.com>
+Message-ID: <48EC5F69.6080203@thiengineering.ch>
+
+Filed my proposed fix with attached unified diff as response to Haralds 
+ticket.
+
+For those interested the fix also works when used at application code 
+level, just copy the line
+
+window.document.body.onbeforeunload = window.onbeforeunload;
+
+as last line into one of the widgets __init__ function.
+
+Werner
+
+Harald Bl?tand wrote:
+> 
+> 
+> On Tue, Oct 7, 2008 at 7:18 PM, Werner Thie <wthie@thiengineering.ch> wrote:
+> 
+>     May I pick up this particular problem and its proposed solution up
+>     again:
+> 
+>     Was there a ticket opened by Harald Bl?tand?
+> 
+>  
+> Yes: http://divmod.org/trac/ticket/2731 .
+>  
+> (The Subject of this thread has become a little misleading.)
+>  
+> Harald
+>  
+> 
+> 
+> ------------------------------------------------------------------------
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+From aaron.devore at gmail.com  Fri Oct 10 04:39:52 2008
+From: aaron.devore at gmail.com (Aaron DeVore)
+Date: Fri Oct 10 04:39:56 2008
+Subject: [Twisted-web] Tests in #3384 fix
+Message-ID: <2ead2fb0810100139q75ea7159y146e9576f82813da@mail.gmail.com>
+
+I am working on completing the patch for ticket #3384
+(HTTPClientFactory should follow relative redirects). The actual code
+is complete but the tests are not. I need some input as to how many
+tests I should write. If I write a test for every possible case I
+would have about 10 new tests and 40 new lines of code.
+
+The tests would be a mix of the following:
+- Absolute path (starts at the root directory on the server) versus
+relative path (starts at the current directory)
+- With(out) a trailing slash in factory.url
+- With(out) non-path component (a mix of param, query, and fragment as
+returned by urlparse.urlparse)
+
+Should I be this thorough?
+
+-Aaron
+
+From exarkun at divmod.com  Fri Oct 10 08:21:17 2008
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Oct 10 08:21:40 2008
+Subject: [Twisted-web] Tests in #3384 fix
+In-Reply-To: <2ead2fb0810100139q75ea7159y146e9576f82813da@mail.gmail.com>
+Message-ID: <20081010122119.29191.641744713.divmod.quotient.36656@ohm>
+
+On Fri, 10 Oct 2008 01:39:52 -0700, Aaron DeVore <aaron.devore@gmail.com> wrote:
+>I am working on completing the patch for ticket #3384
+>(HTTPClientFactory should follow relative redirects). The actual code
+>is complete but the tests are not. I need some input as to how many
+>tests I should write. If I write a test for every possible case I
+>would have about 10 new tests and 40 new lines of code.
+>
+>The tests would be a mix of the following:
+>- Absolute path (starts at the root directory on the server) versus
+>relative path (starts at the current directory)
+>- With(out) a trailing slash in factory.url
+>- With(out) non-path component (a mix of param, query, and fragment as
+>returned by urlparse.urlparse)
+>
+>Should I be this thorough?
+>
+
+Yep.  If there's a case that the tests don't cover, how will we know if
+it works right or not? :)
+
+Jean-Paul
+
+From aaron.devore at gmail.com  Sat Oct 11 15:59:27 2008
+From: aaron.devore at gmail.com (Aaron DeVore)
+Date: Sat Oct 11 15:59:30 2008
+Subject: [Twisted-web] Tests in #3384 fix
+In-Reply-To: <20081010122119.29191.641744713.divmod.quotient.36656@ohm>
+References: <2ead2fb0810100139q75ea7159y146e9576f82813da@mail.gmail.com>
+	<20081010122119.29191.641744713.divmod.quotient.36656@ohm>
+Message-ID: <2ead2fb0810111259v419c508cw2b4d08159fddf1f7@mail.gmail.com>
+
+Okay, can do. I wanted to avoid that much extra code (and possible
+bugs) but high quality does take priority...
+
+-Aaron
+
+On Fri, Oct 10, 2008 at 5:21 AM, Jean-Paul Calderone <exarkun@divmod.com> wrote:
+
+>
+> Yep.  If there's a case that the tests don't cover, how will we know if
+> it works right or not? :)
+>
+> Jean-Paul
+>
+
+From cayson.z at gmail.com  Mon Oct 13 06:09:44 2008
+From: cayson.z at gmail.com (Boern)
+Date: Mon Oct 13 06:09:52 2008
+Subject: [Twisted-web] how I make output file include xml declaration ?
+Message-ID: <be0f6540810130309l4e3b97d6hd84e870cac9c7ea5@mail.gmail.com>
+
+Hi,all:
+   I am a newbie for nevow and now I write a wap page ,but the output file
+don`t include xml declaration ,eg: <?xml version=3D"1.0" encoding=3D"utf-8"=
+?> .
+how to resolve ?   my wap browser need it to  parse the xml context and how
+I make output file include xml declaration?
+
+
+-- =
+
+Boern Parx
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20081013/0e=
+e200f3/attachment.htm
+From cayson.z at gmail.com  Mon Oct 13 21:39:21 2008
+From: cayson.z at gmail.com (Boern)
+Date: Mon Oct 13 21:39:26 2008
+Subject: [Twisted-web] how to make output file include xml declaration in
+	nevow web framework?
+Message-ID: <be0f6540810131839m36142c9em10e86539ebad6263@mail.gmail.com>
+
+Hi,all:
+   I am a newbie for nevow and now I write a wap page ,but the output file
+don`t include xml declaration ,eg: <?xml version=3D"1.0" encoding=3D"utf-8"=
+?> .
+how to resolve ?   my wap browser need it to  parse the xml context and how
+I make output file include xml declaration?
+
+-- =
+
+Boern Parx
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20081014/cb=
+aeed87/attachment.htm
+From exarkun at divmod.com  Mon Oct 13 21:54:43 2008
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon Oct 13 21:54:57 2008
+Subject: [Twisted-web] how to make output file include xml declaration
+	in nevow web framework?
+In-Reply-To: <be0f6540810131839m36142c9em10e86539ebad6263@mail.gmail.com>
+Message-ID: <20081014015443.29191.190182278.divmod.quotient.38355@ohm>
+
+On Tue, 14 Oct 2008 09:39:21 +0800, Boern <cayson.z@gmail.com> wrote:
+>Hi,all:
+>   I am a newbie for nevow and now I write a wap page ,but the output file
+>don`t include xml declaration ,eg: <?xml version="1.0" encoding="utf-8"?> .
+>how to resolve ?   my wap browser need it to  parse the xml context and how
+>I make output file include xml declaration?
+
+Please don't repost the same question twice in one day.  Don't repost the
+same question at all, actually.  If you don't get a response, you can try
+adding more details to your question, but just posting the same text more
+than once will just annoy people.
+
+The only XML Nevow accepts as input is XHTML, plus some tags defined by
+the Nevow XML namespace.  It doesn't know anything about WAP.  If you want
+to include a specific XML declaration in the output, then that's what you
+should do - include it in the output, not in the XHTML template file.  There
+are a lot of ways to do this.  The best depends on how you're generating
+output.  One way is with a nevow.tags.xml tag.  Another is to write a string
+to the request.
+
+Jean-Paul
+
+From Martin.Bright at casero.com  Mon Oct 20 11:39:14 2008
+From: Martin.Bright at casero.com (Martin Bright)
+Date: Mon Oct 20 11:39:19 2008
+Subject: [Twisted-web] integrating asynqueue
+Message-ID: <29216E03CB2EDA448AE99071A3D9DE7204DBF12B@mail.casero.com>
+
+Hi!
+
+ 
+
+Has anyone successfully incorporated asynqueue
+(http://foss.eepatents.com/trac/AsynQueue/wiki) into their twisted web
+app? I'm trying to include it as a part of  a service, and it doesn't
+seem to be consuming any jobs.
+
+ 
+
+Any pointers would be greatly appreciated.
+
+ 
+
+-martin
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20081020/7c7bb284/attachment.htm
+From hancock.robert at gmail.com  Tue Oct 21 15:41:25 2008
+From: hancock.robert at gmail.com (hancock.robert@gmail.com)
+Date: Tue Oct 21 15:41:56 2008
+Subject: [Twisted-web] Deferreds and Loops
+Message-ID: <001636164a27f3d5c60459c89dd4@google.com>
+
+I want to get the contents of a list of URLs, and if the getPage is  =
+
+successful then I want to write it to a file. If it fails, I want to log a  =
+
+message. In addition, I would like to have this process run every five  =
+
+minutes.
+
+The problem is how to specify a yes/no scenario when the callbacks take  =
+
+arguments. Also, is the best way to loop to just put FeederProtocol.start()=
+  =
+
+in a loop? any ehlp would be greatly appreciated.
+
+while true:
+get page
+if error:
+log
+else:
+write to file
+
+sleep 5 minutes
+
+class FeederProtocol(object):
+
+def get_page_error(self, _failure, log, feed_name):
+""" Failure while getting page. """
+msg =3D 'While getting %s: %s' % (feed_name, _failure.getTraceback())
+log.error(msg)
+_failure.trap(RuntimeError) # Caused chain to stop
+raise(RuntimeError)
+
+get_page(url):
+return client.getPage(url, timeout=3D30)
+
+def page_to_file(self, feed, name):
+try:
+fnout =3D os.path.join(app_conf['download_dir'], name)
+fout =3D open(fnout, 'w')
+except IOError, e:
+log.error('Opening %s: %s' % (fnout, e))
+return
+
+try:
+fout.write(feed)
+except IOError, e:
+log.error('Wrting to %s: %s' % (fnout, e))
+finally:
+fout.close()
+
+def start(self, urls):
+for url in urls:
+d =3D defer.succeed(self.printStatus())
+d.addCallback(self.get_page, feed, log, app_conf)
+d.addCallbacks((self.page_to_file, log, app_conf), (self.get_page_error,  =
+
+log, feed[0]))
+
+class FeederFactory(protocol.ClientFactory):
+protocol =3D FeederProtocol()
+
+def __init__(self, url_list):
+urls =3D url_list
+self.start(self.urls)
+
+def start(self, urls):
+protocol.start(urls)
+
+
+if __name__=3D=3D"__main__":
+name =3D 'mytest'
+urls =3D ['www.example.com', 'www.example2.com']
+
+f =3D FeederFactory(urls)
+reactor.run()
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20081021/ca=
+4a4b95/attachment.htm
+From aaron.devore at gmail.com  Tue Oct 21 19:57:58 2008
+From: aaron.devore at gmail.com (Aaron DeVore)
+Date: Tue Oct 21 19:58:01 2008
+Subject: [Twisted-web] Deferreds and Loops
+In-Reply-To: <001636164a27f3d5c60459c89dd4@google.com>
+References: <001636164a27f3d5c60459c89dd4@google.com>
+Message-ID: <2ead2fb0810211657p38f21bc0x44c098579e8041c4@mail.gmail.com>
+
+Usually for loops I add reactor.callLater as part of the callback
+chain. So something like the following pseudocode, where ----
+indicates indentation.
+
+def func(_):
+----d = getPage(...arguments...)
+----d.addCallbacks(page_to_file, log_error)
+----d.addBoth(reactor.callLater, 300, func, None)
+
+-Aaron
+
+On Tue, Oct 21, 2008 at 12:41 PM,  <hancock.robert@gmail.com> wrote:
+> I want to get the contents of a list of URLs, and if the getPage is
+> successful then I want to write it to a file. If it fails, I want to log a
+> message. In addition, I would like to have this process run every five
+> minutes.
+>
+> The problem is how to specify a yes/no scenario when the callbacks take
+> arguments. Also, is the best way to loop to just put FeederProtocol.start()
+> in a loop? any ehlp would be greatly appreciated.
+>
+> while true:
+> get page
+> if error:
+> log
+> else:
+> write to file
+>
+> sleep 5 minutes
+>
+> class FeederProtocol(object):
+>
+> def get_page_error(self, _failure, log, feed_name):
+> """ Failure while getting page. """
+> msg = 'While getting %s: %s' % (feed_name, _failure.getTraceback())
+> log.error(msg)
+> _failure.trap(RuntimeError) # Caused chain to stop
+> raise(RuntimeError)
+>
+> get_page(url):
+> return client.getPage(url, timeout=30)
+>
+> def page_to_file(self, feed, name):
+> try:
+> fnout = os.path.join(app_conf['download_dir'], name)
+> fout = open(fnout, 'w')
+> except IOError, e:
+> log.error('Opening %s: %s' % (fnout, e))
+> return
+>
+> try:
+> fout.write(feed)
+> except IOError, e:
+> log.error('Wrting to %s: %s' % (fnout, e))
+> finally:
+> fout.close()
+>
+> def start(self, urls):
+> for url in urls:
+> d = defer.succeed(self.printStatus())
+> d.addCallback(self.get_page, feed, log, app_conf)
+> d.addCallbacks((self.page_to_file, log, app_conf), (self.get_page_error,
+> log, feed[0]))
+>
+> class FeederFactory(protocol.ClientFactory):
+> protocol = FeederProtocol()
+>
+> def __init__(self, url_list):
+> urls = url_list
+> self.start(self.urls)
+>
+> def start(self, urls):
+> protocol.start(urls)
+>
+>
+> if __name__=="__main__":
+> name = 'mytest'
+> urls = ['www.example.com', 'www.example2.com']
+>
+> f = FeederFactory(urls)
+> reactor.run()
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+

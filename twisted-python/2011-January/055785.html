@@ -1,0 +1,154 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Twisted and PEP 3148 support
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%20and%20PEP%203148%20support&In-Reply-To=%3C20110111015439.GA21847%40boombah.thristian.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="055784.html">
+   <LINK REL="Next"  HREF="055786.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Twisted and PEP 3148 support</H1>
+    <B>Tim Allen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%20and%20PEP%203148%20support&In-Reply-To=%3C20110111015439.GA21847%40boombah.thristian.org%3E"
+       TITLE="[Twisted-Python] Twisted and PEP 3148 support">screwtape at froup.com
+       </A><BR>
+    <I>Mon Jan 10 18:54:39 MST 2011</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="055784.html">[Twisted-Python] Twisted and PEP 3148 support
+</A></li>
+        <LI>Next message (by thread): <A HREF="055786.html">[Twisted-Python] Twisted and PEP 3148 support
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55785">[ date ]</a>
+              <a href="thread.html#55785">[ thread ]</a>
+              <a href="subject.html#55785">[ subject ]</a>
+              <a href="author.html#55785">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, Jan 10, 2011 at 11:57:14PM +0200, Alex Grönholm wrote:
+&gt;<i> The main focus of the discussion is to figure out how to best integrate 
+</I>&gt;<i> support for this new API to Twisted. If possible, existing protocols 
+</I>&gt;<i> should remain compatible through the use of adapters or some other 
+</I>&gt;<i> mechanism. If not, a way to port them over with a minimal amount of work 
+</I>&gt;<i> would be the next target.
+</I>
+I think I've read PEP 3148 before, but that was a while ago. Looking
+over it again now, here are my initial thoughts as just a user of
+Twisted.
+
+- Executor.submit() seems to be an analogue to Twisted's
+  reactor.callInThread(), that should be easy enough to add to Twisted's
+  implementation.
+- Executor.map() doesn't havve a Twisted analogue, as far as I know, but
+  seems a useful addition.
+- Executor.shutdown() seems like a Bad Idea, at least for implementation
+  in Twisted's reactor - I don't want to call some third-party library
+  and have it shut down my entire process when I'm done! Perhaps, rather
+  than making Twisted's reactor implement the Executor interface, there
+  should be .makeExecutor() method that returns an Executor instance
+  that can support the .shutdown() semantics without actually shutting
+  down the Twisted event loop.
+
+- Futures are obviously fairly similar to Deferreds, but there are some
+  differences of approach:
+    - Futures support cancellation; Twisted finally managed to get rid
+      of cancellation support in Deferreds.
+    - Futures pass themselves to a series of callbacks, and have
+      .result() and .exception() methods so that the callbacks can
+      discover what happened. Deferreds pass results or Failure objects
+      through a double list of callbacks and errbacks.
+    - Futures store the results of the function call that was run in
+      a thread, and pass the same information to each calback. Deferreds
+      allow each callback to transform the result and even pause the
+      callback-chain to wait for more asynchronous results.
+    - Futures allow code to wait indefinitely for a result or exception
+      to appear, which makes sense if the result is being calculated in
+      a thread, but which would cause a deadlock in an event-based
+      system like Twisted.
+
+It should be pretty simple to create a Deferred that wraps a Future:
+
+    from twisted.internet import defer
+
+    def deferredFromFuture(future):
+	d = defer.Deferred()
+	def callback(future):
+	    e = future.exception()
+	    if e:
+		d.fail(e)
+		return
+
+	    d.succeed(future.result())
+
+	future.add_done_callback(callback)
+	return d
+
+I guess a creating a future that wraps a Deferred wouldn't be hard
+either:
+
+    from concurrent.futures import Future
+
+    def futureFromDeferred(deferred):
+	f = Future()
+	f.set_running_or_notify_cancel()
+
+	def callback(result):
+	    f.set_result(result)
+	    return result
+	d.addcallback(callback)
+
+	def errback(failure):
+	    f.set_exception(failure.value)
+	    return failure
+	d.adderrback(errback)
+
+	return f
+
+Of course, if somebody added another callback after the ones added by
+futureFromDeferred(), the new values wouldn't be passed to the Future,
+and if somebody called future.result() or future.exception() without
+a timeout, that could cause a deadlock as mentioned above. I'm not sure
+it's possible to work around either of those problems, so perhaps
+futureFromDeferred() is a thing that should not be included in
+a library, at least not without big warnings all over it like Twisted's
+integration with the stdlib &quot;logging&quot; module has.
+
+I also can't immediately see a way to make an object that functions as
+both a Deferred and a Future, or build Deferred's functionality on top
+of Futures. Perhaps I just haven't thought it through sufficiently - I'd
+be interested to hear if anyone else has any ideas.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="055784.html">[Twisted-Python] Twisted and PEP 3148 support
+</A></li>
+	<LI>Next message (by thread): <A HREF="055786.html">[Twisted-Python] Twisted and PEP 3148 support
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55785">[ date ]</a>
+              <a href="thread.html#55785">[ thread ]</a>
+              <a href="subject.html#55785">[ subject ]</a>
+              <a href="author.html#55785">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

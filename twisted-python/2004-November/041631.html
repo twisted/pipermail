@@ -1,0 +1,172 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Simple multiplex-relayer with	twisted.protocols.smtp?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Simple%20multiplex-relayer%20with%0A%09twisted.protocols.smtp%3F&In-Reply-To=%3C20041126090444.GB2779%40borg.intra.stinghorn.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="041634.html">
+   <LINK REL="Next"  HREF="041633.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Simple multiplex-relayer with	twisted.protocols.smtp?</H1>
+    <B>Mika Bostrom</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Simple%20multiplex-relayer%20with%0A%09twisted.protocols.smtp%3F&In-Reply-To=%3C20041126090444.GB2779%40borg.intra.stinghorn.com%3E"
+       TITLE="[Twisted-Python] Simple multiplex-relayer with	twisted.protocols.smtp?">bostik at stinghorn.com
+       </A><BR>
+    <I>Fri Nov 26 02:04:44 MST 2004</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="041634.html">[Twisted-Python] Re: twisted and threading
+</A></li>
+        <LI>Next message (by thread): <A HREF="041633.html">[Twisted-Python] Simple multiplex-relayer with
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41631">[ date ]</a>
+              <a href="thread.html#41631">[ thread ]</a>
+              <a href="subject.html#41631">[ subject ]</a>
+              <a href="author.html#41631">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>  Good day, hackers.
+
+  I'm trying to implement a rather simple, localhost-bound mail relay
+with Twisted. The setup is follows:
+
+Internet --- MTA -&gt; multiplexer (*) -&gt; parallel filters -&gt; MTA -&gt; dest.
+
+  Multiplexer marked with (*) is my doing. Filters are independent
+systems which accept mail according to destination domain and do their
+magic according to domain-wide settings. Different domains can have
+completely separate configs and even backends.
+
+  I have read and tried to use existing sample from
+<A HREF="http://twistedmatrix.com/pipermail/twisted-python/2003-October/005885.html">http://twistedmatrix.com/pipermail/twisted-python/2003-October/005885.html</A>
+and the surrounding thread, but unfortunately have not been so far able
+to get the system working.
+
+  Basically the system should be rather trivial: accept everything,
+regardless of sender or recipient (frontal MTA has already bounced
+incorrect mails). Check recipient and forward to matching filter set.
+Use smtp.ESMTP for inbound, smtp.SMTPClient for outbound. However, the
+code snippet below freaks out. It now accepts unconditionally both
+sender and recipient but issuing DATA causes an immediate stacktrace
+with the following last error:
+
+File &quot;/usr/lib/python2.3/site-packages/twisted/protocols/smtp.py&quot;,
+line 625, in do_DATA
+    assert self.delivery
+  exceptions.AssertionError: 
+
+  Tracing the problem, it is apparent that there is no delivery method
+in use and incidentally, this was apparently the bugging reason in the
+original (a year old now) problem. Call me stupid but I couldn't fix
+this by following the example and responses.
+
+  Version of Twisted in use: 1.3, as packaged for Debian. (In time we'll
+get 2.0 as well.) Any help will be appreaciated. The leap from very
+simple Finger examples to smtp parts is rather long and steep...
+
+  Code:
+
+[--snip--]
+#!/usr/bin/python
+
+from twisted.internet import reactor, protocol, defer
+from twisted.protocols import smtp
+from twisted.python import log
+import sys
+
+
+class RelayUtility:
+  &quot;&quot;&quot;Utility class for holding runtime values&quot;&quot;&quot;
+  
+  def __init__(self):
+    self.maxconns = 20
+    self.active = 0
+  
+class RelayMessage(smtp.IMessage):
+  def __init__(self):
+    smtp.IMessage.__init__(self)
+    self.msg = []
+
+  
+
+class RelayProtocol(smtp.ESMTP):
+  &quot;&quot;&quot;Relayer; sucks the mail in&quot;&quot;&quot;
+  
+  def __init__(self):
+    self.util = util
+    # Normal operations
+    smtp.ESMTP.__init__(self)
+    self.host = &quot;nowhere.dot.invalid&quot;
+
+  def connectionLost(self, reason):
+    self.util.active -= 1
+
+  def connectionMade(self):
+    # The easiest way. Increments upon connection, decrements
+    # upon disconnection; In case of full queue, just kick the client
+    self.util.active += 1
+    if (self.util.active &lt;= self.util.maxconns):
+      smtp.ESMTP.connectionMade(self)
+    else:
+      self.sendCode(430, &quot;Queue full. Try again later.&quot;)
+      self.transport.loseConnection()
+
+    
+  # This can't be right
+  def validateFrom(self, helo, origin):
+    return smtp.Address(origin, None)
+
+  # This is certainly not right, DATA barks
+  def validateTo(self, user):
+    return RelayMessage
+
+class RelayFactory(smtp.SMTPFactory):
+  protocol = RelayProtocol
+
+
+util = RelayUtility()
+log.startLogging(sys.stdout)
+reactor.listenTCP(10025, RelayFactory())
+reactor.run()
+
+[--snap--]
+
+-- 
+ Mika Boström         \-/  &quot;World peace will be achieved
+ <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Bostik at stinghorn.com</A>  X    when the last man has killed
+ Software slave       /-\   the second-to-last.&quot; -anon?
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="041634.html">[Twisted-Python] Re: twisted and threading
+</A></li>
+	<LI>Next message (by thread): <A HREF="041633.html">[Twisted-Python] Simple multiplex-relayer with
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41631">[ date ]</a>
+              <a href="thread.html#41631">[ thread ]</a>
+              <a href="subject.html#41631">[ subject ]</a>
+              <a href="author.html#41631">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

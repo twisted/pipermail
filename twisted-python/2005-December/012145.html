@@ -1,0 +1,240 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] pb references
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20pb%20references&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="012156.html">
+   <LINK REL="Next"  HREF="012146.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] pb references</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20pb%20references&In-Reply-To="
+       TITLE="[Twisted-Python] pb references">warner at lothar.com
+       </A><BR>
+    <I>Mon Dec 12 04:00:55 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="012156.html">[Twisted-Python] How can a tcp client connect with multi servers?
+</A></li>
+        <LI>Next message: <A HREF="012146.html">[Twisted-Python] Re: pb references
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12145">[ date ]</a>
+              <a href="thread.html#12145">[ thread ]</a>
+              <a href="subject.html#12145">[ subject ]</a>
+              <a href="author.html#12145">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Micky Latowicki &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ml.flex at gmail.com</A>&gt; writes:
+
+&gt;<i> Now, B is apparently trying to send this RemoteReference to some third
+</I>&gt;<i> party, C. This is not allowed by twisted, possibly because that would
+</I>&gt;<i> often require forwarding messages from C to A through B, which can be
+</I>&gt;<i> inefficient and unreliable.
+</I>
+In PB we call this &quot;serializing third-party references&quot;. and it's illustrated
+concisely by the &quot;Granovetter Diagram&quot;[1] as described by papers on
+distributed computing[2]. I also sometimes call it the &quot;Gift&quot; pattern. Micky
+has described the situtation accurately, but I wanted to add some detail on
+the whole third-party reference thing, because it's changing in newpb. Some
+of this is pretty verbose, probably more information than anybody but a newpb
+implementor is likely to care about, but I figured I'll throw it out there so
+people can know what's going on behind the scenes.
+
+oldpb refuses to serialize third-party references because there's no
+reference-identification infrastructure in place to let the recipient
+establish a direct connection to the originator. Each RemoteReference is
+really just a connection-local ID number (the CLID), like &quot;4&quot;, wrapped by a
+bunch of code that implements callRemote(). The CLID is only meaningful when
+it gets looked up by the Broker on the other end of the wire that it's scoped
+to. So if B wants to send his RemoteReference(A) to C, the only way to send
+something that C will actually be able to use would be to create a proxy
+object that provides a whole bunch of methods like the following:
+
+ def remote_foo(self, *args, **kwargs):
+     return self.refA.callRemote(&quot;foo&quot;, *args, **kwargs)
+
+(with suitable cleverness, you could make this into a generic Proxy object,
+such that you didn't have to manually duplicate this for every single method
+that A can respond to. Note that even in newpb this pattern is useful, so
+we'll figure out some way to make it convenient: Revocable Forwarders,
+Logging Proxies, and restricted Facets are all design patterns implemented
+with proxy objects like these).
+
+The issue of course is speed and resource consumption. With this proxy in
+place, B has to be involved in every message between A and C, even if he
+doesn't want to, adding at least an extra round trip for every method call.
+Worse yet, B has to carefully watch the arguments and return values of all
+the methods flying between A and C to see if either end has included a new
+RemoteReference to some local object. If so, B has to create a new proxy for
+that object too. (this is one of the obligations of a &quot;Membrane&quot;, and is a
+nuisance that would be nice to avoid).
+
+Finally, one of the design goals of oldpb has been reasonable security: make
+it slightly harder to accidentally leak information or authority. To this
+end, objects must be declared pb.Referenceable to be remotely callable,
+instances must inherit from pb.Copyable to be transferred across the wire,
+and RemoteReferences cannot be sent to third parties. oldpb forces you to
+make certain designations explicit. For both these reasons (and because it's
+just too much of a hassle to implement), oldpb takes the easy way out and
+punts, by disallowing third-party references and forcing the user to
+implement a proxy if that's what they really want.
+
+NEWPB
+
+In newpb, things are much better. Assuming you make your Tub accessible to
+the outside world (by telling it to listen on a port, and by telling it what
+hostname+portno it's listening on), each Referenceable you publish gets a
+PB-URL, which is then accessible from any other Tub, anywhere. (the return
+value from tub.registerReference() is this PB-URL). To &quot;gift&quot; a
+RemoteReference to a third party, you simply include the RemoteReference as
+an argument in a callRemote (or return it from a remotely-invoked method),
+and PB will handle the rest for you. This works by passing a special sequence
+that includes the PB-URL of the target object, which the receiving side then
+submits to tub.getReference() to obtain their own RemoteReference before
+invoking the target method.
+
+If you don't want to pass live references around, you can turn any
+RemoteReference into a &quot;SturdyRef&quot; (which is like an object form of a PB-URL)
+with rref.getSturdyRef(), and then pass *that*, since SturdyRefs are
+pb.Copyable . You can also take a SturdyRef and pass it &quot;live&quot; to a remote
+Tub, by doing something like:
+
+ rref.callRemote(&quot;introduce&quot;, sturdy.asLiveRef())
+
+whereupon the recipient's remote_introduce() method will be invoked with a
+live RemoteReference to the target of the sturdyref.
+
+The API is still up in the air, but my plan is for every RemoteReference you
+pass over a wire to be given an unguessable PB-URL so that it is eligible for
+being sent as a gift to a third-party Tub. (one possibility is that you have
+to explicitly publish the ones that you want to be giftable.. there might be
+a switch to turn this sort of thing on or off, it's a tradeoff of memory
+consumption versus convenience). Another design question has to do with
+object lifetime: in the current implementation, when B sends rref(A) to C, B
+makes sure to keep it's handle on A alive until C confirms it has acquired
+its own. This improves the chances that C will be able to acquire a live
+reference, but it also allows a malicious C to force B to keep that rref
+alive forever, wasting memory. The alternative is to just tell C to take
+their chances, and maybe they'll wind up with a working RemoteReference, and
+maybe they'll be unlucky and A will have garbage-collected that object by the
+time they finish trying to acquire their own. Distributed garbage collection
+is very tricky.
+
+The object-lifetime design issues show up elsewhere too. Should an object,
+once it gets sent over the wire (any wire), stay alive forever, just in case
+somebody wrote down its URL and might some day come calling for it? Or should
+it be allowed to vanish as soon as the last live reference is released? In
+the current implementation, anything you submit to tub.registerReference()
+will stay alive forever (where &quot;forever&quot; is equal to the lifetime of the
+Tub), whereas objects that cross the wire in method invocations get
+reference-counted and released when there are no more live references to
+them. Correspondingly, objects submitted to tub.registerReference() get
+globally-reachable names (PB-URLs), and are therefore eligible for gifting,
+whereas objects merely crossing the wire do not (and cannot be gifted). The
+latter needs to change, since *all* objects should be giftable, but it's
+quite possible that the URL-&gt;object table will use weakrefs so that the
+giftable/non-giftable distinction can be orthogonal to the
+long-lived/ephemeral distinction. Tyler's trying to convince me to let
+objects stay alive &quot;forever&quot;, get rid of garbage collection and distributed
+reference counting, and just use the Tub lifetime to reclaim memory or block
+access to old objects. I'm not sure yet, though, it may become a flag you set
+on the Tub.
+
+One of the issues with allowing Gifts is that it opens up the possibility
+that methods will be invoked out-of-order. In the present implementation, if
+you do:
+
+  a.callRemote(&quot;introduce&quot;, gift_rref_to_B)
+  a.callRemote(&quot;second&quot;, 1, 2, 3)
+
+then remote_second() will probably be invoked *first*, because the potential
+call to remote_introduce() is held up waiting for gift_rref_to_B to be turned
+into a real RemoteReference (which must wait for connection negotiation,
+etc). I'm thinking that this will be changed (by queueing all method
+invocations and stalling remote_second until remote_introduce has been
+invoked), but I might add a flag that lets you choose between the two
+behaviors. Setting the flag one way lets methods be invoked as quickly as
+possible, setting it the other way forces them to be called in-order, even if
+that adds arbitrarily long delays to deal with Gifts. I might add a flag
+which would disable Gifts altogether, since they're a moderately advanced
+feature and it might be confusing to have them work so transparently.
+
+Finally, there's the complex issue of what kind of ordering guarantees to
+make regarding methods invoked on gifted references. The E documents[3]
+describe a situation where you'd like to make certain promises about the
+relative ordering of methods invoked (by you) on some reference, versus
+methods invoked (on that same reference) by someone else you've just given
+that reference to. E (or VatTP, to be precise) suggests a funny kind of proxy
+behavior called the WormholeOp[4] to provide these promises. At the moment,
+newpb just punts on the issue, and only makes claims about the relative
+ordering of messages sent on a *single connection*. If you want to make sure
+that messages sent to or from different parties happen in some particular
+order, you must wait for the first to complete before allowing the second to
+occur. This might be improved in the future (once I understand the issue
+better, for starters), but for now newpb's ordering guarantees may not be as
+thorough as certain environments might prefer. (I *think* the only practical
+consequence is that certain kinds of promise-pipelining optimizations cannot
+be made, occasionally increasing the number of round trips, but really I
+don't understand enough yet, and neither of the two people on the planet who
+*do* understand enough have been able to explain it to me in a way that I can
+get my head around).
+
+Also, the proxy object described above (as the only way to accomplish
+third-party references in oldpb) is actually quite useful, so newpb will
+eventually make it easy and cheap to build them. One pattern is the Revocable
+Forwarder, where you want to extend your authority to somebody else, but you
+want to be able to cut them off if you change your mind. This is as simple as
+an object that does the same sort of &quot;def remote_foo(): return
+self.refA.callRemote('foo')&quot; thing as above, but adds an extra method
+(exposed in a separate capability) that does 'del self.refA' to turn off all
+forwarding at once. Another pattern is the restrictive Facet, which forwards
+access to some (but not all) methods. Either of things might add logging,
+where the caller doesn't notice anything special, but somebody else gets a
+record of each method invoked.
+
+
+Anyway, I just wanted to do a bit of a braindump on where third-party
+references are going in newpb. The summary is that using them is as easy as
+you think it ought to be. &quot;make simple things simple&quot;, and all that :).
+
+cheers,
+ -Brian
+
+
+
+[1]: &quot;Ode to the Granovetter Diagram&quot;
+     <A HREF="http://www.erights.org/elib/capability/ode/index.html">http://www.erights.org/elib/capability/ode/index.html</A>
+[2]: pretty much everything at <A HREF="http://www.erights.org/">http://www.erights.org/</A>
+[3]: <A HREF="http://www.erights.org/elib/concurrency/partial-order.html">http://www.erights.org/elib/concurrency/partial-order.html</A>
+[4]: <A HREF="http://www.erights.org/elib/distrib/captp/WormholeOp.html">http://www.erights.org/elib/distrib/captp/WormholeOp.html</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="012156.html">[Twisted-Python] How can a tcp client connect with multi servers?
+</A></li>
+	<LI>Next message: <A HREF="012146.html">[Twisted-Python] Re: pb references
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12145">[ date ]</a>
+              <a href="thread.html#12145">[ thread ]</a>
+              <a href="subject.html#12145">[ subject ]</a>
+              <a href="author.html#12145">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

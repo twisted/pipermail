@@ -1,0 +1,309 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] debugging a memory leak
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20debugging%20a%20memory%20leak&In-Reply-To=%3C4B7F284B.70801%40thiengineering.ch%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="054113.html">
+   <LINK REL="Next"  HREF="054115.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] debugging a memory leak</H1>
+    <B>Werner Thie</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20debugging%20a%20memory%20leak&In-Reply-To=%3C4B7F284B.70801%40thiengineering.ch%3E"
+       TITLE="[Twisted-Python] debugging a memory leak">wthie at thiengineering.ch
+       </A><BR>
+    <I>Fri Feb 19 17:09:47 MST 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="054113.html">[Twisted-Python] debugging a memory leak
+</A></li>
+        <LI>Next message (by thread): <A HREF="054115.html">[Twisted-Python] debugging a memory leak
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#54114">[ date ]</a>
+              <a href="thread.html#54114">[ thread ]</a>
+              <a href="subject.html#54114">[ subject ]</a>
+              <a href="author.html#54114">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi Alec
+
+...and they promised you that with a gc'ed language there will never be 
+a memory problem again, you just plain forget about it.
+
+I was stuck in the same position as you and after lots of probing the 
+following attempt helped a lot to correct what was later proofed to be 
+overly optimistic coding by holding on to objects for 
+performance/practical reasons in other objects. Producing non collect 
+able cycles in twisted is probably as easy as to forget about memory 
+when you have Alzheimer.
+
+Proofing and working on the problem was only possible on the production 
+machine under real load situations. I went ahead and created a manhole 
+service on the production server, allowing me to peek at the python 
+object space without disturbing it too much. What I used as a tool was 
+the code you find later on included.
+
+After cleaning all the self produced cycles out our servers processes 
+stabilized at roughly 280 to 320 MB per process and are now running 
+stable for months with more than 20k logins per day and a usual time of 
+connect per user on the average of 25 minutes playing games delivered by 
+nevow/athena LivePages.
+
+As I said before, all cycles I found in our SW were introduced by 
+patterns like
+
+def beforeRender(self, ctx):
+     self.session = inevow.ISession(ctx)
+
+The included code helps to identify the amount of objects being around. 
+Although it's a primitive tool it shines the light where its needed and 
+if you see certain object counts run away then you have at least 
+identified the surrounding where the non collect able cycles are built.
+
+Why didn't I use heapy/guppy and found out that way? I wasn't able to 
+find the evidence for what I was suspecting with all the tools I tried 
+(and boy I tried for WEEKS). Avid users of heapy will most probably 
+disagree and tell me it would have been easy. But in a situation as this 
+everything that works to move you out of that pothole you're in is the 
+right thing to do.
+
+HTH, Werner
+
+exc = [
+   &quot;function&quot;,
+   &quot;type&quot;,
+   &quot;list&quot;,
+   &quot;dict&quot;,
+   &quot;tuple&quot;,
+   &quot;wrapper_descriptor&quot;,
+   &quot;module&quot;,
+   &quot;method_descriptor&quot;,
+   &quot;member_descriptor&quot;,
+   &quot;instancemethod&quot;,
+   &quot;builtin_function_or_method&quot;,
+   &quot;frame&quot;,
+   &quot;classmethod&quot;,
+   &quot;classmethod_descriptor&quot;,
+   &quot;_Environ&quot;,
+   &quot;MemoryError&quot;,
+   &quot;_Printer&quot;,
+   &quot;_Helper&quot;,
+   &quot;getset_descriptor&quot;,
+   &quot;weakreaf&quot;
+]
+
+inc = [
+   'myFirstSuspect',
+   'mySecondSuspect'
+]
+
+prev = {}
+
+def dumpObjects(delta=True, limit=0, include=inc, exclude=[]):
+   global prev
+   if include != [] and exclude != []:
+     print 'cannot use include and exclude at the same time'
+     return
+   print 'working with:'
+   print '   delta: ', delta
+   print '   limit: ', limit
+   print ' include: ', include
+   print ' exclude: ', exclude
+   objects = {}
+   gc.collect()
+   oo = gc.get_objects()
+   for o in oo:
+     if getattr(o, &quot;__class__&quot;, None):
+       name = o.__class__.__name__
+       if ((exclude == [] and include == [])       or \
+           (exclude != [] and name not in exclude) or \
+           (include != [] and name in include)):
+         objects[name] = objects.get(name, 0) + 1
+##    if more:
+##      print o
+   pk = prev.keys()
+   pk.sort()
+   names = objects.keys()
+   names.sort()
+   for name in names:
+     if limit == 0 or objects[name] &gt; limit:
+       if not prev.has_key(name):
+         prev[name] = objects[name]
+       dt = objects[name] - prev[name]
+       if delta or dt != 0:
+         print '%0.6d -- %0.6d -- ' % (dt, objects[name]),  name
+       prev[name] = objects[name]
+
+def getObjects(oname):
+   &quot;&quot;&quot;
+   gets an object list with all the named objects out of the sea of
+   gc'ed objects
+   &quot;&quot;&quot;
+   olist = []
+   objects = {}
+   gc.collect()
+   oo = gc.get_objects()
+   for o in oo:
+     if getattr(o, &quot;__class__&quot;, None):
+       name = o.__class__.__name__
+       if (name == oname):
+         olist.append(o)
+   return olist
+
+dumpObject = dumpobj.dumpObj
+
+Alec Matusis wrote:
+&gt;<i> I modified a tolerably leaking (about 40MB/day) Twisted server: when the new
+</I>&gt;<i> code was pushed, the memory leak  became catastrophic (about 100MB/hr).
+</I>&gt;<i> We could tolerate 40MB/day, but the new code needs to be debugged.
+</I>&gt;<i> First, I reverted to the old version, that is leaking 40MB/day (The leak
+</I>&gt;<i> rate is actually proportional to the number of new connections per second,
+</I>&gt;<i> (which correlates with the CPU utilization of the process): if CPU as
+</I>&gt;<i> measured by $top jumps to &gt;90%, the leak can accelerate to 50MB/hr)
+</I>&gt;<i> I took two steps to debug the leak:
+</I>&gt;<i> 
+</I>&gt;<i> 1) Using guppy/heapy via manhole:
+</I>&gt;<i> 
+</I>&gt;&gt;&gt;&gt;<i> hp = hpy()
+</I>&gt;&gt;&gt;&gt;<i> h = hp.heap()
+</I>&gt;&gt;&gt;&gt;<i> h
+</I>&gt;<i> Partition of a set of 1157084 objects. Total size = 140911144 bytes.
+</I>&gt;<i>  Index  Count   %     Size   % Cumulative  % Kind (class / dict of class)
+</I>&gt;<i>      0 785798  68 48463680  34  48463680  34 str
+</I>&gt;<i>      1   7357   1 24660664  18  73124344  52 dict of service.TagSession
+</I>&gt;<i>      2  11735   1 12298280   9  85422624  61 dict of
+</I>&gt;<i> twisted.internet.base.DelayedCall
+</I>&gt;<i>      3   7377   1  7731096   5  93153720  66 dict of
+</I>&gt;<i> twisted.internet.tcp.Server
+</I>&gt;<i>      4   7375   1  7729000   5 100882720  72 dict of protocols.TagProtocol
+</I>&gt;<i>      5  30925   3  7174600   5 108057320  77 __builtin__.set
+</I>&gt;<i>      6   9193   1  6373336   5 114430656  81 dict (no owner)
+</I>&gt;<i>      7  15557   1  3396904   2 117827560  84 list
+</I>&gt;<i>      8  44833   4  3227976   2 121055536  86 types.BuiltinFunctionType
+</I>&gt;<i>      9  38142   3  3051360   2 124106896  88 types.MethodType
+</I>&gt;<i> &lt;328 more rows. Type e.g. '_.more' to view.&gt;
+</I>&gt;<i> 
+</I>&gt;<i> Note that the total size of all objects is 140911144 bytes 
+</I>&gt;<i> The 1st, 3d and 4th items in this list show the actual number of connected
+</I>&gt;<i> clients. I wait for about 48 hrs, and then execute the same command, and I
+</I>&gt;<i> see approximately the same Total size, of 130MB.
+</I>&gt;<i> So the total size that Heapy sees via the manhole is stable, fluctuating
+</I>&gt;<i> around 140MB. 
+</I>&gt;<i> 
+</I>&gt;<i> The problem is that the total RSS size of the process visible by the OS is
+</I>&gt;<i> much larger, it is  871680KB = 851MB:
+</I>&gt;<i> $ps -o pid,vsz,rss,sz,size -p 11236
+</I>&gt;<i>   PID     VSZ           RSS       SZ           SZ
+</I>&gt;<i> 11236 1303180 871680 325795 1174388
+</I>&gt;<i> 
+</I>&gt;<i> It is this total RSS size that keeps leaking at 40MB per day. 
+</I>&gt;<i> 
+</I>&gt;<i> As far as I understand, this means that this is not the problem with purely
+</I>&gt;<i> Python code, since Heapy shows that the total size of all Python objects is
+</I>&gt;<i> more or less constant.
+</I>&gt;<i> Is this a correct assumption?
+</I>&gt;<i> 
+</I>&gt;<i> 2) So now I turn to valgrind. I am no expert in using valgrind, so what I
+</I>&gt;<i> did was based only on general logic/rough guesses. 
+</I>&gt;<i> Since I cannot run this under valgrind on a production machine due to
+</I>&gt;<i> performance reasons, I recompile python on the staging machine:
+</I>&gt;<i> ./configure --enable-shared --without-pymalloc
+</I>&gt;<i> --prefix=/nail/encap/python-2.6.4-valgrind
+</I>&gt;<i> I then follow the instructions in
+</I>&gt;<i> <A HREF="http://svn.python.org/projects/python/trunk/Misc/README.valgrind">http://svn.python.org/projects/python/trunk/Misc/README.valgrind</A>
+</I>&gt;<i> Then I run twistd process like this:
+</I>&gt;<i> 
+</I>&gt;<i> valgrind  --tool=memcheck
+</I>&gt;<i> --suppressions=/nail/sys/src/Python-2.6.4/Misc/valgrind-python.supp
+</I>&gt;<i> --leak-check=full --log-file=/tmp/valgrind.log  /usr/local/bin/twistd
+</I>&gt;<i> --no_save --reactor=epoll --pidfile=logs/tagserv.pid
+</I>&gt;<i> --logfile=logs/tagserv.log --python=tagserv.py
+</I>&gt;<i> 
+</I>&gt;<i> The memory for the process shown by the OS is now 5x normal, and the
+</I>&gt;<i> performance is about 5x worse, since it's running inside valgrind's
+</I>&gt;<i> synthetic CPU.
+</I>&gt;<i> Because this is done on the staging box where I cannot accurately reproduce
+</I>&gt;<i> the real load, the memory leaks from simulated load seen by $ps -o rss are
+</I>&gt;<i> pretty small, about 1 to 10MB.
+</I>&gt;<i> Still, I am interested in finding out what they are.
+</I>&gt;<i> 
+</I>&gt;<i> Now I encounter the problems with my understanding of how to use valgrind.
+</I>&gt;<i> This may not be the appropriate list for this, but perhaps someone could
+</I>&gt;<i> recognize the problem.
+</I>&gt;<i> When I start the server, about 240 lines is written to valgrind log file,
+</I>&gt;<i> --log-file=/tmp/valgrind.log  
+</I>&gt;<i> When I shut it down, it adds another 100 lines.
+</I>&gt;<i> No matter what I do in between, it always results in the log file with
+</I>&gt;<i> exactly 343 lines.
+</I>&gt;<i> I can have server runs with a leak of 1MB, or with 10MB, but in the end, I
+</I>&gt;<i> get pretty much the same log file. Moreover, when look for all lost memory
+</I>&gt;<i> reports:
+</I>&gt;<i> $grep lost valgrind.log.1  
+</I>&gt;<i>  17,352 bytes in 31 blocks are possibly lost in loss record 49 of 62
+</I>&gt;<i>  203,312 bytes in 478 blocks are possibly lost in loss record 57 of 62
+</I>&gt;<i>     definitely lost: 0 bytes in 0 blocks.
+</I>&gt;<i>       possibly lost: 220,664 bytes in 509 blocks.
+</I>&gt;<i>  64 bytes in 2 blocks are definitely lost in loss record 12 of 63
+</I>&gt;<i>  17,352 bytes in 31 blocks are possibly lost in loss record 50 of 63
+</I>&gt;<i>  203,824 bytes in 479 blocks are possibly lost in loss record 58 of 63
+</I>&gt;<i>     definitely lost: 64 bytes in 2 blocks.
+</I>&gt;<i>       possibly lost: 221,176 bytes in 510 blocks.
+</I>&gt;<i>  47 bytes in 1 blocks are definitely lost in loss record 8 of 63
+</I>&gt;<i>  128 bytes in 4 blocks are definitely lost in loss record 16 of 63
+</I>&gt;<i>  584 (104 direct, 480 indirect) bytes in 2 blocks are definitely lost in
+</I>&gt;<i> loss record 26 of 63
+</I>&gt;<i>  1,008 bytes in 6 blocks are definitely lost in loss record 31 of 63
+</I>&gt;<i>  22,296 bytes in 41 blocks are possibly lost in loss record 50 of 63
+</I>&gt;<i>  183,368 bytes in 381 blocks are possibly lost in loss record 59 of 63
+</I>&gt;<i>     definitely lost: 1,287 bytes in 13 blocks.
+</I>&gt;<i>     indirectly lost: 480 bytes in 20 blocks.
+</I>&gt;<i>       possibly lost: 205,664 bytes in 422 blocks.
+</I>&gt;<i> 
+</I>&gt;<i> If I add up all those numbers, I get less than 1MB. How do I track down the
+</I>&gt;<i> 10MB leak?
+</I>&gt;<i> 
+</I>&gt;<i> Are there any alternative strategies in finding this leak?
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="054113.html">[Twisted-Python] debugging a memory leak
+</A></li>
+	<LI>Next message (by thread): <A HREF="054115.html">[Twisted-Python] debugging a memory leak
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#54114">[ date ]</a>
+              <a href="thread.html#54114">[ thread ]</a>
+              <a href="subject.html#54114">[ subject ]</a>
+              <a href="author.html#54114">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

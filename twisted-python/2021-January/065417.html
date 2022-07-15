@@ -1,0 +1,154 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Thread Cancelled
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Thread%20Cancelled&In-Reply-To=%3CCAAXGW-zjmz-nqf4kidYRUYjfvWJuJZKo%3DHMCpcRYoeG%3DAoRTmA%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="065416.html">
+   <LINK REL="Next"  HREF="065418.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Thread Cancelled</H1>
+    <B>Robert DiFalco</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Thread%20Cancelled&In-Reply-To=%3CCAAXGW-zjmz-nqf4kidYRUYjfvWJuJZKo%3DHMCpcRYoeG%3DAoRTmA%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Thread Cancelled">robert.difalco at gmail.com
+       </A><BR>
+    <I>Sun Jan 24 12:57:33 MST 2021</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="065416.html">[Twisted-Python] Thread Cancelled
+</A></li>
+        <LI>Next message (by thread): <A HREF="065418.html">[Twisted-Python] Thread Cancelled
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65417">[ date ]</a>
+              <a href="thread.html#65417">[ thread ]</a>
+              <a href="subject.html#65417">[ subject ]</a>
+              <a href="author.html#65417">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>You're absolutely right, I meant &quot;cancel the deferred&quot;. I don't grok server
+sockets very well so maybe someone can help. But apparently, klein does a
+.doRead from our server socket (getting the request from the client?). This
+returns a &quot;why&quot; of &quot;connection done&quot; so that closes the connection before
+we have written our response to the client, and that cancels the deferred
+SQS write.
+
+<A HREF="https://github.com/racker/python-twisted-core/blob/master/twisted/internet/selectreactor.py#L148-L155">https://github.com/racker/python-twisted-core/blob/master/twisted/internet/selectreactor.py#L148-L155</A>
+
+The method above is &quot;doRead&quot;. Which calls this:
+<A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/tcp.py#L239">https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/tcp.py#L239</A>
+
+I guess if If socket.rcv() returns an empty string it simply closes the
+connection.
+<A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/tcp.py#L249-L250">https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/tcp.py#L249-L250</A>
+
+Is that normal? I mean I guess it must be but then why is the read getting
+an empty string and closing the connection? I can't really account for it?
+Some kind of back pressure due to load?
+
+Thanks for any thoughts.
+
+
+
+On Sun, Jan 24, 2021 at 11:32 AM Colin Dunklau &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">colin.dunklau at gmail.com</A>&gt;
+wrote:
+
+&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> On Sun, Jan 24, 2021 at 11:45 AM Robert DiFalco &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert.difalco at gmail.com</A>&gt;
+</I>&gt;<i> wrote:
+</I>&gt;<i>
+</I>&gt;&gt;<i> Hi, I apologize this question is a little vague. I'm looking for
+</I>&gt;&gt;<i> pointers. I have a klein route that makes an underlying deferToThread call
+</I>&gt;&gt;<i> with a simple single thread (an IO based sync call I can't change, a boto3
+</I>&gt;&gt;<i> sqs write). The thread pool is simple, just a couple of threads, nothing
+</I>&gt;&gt;<i> fancy.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> VERY rarely it appears that Klein cancels the thread. What techniques can
+</I>&gt;&gt;<i> I use to figure out why my thread is being Canceled? There's nothing in the
+</I>&gt;&gt;<i> failure to tell me &quot;who, why, or where&quot; it was canceled. Also, I cannot get
+</I>&gt;&gt;<i> this down to a reproducible case, but here's the boto3 sqs wrapper, this
+</I>&gt;&gt;<i> fall back works fine, but it's a band-aide for an error I can't track down.:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> def write(self, payload):
+</I>&gt;&gt;<i>     &quot;&quot;&quot;
+</I>&gt;&gt;<i>     Write message to SQS async from thread pool. If twisted cancels the
+</I>&gt;&gt;<i>     thread, instead write synchronously.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>     def _retrySynchronously(error):
+</I>&gt;&gt;<i>         if error.type != CancelledError:
+</I>&gt;&gt;<i>             return error
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>         log.warn(&quot;Async SQS write cancelled. Calling synchronously.&quot;)
+</I>&gt;&gt;<i>         return defer.succeed(self._writeSyncFallback(payload))
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>     deferredCall = self._deferToThread(self.sqs.write, payload)
+</I>&gt;&gt;<i>     deferredCall.addErrback(_retrySynchronously)
+</I>&gt;&gt;<i>     return deferredCall
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> def _writeSyncFallback(self, payload):
+</I>&gt;&gt;<i>     return self.sqs.write(payload)
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> The _deferToThread call just uses my own thread pool with 2 threads, but
+</I>&gt;&gt;<i> is otherwise stock.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Is there a level of logging I'm missing or some other thing that would
+</I>&gt;&gt;<i> tell me why the thread is being canceled? The retry works great and Klein
+</I>&gt;&gt;<i> does not return an error from the route.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Thanks in advance.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;<i> I think we'll need to see more code for this, specifically the caller of
+</I>&gt;<i> that `write` method, and its callers, etc. Note that the thread itself
+</I>&gt;<i> isn't being cancelled, the Deferred you get from _deferToThread is... so
+</I>&gt;<i> you'll most likely need to find out what code interacts with that object to
+</I>&gt;<i> progress in isolating this.
+</I>&gt;<i>
+</I>&gt;<i> In my quick skim of the deferToThread and ThreadPool source, I can't find
+</I>&gt;<i> any explicit cancellations. While that certainly doesn't rule it out, it
+</I>&gt;<i> does make me think you're more likely to find the issue by inspecting the
+</I>&gt;<i> callers involved.
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20210124/23d4c670/attachment.htm&gt;
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="065416.html">[Twisted-Python] Thread Cancelled
+</A></li>
+	<LI>Next message (by thread): <A HREF="065418.html">[Twisted-Python] Thread Cancelled
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65417">[ date ]</a>
+              <a href="thread.html#65417">[ thread ]</a>
+              <a href="subject.html#65417">[ subject ]</a>
+              <a href="author.html#65417">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

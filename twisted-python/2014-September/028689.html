@@ -1,0 +1,167 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] spawnProcess - reapProcess not retrying on	failures
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20spawnProcess%20-%20reapProcess%20not%20retrying%20on%0A%09failures&In-Reply-To=%3C5405A47D.3020106%40editshare.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="028688.html">
+   <LINK REL="Next"  HREF="028690.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] spawnProcess - reapProcess not retrying on	failures</H1>
+    <B>Justin Mazzola Paluska</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20spawnProcess%20-%20reapProcess%20not%20retrying%20on%0A%09failures&In-Reply-To=%3C5405A47D.3020106%40editshare.com%3E"
+       TITLE="[Twisted-Python] spawnProcess - reapProcess not retrying on	failures">jmp at editshare.com
+       </A><BR>
+    <I>Tue Sep  2 05:05:33 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="028688.html">[Twisted-Python] spawnProcess - reapProcess not retrying on failures
+</A></li>
+        <LI>Next message: <A HREF="028690.html">[Twisted-Python] spawnProcess - reapProcess not retrying on	failures
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28689">[ date ]</a>
+              <a href="thread.html#28689">[ thread ]</a>
+              <a href="subject.html#28689">[ subject ]</a>
+              <a href="author.html#28689">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 09/02/2014 05:08 AM, Adi Roiban wrote:
+&gt;<i> Hi,
+</I>&gt;<i>
+</I>&gt;<i> While using spawnProcess on Linux I found out that when an invalid
+</I>&gt;<i> executable is called there is a corner case in which a zombie process
+</I>&gt;<i> is left until main process exists and can not be closed.
+</I>&gt;<i>
+</I>&gt;<i> I wrote a test for this but I was not able to reproduce this error in
+</I>&gt;<i> isolation, event if I run the test for 10000 times. reapProcess will
+</I>&gt;<i> always succeed from the first call.
+</I>&gt;<i>
+</I>&gt;<i> For the production code I can always reproduce the problem.
+</I>&gt;<i>
+</I>&gt;<i> Inspecting the execution thread I found out that all pipes are closed
+</I>&gt;<i> but spawned process is not closed yet. Due to this
+</I>&gt;<i> Process.maybeCallProcessEnded() will call self.reapProcess().
+</I>&gt;<i>
+</I>&gt;<i> In my case,  os.waitpid(pid, os.WNOHANG) return 0, and
+</I>&gt;<i> self.reapProcess() will just ignore this case.
+</I>
+We encountered this problem in our code too.  We worked around it with the 
+following code, which basically monkey-patches Twisted to &quot;try again later&quot; when 
+waitpid returns 0.  (Most of the code below is just copied from _BaseProcess; 
+the important part is the &quot;elif pid == 0&quot; branch.)
+
+-----
+
+&quot;&quot;&quot;Workarounds for problems with Twisted.&quot;&quot;&quot;
+
+import errno
+import os
+
+from twisted.python import log
+from twisted.internet.process import (
+     _BaseProcess,
+     reapAllProcesses,
+     unregisterReapProcessHandler
+)
+
+def workaround_reapProcess(reactor):
+     &quot;&quot;&quot;Install a workaround for unsticking reapProcess.
+
+     Sometimes when a child process takes too long to die that
+     reapProcess doesn't catch it in time.  We add a hack where we add
+     a timeout to the reactor to try again later.
+     &quot;&quot;&quot;
+
+     def reapProcess(self):
+         &quot;&quot;&quot;
+         Try to reap a process (without blocking) via waitpid.
+
+         This is called when sigchild is caught or a Process object loses its
+         &quot;connection&quot; (stdout is closed) This ought to result in reaping all
+         zombie processes, since it will be called twice as often as it needs
+         to be.
+
+         (Unfortunately, this is a slightly experimental approach, since
+         UNIX has no way to be really sure that your process is going to
+         go away w/o blocking.  I don't want to block.)
+         &quot;&quot;&quot;
+         try:
+             try:
+                 pid, status = os.waitpid(self.pid, os.WNOHANG)
+             except OSError, e:
+                 if e.errno == errno.ECHILD:
+                     # no child process
+                     pid = None
+                 else:
+                     raise
+         except:
+             log.msg('Failed to reap %d:' % self.pid)
+             log.err()
+             pid = None
+             status = None
+         if pid:
+             self.processEnded(status)
+             unregisterReapProcessHandler(pid, self)
+         elif pid == 0:
+             # Twisted seems to get stuck if pid is 0, which means that
+             # the child process hasn't changed status, but if called
+             # after SIGCHLD probably means that the child process is
+             # in the process of dying, but hasn't quite died yet.
+             # We'll try to kick the reactor to reap the processes
+             # again in a bit.
+             #
+             # We're testing specifically against 0 because pid may
+             # also be None in an error case.
+             def unstick():
+                 reapAllProcesses()
+             reactor.callLater(1, unstick)
+
+     _BaseProcess.reapProcess = reapProcess
+
+----
+
+To use this, import your reactor and then call workaround_reapProcess(reactor).
+
+Now that two of us have seen the same problem, we should probably file a ticket 
+in the bug tracker.
+     --Justin
+
+</PRE>
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="028688.html">[Twisted-Python] spawnProcess - reapProcess not retrying on failures
+</A></li>
+	<LI>Next message: <A HREF="028690.html">[Twisted-Python] spawnProcess - reapProcess not retrying on	failures
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28689">[ date ]</a>
+              <a href="thread.html#28689">[ thread ]</a>
+              <a href="subject.html#28689">[ subject ]</a>
+              <a href="author.html#28689">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,206 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Multiple main loops
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Multiple%20main%20loops&In-Reply-To=%3C44577425.4080500%40eastlink.ca%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="045533.html">
+   <LINK REL="Next"  HREF="045535.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Multiple main loops</H1>
+    <B>David Pratt</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Multiple%20main%20loops&In-Reply-To=%3C44577425.4080500%40eastlink.ca%3E"
+       TITLE="[Twisted-Python] Multiple main loops">fairwinds at eastlink.ca
+       </A><BR>
+    <I>Tue May  2 09:00:53 MDT 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="045533.html">[Twisted-Python] What is the meaning of &quot;threadable.whenThreaded	is deprecated Use application-level logic instead&quot;
+</A></li>
+        <LI>Next message (by thread): <A HREF="045535.html">[Twisted-Python] Multiple main loops
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45534">[ date ]</a>
+              <a href="thread.html#45534">[ thread ]</a>
+              <a href="subject.html#45534">[ subject ]</a>
+              <a href="author.html#45534">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi. I am hoping you can clarify for me whether it is possible to run 
+multiple independent main loops in Twisted. It is my understanding that 
+this would mean separate independent reactors.
+
+Googling, I found this patch but after looking into the repository, it 
+was never committed. I would appreciate any comments on the patch or 
+attempts people have made on the integration of a second twisted loop.
+
+At the present time I am using twisted with wxpython with wxpython as 
+main loop and also running a selectreactor instance. Here there are two 
+separate loops, interoperating and operating independently, however they 
+are not both twisted loops.
+
+Zope currently runs using a reactor instance for each zope instance but 
+I would like to consider a separate independent loop for each client to 
+synchronize to a server without paying a penalty. Zope's ZEO (basically 
+a synchronization server) currently uses a simple zrpc protocol and runs 
+independently but interoperates with a separate ansyncore main loop. The 
+current system works well for the exception that it would be great to 
+simplify this as well as improve security using twisted's built in 
+capabilities. Many thanks.
+
+
+Regards
+David
+
+
+Index: twisted/internet/default.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/default.py,v
+retrieving revision 1.79
+diff -u -r1.79 default.py
+--- twisted/internet/default.py    10 May 2003 12:52:37 -0000    1.79
++++ twisted/internet/default.py    11 May 2003 23:11:26 -0000
+@@ -367,8 +367,6 @@
+
+
+  # global state for selector
+-reads = {}
+-writes = {}
+
+
+  def win32select(r, w, e, timeout=None):
+@@ -403,13 +401,18 @@
+
+      __implements__ = (PosixReactorBase.__implements__, IReactorFDSet)
+
++    def __init__(self):
++        PosixReactorBase.__init__(self)
++        self.reads = {}
++        self.writes = {}
++
+      def _preenDescriptors(self):
+          log.msg(&quot;Malformed file descriptor found.  Preening lists.&quot;)
+-        readers = reads.keys()
+-        writers = writes.keys()
+-        reads.clear()
+-        writes.clear()
+-        for selDict, selList in ((reads, readers), (writes, writers)):
++        readers = self.reads.keys()
++        writers = self.writes.keys()
++        self.reads.clear()
++        self.writes.clear()
++        for selDict, selList in ((self.reads, readers), (self.writes, 
+writers)):
+              for selectable in selList:
+                  try:
+                      select.select([selectable], [selectable], 
+[selectable], 0)
+@@ -419,19 +422,19 @@
+                      selDict[selectable] = 1
+
+
+-    def doSelect(self, timeout,
+-                 # Since this loop should really be as fast as possible,
+-                 # I'm caching these global attributes so the interpreter
+-                 # will hit them in the local namespace.
+-                 reads=reads,
+-                 writes=writes,
+-                 rhk=reads.has_key,
+-                 whk=writes.has_key):
++    def doSelect(self, timeout):
+          &quot;&quot;&quot;Run one iteration of the I/O monitor loop.
+
+          This will run all selectables who had input or output readiness
+          waiting for them.
+          &quot;&quot;&quot;
++        # Since this loop should really be as fast as possible,
++        # I'm caching these global attributes so the interpreter
++        # will hit them in the local namespace.
++        reads=self.reads
++        writes=self.writes
++        rhk=reads.has_key
++        whk=writes.has_key
+          while 1:
+              try:
+                  r, w, ignored = _select(reads.keys(),
+@@ -502,33 +505,33 @@
+      def addReader(self, reader):
+          &quot;&quot;&quot;Add a FileDescriptor for notification of data available to 
+read.
+          &quot;&quot;&quot;
+-        reads[reader] = 1
++        self.reads[reader] = 1
+
+      def addWriter(self, writer):
+          &quot;&quot;&quot;Add a FileDescriptor for notification of data available to 
+write.
+          &quot;&quot;&quot;
+-        writes[writer] = 1
++        self.writes[writer] = 1
+
+      def removeReader(self, reader):
+          &quot;&quot;&quot;Remove a Selectable for notification of data available to read.
+          &quot;&quot;&quot;
+-        if reads.has_key(reader):
+-            del reads[reader]
++        if self.reads.has_key(reader):
++            del self.reads[reader]
+
+      def removeWriter(self, writer):
+          &quot;&quot;&quot;Remove a Selectable for notification of data available to 
+write.
+          &quot;&quot;&quot;
+-        if writes.has_key(writer):
+-            del writes[writer]
++        if self.writes.has_key(writer):
++            del self.writes[writer]
+
+      def removeAll(self):
+          &quot;&quot;&quot;Remove all readers and writers, and return list of 
+Selectables.&quot;&quot;&quot;
+-        readers = reads.keys()
++        readers = self.reads.keys()
+          for reader in readers:
+-            if reads.has_key(reader):
+-                del reads[reader]
+-            if writes.has_key(reader):
+-                del writes[reader]
++            if self.reads.has_key(reader):
++                del self.reads[reader]
++            if self.writes.has_key(reader):
++                del self.writes[reader]
+          return readers
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="045533.html">[Twisted-Python] What is the meaning of &quot;threadable.whenThreaded	is deprecated Use application-level logic instead&quot;
+</A></li>
+	<LI>Next message (by thread): <A HREF="045535.html">[Twisted-Python] Multiple main loops
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45534">[ date ]</a>
+              <a href="thread.html#45534">[ thread ]</a>
+              <a href="subject.html#45534">[ subject ]</a>
+              <a href="author.html#45534">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

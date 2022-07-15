@@ -1,0 +1,255 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Zope PageTemplates for Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Zope%20PageTemplates%20for%20Twisted&In-Reply-To=%3C20020530231302.A14225%40mel.interspace.dk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="033684.html">
+   <LINK REL="Next"  HREF="033688.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Zope PageTemplates for Twisted</H1>
+    <B>Sune Kirkeby</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Zope%20PageTemplates%20for%20Twisted&In-Reply-To=%3C20020530231302.A14225%40mel.interspace.dk%3E"
+       TITLE="[Twisted-Python] Zope PageTemplates for Twisted">sune-twisted at mel.interspace.dk
+       </A><BR>
+    <I>Thu May 30 15:13:02 MDT 2002</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="033684.html">[Twisted-Python] Twisted 0.18.0rc1, Bugs 0.2.0, and Twisted Emacs 0.1.0
+</A></li>
+        <LI>Next message (by thread): <A HREF="033688.html">[Twisted-Python] Regarding customer support...
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#33687">[ date ]</a>
+              <a href="thread.html#33687">[ thread ]</a>
+              <a href="subject.html#33687">[ subject ]</a>
+              <a href="author.html#33687">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Whee!
+
+In a fit of God-how-I-hate-all-other-template-languages I decided to
+take another look at Zopes PageTemplates (TAL, METAL and friends).
+
+I ended up liking the beast so much I decided to start porting it to
+Twisted, which resulted in the attached t.w.tal module.  It is still
+very incomplete, and most likely also very buggy.  But, in the
+interest of feedback I post it here.
+
+It dislikes it when I reuse deferreds (t.w.w.RenderSession becomes
+very confused and claims to be &quot;rendering unknown&quot; for all but the
+first instances).
+
+Other than that the only problem I have had so far was that I had to
+remove a str'ing in the TAL-engine.
+
+-- 
+Sune Kirkeby | 5 out of 4 people have trouble with fractions.
+-------------- next part --------------
+# I need a license.
+
+&quot;&quot;&quot;
+TAL interpreter for Twisted.
+&quot;&quot;&quot;
+
+import string, types
+
+from twisted.web import widgets
+from twisted.web.server import NOT_DONE_YET
+
+from TAL.TALDefs import quote
+from TAL.TALDefs import TAL_VERSION, isCurrentVersion, getProgramMode
+from TAL.TALDefs import TALError, METALError
+from TAL.TALParser import TALParser
+from TAL.TALInterpreter import TALInterpreter
+from TAL.TALGenerator import TALGenerator
+#from TAL.DummyEngine import DummyEngine
+from PageTemplates.Expressions import getEngine
+
+class TwistedTALInterpreter:
+    def __init__(self, engine):
+        self.engine = engine
+        self.mode = None
+
+    def interpret(self, program):
+        lst = []
+
+        for (opcode, args) in program:
+            handler = getattr(self, 'do_' + opcode, None)
+            if not handler:
+                raise TALError, (&quot;Unknown opcode: %s (%r)&quot; % (opcode, args))
+
+            result = handler(args)
+            if isinstance(result, types.ListType):
+                lst.extend(result)
+            elif result:
+                lst.append(result)
+
+        return lst
+
+    def do_version(self, version):
+        assert version == TAL_VERSION
+
+    def do_mode(self, mode):
+        assert mode in (&quot;html&quot;, &quot;xml&quot;)
+        self.mode = mode
+
+    def do_rawtextOffset(self, (text, somenumber)):
+        return text
+
+    def do_rawtextColumn(self, (text, somenumber)):
+        return text
+
+    def do_startTag(self, (name, attributes)):
+        txt = '&lt;%s' % name
+
+        def format_attribute(attr):
+            if len(attr) == 2:
+                return attr[1]
+            elif attr[2] == 0:
+                return '%s=%s' % (attr[0], quote(attr[1]))
+        attributes = map(format_attribute, attributes)
+        formatted = string.join([ a for a in attributes if a ], ' ')
+
+        if formatted:
+            txt = txt + ' ' + formatted
+        txt = txt + '&gt;'
+
+        return txt
+
+    def do_optTag(self, foo):
+        return self.interpret(foo[5])
+
+    def do_loop(self, (name, expr, block)):
+        iterator = self.engine.setRepeat(name, expr)
+        lst = []
+        while iterator.next():
+            lst.extend(self.interpret(block))
+        return lst
+
+    def do_beginScope(self, attrs):
+        self.engine.beginScope()
+
+    def do_endScope(self, nothing):
+        self.engine.endScope()
+
+    def do_insertText(self, (text, insteadOf)):
+        val = self.engine.evaluateText(text)
+        if not val:
+            return
+        if val is self.engine.getDefault():
+            self.interpret(insteadOf)
+        return val
+
+    def do_useMacro(self, (macroName, macroExpr, compiledSlots, block)):
+        macro = self.engine.evaluateMacro(macroExpr)
+        if macro is self.engine.getDefault():
+            macro = block
+
+        else:
+            if not isCurrentVersion(macro):
+                raise METALError(&quot;macro %s has incompatible version %s&quot; %
+                                 (`macroName`, `getProgramVersion(macro)`),
+                                 self.position)
+            mode = getProgramMode(macro)
+            if not mode == self.mode:
+                raise METALError(&quot;macro %s has incompatible mode %s&quot; %
+                                 (`macroName`, `mode`), self.position)
+
+        return self.interpret(macro)
+
+    def do_defineMacro(self, (macroName, macro)):
+        pass
+
+class TALWidget(widgets.Widget):
+    def preDisplay(self, request):
+        pass
+
+    def getTemplates(self, request):
+        raise UnimplementedError
+
+    def getContext(self, request):
+        return {}
+
+    def display(self, request):
+        self.preDisplay(request)
+
+        ctx = {
+            'request': request,
+            'here': self,
+            'macros': {},
+        }
+        ctx.update(self.getContext(request))
+
+        engine = getEngine()
+        context = engine.getContext(ctx)
+        generator = TALGenerator(engine)
+
+        result = []
+        for template in self.getTemplates(request):
+            parser = TALParser(generator)
+            parser.parseString(template)
+            program, macros = parser.getCode()
+            ctx['macros'].update(macros)
+
+            interpreter = TwistedTALInterpreter(context)
+            result.extend(interpreter.interpret(program))
+
+        return result
+
+if __name__ == '__main__':
+    import sys
+    from twisted.web import widgets
+    from TAL.TALParser import TALParser
+    from TAL.DummyEngine import DummyEngine
+    
+    parser = TALParser()
+    engine = DummyEngine()
+    interpreter = TwistedTALInterpreter(engine)
+
+    engine.setGlobal('here/title', 'TITLE, GOD DAMMIT!')
+
+    file = sys.argv[1]
+    parser.parseFile(file)
+    program, macros = parser.getCode()
+    result = interpreter.interpret(program)
+
+    class Request:
+        def write(self, txt):
+            print txt
+        def finish(self):
+            pass
+
+    widgets.RenderSession(result, Request())
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="033684.html">[Twisted-Python] Twisted 0.18.0rc1, Bugs 0.2.0, and Twisted Emacs 0.1.0
+</A></li>
+	<LI>Next message (by thread): <A HREF="033688.html">[Twisted-Python] Regarding customer support...
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#33687">[ date ]</a>
+              <a href="thread.html#33687">[ thread ]</a>
+              <a href="subject.html#33687">[ subject ]</a>
+              <a href="author.html#33687">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

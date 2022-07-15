@@ -1,0 +1,197 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] [PATCH] to make twisted more &quot;child process friendly&quot;
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20%5BPATCH%5D%20to%20make%20twisted%20more%20%22child%20process%20friendly%22&In-Reply-To=20020621141835.GA23753%40ranty.ddts.net">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001284.html">
+   <LINK REL="Next"  HREF="001270.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] [PATCH] to make twisted more &quot;child process friendly&quot;</H1>
+    <B>Manuel Estrada Sainz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20%5BPATCH%5D%20to%20make%20twisted%20more%20%22child%20process%20friendly%22&In-Reply-To=20020621141835.GA23753%40ranty.ddts.net"
+       TITLE="[Twisted-Python] [PATCH] to make twisted more &quot;child process friendly&quot;">ranty-bulk at ranty.ddts.net
+       </A><BR>
+    <I>Thu Jul  4 11:29:04 EDT 2002</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001284.html">[Twisted-Python] apache and twisted.web bug
+</A></li>
+        <LI>Next message: <A HREF="001270.html">[Twisted-Python] [PATCH] to make twisted more &quot;child process friendly&quot;
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1269">[ date ]</a>
+              <a href="thread.html#1269">[ thread ]</a>
+              <a href="subject.html#1269">[ subject ]</a>
+              <a href="author.html#1269">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, Jun 21, 2002 at 04:18:35PM +0200, Manuel Estrada Sainz wrote:
+&gt;<i>  Hello,
+</I>&gt;<i> 
+</I>&gt;<i>  Working on apt-proxy v2 I got stuck trying to get the status of a
+</I>&gt;<i>  subprocess:
+</I>&gt;<i> 
+</I>&gt;<i>  internet/default.py:76
+</I>&gt;<i> 	signal.signal(signal.SIGCHLD, process.reapProcess)
+</I>&gt;<i> 	
+</I>&gt;<i> 	process.reapProcess will be called for every child that exists,
+</I>&gt;<i> 	which makes imposible to anyone to get the status. And actually
+</I>&gt;<i> 	makes useless calling 'reapProcess' from
+</I>&gt;<i> 	Process.maybeCallProcessEnded
+</I>&gt;<i> 
+</I>&gt;<i>  The patch allows objects to be registered to get the termination status
+</I>&gt;<i>  of certain processes and changes process.Process to use it.
+</I>
+ That patch has a problem, if you use registerReapProccessHandler but
+ the process finished before you actually called
+ registerReapProccessHandler you will wait for ever on a dead child.
+
+ The attached patch makes two variations:
+
+ - reapProcess only takes the status of registered pid's, the rest are
+   left alone.
+ - registerReapProccessHandler checks if the child already exited and
+   if so directly calls the callback.
+
+ This also has the side efect of being more friendly to standard python
+ popen, which will again be able to return the status on close().
+
+ Thanks for a great job,
+ 
+ 	ranty
+
+ PS: Twisted rocks :)
+
+-- 
+--- Manuel Estrada Sainz &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ranty at debian.org</A>&gt;
+                         &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ranty at bigfoot.com</A>&gt;
+			 &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ranty at users.sourceforge.net</A>&gt;
+------------------------ &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">manuel.estrada at hispalinux.es</A>&gt; -------------------
+God grant us the serenity to accept the things we cannot change, courage to
+change the things we can, and wisdom to know the difference.
+-------------- next part --------------
+? diff.diff
+? diff.diff2
+Index: process.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/process.py,v
+retrieving revision 1.16
+diff -u -r1.16 process.py
+--- process.py	26 Jun 2002 06:47:50 -0000	1.16
++++ process.py	4 Jul 2002 15:17:07 -0000
+@@ -40,6 +40,7 @@
+ import abstract, main
+ from main import CONNECTION_LOST, CONNECTION_DONE
+ 
++reapProcessHandlers = {}
+ def reapProcess(*args):
+     &quot;&quot;&quot;Reap as many processes as possible (without blocking) via waitpid.
+ 
+@@ -52,10 +53,32 @@
+     UNIX has no way to be really sure that your process is going to
+     go away w/o blocking.  I don't want to block.)
+     &quot;&quot;&quot;
++    for pid in reapProcessHandlers.keys():
++        try:
++            pid, status = os.waitpid(pid,os.WNOHANG)
++        except:
++            pid = None
++        if pid:
++            reapProcessHandlers[pid].processEnded(status)
++            del reapProcessHandlers[pid]
++
++def registerReapProccessHandler(pid, process):
++    if reapProcessHandlers.has_key(pid):
++        raise RuntimeError
+     try:
+-        os.waitpid(0,os.WNOHANG)
++        aux_pid, status = os.waitpid(pid,os.WNOHANG)
+     except:
+-        pass
++        aux_pid = None
++    if aux_pid:
++        process.processEnded(status)
++    else:
++        reapProcessHandlers[pid] = process
++
++def unregisterReapProccessHandler(pid, process):
++    if not (reapProcessHandlers.has_key(pid)
++            and reapProcessHandlers[pid] == process):
++        raise RuntimeError
++    del reapProcessHandlers[pid]
+ 
+ class ProcessWriter(abstract.FileDescriptor, styles.Ephemeral):
+     &quot;&quot;&quot;(Internal) Helper class to write to Process's stdin.
+@@ -184,8 +207,8 @@
+         stdout_read, stdout_write = os.pipe()
+         stderr_read, stderr_write = os.pipe()
+         stdin_read,  stdin_write  = os.pipe()
+-        pid = os.fork()
+-        if pid == 0: # pid is 0 in the child process
++        self.pid = os.fork()
++        if self.pid == 0: # pid is 0 in the child process
+             # stop debugging, if I am!  I don't care anymore!
+             sys.settrace(None)
+             # Destroy my stdin / stdout / stderr (in that order)
+@@ -246,6 +269,7 @@
+             self.proto.makeConnection(self)
+         except:
+             log.deferr()
++        registerReapProccessHandler(self.pid, self)
+ 
+     def closeStdin(self):
+         &quot;&quot;&quot;Call this to close standard input on this process.
+@@ -301,17 +325,23 @@
+     lostErrorConnection = 0
+     lostOutConnection = 0
+     lostInConnection = 0
++    lostProcess = 0
+ 
+     def maybeCallProcessEnded(self):
+         if (self.lostErrorConnection and
+             self.lostOutConnection and
+-            self.lostInConnection):
++            self.lostInConnection and
++            self.lostProcess):
+             try:
+                 self.proto.processEnded()
+             except:
+                 log.deferr()
+-            reapProcess()
+     
++    def processEnded(self, status):
++        self.status = status
++        self.lostProcess = 1
++        self.maybeCallProcessEnded()
++        
+     def inConnectionLost(self):
+         del self.writer
+         self.lostInConnection = 1
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001284.html">[Twisted-Python] apache and twisted.web bug
+</A></li>
+	<LI>Next message: <A HREF="001270.html">[Twisted-Python] [PATCH] to make twisted more &quot;child process friendly&quot;
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1269">[ date ]</a>
+              <a href="thread.html#1269">[ thread ]</a>
+              <a href="subject.html#1269">[ subject ]</a>
+              <a href="author.html#1269">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

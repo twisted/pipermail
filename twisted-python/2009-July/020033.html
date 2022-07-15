@@ -1,0 +1,209 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] How to debug an AMP connection?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20to%20debug%20an%20AMP%20connection%3F&In-Reply-To=368574aa0907240744w7b17c498v3a9488684a1afeb1%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="020032.html">
+   <LINK REL="Next"  HREF="020034.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] How to debug an AMP connection?</H1>
+    <B>Peter Westlake</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20to%20debug%20an%20AMP%20connection%3F&In-Reply-To=368574aa0907240744w7b17c498v3a9488684a1afeb1%40mail.gmail.com"
+       TITLE="[Twisted-Python] How to debug an AMP connection?">peter.westlake at pobox.com
+       </A><BR>
+    <I>Fri Jul 24 11:12:28 EDT 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="020032.html">[Twisted-Python] How to debug an AMP connection?
+</A></li>
+        <LI>Next message: <A HREF="020034.html">[Twisted-Python] How to debug an AMP connection?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#20033">[ date ]</a>
+              <a href="thread.html#20033">[ thread ]</a>
+              <a href="subject.html#20033">[ subject ]</a>
+              <a href="author.html#20033">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+
+On Fri, 24 Jul 2009 10:44 -0400, &quot;Drew Smathers&quot;
+&lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">drew.smathers at gmail.com</A>&gt; wrote:
+&gt;<i> On Fri, Jul 24, 2009 at 9:35 AM, Peter Westlake&lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">peter.westlake at pobox.com</A>&gt;
+</I>&gt;<i> wrote:
+</I>&gt;<i> &gt; Hello,
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I'm having trouble with an AMP connection that doesn't fire
+</I>&gt;<i> &gt; the Deferred returned by callRemote. The AMP command copies
+</I>&gt;<i> &gt; files from the client (called a &quot;worker&quot; in the code below)
+</I>&gt;<i> &gt; to a server (&quot;controller&quot;). It sends a chunk of text at a
+</I>&gt;<i> &gt; time - 16K originally, but I tried smaller amounts too.
+</I>&gt;<i> &gt; The server appends the text to a queue to be written;
+</I>&gt;<i> &gt; it shouldn't take long, because it doesn't do the I/O
+</I>&gt;<i> &gt; synchronously, just starts a thread.
+</I>&gt;<i> &gt;
+</I>&gt;<i> 
+</I>&gt;<i> &quot;justs starts a thread&quot;? Where are you starting a thread in the code
+</I>&gt;<i> example you've posted?
+</I>
+&gt;<i> Please post a complete example; I don't see methods on client code
+</I>&gt;<i> below such as send_next() or next_or_retry().  It's hard to help
+</I>&gt;<i> without a complete example.
+</I>
+Sorry - I was trying to avoid clogging everyone's inboxes with too
+much code. So far I haven't been able to reproduce the bug in a
+simple way. In the meantime, here's the code that starts the thread.
+It's one of the very first bits of code I wrote with either Twisted
+or Python, so it may do things in quite the wrong way. It serialises
+writes to a file by storing requests in a queue, and it gets called
+by the line
+
+       ac.instances[number].logfile[stream].write(data)
+
+in the command handler.
+
+
+from twisted.internet import defer, threads
+import os, errno
+
+class FileMan(object):
+    def __init__(self, filename):
+        self.filename = filename
+        self.queue = []
+        self.started = False
+
+    def check_file(self):
+        self.started = os.path.exists(self.filename)
+        return self.started
+
+    def makedir(self):
+        dirname = os.path.dirname(self.filename)
+        if not os.path.isdir(dirname):
+            os.makedirs(dirname)
+
+    def add(self, op, *a, **kw):
+        def getnext(result):
+            del(self.queue[0])
+            if len(self.queue) &gt; 0:
+                self.queue[0].callback('unused')
+            return result
+
+        d = defer.Deferred()
+        d.addCallback(op, *a, **kw)
+        d.addBoth(getnext)
+        self.queue.append(d)
+        if len(self.queue) == 1:
+            d.callback('unused')
+        return d
+
+    def write(self, data, mode='a'):
+        def do_write(result, filename, data):
+            def write_in_thread(filename, data):
+                f = open(filename, mode)
+                try:
+                    f.write(data)
+                finally:
+                    f.close()
+                self.started = True
+            d = threads.deferToThread(write_in_thread, filename, data)
+            return d
+        return self.add(do_write, self.filename, data)
+
+
+&gt;<i>  In general, though, if you're trying to
+</I>&gt;<i> debug Deferreds you might try setting debugging with
+</I>&gt;<i> defer.setDebugging(1).
+</I>
+What kind of output does that produce? I did try it,
+but didn't see anything out of the ordinary.
+ 
+Peter.
+
+
+&gt;<i> &gt; Client-side code:
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; class ConnectionBuffer(object):
+</I>&gt;<i> &gt; &#160; &#160;&quot;&quot;&quot;Class to store AMP commands and retry them after network outages.
+</I>&gt;<i> &gt; &#160; &#160;...
+</I>&gt;<i> &gt; &#160; &#160;&quot;&quot;&quot;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; &#160; &#160;def send(self, adv_arg, *a, **kw):
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;if self.protocol:
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160; &#160; &#160;# call_d is here purely to make the Deferred accessible when
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160; &#160; &#160;debugging.
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160; &#160; &#160;self.call_d &#160;= self.protocol.callRemote(*a,
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160; &#160; &#160;**kw).addBoth(self.next_or_retry, adv_arg)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; &#160; &#160;def connected(self, protocol):
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;self.protocol = protocol
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;self.send_next()
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; &#160; &#160;def disconnected(self):
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;self.protocol = None
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Server:
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; class ControllerProtocol(amp.AMP):
+</I>&gt;<i> &gt; &#160; &#160;&quot;&quot;&quot;Protocol used by the controller to communicate with a worker.
+</I>&gt;<i> &gt; &#160; &#160;...
+</I>&gt;<i> &gt; &#160; &#160;&quot;&quot;&quot;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; &#160; &#160;def logoutput(self, product, branch, site, job, action, number,
+</I>&gt;<i> &gt; &#160; &#160;data, stream):
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;&quot;&quot;&quot;Receive stdout or stderr from an action running on a
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;worker.&quot;&quot;&quot;
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;actid = (product, branch, site, job, action)
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;ac = self.factory.controller.actions.find(actid)
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;ac.instances[number].logfile[stream].write(data)
+</I>&gt;<i> &gt; &#160; &#160; &#160; &#160;return {'status': True}
+</I>&gt;<i> &gt; &#160; &#160;commands.LogOutput.responder(logoutput)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; _______________________________________________
+</I>&gt;<i> &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+</PRE>
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="020032.html">[Twisted-Python] How to debug an AMP connection?
+</A></li>
+	<LI>Next message: <A HREF="020034.html">[Twisted-Python] How to debug an AMP connection?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#20033">[ date ]</a>
+              <a href="thread.html#20033">[ thread ]</a>
+              <a href="subject.html#20033">[ subject ]</a>
+              <a href="author.html#20033">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

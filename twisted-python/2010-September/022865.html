@@ -1,0 +1,239 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Selectable SerialPort Windows/Linux
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Selectable%20SerialPort%20Windows/Linux&In-Reply-To=AANLkTi%3DAG7dDQ4Fcjuqe5dOnkcaxEi%3DCF5e5Fb7sSAvp%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="022870.html">
+   <LINK REL="Next"  HREF="022863.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Selectable SerialPort Windows/Linux</H1>
+    <B>eulores</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Selectable%20SerialPort%20Windows/Linux&In-Reply-To=AANLkTi%3DAG7dDQ4Fcjuqe5dOnkcaxEi%3DCF5e5Fb7sSAvp%40mail.gmail.com"
+       TITLE="[Twisted-Python] Selectable SerialPort Windows/Linux">eulores at gmail.com
+       </A><BR>
+    <I>Tue Sep 14 09:03:01 EDT 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="022870.html">[Twisted-Python] Selectable SerialPort Windows/Linux
+</A></li>
+        <LI>Next message: <A HREF="022863.html">[Twisted-Python] Just curious about EINTR in socket.recv()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#22865">[ date ]</a>
+              <a href="thread.html#22865">[ thread ]</a>
+              <a href="subject.html#22865">[ subject ]</a>
+              <a href="author.html#22865">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Here is my code for Plug 'n Play detection of serial devices. It's not
+yet ready for showtime, but it works with my serial attached Wacom.
+
+Best regards,
+eulores
+
+
+# -*- coding: utf-8 -*-
+
+import sys
+if sys.platform == 'win32':
+    from twisted.internet import win32eventreactor
+    win32eventreactor.install()
+from twisted.internet import reactor, protocol
+from twisted.internet.task import deferLater, LoopingCall
+from twisted.internet.defer import Deferred, inlineCallbacks, returnValue
+from twisted.internet.serialport import *
+import re
+
+def wait(seconds):
+    return deferLater(reactor, seconds, lambda:None)
+
+class StructuredPnP(object):
+    ''' The structured PnP field is available with these fields:
+            data:    string, required. Original unformatted string.
+            other:   string, optional
+            rev:     integer, required. Revision of the PnP standard.
+100 is standard version 1.00
+            eisa:    string, required
+            product: string, required
+            serial:  string, optional
+            klass:   string, optional
+            compat:  string, optional. Other older products with
+similar functionality
+            user:    string, optional. Free flowing field useful for
+the end-user
+    '''
+    def __init__(self, data):
+        #data = '\\96,N,8,1(\x01$WAC0608\\\\PEN\\WAC0000\\WACOM
+UD\r\nUD-0608-R,V1.4-4\r\nF4)'
+        # test string for a 7-bit character string
+        #data = 'aaa(bbcccdddd\\eeeeeeee\\fff\\gggg\\hhhhii)'
+        # test string for a 6-bit character string
+        #data = 'AAA\x08BBCCCDDDD&lt;EEEEEEEE&lt;FFF&lt;GGGG&lt;HHHHII\x09'
+        self.data = data
+        for key in &quot;other eisa product serial klass compat user&quot;.split():
+            setattr(self, key, '')
+        self.rev = '\0\0'
+        prologue = r'(?P&lt;other&gt;[^(]{,16}?)'
+        matrix =
+r'(?P&lt;rev&gt;..)(?P&lt;eisa&gt;...)(?P&lt;product&gt;....)(?:@(?P&lt;serial&gt;[^@]{,8}))?(?:@(?P&lt;klass&gt;[^@]{,32}))?(?:@(?P&lt;compat&gt;[^@]{,40}))?(?:@(?P&lt;user&gt;.{,40}?))?(?:..)?'
+        needle1 = prologue + '\\(' + matrix.replace('@','\\\\') + '\\)'
+        needle2 = prologue + '\\\x08' + matrix.replace('@','\\\x3C') + '\\\x09'
+        dct = dict()
+        mo = re.match(needle1, data, re.S)
+        if mo:
+            dct = mo.groupdict()
+        else:
+            mo = re.match(needle2, data, re.S)
+            if mo:
+                dct = mo.groupdict()
+                for k in &quot;eisa product serial klass compat user&quot;.split():
+                    v = dct[k]
+                    dct[k] = ''.join([chr(ord(ch)+0x20) for ch in list(v)])
+        for k,v in dct.items():
+            setattr(self, k, v)
+        self.rev = ((ord(self.rev[0])&amp;0x3f)&lt;&lt;6) + (ord(self.rev[1])&amp;0x3f)
+    def __str__(self):
+        return self.data
+    def __repr__(self):
+        l = ['&lt;StructuredPnP object&gt; %r' % self.data]
+        for k in &quot;other rev eisa product serial klass compat user&quot;.split():
+            l.append('  %-8s %r' % (k, getattr(self,k,False)))
+        return '\n'.join(l)
+
+class PnPProtocol(protocol.Protocol):
+    &quot;&quot;&quot; See Plug and Play External COM device Specification, rev 1.00
+from Microsoft &amp; Hayes, 1994-1995&quot;&quot;&quot;
+    def __init__(self, deferred):
+        self.deferred = deferred
+        self.data = ''
+        self.timeout = 1.4
+        self.T5 = reactor.callLater(self.timeout, self.deliverPnP)
+    def deliverPnP(self):
+        self.transport.loseConnection()
+        if self.deferred is not None:
+            d, self.deferred = self.deferred, None
+            d.callback(StructuredPnP(self.data))
+    def dataReceived(self, data):
+        self.T5.reset(self.timeout)
+        self.data += data
+        if len(self.data)&gt;=256:
+            self.T5.reset(0)
+    @inlineCallbacks
+    def connectionMade(self):
+        while 1:
+            # print &quot;2.1.1&quot;
+            self.transport.setDTR(1)
+            self.transport.setRTS(0)
+            yield wait(0.2)
+            if not self.transport.getDSR():
+                break
+            # print &quot;2.1.3 part A&quot;
+            self.transport.setDTR(0)
+            yield wait(0.2)
+            # print &quot;2.1.3 part B&quot;
+            self.transport.setDTR(1)
+            yield wait(0.2)
+            # print &quot;2.1.4&quot;
+            self.transport.setRTS(1)
+            # timer T5 is now used for per-character timeout
+            self.timeout = 0.2
+            yield wait(0.2)
+            if self.data:
+                break
+            # print &quot;2.1.5&quot;
+            self.transport.setDTR(0)
+            self.transport.setRTS(0)
+            yield wait(0.2)
+            # print &quot;2.1.6&quot;
+            self.transport.setDTR(1)
+            self.transport.setRTS(1)
+            yield wait(0.2)
+            break
+        if not self.data:
+            self.T5.reset(0)
+        returnValue(None)
+    def connectionLost(self, reason='connectionDone'):
+        print &quot;Connection lost:&quot;, reason
+
+def pnpString(port=0):
+    d = Deferred()
+    protocol = PnPProtocol(d)
+    try:
+        #SerialPort(protocol, port, reactor, baudrate=1200,
+bytesize=SEVENBITS, parity=PARITY_NONE, stopbits=STOPBITS_ONE,
+timeout=0, xonxoff=0, rtscts=0)
+        SerialPort(protocol, port, reactor, baudrate=1200,
+bytesize=SEVENBITS, parity=PARITY_NONE, stopbits=STOPBITS_ONE,
+xonxoff=0, rtscts=0)
+    except serial.SerialException:
+        d.callback(StructuredPnP(''))
+    return d
+
+@inlineCallbacks
+def imRunning():
+    print &quot;PnP string: %r&quot; % (yield pnpString(3))
+    reactor.stop()
+
+if __name__ == &quot;__main__&quot;:
+    reactor.callWhenRunning(imRunning)
+    reactor.run()
+
+
+
+On Tue, Sep 14, 2010 at 11:24 AM, Markus Hubig &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">mhubig at imko.de</A>&gt; wrote:
+&gt;<i> Hi @all!
+</I>&gt;<i> I'm trying to write a python library module for a special
+</I>&gt;<i> serial communication protocol called IMPBUS. To use the serial
+</I>&gt;<i> interface for sending and receiving packets as for now I'm
+</I>&gt;<i> sub-classing pyserial. My code looks like this:
+</I>&gt;<i>
+</I>&gt;<i> But the problem is that I can't use select with pyserial on Windows,
+</I>&gt;<i> because it don't provide the fileno() methode. So after some googling
+</I>&gt;<i> I found twisted.internet.serialport &quot;A select()able serial device, acting
+</I>&gt;<i> as a transport.&quot;
+</I>&gt;<i> I never used twisted before so I'm a little overwhelmed by how I can
+</I>&gt;<i> replace pyserial with twisted in the code above ... maybe someone can
+</I>&gt;<i> point me to the right direction. It seems I need a &quot;Protocol&quot; and a
+</I>&gt;<i> &quot;receiver&quot; ...
+</I>&gt;<i> - Markus
+</I>&gt;<i> --
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20100914/147f1bbd/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20100914/147f1bbd/attachment.htm</A> 
+</PRE>
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="022870.html">[Twisted-Python] Selectable SerialPort Windows/Linux
+</A></li>
+	<LI>Next message: <A HREF="022863.html">[Twisted-Python] Just curious about EINTR in socket.recv()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#22865">[ date ]</a>
+              <a href="thread.html#22865">[ thread ]</a>
+              <a href="subject.html#22865">[ subject ]</a>
+              <a href="author.html#22865">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

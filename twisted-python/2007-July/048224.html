@@ -1,0 +1,157 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Application Start Up and Tear Down
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Application%20Start%20Up%20and%20Tear%20Down&In-Reply-To=%3C20070709072721.4947.496349772.divmod.quotient.9347%40ohm%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="048220.html">
+   <LINK REL="Next"  HREF="048225.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Application Start Up and Tear Down</H1>
+    <B>Valentino Volonghi aka Dialtone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Application%20Start%20Up%20and%20Tear%20Down&In-Reply-To=%3C20070709072721.4947.496349772.divmod.quotient.9347%40ohm%3E"
+       TITLE="[Twisted-Python] Application Start Up and Tear Down">dialtone at divmod.com
+       </A><BR>
+    <I>Mon Jul  9 01:27:21 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="048220.html">[Twisted-Python] Application Start Up and Tear Down
+</A></li>
+        <LI>Next message (by thread): <A HREF="048225.html">[Twisted-Python] Application Start Up and Tear Down
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48224">[ date ]</a>
+              <a href="thread.html#48224">[ thread ]</a>
+              <a href="subject.html#48224">[ subject ]</a>
+              <a href="author.html#48224">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, 9 Jul 2007 11:18:50 +0600, Pavel Bastov &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">pbastov at gmail.com</A>&gt; wrote:
+&gt;<i>Hmm,
+</I>&gt;<i>
+</I>&gt;<i>I don't call reactor.run() explicitly.
+</I>&gt;<i>
+</I>&gt;<i>Here is how I launch it:
+</I>&gt;<i>
+</I>&gt;<i>application = service.Application('xoochat', uid = uid, gid = gid)
+</I>&gt;<i>internet.TCPServer(config.port,
+</I>&gt;<i>factory).setServiceParent(service.IServiceCollection(application))
+</I>&gt;<i>internet.TCPServer(3711,
+</I>&gt;<i>pushFactory).setServiceParent(service.IServiceCollection(application))
+</I>
+The right way to do this is defining your own Service like in this way:
+
+import locale
+
+from twisted.internet import defer
+
+from twisted.cred.checkers import AllowAnonymousAccess
+from twisted.python.components import registerAdapter
+from twisted.cred.credentials import IAnonymous
+from twisted.application.service import Service
+from twisted.cred.portal import Portal
+
+from nevow import inevow, appserver
+#from nevow import guard
+
+from starter.monkeypatches import VhostFakeRoot
+from starter import storage, auth, guard, istarter
+from starter.web import main
+
+class StarterService(Service):
+    def __init__(self, conf):
+        self.conf = conf
+        
+    def privilegedStartService(self):
+        locale.setlocale(locale.LC_TIME, self.conf['general']['lc_ctime'])
+        
+        dbconf = self.conf['db']
+        self.db = p = storage.init(dbconf['engine'])
+        p.init(dbconf['strategy'],
+               dbconf['database'],
+               dbconf['host'],
+               dbconf['port'],
+               dbconf['user'],
+               dbconf['password'])
+        
+        ls = auth.LoginSystem(self.db, self.conf)
+        p = Portal(ls)
+        p.registerChecker(AllowAnonymousAccess(), IAnonymous)
+        p.registerChecker(ls)
+        
+        registerAdapter(main.Root, istarter.IAvatar, inevow.IResource)
+
+        res = guard.SessionWrapper(p)
+        vhost = VhostFakeRoot(res)
+        self.site = appserver.NevowSite(vhost, logPath=self.conf['paths']['web'].path)
+
+        from twisted.internet import reactor
+
+        self.port = reactor.listenTCP(self.conf['web']['port'],
+                                      self.site,
+                                      interface=self.conf['web']['interface'])
+
+    def stopService(self):
+        dl = []
+        if self.port is not None:
+            dl.append(defer.maybeDeferred(self.port.stopListening))
+            self.port = None
+        if self.db is not None:
+            dl.append(defer.maybeDeferred(self.db.close))
+            self.db = None
+        return defer.DeferredList(dl)
+
+And you define your .tac file like this:
+
+from twisted.application import service
+from starter.service import StarterService
+from configuration import main
+
+application = service.Application('Starter')
+StarterService(main).setServiceParent(application)
+
+Of course Twisted will call Service.privilegedStartService when everything startsup and after
+it changed UID (or anyway after Service.startService).
+
+Then when everything stops it will call Service.stopService.
+
+You can of course register other services as children of this parent one by using .setServiceParent().
+
+-- 
+Valentino Volonghi aka dialtone
+Blog: <A HREF="http://www.twisted.it">http://www.twisted.it</A>
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="048220.html">[Twisted-Python] Application Start Up and Tear Down
+</A></li>
+	<LI>Next message (by thread): <A HREF="048225.html">[Twisted-Python] Application Start Up and Tear Down
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48224">[ date ]</a>
+              <a href="thread.html#48224">[ thread ]</a>
+              <a href="subject.html#48224">[ subject ]</a>
+              <a href="author.html#48224">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

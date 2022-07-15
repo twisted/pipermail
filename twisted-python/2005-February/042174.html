@@ -1,0 +1,226 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20linux%20kernel%202.6.11-rc%20broke%20twisted%20process%0A%09pipes&In-Reply-To=%3C20050301003723.GT8880%40opteron.random%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="042173.html">
+   <LINK REL="Next"  HREF="042176.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20linux%20kernel%202.6.11-rc%20broke%20twisted%20process%0A%09pipes&In-Reply-To=%3C20050301003723.GT8880%40opteron.random%3E"
+       TITLE="[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes">andrea at cpushare.com
+       </A><BR>
+    <I>Mon Feb 28 17:37:23 MST 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="042173.html">[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+</A></li>
+        <LI>Next message (by thread): <A HREF="042176.html">[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#42174">[ date ]</a>
+              <a href="thread.html#42174">[ thread ]</a>
+              <a href="subject.html#42174">[ subject ]</a>
+              <a href="author.html#42174">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>BTW, I'm sending as <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">andrea at cpushare.com</A> but this email is really meant
+to be from <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">andrea at suse.de</A>, the lists are set so that I can't post unless
+I'm subscribed and to avoid unnecessary email load, I'm avoiding to
+subscribe two of my accounts to the same list.
+
+On Mon, Feb 28, 2005 at 05:52:05PM -0500, James Y Knight wrote:
+&gt;<i> I agree this code is somewhat suboptimal. However, I do not agree that 
+</I>&gt;<i> it works only by luck.
+</I>
+The thing is that readable and writeable (in select(2) terms) could be
+returned from linux 2.6.9 and all previous kernels immediatly without
+sleeping, even if there was no disconnect event. You only needed the
+write buffer empty for it to return POLLIN|POLLOUT without sleeping.
+That's what I mean with &quot;by luck&quot;. It wasn't twisted mistake but a linux
+mistake apparently.
+
+That check of &quot;r and w&quot; definitely could be true even if the other side
+of the pipe didn't disconnect in past linux.
+
+&gt;<i> In response to your main question of &quot;why is it checking for 
+</I>&gt;<i> readability at all&quot;, there is a good answer: to get the disconnect 
+</I>&gt;<i> event without trying to write data. Select doesn't have a &quot;err&quot; fdset, 
+</I>
+Ok, btw even linux always returns the fd in both readable and writeable
+when the other side of the pipe disconnects. This because we raise a
+POLLERR and this is the mask to check when a fd is readable/writeable
+
+#define POLLIN_SET (POLLRDNORM | POLLRDBAND | POLLIN | POLLHUP | POLLERR)
+#define POLLOUT_SET (POLLWRBAND | POLLWRNORM | POLLOUT | POLLERR)
+
+So when POLLERR is raised, the fd is returned readable and writeable
+from select.
+
+Current kernel code is this:
+
+static unsigned int
+pipe_poll(struct file *filp, poll_table *wait)
+{
+        unsigned int mask;
+        struct inode *inode = filp-&gt;f_dentry-&gt;d_inode;
+        struct pipe_inode_info *info = inode-&gt;i_pipe;
+        int nrbufs;
+
+        poll_wait(filp, PIPE_WAIT(*inode), wait);
+
+        /* Reading only -- no need for acquiring the semaphore.  */
+        nrbufs = info-&gt;nrbufs;
+        mask = 0;
+        if (filp-&gt;f_mode &amp; FMODE_READ) {
+                mask = (nrbufs &gt; 0) ? POLLIN | POLLRDNORM : 0;
+                if (!PIPE_WRITERS(*inode) &amp;&amp; filp-&gt;f_version != PIPE_WCOUNTER(*inode))
+                        mask |= POLLHUP;
+        }
+
+        if (filp-&gt;f_mode &amp; FMODE_WRITE) {
+                mask |= (nrbufs &lt; PIPE_BUFFERS) ? POLLOUT | POLLWRNORM : 0;
+                if (!PIPE_READERS(*inode))
+                        mask |= POLLERR;
+        }
+
+        return mask;
+}
+
+With this new kernel code, a write pipe will _never_ return readable,
+unless it's disconnected, and it will match the the current twisted code
+as far as I can tell.
+
+As you can see we never set POLLOUT for a write-pipe (opened in WRONLY
+mode), and in turn the only way to end up in the POLLIN_SET is that
+POLLERR is set.
+
+&gt;<i> so you have to select for either readability or writability. You can't 
+</I>&gt;<i> select for writability when you have no data to write, or else you'll 
+</I>&gt;<i> be continuously waking up. On all UNIX OSes that I know of, write pipes 
+</I>&gt;<i> show up as readable in select when the other side has closed, for just 
+</I>&gt;<i> this reason. I don't know if it's documented in any specs, but as far 
+</I>&gt;<i> as I can tell, it's universally true.
+</I>&gt;<i> Breaking this would be a Bad Thing, for I suspect more apps than just 
+</I>&gt;<i> Twisted.
+</I>
+Linux never returned any information about the status of the other side
+of the pipe via the readable information, because readable was always
+returned true, since POLLIN was set unconditionally by the pipe_poll
+code. So we're not going to break anything in that sense, it was already
+broken and infact we're fixing it right now ;).
+
+POLLIN was providing absolutely zero information because it was always
+set unconditionally for both readers and writers. That was wrong and
+that's why I changed it and this seem to make the doRead code valid for
+the first time in linux.
+
+&gt;<i> Of course, if it were that simple, doRead would just be implemented as 
+</I>&gt;<i> &quot;return CONNECTION_LOST&quot;. From my testing, that'd even work on BSDs. 
+</I>&gt;<i> However, linux adds its own little wrinkle to the problem.
+</I>&gt;<i> On linux, the observed behavior seems to be that only one write can be 
+</I>&gt;<i> outstanding at a time -- if there is data in the buffer, writable will 
+</I>&gt;<i> be false and readable will be true. Otherwise, the inverse. This is 
+</I>
+It's never the inverse since pollin was always forced to be set, both
+for readers and writers, so a write fd was always returned as readable
+unconditionally. 
+
+But you're perfectly right that if there is data in the buffer
+writeable was false and readable was true. (readable provides no info in
+linux)
+
+&gt;<i> quite silly...but it's what happens. As far as I can tell, at no time 
+</I>&gt;<i> are both true, except when the pipe is disconnected. On BSD, a write 
+</I>&gt;<i> pipe is simply never readable until the reader is closed, which is a 
+</I>&gt;<i> lot more sensible.
+</I>&gt;<i> Also note, that bit of code is unnecessary if you're using pollreactor 
+</I>&gt;<i> rather than selectreactor. That is, I think it should be fine with 
+</I>
+This is great news. However note that the 2.6.11-rc5 official kernel
+broke my app with the pollreactor too. So something else must have been
+broken for the pollreactor too making the same assumption that doRead
+did, and it's working fine again with my pipe patch infact.
+
+&gt;<i> twisted if the pipe is just POLLHUP when it is disconnected rather than 
+</I>&gt;<i> POLLHUP|POLLIN|POLLOUT.
+</I>
+It's POLLERR not POLLHUP. POLLHUP is set only when the &quot;writer&quot; side
+disconnected and you're listening to a reader fd. POLLERR is instead
+returned when the &quot;reader&quot; disconnected and you're listening to a
+writer fd.
+
+In select terms it means when the reader disconnects the fd will be both
+readable and writeable. And when the writer disconnects the fd will be
+reported only as readable.
+
+In poll terms it means with linux _only_ POLLERR will be set when the
+read disconnects, and POLLIN will never ever be set on a WRONLY pipe.
+
+So with the new fixes it seems linux does the right thing, and we at
+leats mimic the select behaviour that twisted expects, I hope we mimic
+the poll behaviour that twisted expects too.
+
+I found the openbsd implementation of pipe_poll here:
+
+	<A HREF="http://fxr.watson.org/fxr/source/kern/sys_pipe.c?v=OPENBSD#L661">http://fxr.watson.org/fxr/source/kern/sys_pipe.c?v=OPENBSD#L661</A>
+
+671         if (events &amp; (POLLIN | POLLRDNORM)) {
+672                 if ((rpipe-&gt;pipe_buffer.cnt &gt; 0) ||
+673                     (rpipe-&gt;pipe_state &amp; PIPE_EOF))
+674                         revents |= events &amp; (POLLIN | POLLRDNORM);
+675         }
+
+The way I read it, even openbsd will report the fd as readable
+regardless if the channel is disconnected, if the buffer has something
+into it.
+
+Anyway linux won't do that anymore, a write fd will be now reported as
+readable only if the reader has disconnected, and so you're safe to
+assume the reader disconnected if selects returns readable &amp;&amp; writeable.
+So I think we should be fine now and no changes are required in twisted
+at least for the select reactor side.
+
+Please double check the pollreactor side too, we'll never return POLLIN
+anymore for a WRONLY pipe fd.
+
+I'm going to update a semi-productive system running twisted servers
+using processes too, with the new pipe_poll code too to see what happens
+(that's the good thing of not being fully productive yet, so I can
+experiment a bit more ;).
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="042173.html">[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+</A></li>
+	<LI>Next message (by thread): <A HREF="042176.html">[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#42174">[ date ]</a>
+              <a href="thread.html#42174">[ thread ]</a>
+              <a href="subject.html#42174">[ subject ]</a>
+              <a href="author.html#42174">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

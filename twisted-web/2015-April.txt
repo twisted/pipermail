@@ -1,0 +1,838 @@
+From guido at ambient-entertainment.de  Thu Apr  2 11:49:59 2015
+From: guido at ambient-entertainment.de (Guido Winkelmann)
+Date: Thu, 02 Apr 2015 19:49:59 +0200
+Subject: [Twisted-web] treq requests failing with
+	twisted.web._newclient.ResponseNeverReceived
+Message-ID: <54928000.UNoJs6R2oD@r008>
+
+Hi,
+
+Recently, I have been experiencing some problems in our codebase wth treq 
+requests failing with error messages like this:
+
+2015-04-02 19:20:22 ERROR    - pf.agent.http.client - POST 
+http://127.0.0.1:5000/api/v1/agents/a113b5a8-9822-413b-b1fd-fce3014956cf has 
+failed (uid: 78c7ec2a4b4d):
+Traceback (most recent call last):
+Failure: twisted.web._newclient.ResponseNeverReceived: 
+[<twisted.python.failure.Failure <class 
+'twisted.internet.error.ConnectionDone'>>]
+
+Unfortunately, I have not been able to successfully produce a reduced test 
+case that will reproduce this behaviour.  It only happens under some weird set 
+of circumstances, and I am still not sure exactly which.  It appears to be 
+highly sensitive to the order of requests.  Funnily enough, this error does 
+not show in the codebase as it is on github right now, but if I reorder some 
+of the requests, it will show.  Here is one example that has cost me some time 
+and head-scratching:
+
+https://github.com/pyfarm/pyfarm-agent/issues/249
+
+I think that these problems have started after upgrading to Twisted 15.0, but 
+I'm not completely certain about this.
+
+Here is one of the methods that's affected by this:
+
+https://github.com/pyfarm/pyfarm-agent/blob/master/pyfarm/agent/service.py#L231
+
+(post_direct() is just a thin wrapper over treq.request that adds some headers 
+we need in our codebase.  I have tried just using treq.request directly 
+instead, the result was the same.)
+
+Can someone tell me under which circumstances treq.request would produce an 
+error like this?
+
+Without actually knowing the source in question, I would guess that something 
+in there is, for some some reason, erroneously trying to reuse a TCP 
+connection that has already been closed.
+
+Regards,
+
+	Guido W.
+
+
+From guido at ambient-entertainment.de  Wed Apr  8 06:24:45 2015
+From: guido at ambient-entertainment.de (Guido Winkelmann)
+Date: Wed, 08 Apr 2015 14:24:45 +0200
+Subject: [Twisted-web] treq requests failing with
+	twisted.web._newclient.ResponseNeverReceived
+In-Reply-To: <54928000.UNoJs6R2oD@r008>
+References: <54928000.UNoJs6R2oD@r008>
+Message-ID: <2297973.81u4echyPW@r008>
+
+An update on the situation:
+
+I tried downgrading both Twisted and treq to <15.0. The problem remained, so 
+this issue is /not/ new in 15.0.
+
+When I remove the "pool" parameter in this line in treq/api.py:113:
+
+agent = Agent(reactor, pool=pool)
+
+the problem completely disappears, so I'm assuming the problems lies somewhere 
+in the connection pooling logic.
+
+The web server I am using in these tests is flask's built-in standalone 
+webserver (http://flask.pocoo.org/). This webserver speaks HTTP 1.1, but does 
+not support keep-alive (at least not with non-static content), which is 
+technically allowed but may be a slightly unusual combination these days.
+
+Regards,
+	Guido W.
+
+On Thursday 02 April 2015 19:49:59 Guido Winkelmann wrote:
+>Hi,
+>
+>Recently, I have been experiencing some problems in our codebase wth treq
+>requests failing with error messages like this:
+>
+>2015-04-02 19:20:22 ERROR    - pf.agent.http.client - POST
+>http://127.0.0.1:5000/api/v1/agents/a113b5a8-9822-413b-b1fd-fce3014956cf has
+>failed (uid: 78c7ec2a4b4d):
+>Traceback (most recent call last):
+>Failure: twisted.web._newclient.ResponseNeverReceived:
+>[<twisted.python.failure.Failure <class
+>'twisted.internet.error.ConnectionDone'>>]
+>
+>Unfortunately, I have not been able to successfully produce a reduced test
+>case that will reproduce this behaviour.  It only happens under some weird
+>set of circumstances, and I am still not sure exactly which.  It appears to
+>be highly sensitive to the order of requests.  Funnily enough, this error
+>does not show in the codebase as it is on github right now, but if I reorder
+>some of the requests, it will show.  Here is one example that has cost me
+>some time and head-scratching:
+>
+>https://github.com/pyfarm/pyfarm-agent/issues/249
+>
+>I think that these problems have started after upgrading to Twisted 15.0, but
+>I'm not completely certain about this.
+>
+>Here is one of the methods that's affected by this:
+>
+>https://github.com/pyfarm/pyfarm-agent/blob/master/pyfarm/agent/service.py#L2
+>31
+>
+>(post_direct() is just a thin wrapper over treq.request that adds some
+>headers we need in our codebase.  I have tried just using treq.request
+>directly instead, the result was the same.)
+>
+>Can someone tell me under which circumstances treq.request would produce an
+>error like this?
+>
+>Without actually knowing the source in question, I would guess that something
+>in there is, for some some reason, erroneously trying to reuse a TCP
+>connection that has already been closed.
+>
+>Regards,
+>
+>	Guido W.
+>
+>_______________________________________________
+>Twisted-web mailing list
+>Twisted-web at twistedmatrix.com
+>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+
+From guido at ambient-entertainment.de  Wed Apr  8 11:44:56 2015
+From: guido at ambient-entertainment.de (Guido Winkelmann)
+Date: Wed, 08 Apr 2015 19:44:56 +0200
+Subject: [Twisted-web] treq requests failing with
+	twisted.web._newclient.ResponseNeverReceived
+In-Reply-To: <2297973.81u4echyPW@r008>
+References: <54928000.UNoJs6R2oD@r008> <2297973.81u4echyPW@r008>
+Message-ID: <2223234.SL78F6DlN5@r008>
+
+Through some trial and error, I have finally managed to produce a reduced test 
+case that can actually reproduce this problem:
+
+1. Install and start a local webserver with a keep-alive timeout of one 
+second.
+For Apache, the relevant configuration entries look like this:
+
+KeepAlive On
+KeepAliveTimeout 1
+MaxKeepAliveRequests 1000
+
+(MaxKeepAliveRequests is not that important, just so long as it isn't reached 
+during the test.)
+
+The bug is not triggered if the webserver includes a "Connection: close" 
+header, which Apache does if you disable KeepAlive entirely.
+
+2. Run this Python script:
+==============
+import time
+import treq
+from twisted.internet import reactor
+from twisted.internet.defer import inlineCallbacks, returnValue
+
+@inlineCallbacks
+def post_data():
+  try:
+    resp = yield treq.post("http://127.0.0.1/",
+                  data="bla",
+                  persistent=True)
+
+    print("response code: %s" % resp.code)
+    data = yield treq.content(resp)
+    print("data: %r" % data)
+
+  except Exception as failure:
+    print("failure: %r" % failure)
+    returnValue(None)
+
+  returnValue(data)
+
+def call_again(_):
+  time.sleep(1.1)
+  d = post_data()
+  d.addBoth(lambda _: reactor.stop())
+
+d = post_data()
+d.addCallback(call_again)
+
+reactor.run()
+==============
+
+The output from that looks like this on my machine:
+==============
+response code: 404
+data: '<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 
+2.0//EN">\n<html><head>\n<title>404 Not Found</title>\n</head><body>\n<h1>Not 
+Found</h1>\n<p>The requested URL / was not found on this 
+server.</p>\n<hr>\n<address>Apache Server at 127.0.0.1 Port 
+80</address>\n</body></html>\n'
+failure: ResponseNeverReceived([<twisted.python.failure.Failure <class 
+'twisted.internet.error.ConnectionDone'>>],)
+==============
+
+As you can see, the second request fails with "ResponseNeverReceived".
+
+As far as I can tell, twisted.web.client.HTTPConnectionPool simply fails to 
+notice that the server has closed the underlying connection in the meantime.
+
+According to the RFC, the server is allowed to close the connection at any 
+time if it is idle from the server's point of view (explicitly even if a new 
+request from the client has already arrived).
+
+Regards,
+	Guido W.
+
+On Wednesday 08 April 2015 14:24:45 Guido Winkelmann wrote:
+>An update on the situation:
+>
+>I tried downgrading both Twisted and treq to <15.0. The problem remained, so
+>this issue is /not/ new in 15.0.
+>
+>When I remove the "pool" parameter in this line in treq/api.py:113:
+>
+>agent = Agent(reactor, pool=pool)
+>
+>the problem completely disappears, so I'm assuming the problems lies
+>somewhere in the connection pooling logic.
+>
+>The web server I am using in these tests is flask's built-in standalone
+>webserver (http://flask.pocoo.org/). This webserver speaks HTTP 1.1, but does
+>not support keep-alive (at least not with non-static content), which is
+>technically allowed but may be a slightly unusual combination these days.
+>
+>Regards,
+>	Guido W.
+>
+>On Thursday 02 April 2015 19:49:59 Guido Winkelmann wrote:
+>>Hi,
+>>
+>>Recently, I have been experiencing some problems in our codebase wth treq
+>>requests failing with error messages like this:
+>>
+>>2015-04-02 19:20:22 ERROR    - pf.agent.http.client - POST
+>>http://127.0.0.1:5000/api/v1/agents/a113b5a8-9822-413b-b1fd-fce3014956cf has
+>>failed (uid: 78c7ec2a4b4d):
+>>Traceback (most recent call last):
+>>Failure: twisted.web._newclient.ResponseNeverReceived:
+>>[<twisted.python.failure.Failure <class
+>>'twisted.internet.error.ConnectionDone'>>]
+>>
+>>Unfortunately, I have not been able to successfully produce a reduced test
+>>case that will reproduce this behaviour.  It only happens under some weird
+>>set of circumstances, and I am still not sure exactly which.  It appears to
+>>be highly sensitive to the order of requests.  Funnily enough, this error
+>>does not show in the codebase as it is on github right now, but if I reorder
+>>some of the requests, it will show.  Here is one example that has cost me
+>>some time and head-scratching:
+>>
+>>https://github.com/pyfarm/pyfarm-agent/issues/249
+>>
+>>I think that these problems have started after upgrading to Twisted 15.0,
+>>but I'm not completely certain about this.
+>>
+>>Here is one of the methods that's affected by this:
+>>
+>>https://github.com/pyfarm/pyfarm-agent/blob/master/pyfarm/agent/service.py#L
+>>2 31
+>>
+>>(post_direct() is just a thin wrapper over treq.request that adds some
+>>headers we need in our codebase.  I have tried just using treq.request
+>>directly instead, the result was the same.)
+>>
+>>Can someone tell me under which circumstances treq.request would produce an
+>>error like this?
+>>
+>>Without actually knowing the source in question, I would guess that
+>>something in there is, for some some reason, erroneously trying to reuse a
+>>TCP connection that has already been closed.
+>>
+>>Regards,
+>>
+>>	Guido W.
+>>
+>>_______________________________________________
+>>Twisted-web mailing list
+>>Twisted-web at twistedmatrix.com
+>>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>_______________________________________________
+>Twisted-web mailing list
+>Twisted-web at twistedmatrix.com
+>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+
+From hawkowl at atleastfornow.net  Mon Apr 13 02:17:24 2015
+From: hawkowl at atleastfornow.net (HawkOwl)
+Date: Mon, 13 Apr 2015 16:17:24 +0800
+Subject: [Twisted-web] Twisted 15.1 Release Announcement
+Message-ID: <A9B8205C-F287-472C-AA5F-8E6E132862F4@atleastfornow.net>
+
+On behalf of Twisted Matrix Laboratories, I am honoured to announce the release of Twisted 15.1.0 -- just in time for the PyCon sprints!
+
+This is not a big release, but does have some nice-to-haves:
+
+- You can now install Twisted's optional dependencies easier -- for example, `pip install twisted[tls]` installs Twisted with TLS support.
+- twisted.web.static.File allows defining a custom resource for rendering forbidden pages.
+- Twisted's MSN support is now deprecated.
+- More documentation has been added on how Trial finds tests.
+- ...and 26 other closed tickets containing bug fixes, feature enhancements, and documentation.
+
+For more information, check the NEWS file (link provided below).
+
+You can find the downloads at <https://pypi.python.org/pypi/Twisted> (or alternatively <http://twistedmatrix.com/trac/wiki/Downloads>) . The NEWS file is also available at
+<https://github.com/twisted/twisted/blob/releases/release-15.1.0-7758/NEWS>.
+
+Many thanks to everyone who had a part in this release - the supporters of the Twisted Software Foundation, the developers who contributed code as well as documentation, and all the people building great things with Twisted!
+
+Twisted Regards,
+Hawkie Owl
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 455 bytes
+Desc: Message signed with OpenPGP using GPGMail
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150413/6f5ac047/attachment.pgp>
+
+From csdrane at gmail.com  Mon Apr 13 12:29:01 2015
+From: csdrane at gmail.com (Chris Drane)
+Date: Mon, 13 Apr 2015 14:29:01 -0400
+Subject: [Twisted-web] Client.agent - PartialDownloadError - cannot
+	determine cause
+Message-ID: <CAAa4tawmRy78D2daTGQz5s+K2o_3uXFbPLp8brNcd_BFHGf3CA@mail.gmail.com>
+
+I am new with Twisted so chances are that this is *not* a bug. If that is
+the case, I would very much appreciate it if you help me understand what I
+am doing incorrectly.
+
+I have some very simple code to just download a particular page via HTTP.
+The problem I'm running into is that I get PartialDownloadErrors for some
+sites, while others load fine. And when I examine the HTTP response, it
+looks like the page fully downloaded. The traceback and logging information
+have been very unhelpful. I cannot determine what exactly is causing the
+error.
+
+import sys
+from twisted.internet.task import react
+from twisted.python.log import err, startLogging
+from twisted.web.client import Agent, BrowserLikeRedirectAgent, readBody
+from twisted.web.http_headers import Headers
+from twisted.internet import reactor
+from twisted.internet.ssl import ClientContextFactory
+
+def cbBody(r):
+    print "Response body:"
+    print r
+
+def cbRequest(response):
+    print "Received response"
+    d = readBody(response)
+    d.addCallbacks(cbBody, err)
+    return d
+
+def err(e):
+    try:
+        e.raiseException()
+    except Exception, err:
+        pass
+        # display HTTP response
+        # print err.response
+    e.printTraceback()
+    sys.stderr.write(str(e))
+
+def main(reactor):
+    startLogging(sys.stdout)
+    agent = BrowserLikeRedirectAgent(Agent(reactor))
+    d = agent.request("GET", b"http://www.google.com",
+            Headers({'User-Agent': ['Twisted Web Client Example']}),
+            None)
+    d.addCallbacks(cbRequest, err)
+    return d
+
+react(main)
+
+2015-04-13 14:13:11-0400 [-] Log opened.
+2015-04-13 14:13:11-0400 [-] Starting factory
+<twisted.web.client._HTTP11ClientFactory instance at 0x10303f560>
+2015-04-13 14:13:11-0400 [HTTP11ClientProtocol,client] Received response
+2015-04-13 14:13:11-0400 [HTTP11ClientProtocol,client] Traceback (most
+recent call last):
+2015-04-13 14:13:11-0400 [HTTP11ClientProtocol,client] Failure:
+twisted.web.client.PartialDownloadError: 200 OK
+2015-04-13 14:13:11-0400 [HTTP11ClientProtocol,client] [Failure instance:
+Traceback (failure with no frames): <class
+'twisted.web.client.PartialDownloadError'>: 200 OK
+2015-04-13 14:13:11-0400 [HTTP11ClientProtocol,client] Stopping factory
+<twisted.web.client._HTTP11ClientFactory instance at 0x10303f560>
+2015-04-13 14:13:11-0400 [-] Main loop terminated.
+
+Thanks!
+
+Chris
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150413/916b2019/attachment.html>
+
+From wolfgang.kde at rohdewald.de  Mon Apr 13 12:39:50 2015
+From: wolfgang.kde at rohdewald.de (Wolfgang Rohdewald)
+Date: Mon, 13 Apr 2015 20:39:50 +0200
+Subject: [Twisted-web] Client.agent - PartialDownloadError - cannot
+	determine cause
+In-Reply-To: <CAAa4tawmRy78D2daTGQz5s+K2o_3uXFbPLp8brNcd_BFHGf3CA@mail.gmail.com>
+References: <CAAa4tawmRy78D2daTGQz5s+K2o_3uXFbPLp8brNcd_BFHGf3CA@mail.gmail.com>
+Message-ID: <2471551.F2gtBst3Eh@i5>
+
+Am Montag, 13. April 2015, 14:29:01 schrieb Chris Drane:
+> I am new with Twisted so chances are that this is *not* a bug. If that is
+> the case, I would very much appreciate it if you help me understand what I
+> am doing incorrectly.
+
+just googled the error message out of curiousity:
+
+http://stackoverflow.com/questions/29423986/twisted-giving-twisted-web-client-partialdownloaderror-200-ok
+
+-- 
+Wolfgang
+
+
+From csdrane at gmail.com  Mon Apr 13 12:45:56 2015
+From: csdrane at gmail.com (Chris Drane)
+Date: Mon, 13 Apr 2015 14:45:56 -0400
+Subject: [Twisted-web] Client.agent - PartialDownloadError - cannot
+ determine cause
+In-Reply-To: <2471551.F2gtBst3Eh@i5>
+References: <CAAa4tawmRy78D2daTGQz5s+K2o_3uXFbPLp8brNcd_BFHGf3CA@mail.gmail.com>
+ <2471551.F2gtBst3Eh@i5>
+Message-ID: <CAAa4taztxH_Dhm0b2n64b2mGQ5M9hx7kLq69YhgAt6adoXBM1Q@mail.gmail.com>
+
+Yes I actually started that thread, and I wasn't fully satisfied with the
+answer. I feel like I was given workarounds rather than addressing what
+seems to be a problem with how either HTTP or TCP is handled. Please
+correct me if I'm mistaken (I probably am).
+
+On Mon, Apr 13, 2015 at 2:39 PM, Wolfgang Rohdewald <
+wolfgang.kde at rohdewald.de> wrote:
+
+> Am Montag, 13. April 2015, 14:29:01 schrieb Chris Drane:
+> > I am new with Twisted so chances are that this is *not* a bug. If that is
+> > the case, I would very much appreciate it if you help me understand what
+> I
+> > am doing incorrectly.
+>
+> just googled the error message out of curiousity:
+>
+>
+> http://stackoverflow.com/questions/29423986/twisted-giving-twisted-web-client-partialdownloaderror-200-ok
+>
+> --
+> Wolfgang
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150413/89af5a1a/attachment.html>
+
+From csdrane at gmail.com  Mon Apr 13 13:30:20 2015
+From: csdrane at gmail.com (Chris Drane)
+Date: Mon, 13 Apr 2015 15:30:20 -0400
+Subject: [Twisted-web] Client.agent - PartialDownloadError - cannot
+ determine cause
+In-Reply-To: <CAAa4taztxH_Dhm0b2n64b2mGQ5M9hx7kLq69YhgAt6adoXBM1Q@mail.gmail.com>
+References: <CAAa4tawmRy78D2daTGQz5s+K2o_3uXFbPLp8brNcd_BFHGf3CA@mail.gmail.com>
+ <2471551.F2gtBst3Eh@i5>
+ <CAAa4taztxH_Dhm0b2n64b2mGQ5M9hx7kLq69YhgAt6adoXBM1Q@mail.gmail.com>
+Message-ID: <CAAa4taxxhw7utuP-7AaNneNn_j3bEzk+DwEWPH5qQREZTyz30A@mail.gmail.com>
+
+I revisited the Stack Overflow post and it appears that I am able to
+receive HTTP responses properly now. Doing so required me to launch
+WireShark and copy a browser's actual headers. I also had to add a
+ContentDecoderAgent.
+
+Specifically it was the lack of an Accept-Encoding that was causing the
+problem. I added ["gzip, deflate, sdch"] and it seemed to do the trick.
+
+I really do think that there should be an easier way to do this. I also
+don't understand why the Agent couldn't have properly interpreted the
+initial response.
+
+Thanks for everyone's time.
+
+On Mon, Apr 13, 2015 at 2:45 PM, Chris Drane <csdrane at gmail.com> wrote:
+
+> Yes I actually started that thread, and I wasn't fully satisfied with the
+> answer. I feel like I was given workarounds rather than addressing what
+> seems to be a problem with how either HTTP or TCP is handled. Please
+> correct me if I'm mistaken (I probably am).
+>
+> On Mon, Apr 13, 2015 at 2:39 PM, Wolfgang Rohdewald <
+> wolfgang.kde at rohdewald.de> wrote:
+>
+>> Am Montag, 13. April 2015, 14:29:01 schrieb Chris Drane:
+>> > I am new with Twisted so chances are that this is *not* a bug. If that
+>> is
+>> > the case, I would very much appreciate it if you help me understand
+>> what I
+>> > am doing incorrectly.
+>>
+>> just googled the error message out of curiousity:
+>>
+>>
+>> http://stackoverflow.com/questions/29423986/twisted-giving-twisted-web-client-partialdownloaderror-200-ok
+>>
+>> --
+>> Wolfgang
+>>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150413/7f6df7e4/attachment.html>
+
+From glyph at twistedmatrix.com  Mon Apr 13 23:23:32 2015
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 14 Apr 2015 01:23:32 -0400
+Subject: [Twisted-web] Twisted 15.1 Release Announcement
+In-Reply-To: <A9B8205C-F287-472C-AA5F-8E6E132862F4@atleastfornow.net>
+References: <A9B8205C-F287-472C-AA5F-8E6E132862F4@atleastfornow.net>
+Message-ID: <4342E895-7EC5-421A-804C-5887CE5F539F@twistedmatrix.com>
+
+
+> On Apr 13, 2015, at 04:17, HawkOwl <hawkowl at atleastfornow.net> wrote:
+> 
+> On behalf of Twisted Matrix Laboratories, I am honoured to announce the release of Twisted 15.1.0 -- just in time for the PyCon sprints!
+> 
+> This is not a big release, but does have some nice-to-haves:
+> 
+> - You can now install Twisted's optional dependencies easier -- for example, `pip install twisted[tls]` installs Twisted with TLS support.
+> - twisted.web.static.File allows defining a custom resource for rendering forbidden pages.
+> - Twisted's MSN support is now deprecated.
+> - More documentation has been added on how Trial finds tests.
+> - ...and 26 other closed tickets containing bug fixes, feature enhancements, and documentation.
+> 
+> For more information, check the NEWS file (link provided below).
+> 
+> You can find the downloads at <https://pypi.python.org/pypi/Twisted> (or alternatively <http://twistedmatrix.com/trac/wiki/Downloads>) . The NEWS file is also available at
+> <https://github.com/twisted/twisted/blob/releases/release-15.1.0-7758/NEWS>.
+> 
+> Many thanks to everyone who had a part in this release - the supporters of the Twisted Software Foundation, the developers who contributed code as well as documentation, and all the people building great things with Twisted!
+> 
+> Twisted Regards,
+> Hawkie Owl
+
+This is very exciting.  I am SUPER PUMPED to start telling people to `pip install twisted[tls]? instead of the whole mess it used to be.  Thanks in particular to you, Hawkie, and to Chris Wolfe who landed that patch (and brought twisted stickers to PyCon!)
+
+-glyph
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 630 bytes
+Desc: Message signed with OpenPGP using GPGMail
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150414/37b6e721/attachment.pgp>
+
+From glyph at twistedmatrix.com  Mon Apr 13 23:33:39 2015
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 14 Apr 2015 01:33:39 -0400
+Subject: [Twisted-web] Client.agent - PartialDownloadError - cannot
+	determine cause
+In-Reply-To: <CAAa4taxxhw7utuP-7AaNneNn_j3bEzk+DwEWPH5qQREZTyz30A@mail.gmail.com>
+References: <CAAa4tawmRy78D2daTGQz5s+K2o_3uXFbPLp8brNcd_BFHGf3CA@mail.gmail.com>
+ <2471551.F2gtBst3Eh@i5>
+ <CAAa4taztxH_Dhm0b2n64b2mGQ5M9hx7kLq69YhgAt6adoXBM1Q@mail.gmail.com>
+ <CAAa4taxxhw7utuP-7AaNneNn_j3bEzk+DwEWPH5qQREZTyz30A@mail.gmail.com>
+Message-ID: <2C620A21-1ED2-4551-9405-974F8DD00A5F@twistedmatrix.com>
+
+
+> On Apr 13, 2015, at 15:30, Chris Drane <csdrane at gmail.com> wrote:
+> 
+> I revisited the Stack Overflow post and it appears that I am able to receive HTTP responses properly now. Doing so required me to launch WireShark and copy a browser's actual headers. I also had to add a ContentDecoderAgent. 
+
+This is a good idea, but it's also a bit of an accident.  Some sites may give you length prefixes with a content decoder, but there will still be some that provoke a PartialDownloadError no matter what you do.  There are edge cases in HTTP where you just cannot know if you have received everything the server sent, and many sites still operate that way.
+
+> Specifically it was the lack of an Accept-Encoding that was causing the problem. I added ["gzip, deflate, sdch"] and it seemed to do the trick.
+
+Hrm.  You have to set this header manually, even using a ContentDecoderAgent?  That sounds like a bug.
+
+> I really do think that there should be an easier way to do this.
+
+Absolutely.  From the very beginning, Agent was not really supposed to be a "high level" HTTP API, but those working on it sort of ran out of energy halfway through.  If you're writing applications today, you probably should use treq instead - https://github.com/twisted/treq <https://github.com/twisted/treq> - but longer-term the plan is to absorb treq or something very much like it into Twisted itself.
+
+Looking through the ticket tracker, though, I see that the plan ... does not seem to be very well documented.  I can't find the "high level" ticket anywhere, and the closest thing I can find with just a few minutes of searching the tracker is this:
+
+https://twistedmatrix.com/trac/ticket/3987#comment:29 <https://twistedmatrix.com/trac/ticket/3987#comment:29>
+
+which closes a ticket about a "high level interface" by talking about a "mid-level API".  We clearly need a higher level API within Twisted itself.
+
+> I also don't understand why the Agent couldn't have properly interpreted the initial response.
+
+It did properly interpret the initial response.  You may or may not have received the whole body, and that's exactly what PartialDownloadError means.  If responses which might be the whole response OR might be the server breaking the connection on you are acceptable, handle that error and just treat the body that you have received so far as complete.  This is perfectly acceptable in many cases.
+
+> Thanks for everyone's time.
+
+Thanks for using Twisted!  Sorry that this experience was somewhat rocky.  I hope you'll stick around and help us improve it.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150414/68a97e27/attachment-0001.html>
+
+From beenje at gmail.com  Thu Apr 23 14:44:52 2015
+From: beenje at gmail.com (Benjamin BERTRAND)
+Date: Thu, 23 Apr 2015 22:44:52 +0200
+Subject: [Twisted-web] web UI example for Twisted application
+Message-ID: <9D07D461-20DA-44EF-B78C-2739A48F0AFB@gmail.com>
+
+Hello,
+
+I have a Twisted network application that I deployed as a twistd plugin.
+I have different configuration files defining several parameters including some Redis pub/sub channels.
+Today I use a script to stop and start the plugin with the proper configuration file.
+I?d like to make a web UI to be able to change the configuration of the application.
+
+I already saw some people asking about that but I haven?t found any example.
+Could anyone point me to some examples of a Twisted application with a web UI?
+
+I have developed some Flask web app, so I think it would be easier for me to start with Klein.
+But I?m not against trying Nevow (Twisted docs recommend it for this purpose).
+
+Thanks
+
+Benjamin
+
+From glyph at twistedmatrix.com  Thu Apr 23 22:20:52 2015
+From: glyph at twistedmatrix.com (Glyph)
+Date: Fri, 24 Apr 2015 00:20:52 -0400
+Subject: [Twisted-web] web UI example for Twisted application
+In-Reply-To: <9D07D461-20DA-44EF-B78C-2739A48F0AFB@gmail.com>
+References: <9D07D461-20DA-44EF-B78C-2739A48F0AFB@gmail.com>
+Message-ID: <3200465E-7BEA-46BC-AA79-2378497F5723@twistedmatrix.com>
+
+
+> On Apr 23, 2015, at 16:44, Benjamin BERTRAND <beenje at gmail.com> wrote:
+> 
+> Hello,
+> 
+> I have a Twisted network application that I deployed as a twistd plugin.
+> I have different configuration files defining several parameters including some Redis pub/sub channels.
+> Today I use a script to stop and start the plugin with the proper configuration file.
+> I?d like to make a web UI to be able to change the configuration of the application.
+> 
+> I already saw some people asking about that but I haven?t found any example.
+> Could anyone point me to some examples of a Twisted application with a web UI?
+> 
+> I have developed some Flask web app, so I think it would be easier for me to start with Klein.
+> But I?m not against trying Nevow (Twisted docs recommend it for this purpose).
+
+I think the Twisted docs ought to be updated.  If I were starting a web frontend today with Twisted, I would definitely start with Klein and twisted.web.template.
+
+Sadly I don't have a simple example to show you immediately; most real-world applications that put web UIs on Twisted are quite complex.  Hopefully the template-rendering examples in the Klein documentation are sufficient?
+
+-glyph
+
+From dynamicgl at gmail.com  Thu Apr 23 23:04:12 2015
+From: dynamicgl at gmail.com (Gelin Yan)
+Date: Fri, 24 Apr 2015 13:04:12 +0800
+Subject: [Twisted-web] web UI example for Twisted application
+In-Reply-To: <3200465E-7BEA-46BC-AA79-2378497F5723@twistedmatrix.com>
+References: <9D07D461-20DA-44EF-B78C-2739A48F0AFB@gmail.com>
+ <3200465E-7BEA-46BC-AA79-2378497F5723@twistedmatrix.com>
+Message-ID: <CABkOF6TjD7A3WwQeZHLWNiVNMnN0_z9bDAU66Tx-=ZZwHWOADw@mail.gmail.com>
+
+2015?4?24? ??12:23? "Glyph" <glyph at twistedmatrix.com>???
+>
+>
+> > On Apr 23, 2015, at 16:44, Benjamin BERTRAND <beenje at gmail.com> wrote:
+> >
+> > Hello,
+> >
+> > I have a Twisted network application that I deployed as a twistd plugin.
+> > I have different configuration files defining several parameters
+including some Redis pub/sub channels.
+> > Today I use a script to stop and start the plugin with the proper
+configuration file.
+> > I?d like to make a web UI to be able to change the configuration of the
+application.
+> >
+> > I already saw some people asking about that but I haven?t found any
+example.
+> > Could anyone point me to some examples of a Twisted application with a
+web UI?
+> >
+> > I have developed some Flask web app, so I think it would be easier for
+me to start with Klein.
+> > But I?m not against trying Nevow (Twisted docs recommend it for this
+purpose).
+>
+> I think the Twisted docs ought to be updated.  If I were starting a web
+frontend today with Twisted, I would definitely start with Klein and
+twisted.web.template.
+>
+> Sadly I don't have a simple example to show you immediately; most
+real-world applications that put web UIs on Twisted are quite complex.
+Hopefully the template-rendering examples in the Klein documentation are
+sufficient?
+>
+> -glyph
+
+hi
+
+you can try cyclone.io i have used it for years. it bases on twisted.
+
+regards
+
+gelin yan
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150424/eecc6493/attachment.html>
+
+From cwaldbieser at gmail.com  Fri Apr 24 09:26:43 2015
+From: cwaldbieser at gmail.com (Carl Waldbieser)
+Date: Fri, 24 Apr 2015 11:26:43 -0400
+Subject: [Twisted-web] web UI example for Twisted application
+In-Reply-To: <9D07D461-20DA-44EF-B78C-2739A48F0AFB@gmail.com>
+References: <9D07D461-20DA-44EF-B78C-2739A48F0AFB@gmail.com>
+Message-ID: <CAHPVzqb73RGiAGMZ9Lfuw-h1RoGyJobv3506XwM1K2KGsou+aQ@mail.gmail.com>
+
+This is not the simplest example, but if you take a look at this project,
+it has what I think you are describing:
+
+  https://github.com/cwaldbieser/synthproxy
+
+The "BindProxy" proxy has an administrative web service based on Klein.  It
+really only has a single resource for deleting items from the cache, but it
+shows one way how to integrate the web interface with your other network
+service.
+
+Thanks,
+Carl Waldbieser
+
+
+On Thu, Apr 23, 2015 at 4:44 PM, Benjamin BERTRAND <beenje at gmail.com> wrote:
+
+> Hello,
+>
+> I have a Twisted network application that I deployed as a twistd plugin.
+> I have different configuration files defining several parameters including
+> some Redis pub/sub channels.
+> Today I use a script to stop and start the plugin with the proper
+> configuration file.
+> I?d like to make a web UI to be able to change the configuration of the
+> application.
+>
+> I already saw some people asking about that but I haven?t found any
+> example.
+> Could anyone point me to some examples of a Twisted application with a web
+> UI?
+>
+> I have developed some Flask web app, so I think it would be easier for me
+> to start with Klein.
+> But I?m not against trying Nevow (Twisted docs recommend it for this
+> purpose).
+>
+> Thanks
+>
+> Benjamin
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150424/3b143b21/attachment.html>
+
+From beenje at gmail.com  Fri Apr 24 15:25:31 2015
+From: beenje at gmail.com (Benjamin BERTRAND)
+Date: Fri, 24 Apr 2015 23:25:31 +0200
+Subject: [Twisted-web] web UI example for Twisted application
+In-Reply-To: <CAHPVzqb73RGiAGMZ9Lfuw-h1RoGyJobv3506XwM1K2KGsou+aQ@mail.gmail.com>
+References: <9D07D461-20DA-44EF-B78C-2739A48F0AFB@gmail.com>
+ <CAHPVzqb73RGiAGMZ9Lfuw-h1RoGyJobv3506XwM1K2KGsou+aQ@mail.gmail.com>
+Message-ID: <A3F0C816-036F-4721-9AD7-5CBF83BADED7@gmail.com>
+
+Thank you all for your answers.
+I?ll start looking more in the given examples.
+
+/Benjamin
+
+> Le 24 avr. 2015 ? 17:26, Carl Waldbieser <cwaldbieser at gmail.com> a ?crit :
+> 
+> This is not the simplest example, but if you take a look at this project, it has what I think you are describing:
+> 
+>   https://github.com/cwaldbieser/synthproxy <https://github.com/cwaldbieser/synthproxy>
+> 
+> The "BindProxy" proxy has an administrative web service based on Klein.  It really only has a single resource for deleting items from the cache, but it shows one way how to integrate the web interface with your other network service.
+> 
+> Thanks,
+> Carl Waldbieser
+> 
+> 
+> On Thu, Apr 23, 2015 at 4:44 PM, Benjamin BERTRAND <beenje at gmail.com <mailto:beenje at gmail.com>> wrote:
+> Hello,
+> 
+> I have a Twisted network application that I deployed as a twistd plugin.
+> I have different configuration files defining several parameters including some Redis pub/sub channels.
+> Today I use a script to stop and start the plugin with the proper configuration file.
+> I?d like to make a web UI to be able to change the configuration of the application.
+> 
+> I already saw some people asking about that but I haven?t found any example.
+> Could anyone point me to some examples of a Twisted application with a web UI?
+> 
+> I have developed some Flask web app, so I think it would be easier for me to start with Klein.
+> But I?m not against trying Nevow (Twisted docs recommend it for this purpose).
+> 
+> Thanks
+> 
+> Benjamin
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com <mailto:Twisted-web at twistedmatrix.com>
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web <http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web>
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20150424/a854af21/attachment.html>
+

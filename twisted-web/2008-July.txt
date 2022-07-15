@@ -1,0 +1,2041 @@
+From p.mayers at imperial.ac.uk  Wed Jul  2 10:48:41 2008
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Wed Jul  2 10:49:17 2008
+Subject: [Twisted-web] Re: xmlrpc resource file descriptor leak
+In-Reply-To: <4868C2B8.4010109@imperial.ac.uk>
+References: <4868C2B8.4010109@imperial.ac.uk>
+Message-ID: <486B9549.7090608@imperial.ac.uk>
+
+Phil Mayers wrote:
+> This is a bit vague, and I wanted to get some feedback before I submit a 
+> ticket.
+> 
+> We have a long-running twisted / nevow process that basically has:
+> 
+>  root
+>   \- RPC2 - a twisted.web.xmlrpc.XMLRPC sub-class
+>   \- ui   - nevow pages
+> 
+> The thing hung up over the weekend with "too many open file descriptors" 
+> and before I killed it I did an "lsof"; lots of the files were:
+> 
+> python25 20163  nsg   31u   REG              253,0      370   3276854 
+> /tmp/tmp5QJivu (deleted)
+> 
+> ...and "cat /proc/20163/fd/31" shows:
+> 
+> <?xml version='1.0'?>
+> <methodCall>
+> <methodName>classify_maclist</methodName>
+
+<snip>
+
+> 
+> ...which is an XMLRPC call from a Zope server on another machine to this 
+> process. I presume the t.w.http.Request content is getting written to a 
+> tempfile, but I can't understand why - the Content-Length is tiny (<400 
+> bytes).
+
+Ignore this. The underlying cause seemed to be an unrelated issue; this 
+issue was prevent Python from gc-ing the http.Request objects and thus 
+closing the open file descriptors.
+
+I still don't know why the content was written to a temp file when it 
+was so short, but it may be because I'm using HTTPS rather than HTTP.
+
+Sorry for the noise.
+
+From wthie at thiengineering.ch  Thu Jul  3 02:59:48 2008
+From: wthie at thiengineering.ch (Werner Thie)
+Date: Thu Jul  3 03:00:30 2008
+Subject: [Twisted-web] xmlrpc resource file descriptor leak
+In-Reply-To: <4868C2B8.4010109@imperial.ac.uk>
+References: <4868C2B8.4010109@imperial.ac.uk>
+Message-ID: <486C78E4.8090802@thiengineering.ch>
+
+Hi
+
+suffering form the same problem a year ago or so, I dug into this by 
+following the call chain and cgi.py is the source of the 'too many fd' 
+problem.
+
+For an explanation read the comment starting at line 417 in cgi.py which 
+reads:
+
+     The class is subclassable, mostly for the purpose of overriding
+     the make_file() method, which is called internally to come up with
+     a file open for reading and writing.  This makes it possible to
+     override the default choice of storing all files in a temporary
+     directory and unlinking them as soon as they have been opened.
+
+The trick which is used here is the fact, that an fd hangs around for 
+some time even if the fd in question was unlinked. It takes some time 
+for the OS to collect all those unlinked fds, but they will be collected 
+  eventually. The number of fds allowed per process when using cgi.py 
+(used by twisted) depends on the burst rate of requests, because every 
+request has per default a FieldStorage and therefore an fd.
+
+The only solution is to up the number of allowed fds per process/per 
+machine and depends on the OS:
+
+MS Windows: if CRT is used, hardcoded to 2048 else limited by mem
+
+On **ixes use ''ulimit -a' or 'sysctl -a | grep files' to get a printout 
+the system value, usually something along kern.maxfiles=10000
+
+Per machine:
+/etc/sysctl.conf contains the values for the kernel preset when booting.
+
+Per process:
+/etc/login.conf contains usually a variable called openfiles-max
+
+On my OpenBSD production system (avg load 30 req/sec) values are
+
+kern.maxfiles=10000
+
+openfiles-max=8192
+openfiles-cur=8192
+
+which allows smooth operation of two twisted processes on a dual core 
+machine.
+
+HTH, Werner
+
+FYI the output of top:
+
+load averages:  0.34,  0.31,  0.31 
+                                            08:55:01
+31 processes:  1 running, 29 idle, 1 on processor
+CPU0 states: 10.8% user,  0.0% nice,  2.6% system,  0.0% interrupt, 
+86.6% idle
+CPU1 states:  0.0% user,  0.0% nice,  0.0% system,  0.0% interrupt, 
+100% idle
+Memory: Real: 325M/608M act/tot  Free: 2913M  Swap: 0K/4096M used/tot
+
+PID  UNAME PRI NICE  SIZE   RES STATE    WAIT  TIME   CPU    COMMAND
+4562 www   2   0     125M   97M sleep/0  poll  242:39 11.82% python2.5
+6506 www   2   0     205M  181M run/0    -     34:20   2.00% python2.5
+
+
+Phil Mayers wrote:
+> This is a bit vague, and I wanted to get some feedback before I submit a 
+> ticket.
+> 
+> We have a long-running twisted / nevow process that basically has:
+> 
+>  root
+>   \- RPC2 - a twisted.web.xmlrpc.XMLRPC sub-class
+>   \- ui   - nevow pages
+> 
+> The thing hung up over the weekend with "too many open file descriptors" 
+> and before I killed it I did an "lsof"; lots of the files were:
+> 
+> python25 20163  nsg   31u   REG              253,0      370   3276854 
+> /tmp/tmp5QJivu (deleted)
+> 
+> ...and "cat /proc/20163/fd/31" shows:
+> 
+> <?xml version='1.0'?>
+> <methodCall>
+> <methodName>classify_maclist</methodName>
+> <params>
+> <param>
+> <value><string>HORPROD</string></value>
+> </param>
+> <param>
+> <value><array><data>
+> <value><string>xxxx</string></value>
+> </data></array></value>
+> </param>
+> <param>
+> <value><int>-1</int></value>
+> </param>
+> <param>
+> <value><int>5</int></value>
+> </param>
+> </params>
+> </methodCall>
+> 
+> ...which is an XMLRPC call from a Zope server on another machine to this 
+> process. I presume the t.w.http.Request content is getting written to a 
+> tempfile, but I can't understand why - the Content-Length is tiny (<400 
+> bytes).
+> 
+> I can't seem to reproduce this in a sample application though; does 
+> anyone have any ideas how I can narrow down the problem?
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+From abdulwahid at gmail.com  Sat Jul  5 04:08:36 2008
+From: abdulwahid at gmail.com (Abdul-Wahid Paterson)
+Date: Sat Jul  5 04:08:39 2008
+Subject: [Twisted-web] nevow's loaders.xmlfile returning XML
+In-Reply-To: <20080628151245.4714.1788998677.divmod.quotient.14439@ohm>
+References: <995fcdb00806280456q6004d87cqa4d882a8181a028d@mail.gmail.com>
+	<20080628151245.4714.1788998677.divmod.quotient.14439@ohm>
+Message-ID: <995fcdb00807050108q2af2b918oda455eba18755faa@mail.gmail.com>
+
+Hi,
+
+> My guess is that you either have two templates that have html tags or
+> that you are loading one template with an html tag twice and then putting
+> one inside the other.  Nevow won't stop you from doing this, even though
+> in most cases, the result isn't very sensible.
+>
+
+Yes you are right. I found the problem was in the code that someone
+else wrote and committed to CVS. They had put something in the
+authentication system that was also including HTML.
+
+BTW, where can I find some good documenation on nevow.guard so I can
+fix the authentication system? I looked at the code the other
+developer wrote but was a bit confused about how guard is working and
+couldn't find anything use by googling.
+
+Regards,
+
+AW
+
+From abdulwahid at gmail.com  Sat Jul  5 08:02:09 2008
+From: abdulwahid at gmail.com (Abdul-Wahid Paterson)
+Date: Sat Jul  5 08:02:12 2008
+Subject: [Twisted-web] nevow's loaders.xmlfile returning XML
+In-Reply-To: <995fcdb00807050108q2af2b918oda455eba18755faa@mail.gmail.com>
+References: <995fcdb00806280456q6004d87cqa4d882a8181a028d@mail.gmail.com>
+	<20080628151245.4714.1788998677.divmod.quotient.14439@ohm>
+	<995fcdb00807050108q2af2b918oda455eba18755faa@mail.gmail.com>
+Message-ID: <995fcdb00807050502t3c59ed02p13315975bbc6d1cc@mail.gmail.com>
+
+Hi,
+
+
+>> My guess is that you either have two templates that have html tags or
+>> that you are loading one template with an html tag twice and then putting
+>> one inside the other.  Nevow won't stop you from doing this, even though
+>> in most cases, the result isn't very sensible.
+>>
+>
+> Yes you are right. I found the problem was in the code that someone
+> else wrote and committed to CVS. They had put something in the
+> authentication system that was also including HTML.
+>
+Further to this, I have still seem to have a problem with the XHTML
+generated. When I load the page through firefox it does not render my
+inline SVG. However, when I save the page as something .xml and load
+the same page into firefox it does render the SVG. Is this something
+to do with the Content-Type not being set to application/xhtml+ xml ?
+If so, how can I set it?
+
+AW
+
+From lasizoillo at gmail.com  Sun Jul  6 08:46:13 2008
+From: lasizoillo at gmail.com (lasizoillo)
+Date: Sun Jul  6 08:46:19 2008
+Subject: [Twisted-web] Full text Delicious index in python with xapian and
+	twisted
+Message-ID: <49414f570807060546l2567d5b3qd19ae1748e229482@mail.gmail.com>
+
+Hi
+
+I have seen in reddit a link to a interesting (and simple) twisted-web example.
+
+http://dpn.name/index.php/2008/07/06/code-full-text-delicious-index-in-python-with-xapian-and-twisted/
+
+Uses twisted-web (and other libs) to do full-text-search over del.icio.us.
+
+Regards,
+
+Javi
+
+From Marcin.Kasperski at softax.com.pl  Tue Jul  8 13:02:41 2008
+From: Marcin.Kasperski at softax.com.pl (Marcin Kasperski)
+Date: Tue Jul  8 13:05:11 2008
+Subject: [Twisted-web] Re: Twisted Hosting and Twisted in the Cloud
+References: <4327dfbd0806292100y4723b30ema2698f52773c43da@mail.gmail.com>
+Message-ID: <87wsjwe2by.fsf@softax.com.pl>
+
+>  * Dedicated hosts, with Twisted libs pre-installed on them
+>  * Virtual hosts/"slices" with Twisted libs pre-installed on them
+
+Installing Twisted is easy enough ;-) If I manage dedicated host or
+VPS, then installing twisted is a simple command, be it easy_install,
+apt-get install, or yum something....
+
+So I do not think there is much to be gained here. Maybe cheap shared
+hosting with ability to run twisted apps could make some sense, but
+... VPS are cheap nowadays.
+
+Supported installation may be different story, but it can be uneasy
+to draw a line where the support really ends....
+
+Just my 2 cents.
+
+PS I love VPS-s ;-)
+
+-- 
+----------------------------------------------------------------------
+| Marcin Kasperski   | If we are to be successful, we must still have
+| http://mekk.waw.pl |    the courage to put our faith in people as
+|                    |  opposed to a process. (Booch,Martin,Newkirk)
+----------------------------------------------------------------------
+
+
+From duncan.mcgreggor at gmail.com  Tue Jul  8 15:49:26 2008
+From: duncan.mcgreggor at gmail.com (Duncan McGreggor)
+Date: Tue Jul  8 15:49:31 2008
+Subject: [Twisted-web] Re: [Twisted-Python] Re: Twisted Hosting and Twisted
+	in the Cloud
+In-Reply-To: <87wsjwe2by.fsf@softax.com.pl>
+References: <4327dfbd0806292100y4723b30ema2698f52773c43da@mail.gmail.com>
+	<87wsjwe2by.fsf@softax.com.pl>
+Message-ID: <4327dfbd0807081249o6759ad9fg9e80b1b8d954d006@mail.gmail.com>
+
+On Tue, Jul 8, 2008 at 12:02 PM, Marcin Kasperski
+<Marcin.Kasperski@softax.com.pl> wrote:
+>>  * Dedicated hosts, with Twisted libs pre-installed on them
+>>  * Virtual hosts/"slices" with Twisted libs pre-installed on them
+>
+> Installing Twisted is easy enough ;-) If I manage dedicated host or
+> VPS, then installing twisted is a simple command, be it easy_install,
+> apt-get install, or yum something....
+>
+> So I do not think there is much to be gained here. Maybe cheap shared
+> hosting with ability to run twisted apps could make some sense, but
+> ... VPS are cheap nowadays.
+
+There are two things to consider here:
+
+1) We've had conversations with application developers who use Twisted
+and do a lot of repeated setup. They'd like it if they didn't have to
+do that every time... but not only the work itself, the mental
+convenience factor: they don't want to even have to think about it.
+They'd like to consider it simply part of their OS. I don't know about
+you, but I like the idea of a Twisted OS ;-)
+
+2) Perception and exposure. This one's a biggie. If hosting providers
+start offering explicit support for Twisted, we get an arguably
+significant increase in exposure to potential users. The more people
+who are aware that Twisted exists, the more that use it. The many and
+obvious benefits that come as a result of this (including more
+potential funding for the TSF!) are an excellent motivation.
+
+> Supported installation may be different story, but it can be uneasy
+> to draw a line where the support really ends....
+
+That's definitely a dark art ;-)
+
+d
+
+From Andy at NewWorldElectric.com  Tue Jul  8 22:20:00 2008
+From: Andy at NewWorldElectric.com (Andy Fundinger)
+Date: Tue Jul  8 22:20:03 2008
+Subject: [Twisted-web] Re: [Twisted-Python] Re: Twisted Hosting and
+	Twisted in the Cloud
+In-Reply-To: <4327dfbd0807081249o6759ad9fg9e80b1b8d954d006@mail.gmail.com>
+References: <4327dfbd0806292100y4723b30ema2698f52773c43da@mail.gmail.com>
+	<87wsjwe2by.fsf@softax.com.pl>
+	<4327dfbd0807081249o6759ad9fg9e80b1b8d954d006@mail.gmail.com>
+Message-ID: <37d49ed40807081920qce7b19cjdb23608b4d710ecc@mail.gmail.com>
+
+Yeah, initial setup is a pain compared to say Pylons.  Especially when I
+know I'm skimping on setting up the twistd service stuff at the beginning
+when I probably ought to.  The thought keeps going through my head "Why
+don't you write a bastard hybrid of paster for twisted?"  Anybody else hear
+that dark and ominous voice?
+
+-Andy Fundinger
+
+On Tue, Jul 8, 2008 at 3:49 PM, Duncan McGreggor <duncan.mcgreggor@gmail.co=
+m>
+wrote:
+
+> On Tue, Jul 8, 2008 at 12:02 PM, Marcin Kasperski
+> <Marcin.Kasperski@softax.com.pl> wrote:
+> >>  * Dedicated hosts, with Twisted libs pre-installed on them
+> >>  * Virtual hosts/"slices" with Twisted libs pre-installed on them
+> >
+> > Installing Twisted is easy enough ;-) If I manage dedicated host or
+> > VPS, then installing twisted is a simple command, be it easy_install,
+> > apt-get install, or yum something....
+> >
+> > So I do not think there is much to be gained here. Maybe cheap shared
+> > hosting with ability to run twisted apps could make some sense, but
+> > ... VPS are cheap nowadays.
+>
+> There are two things to consider here:
+>
+> 1) We've had conversations with application developers who use Twisted
+> and do a lot of repeated setup. They'd like it if they didn't have to
+> do that every time... but not only the work itself, the mental
+> convenience factor: they don't want to even have to think about it.
+> They'd like to consider it simply part of their OS. I don't know about
+> you, but I like the idea of a Twisted OS ;-)
+>
+> 2) Perception and exposure. This one's a biggie. If hosting providers
+> start offering explicit support for Twisted, we get an arguably
+> significant increase in exposure to potential users. The more people
+> who are aware that Twisted exists, the more that use it. The many and
+> obvious benefits that come as a result of this (including more
+> potential funding for the TSF!) are an excellent motivation.
+>
+> > Supported installation may be different story, but it can be uneasy
+> > to draw a line where the support really ends....
+>
+> That's definitely a dark art ;-)
+>
+> d
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+
+-- =
+
+Blog: http://channel3b.wordpress.com
+Second Life Name: Ciemaar Flintoff
+
+What would you do if they outlawed hypothetical questions?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080708/b1=
+4260dd/attachment.htm
+From d.a.abernathy at gmail.com  Fri Jul 11 15:00:49 2008
+From: d.a.abernathy at gmail.com (DJ)
+Date: Fri Jul 11 15:00:54 2008
+Subject: [Twisted-web] RE: example code for twisted.python.rebuild
+Message-ID: <7dfc47fe0807111200p4fe399absc30aae0bdc7f832e@mail.gmail.com>
+
+Hello All,
+
+I am a twisted novice, using this on a project. I am looking for code
+examples which use twisted.python.rebuild.
+I want to use lastestFunction and lastestClass to reload my def's so I do
+not have to restart the server every time
+I make changes to request.write. Does anyone know where I can find simple
+examples ?
+-- =
+
+Dafina A. Abernathy (DJ)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080711/57=
+5fb718/attachment.htm
+From d.a.abernathy at gmail.com  Fri Jul 11 15:20:48 2008
+From: d.a.abernathy at gmail.com (DJ)
+Date: Fri Jul 11 15:20:54 2008
+Subject: [Twisted-web] Re: empty strings in request.args.items()
+Message-ID: <7dfc47fe0807111220g20c73eecp7f53f2d4fd923a99@mail.gmail.com>
+
+Hello All,
+
+I am a twisted novice using the request.args.items() method to write the
+data from a form to a web page.
+The problem is that the list values are returned with extra empty strings.
+I have included a copy of the request string and the dictionary below:
+
+*Here is the request string:*
+request <GET
+/writeConfigFileChanges?keys=3Dtest&datefmt=3Dmark&format=3D&retryinterva
+l=3Djohn&protocol=3D&adaptername=3D&path=3D&isadapter=3D&adaptertype=3D&key=
+s=3D&retryinterval=3D
+&protocol=3D&adaptername=3D&path=3D&isadapter=3D&adaptertype=3D&formatter=
+=3D&class=3D&args=3D&le
+vel=3D&keys=3D&level=3D&propagate=3D&qualname=3D&handlers=3D&level=3Dnathan=
+&handlers=3D
+HTTP/1.1>
+
+*Here are the values in request.args.items():*
+{'retryinterval': ['john', ''], 'datefmt': ['mark'], 'args': [''],
+'protocol': [
+'', ''], 'adaptername': ['', ''], 'keys': ['test', '', ''], 'format': [''],
+'isa
+dapter': ['', ''], 'propagate': [''], 'handlers': ['', ''], 'path': ['',
+''], 'f
+ormatter': [''], 'qualname': [''], 'class': [''], 'adaptertype': ['', ''],
+'leve
+l': ['', '', 'nathan']}
+
+An extra single quote empty string is appended to some of the lists in the
+dictionary, those extra empty strings should not be there.
+(ex: retryinterval should be -> 'retryinterval': ['john'] ; but instead it
+is -> 'retryinterval': ['john', ''] )
+
+Do you know of trick or a work around to correct this ?
+
+-- =
+
+Dafina A. Abernathy (DJ)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080711/d3=
+48ff12/attachment.htm
+From abdulwahid at gmail.com  Sat Jul 12 15:19:35 2008
+From: abdulwahid at gmail.com (Abdul-Wahid Paterson)
+Date: Sat Jul 12 15:19:38 2008
+Subject: [Twisted-web] Best practice for child pages and shared
+	templates/renders
+Message-ID: <995fcdb00807121219t4200cc86gf53d58705c128167@mail.gmail.com>
+
+Hi,
+
+As a newbie still to twisted/nevow/athena I feel I moving on slowly.
+At least my athena stuff works quite well. Now I need to integrate my
+different code more and am was wondering what is the best approach.
+Mainly I have on my site one XML template that serves XHTML. I have a
+number of renderers that render different parts of the page. However,
+the main central part of the page is very different for all the
+different python objects I am calling...so..my questions are....
+
+How can I use a shared render between the different python modules in
+a way that is efficient?
+
+How is the best way for rendering the main part of the page (the
+central part)? Should I just make it a renderer? Also, what is a page
+fragment and how is that different from a renderer?
+
+Thanks for any help.
+
+AW
+
+From exarkun at divmod.com  Sat Jul 12 17:10:21 2008
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Sat Jul 12 17:10:35 2008
+Subject: [Twisted-web] Re: empty strings in request.args.items()
+In-Reply-To: <7dfc47fe0807111220g20c73eecp7f53f2d4fd923a99@mail.gmail.com>
+Message-ID: <20080712211021.4714.1711045171.divmod.quotient.19841@ohm>
+
+On Fri, 11 Jul 2008 14:20:48 -0500, DJ <d.a.abernathy@gmail.com> wrote:
+>Hello All,
+>
+>I am a twisted novice using the request.args.items() method to write the
+>data from a form to a web page.
+>The problem is that the list values are returned with extra empty strings.
+>I have included a copy of the request string and the dictionary below:
+>
+>*Here is the request string:*
+>request <GET
+>/writeConfigFileChanges?keys=test&datefmt=mark&format=&retryinterva
+>l=john&protocol=&adaptername=&path=&isadapter=&adaptertype=&keys=&retryinterval=
+>&protocol=&adaptername=&path=&isadapter=&adaptertype=&formatter=&class=&args=&le
+>vel=&keys=&level=&propagate=&qualname=&handlers=&level=nathan&handlers=
+>HTTP/1.1>
+>
+>*Here are the values in request.args.items():*
+>{'retryinterval': ['john', ''], 'datefmt': ['mark'], 'args': [''],
+>'protocol': [
+>'', ''], 'adaptername': ['', ''], 'keys': ['test', '', ''], 'format': [''],
+>'isa
+>dapter': ['', ''], 'propagate': [''], 'handlers': ['', ''], 'path': ['',
+>''], 'f
+>ormatter': [''], 'qualname': [''], 'class': [''], 'adaptertype': ['', ''],
+>'leve
+>l': ['', '', 'nathan']}
+>
+>An extra single quote empty string is appended to some of the lists in the
+>dictionary, those extra empty strings should not be there.
+>(ex: retryinterval should be -> 'retryinterval': ['john'] ; but instead it
+>is -> 'retryinterval': ['john', ''] )
+>
+>Do you know of trick or a work around to correct this ?
+>
+
+They're not extra, they're taken from the query arguments.  If you know
+that they aren't important, then you can just ignore them in your code,
+or you can try to change the client so that it doesn't include them when
+it makes the request.
+
+Jean-Paul
+
+From d.a.abernathy at gmail.com  Thu Jul 17 10:54:15 2008
+From: d.a.abernathy at gmail.com (DJ)
+Date: Thu Jul 17 10:54:29 2008
+Subject: [Twisted-web] RE: CSS link to stylesheet does not work in twisted
+Message-ID: <7dfc47fe0807170754o751743f9x730d2f56fca139d6@mail.gmail.com>
+
+Hello Again,
+
+I am using twisted.web.http to prototype a few webpages and link to my
+stylesheet ( <link rel=3Dstylesheet type=3D"text/css" href=3D"configstyle.c=
+ss" />)
+does not work.
+If I save the page has a standalone HTML file and open it in a browser
+window, everything works fine, but not when I call it through twisted.
+Does anyone know why and is there a workaround ?
+-- =
+
+Dafina A. Abernathy (DJ)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080717/9b=
+e51054/attachment.htm
+From steve at holdenweb.com  Thu Jul 17 12:55:07 2008
+From: steve at holdenweb.com (Steve Holden)
+Date: Thu Jul 17 12:55:41 2008
+Subject: [Twisted-web] Re: CSS link to stylesheet does not work in twisted
+In-Reply-To: <7dfc47fe0807170754o751743f9x730d2f56fca139d6@mail.gmail.com>
+References: <7dfc47fe0807170754o751743f9x730d2f56fca139d6@mail.gmail.com>
+Message-ID: <g5nthn$3h1$1@ger.gmane.org>
+
+DJ wrote:
+> Hello Again,
+> 
+> I am using twisted.web.http to prototype a few webpages and link to my 
+> stylesheet ( <link rel=stylesheet type="text/css" href="configstyle.css" 
+> />) does not work.
+> If I save the page has a standalone HTML file and open it in a browser 
+> window, everything works fine, but not when I call it through twisted.
+> Does anyone know why and is there a workaround ?
+
+This really doesn't sound like a Twisted issue. Does the Twisted server 
+serve the stylesheet? Check that by trying to access it via your browser.
+
+It's possible you may need to adjust the link's href attribute to oiint 
+to an HTTP source of the CSS stylesheet.
+
+regards
+  Steve
+-- 
+Steve Holden        +1 571 484 6266   +1 800 494 3119
+Holden Web LLC              http://www.holdenweb.com/
+
+
+From michal.dtz at gmail.com  Fri Jul 18 07:45:11 2008
+From: michal.dtz at gmail.com (=?UTF-8?B?TWljaGHFgg==?= Pasternak)
+Date: Fri Jul 18 07:45:19 2008
+Subject: [Twisted-web] RE: CSS link to stylesheet does not work in twisted
+In-Reply-To: <7dfc47fe0807170754o751743f9x730d2f56fca139d6@mail.gmail.com>
+References: <7dfc47fe0807170754o751743f9x730d2f56fca139d6@mail.gmail.com>
+Message-ID: <20080718134511.5103de4a@gmail.com>
+
+Dnia 2008-07-17, o godz. 09:54:15
+DJ <d.a.abernathy@gmail.com> napisa?(a):
+
+> Hello Again,
+> 
+> I am using twisted.web.http to prototype a few webpages and link to my
+> stylesheet ( <link rel=stylesheet type="text/css"
+> href="configstyle.css" />) does not work.
+> If I save the page has a standalone HTML file and open it in a browser
+> window, everything works fine, but not when I call it through twisted.
+> Does anyone know why and is there a workaround ?
+
+You need to add static.File child to your root resource. Read about
+addChild method of rend.Page . 
+
+-- 
+m
+
+From shad at zaphod.eu  Mon Jul 21 09:48:49 2008
+From: shad at zaphod.eu (shad)
+Date: Mon Jul 21 09:48:54 2008
+Subject: [Twisted-web] Post binary files
+Message-ID: <f3d8f4270807210648n4fa21db2x5d357d48380ce128@mail.gmail.com>
+
+Hello,
+
+I use python twisted web to do a simple web service that serves some streams.
+I process client requests in RequestHandler inherited from
+http.Request, exactly as described in most of examples.
+
+My webservice has to be able to receive file streams.
+For example, if I post a file at the uri /toto, a user can get this
+stream at the same uri. The stream has not to be bufferized, it's sent
+if someone reads it or not.
+
+When I read http.Request methods, I can see that POST data are stored
+in a simple dict. And in my case, the server will grow up in memory.
+So my question is: Is there an official way to handle streams in
+twisted.web or must I use twisted.web2 ?
+
+Thanks.
+
+-- 
+Samuel Alba
+
+From d.a.abernathy at gmail.com  Mon Jul 21 17:53:00 2008
+From: d.a.abernathy at gmail.com (DJ)
+Date: Mon Jul 21 17:53:04 2008
+Subject: [Twisted-web] RE: CSS link to stylesheet does not work in twisted
+In-Reply-To: <20080718134511.5103de4a@gmail.com>
+References: <7dfc47fe0807170754o751743f9x730d2f56fca139d6@mail.gmail.com>
+	<20080718134511.5103de4a@gmail.com>
+Message-ID: <7dfc47fe0807211453oc70937yd9c60a94e0189d77@mail.gmail.com>
+
+Hello Michael,
+
+It worked !!!!
+Thank you very much. !!!
+
+On Fri, Jul 18, 2008 at 6:45 AM, Micha=B3 Pasternak <michal.dtz@gmail.com>
+wrote:
+
+> Dnia 2008-07-17, o godz. 09:54:15
+> DJ <d.a.abernathy@gmail.com> napisa=B3(a):
+>
+> > Hello Again,
+> >
+> > I am using twisted.web.http to prototype a few webpages and link to my
+> > stylesheet ( <link rel=3Dstylesheet type=3D"text/css"
+> > href=3D"configstyle.css" />) does not work.
+> > If I save the page has a standalone HTML file and open it in a browser
+> > window, everything works fine, but not when I call it through twisted.
+> > Does anyone know why and is there a workaround ?
+>
+> You need to add static.File child to your root resource. Read about
+> addChild method of rend.Page .
+>
+> --
+>  m
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+
+-- =
+
+Dafina A. Abernathy (DJ)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080721/dd=
+6c87cf/attachment.htm
+From chhetriarun84 at gmail.com  Mon Jul 21 18:31:14 2008
+From: chhetriarun84 at gmail.com (arun chhetri)
+Date: Mon Jul 21 18:31:18 2008
+Subject: [Twisted-web] twisted.web.resource putChild method
+Message-ID: <8181edc00807211531g61898066s2932ee81cdd0f3e0@mail.gmail.com>
+
+Hi,
+I am new to twisted and just want to know a very simple thing
+
+Do we always have to use putChild method in __init__() of a Class or we can
+use it any where in the Class for example with in render function in which
+we do self.putChild
+
+
+
+Thanks
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080721/be=
+da6bf8/attachment.htm
+From Andy at NewWorldElectric.com  Mon Jul 21 18:51:13 2008
+From: Andy at NewWorldElectric.com (Andy Fundinger)
+Date: Mon Jul 21 18:51:17 2008
+Subject: [Twisted-web] twisted.web.resource putChild method
+In-Reply-To: <8181edc00807211531g61898066s2932ee81cdd0f3e0@mail.gmail.com>
+References: <8181edc00807211531g61898066s2932ee81cdd0f3e0@mail.gmail.com>
+Message-ID: <37d49ed40807211551q4d4af331w22e7837c9ff86bca@mail.gmail.com>
+
+You can do that most anywhere, I like to do it in getChild() to create
+resources when they are first accessed.
+
+-Andy Fundinger
+
+On Mon, Jul 21, 2008 at 6:31 PM, arun chhetri <chhetriarun84@gmail.com>
+wrote:
+
+> Hi,
+> I am new to twisted and just want to know a very simple thing
+>
+> Do we always have to use putChild method in __init__() of a Class or we c=
+an
+> use it any where in the Class for example with in render function in which
+> we do self.putChild
+>
+>
+>
+> Thanks
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+
+
+-- =
+
+Blog: http://channel3b.wordpress.com
+Second Life Name: Ciemaar Flintoff
+
+What would you do if they outlawed hypothetical questions?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080721/be=
+bd39d3/attachment.htm
+From tjstebbing at gmail.com  Tue Jul 22 01:46:36 2008
+From: tjstebbing at gmail.com (Tim Stebbing)
+Date: Tue Jul 22 01:46:41 2008
+Subject: [Twisted-web] IDocFactory.load
+Message-ID: <972281650807212246m57d29d1y2d00c2a7fe3693f1@mail.gmail.com>
+
+RydkYXksCgpPdXIgYXBwIGhhcyBhIGZldyBjdXN0b20gbG9hZGVycyB3aGljaCBiYWNrIGluIHRo
+ZSBjdHggZGF5cyB3b3VsZCBoYXZlCmFkYXB0ZWQgY3R4CnRvIGdldCB0aGUgcmVxdWVzdCB3aGlj
+aCB3ZSB3b3VsZCBkbyB2YXJpb3VzIHRoaW5ncyB3aXRoLiBSZWNlbnRseSB0aGUgY3R4CmhhcyBz
+dG9wcGVkCmJlaW5nIHBhc3NlZCAoeWF5KSwgYW5kIEkgaGFkIGd1ZXNzZWQgaXQgd291bGQgYmUg
+cmVwbGFjZWQgd2l0aCBhIHJlcXVlc3QsCmJ1dCBpdCBzZWVtcwp0aGF0IGlzIG5vdCB0aGUgY2Fz
+ZS4KCkl0IHNlZW1zIGxpa2UgYSBzZW5zaWJsZSBjaGFuZ2UgZm9yIElEb2NGYWN0b3J5LmxvYWQg
+dG8gYmUgcGFzc2VkIGEgcmVxdWVzdAoob3B0aW9uYWxseSwKYXMgdGhlIG9sZCBjdHggd2FzKSwg
+d2hpY2ggaWRlYWxseSBwYWdlLkVsZW1lbnQucmVuZGVyIHdvdWxkIHB1c2ggdGhyb3VnaC4KTG9v
+a2luZwphdCBFbGVtZW50LnJlbmRlciB0aGUgcmVxdWVzdCBpcyByaWdodCB0aGVyZSBhbnl3YXks
+IHlldCB3ZSdyZSBwYXNzaW5nIGEKTm9uZS4KCnRob3VnaHRzPwoKCgp0anMKLS0tLS0tLS0tLS0t
+LS0gbmV4dCBwYXJ0IC0tLS0tLS0tLS0tLS0tCkFuIEhUTUwgYXR0YWNobWVudCB3YXMgc2NydWJi
+ZWQuLi4KVVJMOiBodHRwOi8vdHdpc3RlZG1hdHJpeC5jb20vcGlwZXJtYWlsL3R3aXN0ZWQtd2Vi
+L2F0dGFjaG1lbnRzLzIwMDgwNzIyL2UxYmNmZTA1L2F0dGFjaG1lbnQuaHRtCg==
+From shad at zaphod.eu  Tue Jul 22 10:20:05 2008
+From: shad at zaphod.eu (shad)
+Date: Tue Jul 22 10:20:09 2008
+Subject: [Twisted-web] twisted.web2: stream duplication ?
+Message-ID: <f3d8f4270807220720u45cecdfbkfd5b6de1e60f55b4@mail.gmail.com>
+
+Hello,
+
+Is there a simple way to duplicate a stream ? For example, a file
+uploaded as POST has a stream. This stream can be GET by a client, but
+not several. What can I do to provide the same stream for several
+clients ?
+
+Thanks,
+
+-- 
+Samuel Alba
+
+From chhetriarun84 at gmail.com  Tue Jul 22 18:47:24 2008
+From: chhetriarun84 at gmail.com (arun chhetri)
+Date: Tue Jul 22 18:47:30 2008
+Subject: [Twisted-web] newbiew question
+Message-ID: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+
+from twisted.web import resource, server
+from twisted.web import http
+
+class HomePage(resource.Resource):
+    def __init__(self):
+        resource.Resource.__init__(self)
+        self.putChild('calendar',Calendar(user=3DNone,pswd=3DNone,server=3D=
+None))
+
+    def render(self,request):
+        return"""<html><body>
+                <a href =3D calendar>Here is the solution
+                <body>
+            </html>"""
+    def getChild(self,path,request):
+        return
+Calendar(request.args["user"],request.args["pswd"],request.args["server"])
+
+class Calendar(resource.Resource):
+    def __init__(self,user,pswd,server):
+        resource.Resource.__init__(self)
+        self.user =3D user
+        self.pswd =3D pswd
+        self.server =3D server
+        self.putChild('month',Month(user))
+
+    def render(self,request):
+        return"""<p> The user is %s
+    <a href=3D/calendar/month> The link to the month is this
+    """%self.user[0]
+
+    def getChild(self,path,request):
+        return Month(self.user[0])
+
+class Month(resource.Resource):
+    def __init__(self,user):
+        resource.Resource.__init__(self)
+        self.user =3D user
+    def render(self,request):
+        return """ %s"""%self.user
+
+if __name__=3D=3D"__main__":
+    from twisted.internet import reactor
+    root =3D HomePage()
+    site =3D server.Site(root)
+    reactor.listenTCP(8000,site)
+    reactor.run()
+
+now if i go to http://localhost:8000/?user=3Darun&pswd=3Dtest&server=3Dtest
+i get this   The user is arun The link to the month is
+this<http://localhost:8000/calendar/month>
+and if I click the link then I get    None
+
+Can anybody help me how I can redirect the value self.user to Month so that
+instead of None it shows the user name provided in query string
+
+Thanks in advance
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080722/c7=
+aac222/attachment.htm
+From duncan.mcgreggor at gmail.com  Tue Jul 22 20:02:38 2008
+From: duncan.mcgreggor at gmail.com (Duncan McGreggor)
+Date: Tue Jul 22 20:02:42 2008
+Subject: [Twisted-web] newbiew question
+In-Reply-To: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+Message-ID: <4327dfbd0807221702i10398300me4f520298af60976@mail.gmail.com>
+
+On Tue, Jul 22, 2008 at 3:47 PM, arun chhetri <chhetriarun84@gmail.com> wrote:
+> from twisted.web import resource, server
+> from twisted.web import http
+>
+> class HomePage(resource.Resource):
+>     def __init__(self):
+>         resource.Resource.__init__(self)
+>         self.putChild('calendar',Calendar(user=None,pswd=None,server=None))
+>
+>     def render(self,request):
+>         return"""<html><body>
+>                 <a href = calendar>Here is the solution
+>                 <body>
+>             </html>"""
+>     def getChild(self,path,request):
+>         return
+> Calendar(request.args["user"],request.args["pswd"],request.args["server"])
+>
+> class Calendar(resource.Resource):
+>     def __init__(self,user,pswd,server):
+>         resource.Resource.__init__(self)
+>         self.user = user
+>         self.pswd = pswd
+>         self.server = server
+>         self.putChild('month',Month(user))
+>
+>     def render(self,request):
+>         return"""<p> The user is %s
+>     <a href=/calendar/month> The link to the month is this
+>     """%self.user[0]
+>
+>     def getChild(self,path,request):
+>         return Month(self.user[0])
+>
+> class Month(resource.Resource):
+>     def __init__(self,user):
+>         resource.Resource.__init__(self)
+>         self.user = user
+>     def render(self,request):
+>         return """ %s"""%self.user
+>
+> if __name__=="__main__":
+>     from twisted.internet import reactor
+>     root = HomePage()
+>     site = server.Site(root)
+>     reactor.listenTCP(8000,site)
+>     reactor.run()
+>
+> now if i go to http://localhost:8000/?user=arun&pswd=test&server=test
+> i get this   The user is arun The link to the month is this
+> and if I click the link then I get    None
+>
+> Can anybody help me how I can redirect the value self.user to Month so that
+> instead of None it shows the user name provided in query string
+>
+> Thanks in advance
+
+Hey Arun,
+
+The problem is that you're mixing two different patterns: an object
+store (pre-created hierarchy of parents/children) and dynamically
+generated children.
+
+The latter is the easiest case to talk about, since it's the classic
+HTTP GET where you pass all the arguments you need for any given
+request. If that's what you want to do, then your application needs to
+add query parameters to every link that it renders.
+
+The quickest way to do that with your example code and without
+changing anything would be to change Calendar.render to the following:
+
+    def render(self,request):
+        return """
+            <p> The user is %s
+            <a href=/calendar/month?user=%s&pswd=%s&server=%s>The
+            link to the month is this """ % (
+            self.user[0], self.user[0], self.pswd[0], self.server[0])
+
+and remove your HomePage.__init__ method.
+
+The first option is what I'd guess you were originally aiming for.
+This is a very different pattern: you want an object to be created
+with appropriate data stored on attributes, and you want to be able to
+refer to those objects and the values of their attributes in the
+future, not create them on the fly. There are probably some quick
+hacks that could demonstrate how to do this, but as soon as you tried
+to do anything remotely real with those hacks, you'd be in trouble. If
+this is really what you want, then you should spend some time getting
+to know Axiom.
+
+Hope that helps. If not, feel free to ask more questions,
+
+d
+
+From exarkun at divmod.com  Tue Jul 22 20:26:20 2008
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue Jul 22 20:26:29 2008
+Subject: [Twisted-web] IDocFactory.load
+In-Reply-To: <972281650807212246m57d29d1y2d00c2a7fe3693f1@mail.gmail.com>
+Message-ID: <20080723002620.29191.1332980409.divmod.quotient.1154@ohm>
+
+On Tue, 22 Jul 2008 15:46:36 +1000, Tim Stebbing <tjstebbing@gmail.com> wrote:
+>G'day,
+>
+>Our app has a few custom loaders which back in the ctx days would have
+>adapted ctx
+>to get the request which we would do various things with. Recently the ctx
+>has stopped
+>being passed (yay), and I had guessed it would be replaced with a request,
+>but it seems
+>that is not the case.
+>
+>It seems like a sensible change for IDocFactory.load to be passed a request
+>(optionally,
+>as the old ctx was), which ideally page.Element.render would push through.
+>Looking
+>at Element.render the request is right there anyway, yet we're passing a
+>None.
+>
+>thoughts?
+>
+
+Sounds reasonable.  There should probably be a new interface, perhaps
+with somewhat more limited behavior.  But the main point is that
+changing the name of an argument on an existing interface is kind of
+bad.
+
+There's no reason the request shouldn't be made available to the loader
+that I can think of.  I didn't make it available because I didn't want
+to create a context or a new interface at the time.
+
+Jean-Paul
+
+From maarten at treewalker.org  Tue Jul 22 23:26:56 2008
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Tue Jul 22 23:27:13 2008
+Subject: [Twisted-web] newbiew question
+In-Reply-To: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+Message-ID: <200807230527.03956.maarten@treewalker.org>
+
+On Wednesday 23 July 2008, arun chhetri wrote:
+
+> class Calendar(resource.Resource):
+>     def __init__(self,user,pswd,server):
+>         resource.Resource.__init__(self)
+>         self.user = user
+>         self.pswd = pswd
+>         self.server = server
+>         self.putChild('month',Month(user))
+>
+>     def render(self,request):
+>         return"""<p> The user is %s
+>     <a href=/calendar/month> The link to the month is this
+>     """%self.user[0]
+>
+>     def getChild(self,path,request):
+>         return Month(self.user[0])
+
+The information about the user does not belong in any Resource subclass: a 
+Resource is a page that can be generated for different users, so it should 
+only contain information that is the same for all users. Any user specific 
+data should be fetched via the request object.
+
+> now if i go to http://localhost:8000/?user=arun&pswd=test&server=test
+> i get this   The user is arun The link to the month is
+> this<http://localhost:8000/calendar/month>
+> and if I click the link then I get    None
+
+One way to do it is to include the arguments in the URL for the "month" 
+page:
+    '<a href="month?user=%s&pswd=%s">this month</a>' % (user, pswd)
+
+Having the password in every URL is neither elegant nor safe. So probably 
+you'll want to create a session to remember a user who has already 
+authenticated.
+
+You can get a session object like this:
+    session = request.getSession()
+
+You can attach custom data to a session like this:
+    user = User(name)
+    session.setComponent(IUser, user)
+and fetch it later like this:
+    user = session.getComponent(IUser)
+
+The IUser class is a Zope Interface, here is an example:
+
+from zope.interface import Interface, implements
+
+class IUser(Interface):
+    '''A user account.
+    '''
+
+    def getUserName(self):
+        '''Returns the name of the user account.
+        '''
+
+class User(object):
+    implements(IUser)
+
+    def __init__(self, name):
+        self.__name = name
+
+    def getUserName(self):
+        return self.__name
+
+The User object contains the data you want to keep per user: the user name 
+and maybe more. You don't have to store the password in this data object; 
+instead you should create this object only if the user has successfully 
+authenticated.
+
+Bye,
+		Maarten
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 194 bytes
+Desc: This is a digitally signed message part.
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20080723/f6f274e4/attachment.pgp
+From jibin at live.com  Wed Jul 23 02:13:55 2008
+From: jibin at live.com (jibin zou)
+Date: Wed Jul 23 02:14:30 2008
+Subject: [Twisted-web] newbiew twisted.enterprise.adbapi question
+In-Reply-To: <200807230527.03956.maarten@treewalker.org>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+	<200807230527.03956.maarten@treewalker.org>
+Message-ID: <BAY109-W508D6852DE1D64107BA9F6C5840@phx.gbl>
+
+
+Hi,
+
+I am currently trying to use Twisted to develop my Web-based application. And I am trying to use twisted.enterprise.adbapi to handle my database connection and etc.  I tried the example provide by the online docs.
+It work ONLY with print, without return a value for my Mako template. Can someone give a small example that lighten me how to use it? 
+
+Here is some of my code.
+
+-----database.py-----------
+
+from twisted.enterprise import adbapi
+from twisted.internet import defer
+
+class DBModule():
+
+    connection_pool = adbapi.ConnectionPool("psycopg2", host = "localhost", database = "2juban" ,user = "2juban", password = "2juban" ) 
+    
+    table = " "
+    
+    def findById(self, field, id):
+            
+        if field =="all":
+            field = "*"          
+        
+        query = """SELECT """+field+""" from """+ self.table +""" where id=""" + str(id)
+        row = self.connection_pool.runQuery(query)
+        return row.addCallback(self.print_data)
+    
+    def print_data(self, data):
+                      
+        print data
+        #return data
+
+----hello.rpy-------
+
+...
+from tpp.module.database import DBModule
+
+class hello(Controller):
+
+    d = DBModule()
+    d.table = 'talk_talk'
+    
+    
+    t1 = d.findById('content',2)
+
+...
+..
+.
+
+
+The problem is when I just print out the value , it works ! I can saw it in my eclipse console. But if I want to get the return of the value, it's nothing rather a Deferred<>.
+
+Thanks.
+
+_________________________________________________________________
+Connect to the next generation of MSN Messenger?
+http://imagine-msn.com/messenger/launch80/default.aspx?locale=en-us&source=wlmailtagline
+From radix at twistedmatrix.com  Wed Jul 23 08:15:37 2008
+From: radix at twistedmatrix.com (Christopher Armstrong)
+Date: Wed Jul 23 08:15:41 2008
+Subject: [Twisted-web] newbiew question
+In-Reply-To: <200807230527.03956.maarten@treewalker.org>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+	<200807230527.03956.maarten@treewalker.org>
+Message-ID: <60ed19d40807230515n6d032248l3ced0da5b5d55466@mail.gmail.com>
+
+On Tue, Jul 22, 2008 at 11:26 PM, Maarten ter Huurne
+<maarten@treewalker.org> wrote:
+> On Wednesday 23 July 2008, arun chhetri wrote:
+>
+>> class Calendar(resource.Resource):
+>>     def __init__(self,user,pswd,server):
+>>         resource.Resource.__init__(self)
+>>         self.user = user
+>>         self.pswd = pswd
+>>         self.server = server
+>>         self.putChild('month',Month(user))
+>>
+>>     def render(self,request):
+>>         return"""<p> The user is %s
+>>     <a href=/calendar/month> The link to the month is this
+>>     """%self.user[0]
+>>
+>>     def getChild(self,path,request):
+>>         return Month(self.user[0])
+>
+> The information about the user does not belong in any Resource subclass: a
+> Resource is a page that can be generated for different users, so it should
+> only contain information that is the same for all users. Any user specific
+> data should be fetched via the request object.
+
+This is totally inaccurate. It's perfectly reasonable to store
+user-specific data in Resource objects.  "a Resource is a page that
+can be generated for different users" is either irrelevant or not
+true, I can't tell which. You can dynamically and return Resources
+based on which user is making the request.
+
+Now, I'm not sure my favorite abstraction for a user is a string; I'd
+probably pass something other than a username to a Resource. Perhaps a
+rich object representing the user.
+
+
+-- 
+Christopher Armstrong
+International Man of Twistery
+http://radix.twistedmatrix.com/
+http://twistedmatrix.com/
+http://canonical.com/
+
+From p.mayers at imperial.ac.uk  Wed Jul 23 10:13:49 2008
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Wed Jul 23 10:14:28 2008
+Subject: Resource as Avatar (was Re: [Twisted-web] newbiew question)
+In-Reply-To: <60ed19d40807230515n6d032248l3ced0da5b5d55466@mail.gmail.com>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>	<200807230527.03956.maarten@treewalker.org>
+	<60ed19d40807230515n6d032248l3ced0da5b5d55466@mail.gmail.com>
+Message-ID: <48873C9D.5000609@imperial.ac.uk>
+
+>> The information about the user does not belong in any Resource subclass: a
+>> Resource is a page that can be generated for different users, so it should
+>> only contain information that is the same for all users. Any user specific
+>> data should be fetched via the request object.
+> 
+> This is totally inaccurate. It's perfectly reasonable to store
+> user-specific data in Resource objects.  "a Resource is a page that
+> can be generated for different users" is either irrelevant or not
+> true, I can't tell which. You can dynamically and return Resources
+> based on which user is making the request.
+> 
+> Now, I'm not sure my favorite abstraction for a user is a string; I'd
+> probably pass something other than a username to a Resource. Perhaps a
+> rich object representing the user.
+> 
+> 
+
+Since this is a common mis-conception (one I suffered from and have now 
+disabused myself of) it's worth discussing.
+
+If my understanding is correct: twisted.cred uses the concept of an 
+"avatar". Avatars (I think...):
+
+  * are protocol objects
+  * represent the user
+
+In twisted.web, the Resource *is* the avatar. In twisted.mail.imap, the 
+Mailbox is the avatar. In twisted.conch, the Shell is the avatar (and so 
+on).
+
+I found this initially confusing, because in many web frameworks e.g. 
+Zope, where I came from, the objects representing resources are:
+
+  * long lived
+  * the same instances serve >1 HTTP request
+  * instantiated at process start time
+
+It's also somewhat confusing because unlike other protocols, HTTP 
+requests are very short-lived. It's worth noting you *can* have 
+long-lived multi-instance t.w.Resource objects.
+
+In twisted, a common design pattern seems to be (I hope; I adopted it...)
+
+  * have your realm return a root Resource i.e. one for "/"
+  * attach your User object to that resource
+  * have your root resource dynamically create the leaf resources via 
+locateChild or childFactory, then attach the User object
+  * when you need user info, get at it via e.g. self.user
+  * let the leaf/root objects get GC-ed when the HTTP request is done
+
+I believe changes have been committed to twisted.web making this design 
+pattern even more preferred:
+
+http://twistedmatrix.com/trac/changeset/23950
+
+Code which, by the way, I very much like the look of.
+
+Could someone clarify if this is the "right" way of doing things?
+
+From exarkun at divmod.com  Wed Jul 23 10:58:09 2008
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Wed Jul 23 10:58:19 2008
+Subject: Resource as Avatar (was Re: [Twisted-web] newbiew question)
+In-Reply-To: <48873C9D.5000609@imperial.ac.uk>
+Message-ID: <20080723145809.29191.898449907.divmod.quotient.1388@ohm>
+
+On Wed, 23 Jul 2008 15:13:49 +0100, Phil Mayers <p.mayers@imperial.ac.uk> wrote:
+>>>The information about the user does not belong in any Resource subclass: a
+>>>Resource is a page that can be generated for different users, so it should
+>>>only contain information that is the same for all users. Any user specific
+>>>data should be fetched via the request object.
+>>
+>>This is totally inaccurate. It's perfectly reasonable to store
+>>user-specific data in Resource objects.  "a Resource is a page that
+>>can be generated for different users" is either irrelevant or not
+>>true, I can't tell which. You can dynamically and return Resources
+>>based on which user is making the request.
+>>
+>>Now, I'm not sure my favorite abstraction for a user is a string; I'd
+>>probably pass something other than a username to a Resource. Perhaps a
+>>rich object representing the user.
+>
+>Since this is a common mis-conception (one I suffered from and have now 
+>disabused myself of) it's worth discussing.
+>
+>If my understanding is correct: twisted.cred uses the concept of an 
+>"avatar". Avatars (I think...):
+>
+>  * are protocol objects
+
+In some sense, they are protocol objects - they are used by protocol
+implementations to authorize user actions.  They are not /themselves/
+protocol implementations, though - that is, they do not implement
+IProtocol (at least, not in general) or subclass Protocol.  I'm not
+sure if this is what you meant.
+
+>  * represent the user
+
+Yep, absolutely. :)
+
+>
+>In twisted.web, the Resource *is* the avatar. In twisted.mail.imap, the 
+>Mailbox is the avatar. In twisted.conch, the Shell is the avatar (and so 
+>on).
+
+Yep.
+
+>I found this initially confusing, because in many web frameworks e.g. Zope, 
+>where I came from, the objects representing resources are:
+>
+>  * long lived
+>  * the same instances serve >1 HTTP request
+>  * instantiated at process start time
+>
+>It's also somewhat confusing because unlike other protocols, HTTP requests 
+>are very short-lived. It's worth noting you *can* have long-lived multi- 
+>instance t.w.Resource objects.
+>
+>In twisted, a common design pattern seems to be (I hope; I adopted it...)
+>
+>  * have your realm return a root Resource i.e. one for "/"
+
+Yep, although note that it doesn't _have_ to be "/".  You can have the
+authenticated/authorized part of your resource hierarchy start wherever
+you like.  If it starts at "/", then every resource on the server is
+"guarded".
+
+>  * attach your User object to that resource
+>  * have your root resource dynamically create the leaf resources via 
+>locateChild or childFactory, then attach the User object
+>  * when you need user info, get at it via e.g. self.user
+>  * let the leaf/root objects get GC-ed when the HTTP request is done
+
+Yep.
+
+>
+>I believe changes have been committed to twisted.web making this design 
+>pattern even more preferred:
+>
+>http://twistedmatrix.com/trac/changeset/23950
+>
+>Code which, by the way, I very much like the look of.
+>
+>Could someone clarify if this is the "right" way of doing things?
+>
+
+Sounds like you're basically on target.  One area that you didn't talk
+much about is what the role of the user object is.  It's possible to
+just examine the user object and then, in your custom Resource, decide
+what to do based on that examination.  A more powerful approach is to
+actually delegate those decisions to the user object (and this is why
+twisted.web.guard makes the user object a Resource).  This removes all
+checking from your code and just makes the right code for each user
+execute automatically.  Explicit checking is tedious and error prone.
+Delegating all authorization decisions to the avatar simplifies the
+code and makes it less likely that you'll introduce a security issue.
+
+Jean-Paul
+
+From chhetriarun84 at gmail.com  Wed Jul 23 11:33:34 2008
+From: chhetriarun84 at gmail.com (arun chhetri)
+Date: Wed Jul 23 11:33:40 2008
+Subject: Resource as Avatar (was Re: [Twisted-web] newbiew question)
+In-Reply-To: <48873C9D.5000609@imperial.ac.uk>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+	<200807230527.03956.maarten@treewalker.org>
+	<60ed19d40807230515n6d032248l3ced0da5b5d55466@mail.gmail.com>
+	<48873C9D.5000609@imperial.ac.uk>
+Message-ID: <8181edc00807230833h55f0a11by3bf4eed3b8fa9f44@mail.gmail.com>
+
+hi,
+thanks for your suggestion Phil. You have pointed out the main objective of
+my problem and that is,,
+
+I have created a desktop CALDAV client application. The Client connect to
+the Caldav server and fetches an object
+called account (and it cannot be pickled) which has session information,
+nonce, authentication information etc. Now my task is to port the Desktop
+code to web so that everybody can user it.
+
+But there is some problem. This account object should be created once per
+user session for example, ones user passes the user name, password, server
+address, then this account should be created and using this account any
+transaction with the CALDAV server should be done.
+
+Now I have made the Design something like this
+
+
+
+
+                                 MainClass(User Login)
+                                               |
+                                               |
+                                               |
+                                              V
+                      Calendar Class (The Root of My application, here the
+account object should be created and passed to the controller class)
+                                               |
+                                               |
+                                               |
+                                              V
+                                  Controller Class(This Class Should have
+account object that it gets from the Calendar Class
+and
+                                       |                     should manage
+what kind of views user  want)
+                                               |
+                                               |
+                      ____________V___________________
+                      |
+|                              |
+                      |
+|                              |
+                      |
+|                              |
+                     V
+V                            V
+                Month(View)            Week(View)
+Day(View)
+
+I am new to web development, I am thinking of using the core application of
+CALDAV client  to integrate with this kind of web view. I have tested
+mod_python and that did not worked for me.
+So, can twisted.web be used in this case, and if yes can you please give me
+some pointers how to do that.
+
+
+
+Thanks in advance
+
+
+On Wed, Jul 23, 2008 at 9:13 AM, Phil Mayers <p.mayers@imperial.ac.uk>wrote:
+
+> The information about the user does not belong in any Resource subclass: a
+>>> Resource is a page that can be generated for different users, so it
+>>> should
+>>> only contain information that is the same for all users. Any user
+>>> specific
+>>> data should be fetched via the request object.
+>>>
+>>
+>> This is totally inaccurate. It's perfectly reasonable to store
+>> user-specific data in Resource objects.  "a Resource is a page that
+>> can be generated for different users" is either irrelevant or not
+>> true, I can't tell which. You can dynamically and return Resources
+>> based on which user is making the request.
+>>
+>> Now, I'm not sure my favorite abstraction for a user is a string; I'd
+>> probably pass something other than a username to a Resource. Perhaps a
+>> rich object representing the user.
+>>
+>>
+>>
+> Since this is a common mis-conception (one I suffered from and have now
+> disabused myself of) it's worth discussing.
+>
+> If my understanding is correct: twisted.cred uses the concept of an
+> "avatar". Avatars (I think...):
+>
+>  * are protocol objects
+>  * represent the user
+>
+> In twisted.web, the Resource *is* the avatar. In twisted.mail.imap, the
+> Mailbox is the avatar. In twisted.conch, the Shell is the avatar (and so
+> on).
+>
+> I found this initially confusing, because in many web frameworks e.g. Zop=
+e,
+> where I came from, the objects representing resources are:
+>
+>  * long lived
+>  * the same instances serve >1 HTTP request
+>  * instantiated at process start time
+>
+> It's also somewhat confusing because unlike other protocols, HTTP requests
+> are very short-lived. It's worth noting you *can* have long-lived
+> multi-instance t.w.Resource objects.
+>
+> In twisted, a common design pattern seems to be (I hope; I adopted it...)
+>
+>  * have your realm return a root Resource i.e. one for "/"
+>  * attach your User object to that resource
+>  * have your root resource dynamically create the leaf resources via
+> locateChild or childFactory, then attach the User object
+>  * when you need user info, get at it via e.g. self.user
+>  * let the leaf/root objects get GC-ed when the HTTP request is done
+>
+> I believe changes have been committed to twisted.web making this design
+> pattern even more preferred:
+>
+> http://twistedmatrix.com/trac/changeset/23950
+>
+> Code which, by the way, I very much like the look of.
+>
+> Could someone clarify if this is the "right" way of doing things?
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080723/62=
+e3b534/attachment.htm
+From chhetriarun84 at gmail.com  Wed Jul 23 11:41:36 2008
+From: chhetriarun84 at gmail.com (arun chhetri)
+Date: Wed Jul 23 11:41:43 2008
+Subject: [Twisted-web] newbiew question
+In-Reply-To: <4327dfbd0807221702i10398300me4f520298af60976@mail.gmail.com>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+	<4327dfbd0807221702i10398300me4f520298af60976@mail.gmail.com>
+Message-ID: <8181edc00807230841y412be118p62741cc036ee3aed@mail.gmail.com>
+
+Hi Duncan Mcgregor,
+
+You have guessed it right, I have posted my problem on wiki,,
+
+
+bye
+
+On Tue, Jul 22, 2008 at 7:02 PM, Duncan McGreggor <
+duncan.mcgreggor@gmail.com> wrote:
+
+> On Tue, Jul 22, 2008 at 3:47 PM, arun chhetri <chhetriarun84@gmail.com>
+> wrote:
+> > from twisted.web import resource, server
+> > from twisted.web import http
+> >
+> > class HomePage(resource.Resource):
+> >     def __init__(self):
+> >         resource.Resource.__init__(self)
+> >
+> self.putChild('calendar',Calendar(user=3DNone,pswd=3DNone,server=3DNone))
+> >
+> >     def render(self,request):
+> >         return"""<html><body>
+> >                 <a href =3D calendar>Here is the solution
+> >                 <body>
+> >             </html>"""
+> >     def getChild(self,path,request):
+> >         return
+> >
+> Calendar(request.args["user"],request.args["pswd"],request.args["server"])
+> >
+> > class Calendar(resource.Resource):
+> >     def __init__(self,user,pswd,server):
+> >         resource.Resource.__init__(self)
+> >         self.user =3D user
+> >         self.pswd =3D pswd
+> >         self.server =3D server
+> >         self.putChild('month',Month(user))
+> >
+> >     def render(self,request):
+> >         return"""<p> The user is %s
+> >     <a href=3D/calendar/month> The link to the month is this
+> >     """%self.user[0]
+> >
+> >     def getChild(self,path,request):
+> >         return Month(self.user[0])
+> >
+> > class Month(resource.Resource):
+> >     def __init__(self,user):
+> >         resource.Resource.__init__(self)
+> >         self.user =3D user
+> >     def render(self,request):
+> >         return """ %s"""%self.user
+> >
+> > if __name__=3D=3D"__main__":
+> >     from twisted.internet import reactor
+> >     root =3D HomePage()
+> >     site =3D server.Site(root)
+> >     reactor.listenTCP(8000,site)
+> >     reactor.run()
+> >
+> > now if i go to http://localhost:8000/?user=3Darun&pswd=3Dtest&server=3D=
+test
+> > i get this   The user is arun The link to the month is this
+> > and if I click the link then I get    None
+> >
+> > Can anybody help me how I can redirect the value self.user to Month so
+> that
+> > instead of None it shows the user name provided in query string
+> >
+> > Thanks in advance
+>
+> Hey Arun,
+>
+> The problem is that you're mixing two different patterns: an object
+> store (pre-created hierarchy of parents/children) and dynamically
+> generated children.
+>
+> The latter is the easiest case to talk about, since it's the classic
+> HTTP GET where you pass all the arguments you need for any given
+> request. If that's what you want to do, then your application needs to
+> add query parameters to every link that it renders.
+>
+> The quickest way to do that with your example code and without
+> changing anything would be to change Calendar.render to the following:
+>
+>    def render(self,request):
+>        return """
+>            <p> The user is %s
+>             <a href=3D/calendar/month?user=3D%s&pswd=3D%s&server=3D%s>The
+>             link to the month is this """ % (
+>             self.user[0], self.user[0], self.pswd[0], self.server[0])
+>
+> and remove your HomePage.__init__ method.
+>
+> The first option is what I'd guess you were originally aiming for.
+> This is a very different pattern: you want an object to be created
+> with appropriate data stored on attributes, and you want to be able to
+> refer to those objects and the values of their attributes in the
+> future, not create them on the fly. There are probably some quick
+> hacks that could demonstrate how to do this, but as soon as you tried
+> to do anything remotely real with those hacks, you'd be in trouble. If
+> this is really what you want, then you should spend some time getting
+> to know Axiom.
+>
+> Hope that helps. If not, feel free to ask more questions,
+>
+> d
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080723/6e=
+5f3dcf/attachment-0001.htm
+From maarten at treewalker.org  Wed Jul 23 15:30:33 2008
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Wed Jul 23 15:30:46 2008
+Subject: [Twisted-web] newbiew question
+In-Reply-To: <60ed19d40807230515n6d032248l3ced0da5b5d55466@mail.gmail.com>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+	<200807230527.03956.maarten@treewalker.org>
+	<60ed19d40807230515n6d032248l3ced0da5b5d55466@mail.gmail.com>
+Message-ID: <200807232130.40316.maarten@treewalker.org>
+
+On Wednesday 23 July 2008, Christopher Armstrong wrote:
+> On Tue, Jul 22, 2008 at 11:26 PM, Maarten ter Huurne
+> <maarten@treewalker.org> wrote:
+>
+> > The information about the user does not belong in any Resource
+> > subclass: a Resource is a page that can be generated for different
+> > users, so it should only contain information that is the same for all
+> > users. Any user specific data should be fetched via the request object.
+>
+> This is totally inaccurate. It's perfectly reasonable to store
+> user-specific data in Resource objects.  "a Resource is a page that
+> can be generated for different users" is either irrelevant or not
+> true, I can't tell which. You can dynamically and return Resources
+> based on which user is making the request.
+
+Ah, I never realized it could be used like that. I thought "resource" was 
+intended to be used as "something reachable by URL", with a 1:1 mapping of 
+URL path to Resource instance. Sorry for spreading misinformation.
+
+It is still not entirely clear to me what an avatar is though and how it 
+relates to resources and authorization.
+
+When accessing a file system, would the "traditional" authorization approach 
+be to have permission bits on every file indicating whether that file can 
+be read or written by a certain users, while the "avatar" approach would be 
+to give the user a chroot environment with only files under it that that 
+user should have access to?
+
+On Wednesday 23 July 2008, Phil Mayers wrote:
+> Since this is a common mis-conception (one I suffered from and have now
+> disabused myself of) it's worth discussing.
+>
+> If my understanding is correct: twisted.cred uses the concept of an
+> "avatar". Avatars (I think...):
+>
+>   * are protocol objects
+>   * represent the user
+>
+> In twisted.web, the Resource *is* the avatar. In twisted.mail.imap, the
+> Mailbox is the avatar. In twisted.conch, the Shell is the avatar (and so
+> on).
+
+In what way does the avatar represent the user? Is it like a Mars lander 
+representing the control team on Earth?
+
+> I found this initially confusing, because in many web frameworks e.g.
+> Zope, where I came from, the objects representing resources are:
+>
+>   * long lived
+>   * the same instances serve >1 HTTP request
+>   * instantiated at process start time
+
+That is the approach I was familiar with from Java servlets and from 
+Webware. Since this approach can be mapped onto twisted.web easily I never 
+realized it was designed for a different approach.
+
+On Wednesday 23 July 2008, Jean-Paul Calderone wrote:
+> Sounds like you're basically on target.  One area that you didn't talk
+> much about is what the role of the user object is.  It's possible to
+> just examine the user object and then, in your custom Resource, decide
+> what to do based on that examination.  A more powerful approach is to
+> actually delegate those decisions to the user object (and this is why
+> twisted.web.guard makes the user object a Resource).  This removes all
+> checking from your code and just makes the right code for each user
+> execute automatically.  Explicit checking is tedious and error prone.
+> Delegating all authorization decisions to the avatar simplifies the
+> code and makes it less likely that you'll introduce a security issue.
+
+Does this mean the top-level Resource node is the user object, so in fact 
+there is a user-specific Resource tree?
+
+Bye,
+		Maarten
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 194 bytes
+Desc: This is a digitally signed message part.
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20080723/34d070db/attachment.pgp
+From chhetriarun84 at gmail.com  Wed Jul 23 18:40:35 2008
+From: chhetriarun84 at gmail.com (arun chhetri)
+Date: Wed Jul 23 18:40:39 2008
+Subject: [Twisted-web] newbiew question
+In-Reply-To: <200807232130.40316.maarten@treewalker.org>
+References: <8181edc00807221547q46970b45ia630f98b53bd53c9@mail.gmail.com>
+	<200807230527.03956.maarten@treewalker.org>
+	<60ed19d40807230515n6d032248l3ced0da5b5d55466@mail.gmail.com>
+	<200807232130.40316.maarten@treewalker.org>
+Message-ID: <8181edc00807231540j6050972t4599158df20037be@mail.gmail.com>
+
+hi friends,
+as per the previous question I think I have found my answer,, the structure
+of my program is something like this
+
+
+from twisted.web import resource, static, server
+
+import sys
+sys.path.append("/Library/WebServer/Documents/VCalendar/bin/Client2")
+import Calendar
+
+account =3D None
+account =3D []
+
+class HomePage(resource.Resource):
+    def render(self,request):
+        return"""
+    <html>
+    <body>
+    <form action=3D/optional method=3D"post">
+        User Name <input type=3D"text" name=3D"username"><br/>
+        Pass Word <input type=3D"password" name=3D"pswd"><br/>
+        ServerAdd <input type=3D"text" name=3D"server"><br/>
+        <input type=3D"submit" Value=3D"Submit"><br/>
+    </form>
+    </body>
+    </html>"""
+
+
+class Optional(resource.Resource):
+    def __init__(self):
+        resource.Resource.__init__(self)
+    def render(self,request):
+        self.user =3D request.args["username"]
+        self.pswd =3D request.args["pswd"]
+        self.server =3D request.args["server"]
+        return "<a href =3D /optional/Calendar> Click this link"
+    def getChild(self,path,request):
+        return MainCalendar(self.user[0],self.pswd[0],self.server[0])
+
+class MainCalendar(resource.Resource):
+    def __init__(self,user,pswd,server):
+        resource.Resource.__init__(self)
+        if user !=3D None:
+            if pswd !=3D None:
+                if server !=3D None:
+                    self.user =3D user
+                    self.pswd =3D pswd
+                    self.server =3D server
+                    self.CalendarObject =3D
+Calendar.CalendarObject(self.user,self.pswd,self.server)
+                    self.putChild('month',month(self.CalendarObject))
+                    self.putChild('week',week(self.CalendarObject))
+                    self.putChild('day',day(self.CalendarObject))
+    def render(self,request):
+        return """ <p><a href =3D /optional/calendar/month> Month View</br>
+                    <p><a href =3D /optional/calendar/week> Month View</br>
+                    <p><a href =3D /optional/calendar/day> Day View"""
+    def getChild(self,path,request):
+        if path =3D=3D "/optional/calendar/month":
+            return Month(self.CalendarObject)
+
+        elif path =3D=3D "/optional/calendar/week":
+            return week(self.CalendarObject)
+
+        elif path =3D=3D "/optional/calendar/day":
+            return day(self.CalendarObject)
+
+
+class month(resource.Resource):
+    def __init__(self,CalendarObject):
+        self.CalendarObject =3D CalendarObject
+    def render(self,request):
+        return "Month for %s is good
+"%self.CalendarObject.account.session.user
+class week(resource.Resource):
+    def __init__(self,CalendarObject):
+        self.CalendarObject =3D CalendarObject
+    def render(self,request):
+        return "Week for %s is
+good"%self.CalendarObject.account.session.user
+class day(resource.Resource):
+    def __init__(self,CalendarObject):
+        self.CalendarObject =3D CalendarObject
+    def render(self,request):
+        return "Day for %s is good"%self.CalendarObject.account.session.user
+
+
+if __name__ =3D=3D "__main__":
+    from twisted.internet import reactor
+    root =3D resource.Resource()
+    root.putChild('',HomePage())
+    root.putChild('optional',Optional())
+    site =3D server.Site(root)
+    reactor.listenTCP(8000,site)
+    reactor.run()
+
+Is there any fault in the structure of my code, or any error which i cannot
+see.
+There is one more question,, how can I bind this to my website for ex
+www.xyz.com:10
+
+cheers
+Thanks to all
+
+On Wed, Jul 23, 2008 at 2:30 PM, Maarten ter Huurne
+<maarten@treewalker.org>wrote:
+
+> On Wednesday 23 July 2008, Christopher Armstrong wrote:
+> > On Tue, Jul 22, 2008 at 11:26 PM, Maarten ter Huurne
+> > <maarten@treewalker.org> wrote:
+> >
+> > > The information about the user does not belong in any Resource
+> > > subclass: a Resource is a page that can be generated for different
+> > > users, so it should only contain information that is the same for all
+> > > users. Any user specific data should be fetched via the request objec=
+t.
+> >
+> > This is totally inaccurate. It's perfectly reasonable to store
+> > user-specific data in Resource objects.  "a Resource is a page that
+> > can be generated for different users" is either irrelevant or not
+> > true, I can't tell which. You can dynamically and return Resources
+> > based on which user is making the request.
+>
+> Ah, I never realized it could be used like that. I thought "resource" was
+> intended to be used as "something reachable by URL", with a 1:1 mapping of
+> URL path to Resource instance. Sorry for spreading misinformation.
+>
+> It is still not entirely clear to me what an avatar is though and how it
+> relates to resources and authorization.
+>
+> When accessing a file system, would the "traditional" authorization
+> approach
+> be to have permission bits on every file indicating whether that file can
+> be read or written by a certain users, while the "avatar" approach would =
+be
+> to give the user a chroot environment with only files under it that that
+> user should have access to?
+>
+> On Wednesday 23 July 2008, Phil Mayers wrote:
+> > Since this is a common mis-conception (one I suffered from and have now
+> > disabused myself of) it's worth discussing.
+> >
+> > If my understanding is correct: twisted.cred uses the concept of an
+> > "avatar". Avatars (I think...):
+> >
+> >   * are protocol objects
+> >   * represent the user
+> >
+> > In twisted.web, the Resource *is* the avatar. In twisted.mail.imap, the
+> > Mailbox is the avatar. In twisted.conch, the Shell is the avatar (and so
+> > on).
+>
+> In what way does the avatar represent the user? Is it like a Mars lander
+> representing the control team on Earth?
+>
+> > I found this initially confusing, because in many web frameworks e.g.
+> > Zope, where I came from, the objects representing resources are:
+> >
+> >   * long lived
+> >   * the same instances serve >1 HTTP request
+> >   * instantiated at process start time
+>
+> That is the approach I was familiar with from Java servlets and from
+> Webware. Since this approach can be mapped onto twisted.web easily I never
+> realized it was designed for a different approach.
+>
+> On Wednesday 23 July 2008, Jean-Paul Calderone wrote:
+> > Sounds like you're basically on target.  One area that you didn't talk
+> > much about is what the role of the user object is.  It's possible to
+> > just examine the user object and then, in your custom Resource, decide
+> > what to do based on that examination.  A more powerful approach is to
+> > actually delegate those decisions to the user object (and this is why
+> > twisted.web.guard makes the user object a Resource).  This removes all
+> > checking from your code and just makes the right code for each user
+> > execute automatically.  Explicit checking is tedious and error prone.
+> > Delegating all authorization decisions to the avatar simplifies the
+> > code and makes it less likely that you'll introduce a security issue.
+>
+> Does this mean the top-level Resource node is the user object, so in fact
+> there is a user-specific Resource tree?
+>
+> Bye,
+>                 Maarten
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080723/c2=
+8b0d89/attachment.htm
+From inhahe at gmail.com  Wed Jul 23 22:58:21 2008
+From: inhahe at gmail.com (inhahe)
+Date: Wed Jul 23 22:58:37 2008
+Subject: [Twisted-web] Question about using Stackless with Twisted.
+Message-ID: <da776a8c0807231958w4e071c35x43bf154104d0aea1@mail.gmail.com>
+
+I don't know very much about Twisted, but I would like to know how
+easy would it be to use twisted with WSGI and use it with Stackless so
+that I could use Twisted's defereds but wrap them in a way so that
+upon callback my tasklets resume where they had called the defereds
+using stackless channels.
+
+to make it more clear, it would be something like:
+
+def dcall(function, paramaters):
+  dcall2(function, parameters, stackless.channel())
+
+def dcall2(function, parameters, ch):
+  def callback(result): ch.send(result)
+  twisted.add_callback(function, parameters, callback)
+  return ch.receive()
+
+# in my html rendering..
+# do stuff
+favorite_color = dcall(async_cursor_execute('select * from
+favorite_colors where userid=?', userid)["favoritecolor"]
+# do more stuff
+
+know what I mean?
+
+thanks in advance.
+
+From inhahe at gmail.com  Wed Jul 23 23:14:29 2008
+From: inhahe at gmail.com (inhahe)
+Date: Wed Jul 23 23:39:52 2008
+Subject: [Twisted-web] Re: Question about using Stackless with Twisted.
+In-Reply-To: <da776a8c0807231958w4e071c35x43bf154104d0aea1@mail.gmail.com>
+References: <da776a8c0807231958w4e071c35x43bf154104d0aea1@mail.gmail.com>
+Message-ID: <da776a8c0807232014n2c9b2e99r34b6e393ac22e3@mail.gmail.com>
+
+def dcall(function, paramaters):
+  return dcall2(function, parameters, stackless.channel())
+
+is how the dcall function should have read.
+
+From llliufei79 at gmail.com  Sun Jul 27 09:31:41 2008
+From: llliufei79 at gmail.com (frank liu)
+Date: Sun Jul 27 09:31:46 2008
+Subject: [Twisted-web] learning nevow,
+	any good tutorial on twisted/nevow authenication?
+Message-ID: <dc0116c50807270631j5cbe5645r9408142529252a3c@mail.gmail.com>
+
+thanks in advance.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20080727/52=
+9c4de0/attachment.htm
+From exarkun at divmod.com  Sun Jul 27 09:43:59 2008
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Sun Jul 27 09:44:10 2008
+Subject: [Twisted-web] learning nevow,
+	any good tutorial on twisted/nevow authenication?
+In-Reply-To: <dc0116c50807270631j5cbe5645r9408142529252a3c@mail.gmail.com>
+Message-ID: <20080727134359.29191.404261470.divmod.quotient.7253@ohm>
+
+On Sun, 27 Jul 2008 21:31:41 +0800, frank liu <llliufei79@gmail.com> wrote:
+>thanks in advance.
+>
+
+Example of nevow.guard:
+
+  http://divmod.org/trac/browser/trunk/Nevow/examples/guarded/guarded.py
+
+Jean-Paul
+

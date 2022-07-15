@@ -1,0 +1,164 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Question on pamauth.py
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Question%20on%20pamauth.py&In-Reply-To=%3C44586B05.30806%40imperial.ac.uk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="045544.html">
+   <LINK REL="Next"  HREF="045551.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Question on pamauth.py</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Question%20on%20pamauth.py&In-Reply-To=%3C44586B05.30806%40imperial.ac.uk%3E"
+       TITLE="[Twisted-Python] Question on pamauth.py">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Wed May  3 02:34:13 MDT 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="045544.html">[Twisted-Python] Question on pamauth.py
+</A></li>
+        <LI>Next message (by thread): <A HREF="045551.html">[Twisted-Python] Question on pamauth.py
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45547">[ date ]</a>
+              <a href="thread.html#45547">[ thread ]</a>
+              <a href="subject.html#45547">[ subject ]</a>
+              <a href="author.html#45547">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Duncan McGreggor wrote:
+&gt;<i> 
+</I>&gt;<i> You biggest problem is actually going to be getting PyPAM working. As 
+</I>&gt;<i> far as I know, and as far as tummy.com knows (the original sponsors of 
+</I>&gt;<i> PyPAM), there's been no release since 1999. I toyed with the idea of 
+</I>&gt;<i> using it at one point, but the amount of work necessary in updating the 
+</I>&gt;<i> python was too onerous. Perhaps you have a stronger stomach than I :-)
+</I>
+Agreed that PyPAM has bitrotted. FWIW, I circumvented this by using 
+Cyrus SASLs &quot;saslauthd&quot; unix socket protocol, with saslauthd configured 
+to talk to PAM.
+
+/usr/sbin/saslauthd -m /var/run/saslauthd -a pam -c -n 0
+
+
+def encode_short(s):
+     i = socket.htons(s)
+     return chr(i &amp; 0xff) + chr((i &gt;&gt; 8) &amp; 0xff)
+
+def encode_str(s):
+     l = encode_short(len(s))
+     return l+s
+
+def decode_short(s):
+     return socket.ntohs( (ord(s[1]) &lt;&lt; 8) + ord(s[0]) )
+
+class SaslAuthdProtocol(protocol.Protocol):
+     def connectionMade(self):
+         self.data = ''
+         # we're going to check this lot
+         username = encode_str(self.factory.username)
+         password = encode_str(self.factory.password)
+         service = encode_str(PAMSERVICENAME)
+         realm = encode_str(YOURREALM)
+         # ok
+         message = username + password + service + realm
+         self.transport.write(message)
+
+     def dataReceived(self, data):
+         # ok, we've an outstanding request - where are we?
+         # we're expecting 2 bytes of length, then length bytes of
+         # data which is &quot;code&lt;SP&gt;reason&quot;
+         self.data = self.data + data
+         dl = len(self.data)
+         if dl &lt; 2:
+             # we don't have the length yet
+             return
+         l = decode_short(self.data[:2])
+         if dl &lt; l + 2:
+             # we don't have the rest of the reply yet
+             return
+         if dl &gt; l + 2:
+             # wtf?
+             self.transport.loseConnection()
+         # Ok, we can reply
+         resp = self.data[2:2+l]
+         if ' ' in resp:
+             resp, reason = resp.split(' ', 1)
+         else:
+             reason = ''
+
+         if resp=='OK':
+             self.factory.deferred.callback(reason)
+         else:
+             self.factory.deferred.errback(Exception(reason))
+
+
+class SaslChecker:
+     # We are an ICredentialsChecker implementor
+     interface.implements(checkers.ICredentialsChecker)
+
+     # We can only check plaintext username/password combos
+     credentialInterfaces = (
+             credentials.IUsernamePassword,
+             )
+
+     # return the &quot;avatar ID&quot; - username
+     def ok(self, matched, username):
+         return username
+     def err(self, f, username):
+         raise error.UnauthorizedLogin(f.getErrorMessage())
+
+     def requestAvatarId(self, creds):
+         # Adapt the credentials to a username/password pair
+         up = credentials.IUsernamePassword(creds, default=None)
+
+         # It's going to be a deferred reply
+         d = defer.Deferred()
+         d.addCallbacks(
+             self.ok, self.err, (up.username,), {}, (up.username,), {}
+         )
+
+         # Send the reply off to saslauthd via unix socket
+         f = protocol.ClientFactory()
+         f.username = up.username
+         f.password = up.password
+         f.deferred = d
+         f.protocol = SaslAuthdProtocol
+         reactor.connectUNIX('/var/run/saslauthd/mux', f)
+         return d
+
+Works like a charm.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="045544.html">[Twisted-Python] Question on pamauth.py
+</A></li>
+	<LI>Next message (by thread): <A HREF="045551.html">[Twisted-Python] Question on pamauth.py
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45547">[ date ]</a>
+              <a href="thread.html#45547">[ thread ]</a>
+              <a href="subject.html#45547">[ subject ]</a>
+              <a href="author.html#45547">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

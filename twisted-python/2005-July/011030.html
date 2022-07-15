@@ -1,0 +1,346 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: communication idioms with Perspective Broker
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20communication%20idioms%20with%20Perspective%20Broker&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="011023.html">
+   <LINK REL="Next"  HREF="011043.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: communication idioms with Perspective Broker</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20communication%20idioms%20with%20Perspective%20Broker&In-Reply-To="
+       TITLE="[Twisted-Python] Re: communication idioms with Perspective Broker">db3l at fitlinxx.com
+       </A><BR>
+    <I>Thu Jul 21 12:40:25 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="011023.html">[Twisted-Python] communication idioms with Perspective Broker
+</A></li>
+        <LI>Next message: <A HREF="011043.html">[Twisted-Python] Re: communication idioms with Perspective Broker
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11030">[ date ]</a>
+              <a href="thread.html#11030">[ thread ]</a>
+              <a href="subject.html#11030">[ subject ]</a>
+              <a href="author.html#11030">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Antony Kummel &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">antonykummel at yahoo.com</A>&gt; writes:
+
+As a general comment, I would suggest that you may wish to consider if
+what appears to be your goal of keeping asynchronous activities
+completely in sync is really a constraint you must meet?
+
+That is, your points seem concerned with ensuring that asynchronous
+actions or state changes somehow are reflected to users of that state
+in some atomic manner or on a transactional basis (no changes exposed
+until everything is complete).  This is a non-trivial problem in a
+distributed form, particularly if you start to consider network
+failures that can interfere with communication mid-operation.  It
+would appear you're looking for a ACID-like transactional layer.
+
+Instead of trying to meet such a tough constraint, it may be better to
+see if you can design your system to accept, from the beginning, that
+there will be a period of latency between actions taken in the system
+and resultant changes to state being apparent to users of that state.
+Or, that different parts of the system may be operating with older
+(but still valid) data at various points in time, and take more
+explicit control of when they update to the latest data.  This has its
+own form of complexity, but can yield a much more resiliant system.
+
+&gt;<i> 1. Synchronization of events and state/data changes: I want clients
+</I>&gt;<i> to be able to receive notifications from a server when certain
+</I>&gt;<i> events occur. When such events are related to changes in state or
+</I>&gt;<i> data of the server that are also accessible to the user, I want the
+</I>&gt;<i> client's interface for retrieving the data and getting notified of
+</I>&gt;<i> the event to be coherent.
+</I>
+(...)
+
+&gt;<i> The solution I came up with is to always expose associated events
+</I>&gt;<i> and data using a single cacheable object, so that when there is a
+</I>&gt;<i> change in state/data that should also make an event fire, the data
+</I>&gt;<i> change is propagated to the remote cache, and the remote cache fires
+</I>&gt;<i> an event locally (at the client's side). This way, the client's
+</I>&gt;<i> representation of the server's state is always coherent.
+</I>
+This seems reasonable to me, or at least as close as you can come to
+your requirement of keeping a remote client's data/events in sync.
+You would need to ensure that your state object managed changes to
+itself such that it only reflected changes down the PB channel to any
+cacheable observers at appropriate times when its own state was
+consistent.  E.g., you wouldn't necessarily update on each field or
+attribute change.
+
+What you're effectively doing here is using the cacheable object as
+your transaction manager, controlling what clients see.
+
+Note that to ensure consistency between clients and server, you'd want
+to have everyone working from cacheables of this object and nobody
+(even on the server itself) working from the object itself.  Otherwise,
+you'd need a mechanism (such as with point 2)
+
+You still have an issue of network outages preventing updates from
+making it to clients, but in that case you'd only have to deal with a
+disconnected client being out of date with respect to the server and
+other clients, but in a consistent way, and upon reconnecting it would
+receive a new, but again consistent, set of state information.
+
+&gt;<i> 2. Synchronization of remote commands and remote events/data
+</I>&gt;<i> changes: I want clients to be able to issue commands to a server
+</I>&gt;<i> that make its state or associated data change, and also to have an
+</I>&gt;<i> up-to-date representation of the state or data (and possible events
+</I>&gt;<i> issued by changes in the state/data). The problem is how to
+</I>&gt;<i> synchronize the firing of the deferred returned by the remote method
+</I>&gt;<i> call with the change in the client's representation of the server's
+</I>&gt;<i> state/data (i.e. to make sure that when the deferred fires, the
+</I>&gt;<i> client's representation of the state is coherent with the command,
+</I>&gt;<i> i.e. changed).
+</I>
+(...)
+
+&gt;<i> Presently I have no solution for this, but I'm pretty sure that it
+</I>&gt;<i> requires some combination of referenceable and cacheable that will
+</I>&gt;<i> insure one coherent interface to associated data, events and
+</I>&gt;<i> commands. I am thinking to achieve this with a copyable that will
+</I>&gt;<i> contain both a referenceable and a cacheable.
+</I>
+I think you're going to have an uphill battle here to try to
+synchronize what is inherently distributed and asynchronous behavior.
+
+If I absolutely had to do this, it's probably along the lines of what
+your considering - I'd consider having a transaction object that
+encapsulated change requests and state updates under a single
+umbrella.  Rather than a simple cacheable though, you'd probably need
+to implement a two-phase commit protocol so that the state only
+changed on both client/server or not at all.  If you didn't do that,
+you'd leave yourself open to the operation occurring on the server,
+but the network preventing the new state information from getting down
+to the client, and the client not knowing what state the server was in.
+
+But I'd much rather just assume that the client needed to work
+properly with the state as it currently knew, and respond properly to
+any state updates as they occurred, whether due to its own operation
+or some other client's operation.  E.g., formally decouple the request
+to perform an operation, from the state changes that would occur as
+that operation was performed.
+
+In other words, try to stick more to a model/controller approach,
+where the model state is monitored by clients and they simply react to
+its changes, but actions taken always flow through a distinct
+controller path that is associated with but decoupled from the model.
+
+&gt;<i> 3. Wrapping remote objects for non-online representation. I want to
+</I>&gt;<i> be able to have objects that can be used locally, but may also
+</I>&gt;<i> provide an interface to one or more servers that have to do with the
+</I>&gt;<i> state of the object. Another reason for these wrappers is that I
+</I>&gt;<i> want to be able to pass them freely from process to process, without
+</I>&gt;<i> being dependent on the connection or on a specific server.
+</I>
+(...)
+
+&gt;<i> The question is, how to represent this to the user of the
+</I>&gt;<i> object. Whether to allow access to cached remote data and
+</I>&gt;<i> subscription to events when not online, whether to return a deferred
+</I>&gt;<i> and try to connect in case we don't have the data or throw an
+</I>&gt;<i> exception, etc. I suppose this is mostly a matter of style, but if
+</I>&gt;<i> anyone has done something like this before maybe they would have
+</I>&gt;<i> some insight
+</I>
+What we've done in a system of ours that is designed to be an
+distributed data system is treat the core data objects in the system
+as pure state objects as much as possible, generally falling into two
+classes:
+
+* Pure instance data (data objects) of which multiple copies may exist
+  simultaneously throughout the system, but which operate locally
+  (Copyable in twisted).  The only methods such objects have are to
+  manipulate the local representation (also handled by direct
+  attribute access).
+* Shared state objects (model objects) of which multiple observers
+  throughout the system may exist (Cacheable in twisted).  While these
+  objects may have similar method and attribute access as the above
+  instance data, they are only ever manipulated by controller objects,
+  for which the original instance is only the same &quot;node&quot; as the
+  original instance of the state object.  Any client needing to make
+  changes must use a reference to that controller (a twisted
+  Referenceable) and not the model itself, even on the local node
+  where the model/controller are instantiated.
+
+The choice between the two object types is not a hard and fast rule -
+we've tended to use more of the former so far.
+
+We then constructed a framework of &quot;manager&quot; objects which are
+designed to provide access and manipulation of the above data objects.
+The key attribute of a manager object is that it is both referenceable
+(twisted Referenceable) and all of its methods are deferrable
+interfaces - even if used locally.
+
+Although I found I had a desire to try to somehow just always pass
+object references (referenceable) around to everything and let PB
+handle everything transparently - in practical terms I didn't find
+that workable.  There are just too many nooks and crannies you can get
+into as things get distributed that taking some more explicit control
+became necessary to ensure robustness.  And you just can't always
+assume that making changes to state on what is ostensibly a shared
+object will magically get reflected everywhere reliably.  But that's
+actually where we found PB to be just at the right level as it was
+easy enough to wrap to behave how we wanted.
+
+We provided an extra layer of wrapping for the networking, both for
+the basic connection as well as our referenceables.  A Client object
+encapsulates making a connection to a server, along with reconnecting
+as necessary and generating local signals (we use pydispatcher) on
+connection state changes.  A matching Server object provides client
+access to local managers - through a simple Registry object - upon a
+client's connection.
+
+A general purpose wrapper object is used to wrap each manager
+referenceable so that they appear to be local (it uses the manager's
+interface definition to automatically translate method calls into
+callRemote), as well as to automatically re-establish contact with the
+remote manager if needed, by listening for the Client signals and on a
+reconnect, re-obtaining the remote Registry handle and refetching
+remote references to the manager it had previously wrapped.
+
+The wrapping may be multi-layer.  This allows us for example, to have
+a remote site have a master server, which maintains the client link to
+a central server.  That site server, therefore, has what it considers
+a local Registry with a whole set of local managers - all of which are
+technically wrappers around the twisted referenceable to the main
+central server.  But then other machines at the site themselves become
+clients of the site server, with their own references to the site
+server's references.  So when the other site machines make requests
+they flow to the site server, and then up to the central server and
+back down.  But the same source code works whether running on the
+central server, or at any level of the site servers, without knowing
+the difference (since all registry and manager interfaces are
+deferrable anyway).
+  
+While the wrapper isolates users from need to worry about
+reconnecting, we don't attempt to hide the fact that an outage is
+occurring.  Attempts to make a call on a wrapped manager during an
+outage generates normal PB exceptions, with one change that we modified
+Twisted to always return exceptions up the deferred change (even for a
+dead reference) so clients wouldn't have to deal with both local
+exceptions and errbacks.
+
+In practice, the client applications generally have some application
+level object that is also listening to the Client objects connection
+signals, and either blocking access to the user when the network is
+(with an appropriate message), or adjusting behavior accordingly.
+
+So, in operation, client code works something like:
+
+* Instantiate a Client object, give it connection info and start the
+  connection.  Request the registry from the client object (which is
+  deferrable and only fires once the overall connection cycle is
+  complete).
+* Using the Registry object (which itself is a remote wrapper version
+  on the client side), query references for any manager objects
+  needed.
+* Using the manager objects, retrieve any data objects needed.
+  Changes to model objects occur through their controllers, while
+  changes to data objects are performed locally and changes updated
+  via explicit &quot;save&quot; calls to the managers.  
+
+The last point is where we run into similar issues as yourself, I
+think.  By choosing this route we do not provide for other clients of
+that same data object to automatically see changes made by other
+clients.  They would continue to run with the copy they had previously
+received, although any subsequent retrieval would get a new copy with
+the new data.
+
+To handle crossing state changes, the originator (actual manager
+object on whatever node it exists on) of the data object maintains an
+internal tag (we use a UUID but it could also be a hash of the
+contents) in the object representing its unique state and will raise a
+SaveConflict exception of our own if someone else attempts to store
+changes to an outdated copy.  It is up to clients to handle such
+issues, should they occur (typically by requerying the information and
+then re-applying their changes), although in practice we really don't
+have scenarios where this happens yet due to typical usage patterns.
+
+Some of this could change if we moved a data object to a model object,
+but then we're requiring that even simple users of the data object
+maintain a remote cacheable reference to the object, which is
+relatively heavyweight.  Thus my comment about it being a grey area
+above as to which sort of object we decide to place such state in.  In
+our environment, our User object (which contains identifying and
+control information about users) is just a data object, as the need
+for simultaneous manipulation and monitoring of it is reasonably low.
+We do expect to have many copies of it around, but mostly on a
+read-only basis.
+
+In your context, I would think that the user object itself need not be
+something that constantly updates, but the state of which users were
+currently online would fit better as a model (and the controller to
+feed it would have methods for a given user to go online or offline).
+In our structure, we would separate out the concept of generating a
+system message - probably into a messaging manager - which would then
+receive requests to transmit messages to identified users.  But I
+don't think I'd try to tie those three things (current User object
+contents, currently online user set, generating a message) into any
+sort of guaranteed state ... I'd leave them very loosely coupled.
+
+On the issue of distribute events, that's the area we're currently
+working on, and to us the hardest part is how to handle events that
+may be generated during outages for which the disconnected clients
+have subscriptions.  If it's just for changes to state objects (such
+as cacheables) that's not so bad, since the reconnection process will
+re-query the current state information.  But if it's for more general
+notifications (we might have our own bit for &quot;user updated&quot; like your
+&quot;user came online&quot;) you have a question of how long do you queue up
+such events for clients that might never show up again.
+
+Currently we are targetting such events being handled by a signal or
+event manager, which will maintain an ongoing history of such events.
+Subscribers to the event manager will get copies of appropriate
+events.  When a client connects it's local wrapper for the remote
+event manager will actually handle all local subscriptions,
+maintaining a single remote set of subscriptions to minimize network
+I/O.  It will also track the delivery of any events.  Upon being
+disconnected/reconnecting (per the standard mechanisms), the client
+event manager wrapper will request any signals that may have been
+generated since the last event seen prior to the disconnect.  We'll
+have to bound this somehow for prolonged outages.  But a key point is
+still decoupling the event handling from other operations, and we
+won't be trying to force everything to stay in sync with other clients
+and/or servers at all times.
+
+If you've put up with me until here, I hope that this at least gives
+you some other approaches to think about, even if some or all of it
+isn't directly applicable to your problem domain.
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="011023.html">[Twisted-Python] communication idioms with Perspective Broker
+</A></li>
+	<LI>Next message: <A HREF="011043.html">[Twisted-Python] Re: communication idioms with Perspective Broker
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11030">[ date ]</a>
+              <a href="thread.html#11030">[ thread ]</a>
+              <a href="subject.html#11030">[ subject ]</a>
+              <a href="author.html#11030">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

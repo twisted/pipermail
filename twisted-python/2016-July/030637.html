@@ -1,0 +1,173 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] RFC: IPv6 multicast join/ticket 6597
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20RFC%3A%20IPv6%20multicast%20join/ticket%206597&In-Reply-To=%3C20160726044330.GA8172%40jlitzing-dell%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="063107.html">
+   <LINK REL="Next"  HREF="063103.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] RFC: IPv6 multicast join/ticket 6597</H1>
+    <B>Jason Litzinger</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20RFC%3A%20IPv6%20multicast%20join/ticket%206597&In-Reply-To=%3C20160726044330.GA8172%40jlitzing-dell%3E"
+       TITLE="[Twisted-Python] RFC: IPv6 multicast join/ticket 6597">jlitzingerdev at gmail.com
+       </A><BR>
+    <I>Mon Jul 25 22:43:30 MDT 2016</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="063107.html">[Twisted-Python] Request for help with Twisted bindings in	M2Crypto
+</A></li>
+        <LI>Next message (by thread): <A HREF="063103.html">[Twisted-Python] RFC: IPv6 multicast join/ticket 6597
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#30637">[ date ]</a>
+              <a href="thread.html#30637">[ thread ]</a>
+              <a href="subject.html#30637">[ subject ]</a>
+              <a href="author.html#30637">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+Hello,
+
+I'm looking at making the changes to support IPv6 multicast groups as described
+in ticket 6597 but wanted to get some feedback (and get a feel whether this is
+even desirable) before formally submitting any patches.
+
+Specifically:
+
+1.  I've read [1] and it alludes to udp hopefully disappearing, is that something in the
+    works?  Is there a new approach to solving this problem I should look at?  A
+    branch in the works where this (conceptual) change belongs?
+
+    Note:  The addressFamily attribute referenced already exists and is set
+           properly for IPv6.
+
+2.  The attached change has the side effect that calls to ReactorBase.resolve()
+    with IPv6 literals will now likely succeed where they may have failed in the
+    past.  That means clients counting on resolve raising an exception for an
+    IPv6 literal will break.  Not sure whether this is considered a
+    compatibility issue, but I wanted to raise it.
+
+3.  One alternative to the above would be a complete API separation, via
+    something like joinIPv6Group(), and a new resolve.  Is that more appealing
+    in this case?
+
+Caveats:
+
+1.  I have not finished all of the documentation related to developers, I will
+    do so prior to formal submission.
+
+2.  I know I need tests and docs and will submit them with the final changes.
+
+On to the patches.  With these changes, I can use the joinGroup API to add
+myself to an IPv6 multicast group on Linux (verified via /proc/net/igmp6).
+Additionally, trial reports the same two failures before and after these changes
+(twisted.python.test.test_release.APIBuilderTests.test_build and
+test_buildWithPolicy).  These changes struck me as the obvious approach, but
+given the changes to resolve, not necessarily the best.
+
+
+diff --git a/twisted/internet/base.py b/twisted/internet/base.py
+index 4f2c862..e813741 100644
+--- a/twisted/internet/base.py
++++ b/twisted/internet/base.py
+@@ -567,6 +567,8 @@ class ReactorBase(object):
+             return defer.succeed('0.0.0.0')
+         if abstract.isIPAddress(name):
+             return defer.succeed(name)
++        elif abstract.isIPv6Address(name):
++            return defer.succeed(name)
+         return self.resolver.getHostByName(name, timeout)
+ 
+     # Installation.
+diff --git a/twisted/internet/udp.py b/twisted/internet/udp.py
+index b5a5322..210b079 100644
+--- a/twisted/internet/udp.py
++++ b/twisted/internet/udp.py
+@@ -485,7 +485,10 @@ class MulticastMixin:
+ 
+ 
+     def _joinAddr1(self, addr, interface, join):
+-        return self.reactor.resolve(interface).addCallback(self._joinAddr2, addr, join)
++        if self.addressFamily == socket.AF_INET:
++            return self.reactor.resolve(interface).addCallback(self._joinAddr2, addr, join)
++        else:
++            return self.reactor.resolve(interface).addCallback(self._joinAddrIPv6, addr, join)
+ 
+ 
+     def _joinAddr2(self, interface, addr, join):
+@@ -500,6 +503,18 @@ class MulticastMixin:
+         except socket.error as e:
+             return failure.Failure(error.MulticastJoinError(addr, interface, *e.args))
+ 
++    def _joinAddrIPv6(self, interface, addr, join):
++        addr = socket.inet_pton(socket.AF_INET6, addr)
++        interface = socket.inet_pton(socket.AF_INET6, interface)
++        if join:
++            cmd = socket.IPV6_JOIN_GROUP
++        else:
++            cmd = socket.IPV6_LEAVE_GROUP
++        try:
++            self.socket.setsockopt(socket.IPPROTO_IPV6, cmd, addr + interface)
++        except socket.error as e:
++            return failure.Failure(error.MulticastJoinError(addr, interface, *e.args))
++
+ 
+     def leaveGroup(self, addr, interface=&quot;&quot;):
+         &quot;&quot;&quot;Leave multicast group, return Deferred of success.&quot;&quot;&quot;
+
+
+This does require the client specify the interface argument when calling
+joinGroup, e.g. self.transport.joinGroup(&quot;ff02::1&quot;, interface=&quot;::&quot;).
+
+Thanks in advance for any feedback!
+
+-Jason Litzinger
+
+
+[1] <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2016-March/030188.html">http://twistedmatrix.com/pipermail/twisted-python/2016-March/030188.html</A>
+
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="063107.html">[Twisted-Python] Request for help with Twisted bindings in	M2Crypto
+</A></li>
+	<LI>Next message (by thread): <A HREF="063103.html">[Twisted-Python] RFC: IPv6 multicast join/ticket 6597
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#30637">[ date ]</a>
+              <a href="thread.html#30637">[ thread ]</a>
+              <a href="subject.html#30637">[ subject ]</a>
+              <a href="author.html#30637">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

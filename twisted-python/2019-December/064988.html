@@ -1,0 +1,149 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Weird epoller bug
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Weird%20epoller%20bug&In-Reply-To=%3CCAAXGW-yMByxY5tcd7a5LZ57UXMRktfqe0vdX%2Bi6wm%2BEXMG%3DxiA%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="064987.html">
+   <LINK REL="Next"  HREF="064992.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Weird epoller bug</H1>
+    <B>Robert DiFalco</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Weird%20epoller%20bug&In-Reply-To=%3CCAAXGW-yMByxY5tcd7a5LZ57UXMRktfqe0vdX%2Bi6wm%2BEXMG%3DxiA%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Weird epoller bug">robert.difalco at gmail.com
+       </A><BR>
+    <I>Tue Dec 17 14:21:49 MST 2019</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="064987.html">[Twisted-Python] Weird epoller bug
+</A></li>
+        <LI>Next message (by thread): <A HREF="064992.html">[Twisted-Python] operational visibility
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64988">[ date ]</a>
+              <a href="thread.html#64988">[ thread ]</a>
+              <a href="subject.html#64988">[ subject ]</a>
+              <a href="author.html#64988">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>One more thing, there seems to be an error that can occur in _newclient.py
+where _finishedRequest will be type None and it's errback will be attempted
+to be called. Consider this in _newclient.py. If an exception occurs in in
+maybeDeferred before _finishedRequest is assigned, then it will be None
+when it is chained elsewhere.
+
+def request(self, request):
+    &quot;&quot;&quot;
+    Issue C{request} over C{self.transport} and return a L{Deferred} which
+    will fire with a L{Response} instance or an error.
+
+    @param request: The object defining the parameters of the request to
+       issue.
+    @type request: L{Request}
+
+    @rtype: L{Deferred}
+    @return: The deferred may errback with L{RequestGenerationFailed} if
+        the request was not fully written to the transport due to a local
+        error.  It may errback with L{RequestTransmissionFailed} if it was
+        not fully written to the transport due to a network error.  It may
+        errback with L{ResponseFailed} if the request was sent (not
+        necessarily received) but some or all of the response was lost.  It
+        may errback with L{RequestNotSent} if it is not possible to send
+        any more requests using this L{HTTP11ClientProtocol}.
+    &quot;&quot;&quot;
+    if self._state != 'QUIESCENT':
+        return fail(RequestNotSent())
+
+    self._state = 'TRANSMITTING'
+    _requestDeferred = maybeDeferred(request.writeTo, self.transport)
+
+    def cancelRequest(ign):
+        # Explicitly cancel the request's deferred if it's still trying to
+        # write when this request is cancelled.
+        if self._state in (
+                'TRANSMITTING', 'TRANSMITTING_AFTER_RECEIVING_RESPONSE'):
+            _requestDeferred.cancel()
+        else:
+            self.transport.abortConnection()
+            self._disconnectParser(Failure(CancelledError()))
+    self._finishedRequest = Deferred(cancelRequest)
+
+
+
+
+On Tue, Dec 17, 2019 at 11:19 AM Robert DiFalco &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert.difalco at gmail.com</A>&gt;
+wrote:
+
+&gt;<i> I have a theory that since this runs every 20 seconds that it is falling
+</I>&gt;<i> behind somehow. Ulimits is too low, twisted is maybe eating the too many
+</I>&gt;<i> file handles exception and then trying to close a handle that doesn't
+</I>&gt;<i> actually exist. Dunno.
+</I>&gt;<i>
+</I>&gt;<i> On Tue, Dec 17, 2019 at 10:18 AM Robert DiFalco &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert.difalco at gmail.com</A>&gt;
+</I>&gt;<i> wrote:
+</I>&gt;<i>
+</I>&gt;&gt;<i> We recently switched from these versions and recently our TLS health
+</I>&gt;&gt;<i> check using treq seems to be using more and more file handles and getting
+</I>&gt;&gt;<i> this exception. Additionally our health check gets response time outs at a
+</I>&gt;&gt;<i> much higher frequency. Any tips on how I would go about debugging this? Or
+</I>&gt;&gt;<i> is this perhaps a known issue in one of the versions below and I need to
+</I>&gt;&gt;<i> either bump up or down a release version? Thanks!
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> twisted 16.6.0 -&gt; 19.19.0
+</I>&gt;&gt;<i> treq 15.1.0 -&gt; 18.6.0
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>   File
+</I>&gt;&gt;<i> &quot;/home/foo/foo/local/lib/python2.7/site-packages/twisted/internet/epollreactor.py&quot;,
+</I>&gt;&gt;<i> line 183, in removeWriter
+</I>&gt;&gt;<i>     EPOLLOUT, EPOLLIN)
+</I>&gt;&gt;<i>   File
+</I>&gt;&gt;<i> &quot;/home/foo/foo/local/lib/python2.7/site-packages/twisted/internet/epollreactor.py&quot;,
+</I>&gt;&gt;<i> line 160, in _remove
+</I>&gt;&gt;<i>     self._poller.unregister(fd)
+</I>&gt;&gt;<i> exceptions.IOError: [Errno 2] No such file or directory
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20191217/eacc6ce7/attachment.html&gt;
+</PRE>
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="064987.html">[Twisted-Python] Weird epoller bug
+</A></li>
+	<LI>Next message (by thread): <A HREF="064992.html">[Twisted-Python] operational visibility
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64988">[ date ]</a>
+              <a href="thread.html#64988">[ thread ]</a>
+              <a href="subject.html#64988">[ subject ]</a>
+              <a href="author.html#64988">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

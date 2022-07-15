@@ -1,0 +1,175 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] debugging a memory leak
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20debugging%20a%20memory%20leak&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="021624.html">
+   <LINK REL="Next"  HREF="021614.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] debugging a memory leak</H1>
+    <B>Alec Matusis</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20debugging%20a%20memory%20leak&In-Reply-To="
+       TITLE="[Twisted-Python] debugging a memory leak">matusis at yahoo.com
+       </A><BR>
+    <I>Fri Feb 19 17:52:34 EST 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="021624.html">[Twisted-Python] Nevow question
+</A></li>
+        <LI>Next message: <A HREF="021614.html">[Twisted-Python] debugging a memory leak
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21613">[ date ]</a>
+              <a href="thread.html#21613">[ thread ]</a>
+              <a href="subject.html#21613">[ subject ]</a>
+              <a href="author.html#21613">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I modified a tolerably leaking (about 40MB/day) Twisted server: when the new
+code was pushed, the memory leak  became catastrophic (about 100MB/hr).
+We could tolerate 40MB/day, but the new code needs to be debugged.
+First, I reverted to the old version, that is leaking 40MB/day (The leak
+rate is actually proportional to the number of new connections per second,
+(which correlates with the CPU utilization of the process): if CPU as
+measured by $top jumps to &gt;90%, the leak can accelerate to 50MB/hr)
+I took two steps to debug the leak:
+
+1) Using guppy/heapy via manhole:
+
+&gt;&gt;&gt;<i> hp = hpy()
+</I>&gt;&gt;&gt;<i> h = hp.heap()
+</I>&gt;&gt;&gt;<i> h
+</I>Partition of a set of 1157084 objects. Total size = 140911144 bytes.
+ Index  Count   %     Size   % Cumulative  % Kind (class / dict of class)
+     0 785798  68 48463680  34  48463680  34 str
+     1   7357   1 24660664  18  73124344  52 dict of service.TagSession
+     2  11735   1 12298280   9  85422624  61 dict of
+twisted.internet.base.DelayedCall
+     3   7377   1  7731096   5  93153720  66 dict of
+twisted.internet.tcp.Server
+     4   7375   1  7729000   5 100882720  72 dict of protocols.TagProtocol
+     5  30925   3  7174600   5 108057320  77 __builtin__.set
+     6   9193   1  6373336   5 114430656  81 dict (no owner)
+     7  15557   1  3396904   2 117827560  84 list
+     8  44833   4  3227976   2 121055536  86 types.BuiltinFunctionType
+     9  38142   3  3051360   2 124106896  88 types.MethodType
+&lt;328 more rows. Type e.g. '_.more' to view.&gt;
+
+Note that the total size of all objects is 140911144 bytes 
+The 1st, 3d and 4th items in this list show the actual number of connected
+clients. I wait for about 48 hrs, and then execute the same command, and I
+see approximately the same Total size, of 130MB.
+So the total size that Heapy sees via the manhole is stable, fluctuating
+around 140MB. 
+
+The problem is that the total RSS size of the process visible by the OS is
+much larger, it is  871680KB = 851MB:
+$ps -o pid,vsz,rss,sz,size -p 11236
+  PID     VSZ           RSS       SZ           SZ
+11236 1303180 871680 325795 1174388
+
+It is this total RSS size that keeps leaking at 40MB per day. 
+
+As far as I understand, this means that this is not the problem with purely
+Python code, since Heapy shows that the total size of all Python objects is
+more or less constant.
+Is this a correct assumption?
+
+2) So now I turn to valgrind. I am no expert in using valgrind, so what I
+did was based only on general logic/rough guesses. 
+Since I cannot run this under valgrind on a production machine due to
+performance reasons, I recompile python on the staging machine:
+./configure --enable-shared --without-pymalloc
+--prefix=/nail/encap/python-2.6.4-valgrind
+I then follow the instructions in
+<A HREF="http://svn.python.org/projects/python/trunk/Misc/README.valgrind">http://svn.python.org/projects/python/trunk/Misc/README.valgrind</A>
+Then I run twistd process like this:
+
+valgrind  --tool=memcheck
+--suppressions=/nail/sys/src/Python-2.6.4/Misc/valgrind-python.supp
+--leak-check=full --log-file=/tmp/valgrind.log  /usr/local/bin/twistd
+--no_save --reactor=epoll --pidfile=logs/tagserv.pid
+--logfile=logs/tagserv.log --python=tagserv.py
+
+The memory for the process shown by the OS is now 5x normal, and the
+performance is about 5x worse, since it's running inside valgrind's
+synthetic CPU.
+Because this is done on the staging box where I cannot accurately reproduce
+the real load, the memory leaks from simulated load seen by $ps -o rss are
+pretty small, about 1 to 10MB.
+Still, I am interested in finding out what they are.
+
+Now I encounter the problems with my understanding of how to use valgrind.
+This may not be the appropriate list for this, but perhaps someone could
+recognize the problem.
+When I start the server, about 240 lines is written to valgrind log file,
+--log-file=/tmp/valgrind.log  
+When I shut it down, it adds another 100 lines.
+No matter what I do in between, it always results in the log file with
+exactly 343 lines.
+I can have server runs with a leak of 1MB, or with 10MB, but in the end, I
+get pretty much the same log file. Moreover, when look for all lost memory
+reports:
+$grep lost valgrind.log.1  
+ 17,352 bytes in 31 blocks are possibly lost in loss record 49 of 62
+ 203,312 bytes in 478 blocks are possibly lost in loss record 57 of 62
+    definitely lost: 0 bytes in 0 blocks.
+      possibly lost: 220,664 bytes in 509 blocks.
+ 64 bytes in 2 blocks are definitely lost in loss record 12 of 63
+ 17,352 bytes in 31 blocks are possibly lost in loss record 50 of 63
+ 203,824 bytes in 479 blocks are possibly lost in loss record 58 of 63
+    definitely lost: 64 bytes in 2 blocks.
+      possibly lost: 221,176 bytes in 510 blocks.
+ 47 bytes in 1 blocks are definitely lost in loss record 8 of 63
+ 128 bytes in 4 blocks are definitely lost in loss record 16 of 63
+ 584 (104 direct, 480 indirect) bytes in 2 blocks are definitely lost in
+loss record 26 of 63
+ 1,008 bytes in 6 blocks are definitely lost in loss record 31 of 63
+ 22,296 bytes in 41 blocks are possibly lost in loss record 50 of 63
+ 183,368 bytes in 381 blocks are possibly lost in loss record 59 of 63
+    definitely lost: 1,287 bytes in 13 blocks.
+    indirectly lost: 480 bytes in 20 blocks.
+      possibly lost: 205,664 bytes in 422 blocks.
+
+If I add up all those numbers, I get less than 1MB. How do I track down the
+10MB leak?
+
+Are there any alternative strategies in finding this leak?
+
+
+
+
+</PRE>
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="021624.html">[Twisted-Python] Nevow question
+</A></li>
+	<LI>Next message: <A HREF="021614.html">[Twisted-Python] debugging a memory leak
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21613">[ date ]</a>
+              <a href="thread.html#21613">[ thread ]</a>
+              <a href="subject.html#21613">[ subject ]</a>
+              <a href="author.html#21613">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

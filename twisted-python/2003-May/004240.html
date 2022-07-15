@@ -1,0 +1,169 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Safe Pickling using banana and jelly
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Safe%20Pickling%20using%20banana%20and%20jelly&In-Reply-To=20030526174317.216d7dd9.itamar%40itamarst.org">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004238.html">
+   <LINK REL="Next"  HREF="004241.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Safe Pickling using banana and jelly</H1>
+    <B>Andrew Dalke</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Safe%20Pickling%20using%20banana%20and%20jelly&In-Reply-To=20030526174317.216d7dd9.itamar%40itamarst.org"
+       TITLE="[Twisted-Python] Safe Pickling using banana and jelly">dalke at dalkescientific.com
+       </A><BR>
+    <I>Mon May 26 19:29:06 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004238.html">[Twisted-Python] Safe Pickling using banana and jelly
+</A></li>
+        <LI>Next message: <A HREF="004241.html">[Twisted-Python] Please fix your code to not use dir()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4240">[ date ]</a>
+              <a href="thread.html#4240">[ thread ]</a>
+              <a href="subject.html#4240">[ subject ]</a>
+              <a href="author.html#4240">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Itamar Shtull-Trauring:
+&gt;<i> This is... inaccurate. Jelly has security policies. The one used in the
+</I>&gt;<i> jelly module's jelly() and unjelly() module-level functions is setup by
+</I>&gt;<i> default for allowing anything, so as to make using it easy.
+</I>&gt;<i>
+</I>&gt;<i> However, the security policy for jelly in the network protocol PB only
+</I>&gt;<i> allows deserializing classes which have been explicitly approved by the
+</I>&gt;<i> user.
+</I>
+Mmmm, I see the security code, and it looks safe enough against my
+attack.  (I saw the code originally, but I went the wrong way down
+an if-statement.  I saw a __class__ being created, but hadn't realized
+what it meant to be unjellyable.)
+
+Here's another attack: what happens if I pass back a string which
+encodes [[[[[[[[[[ ... ]]]]]]]]]] where there are enough []s to
+break the recursion limit?
+
+ &gt;&gt;&gt; banana.encode(jelly.jelly([]))
+'\x01\x80\x04\x82list'
+ &gt;&gt;&gt; banana.encode(jelly.jelly([[]]))
+'\x02\x80\x04\x82list\x01\x80\x04\x82list'
+ &gt;&gt;&gt; banana.encode(jelly.jelly([[[]]]))
+'\x02\x80\x04\x82list\x02\x80\x04\x82list\x01\x80\x04\x82list'
+ &gt;&gt;&gt;
+
+The safe unjelly code uses a recursive call, so there can be at
+most 1,000 levels.  Each level takes 8 characters, so I can
+break the recursion limit at 8,000 bytes, and generate a
+RuntimeError.  It looks like this exception is caught in
+an 'except:' in _recvMessage, so that's okay (except for a
+few OSes with a small stack size) ... except what happens
+if the connection then closes and answerRequired is set and
+so _sendError is called, which calls Banana's sendEncoded
+which does a transport.write which fails .... ahh, that's
+too deep into the way Twisted works for me to follow any
+further, but it looks like write is guaranteed to catch all
+underlying errors.
+
+So my first pass suggests the code can be used in a resonable
+secure way.
+
+BTW, in my review I saw that jelly.py uses this code:
+
+     for i in dir(module):
+         i_ = getattr(module, i)
+         if type(i_) == types.ClassType:
+             if issubclass(i_, baseClass):
+                 setUnjellyableForClass('%s%s' % (prefix, i), i_)
+
+Is there any reason this code doesn't use &quot;for i, i_ in 
+module.__dict__.items()&quot;?
+I point it out because formally speaking the definition of &quot;dir()&quot; is
+documented as &quot;primarily as a convenience for use at an interactive 
+prompt&quot;
+and &quot;its detailed behavior may change across releases.&quot;  OTOH, it ain't
+broke, so no need to fix it.
+
+For completeness,
+
+% fgrep 'dir(' */*.py | grep -v '[a-z]dir'
+im/gtkcommon.py:        for n in dir(base):
+     # the behaviour of dir has changed since this was created.
+     # I think in newer Pythons it isn't needed.  But it doesn't
+     # break and is needed for older ones.
+
+manhole/explorer.py:        for i in dir(instance):
+     # The method is documented as
+     #       Note these are only the *instance* methods and members --
+     #       if you want the class methods, you'll have to look up the 
+class.
+     #
+     # However, with the change of dir behaviour in newer Pythons, this
+     # is no longer true -- all names are returned.  Fix doc or fix code?
+
+
+manhole/explorer.py:        for i in dir(theClass):
+     # not sure which behaviour is desired
+
+names/authority.py:        for record in [x for x in dir(dns) if 
+x.startswith('Record_')]:
+     # should be
+     #   for record in [v for k,v in dns.__dict__.items() if 
+k.startswith('Record_')]:
+     # and get rid of the next line
+
+spread/jelly.py:    for i in dir(module):
+spread/newjelly.py:    for i in dir(module):
+    # mentioned above
+trial/unittest.py:        names = dir(module)
+% fgrep 'dir(' */*/*.py | grep -v '[a-z]dir'
+conch/ssh/connection.py:for v in dir(connection):
+conch/ssh/transport.py:for v in dir(transport):
+     # connection.__dict__.names() also works
+
+conch/ssh/userauth.py:for v in dir(userauth):
+     # userauth.__dict__ also works
+
+spread/ui/gtk2util.py:        for k in dir(self):
+     # not sure, but here's the context
+     #
+     #    # mold can go away when we get a newer pygtk (post 1.99.14)
+     #    mold = {}
+     #    for k in dir(self):
+     #        mold[k] = getattr(self, k)
+     #
+     #  Should it go away?
+
+
+					Andrew
+					<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">dalke at dalkescientific.com</A>
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004238.html">[Twisted-Python] Safe Pickling using banana and jelly
+</A></li>
+	<LI>Next message: <A HREF="004241.html">[Twisted-Python] Please fix your code to not use dir()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4240">[ date ]</a>
+              <a href="thread.html#4240">[ thread ]</a>
+              <a href="subject.html#4240">[ subject ]</a>
+              <a href="author.html#4240">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,127 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] IOpenSSLClientConnectionCreator was	ContextFactory,	now it's IOpenSSLClientConnectionCreator not ContextFactory
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20IOpenSSLClientConnectionCreator%20was%0A%09ContextFactory%2C%0A%09now%20it%27s%20IOpenSSLClientConnectionCreator%20not%20ContextFactory&In-Reply-To=%3CA7832E9B-6B12-4B54-8AC0-616BBBA9DB83%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="028363.html">
+   <LINK REL="Next"  HREF="028367.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] IOpenSSLClientConnectionCreator was	ContextFactory,	now it's IOpenSSLClientConnectionCreator not ContextFactory</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20IOpenSSLClientConnectionCreator%20was%0A%09ContextFactory%2C%0A%09now%20it%27s%20IOpenSSLClientConnectionCreator%20not%20ContextFactory&In-Reply-To=%3CA7832E9B-6B12-4B54-8AC0-616BBBA9DB83%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] IOpenSSLClientConnectionCreator was	ContextFactory,	now it's IOpenSSLClientConnectionCreator not ContextFactory">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue May 20 03:27:08 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="028363.html">[Twisted-Python] IOpenSSLClientConnectionCreator was ContextFactory, now it's IOpenSSLClientConnectionCreator not ContextFactory
+</A></li>
+        <LI>Next message (by thread): <A HREF="028367.html">[Twisted-Python] Porting Twisted to Python 3.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#60827">[ date ]</a>
+              <a href="thread.html#60827">[ thread ]</a>
+              <a href="subject.html#60827">[ subject ]</a>
+              <a href="author.html#60827">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On May 19, 2014, at 11:24 AM, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A> wrote:
+
+&gt;<i> Prior to #7098, these were things that implemented a `getContext` method that returned an `OpenSSL.SSL.Context` instance.
+</I>
+I should note that this was poorly documented everywhere (in fact, one of the main things I noticed when working on the cluster of problems related to #7098 was that nothing really explained what a &quot;context factory&quot; was).
+
+&gt;<i> Subsequent to #7098, these are now *either* that or an object that provides `IOpenSSLClientConnectionCreator`.
+</I>
+Yes, this is correct.
+
+&gt;<i> However, other parts of Twisted itself were not updated.  For example, the layers that sit in between `twisted.protocols.tls` and `twisted.web.client.Agent` weren't touched much.
+</I>
+Are you referring to anything other than SSL4ClientEndpoint?
+
+&gt;<i> `SSL4ClientEndpoint`, for example, still documents its `sslContextFactory` as &quot;SSL Configuration information as an instance of L{twisted.internet.ssl.ContextFactory}.&quot;.  And, somewhat insanely I think, `IReactorSSL.connectSSL` still says &quot;@param contextFactory: a L{twisted.internet.ssl.ClientContextFactory} object.&quot;.
+</I>
+&quot;Insanely&quot; might be overstating it.  Incorrectly, maybe :-).
+
+&gt;<i> Merely from a documentation standpoint, this seems suboptimal.  From a compatibility standpoint...  Well, it seems incompatible to me.  Perhaps this is an instance where the compatibility policy can be broken (though really that's academic since 14.0.0 has already been released, the policy has been broken already) but I don't recall any explicit discussion about a decision to do this.
+</I>
+At the time, I thought really hard about how to perform this change in a compatible way, and I thought I'd come up with something that was in line with the compatibility policy.  Apparently my reviewer agreed.  I even thought I discussed it with you, since you were sitting right there ;-).  Perhaps it was someone else at the sprint.  Upon reflection though, I think you're right, and it is technically incompatible.  I only say &quot;technically&quot; because I don't think third-party implementations exist, not because this type of incompatibility should be OK or the policy should be changed.
+
+My reasoning went like this:
+
+If you can import the new interface to declare that you implement it, then of course your contextFactory expects to have the new methods declared on it.  So there's no possibility of passing in an object which does not provide that interface and getting a surprise AttributeError.
+
+If you want to work with older versions of Twisted and span the compatibility gap, then it's easy enough to determine if the new interface is available.
+
+To be clear, the case I didn't consider, the thing that makes this an incompatible change, is that if you have a new version of Twisted, where the new interfaces are available, and your shiny new IOpenSSLClientConnectionCreator provides them, but does not provide the old-style &quot;getContext&quot;, then a perfectly valid 3rd-party implementation of IReactorSSL will unconditionally call getContext on your fancy new object and explode.
+
+In other words, IReactorSSL has changed incompatibly, because the type of one of its arguments has changed incompatibly.
+
+If I had done this only to, for example, SSL4ClientEndpoint's constructor, I think it actually would have been a compatible change.  In order to provoke this behavior in that case, you'd need to monkeypatch SSL4ClientEndpoint itself.
+
+&gt;<i> I *hope* and suspect there won't be much fall-out from this change considering it's hard to implement TLS and as far as I know there are no third-party implementations of `IReactorSSL` (GNUTLS came to mind but they have their own incompatible interface afaict).  In other words, maybe we'll get lucky this time.
+</I>
+I did check various code-search sites to see how folks were using it, and... yes, basically nobody has implemented IReactorSSL, as far as I can tell.  I did learn that a lot of people vendor in Twisted though: do you know Twisted 10.2 apparently is in Chromium's build tools directory?  Anyway, if someone had actually implemented it, this problem might have occurred to me earlier.
+
+If we were going to make this mistake and learn from it, then this seems like the ideal place to have done so.
+
+&gt;<i> I wrote this email instead of filing tickets about the documentation problems because doing the latter was implicit acknowledgement that this incompatible change is okay.  Having written the email now, I see there's probably no going back, regardless.  Maybe we can learn something from this incident and avoid repeating it with a more popular interface, though.
+</I>
+So, just from a technical perspective, how could we have avoided this?
+
+If we were to go with the suggested 'version' attribute on interfaces, I think that we would still have basically the same problem.  We could increment IReactorSSL to version 2, but that still obliges the caller with the new-style context factory to always check that attribute before attempting to call it. That seems like a pyrrhic victory; satisfying our currently stated victory condition without actually satisfying the goal of not breaking software that implements IReactorSSL.  In fairness, it does, at least, give the developer of the offending code a way to fix it, but the developer of the offending code (the one that calls IReactorSSL) is unlikely to be the one who notices it.
+
+We could have declared a new interface (Or IReactorSSL version 2) with a new method, connectSSL_Ex, which had the new signature.  In that case, at least, you'd be aware that you were calling a new method that might not be available on older Twisted versions and might think to check the presence of IReactorSSL_2 or IReactorSSL.version.
+
+I'd say we could have only changed SSL4ClientEndpoint/SSL4ServerEndpoint and just planned to deprecate IReactorSSL entirely, but that would have left 'ITLSTransport' in the lurch, using crappy old interfaces, unless we implemented generalized protocol switching.
+
+This still leaves me scratching my head as to how I could have noticed the change was incompatible in time, though, which is possibly the more interesting question.  I guess I do read CompatibilityPolicy from time to time so this suggestion might have worked:
+
+&gt;<i> We could probably add a description of this particular kind of incompatible change to the `CompatibilityPolicy` wiki page.  If reviewers read that page, then they'll know to watch out for it.
+</I>
+&quot;Don't change the type of any public interface's arguments; for example: ...&quot;?
+
+I was going to say something about how we might want certain interfaces to not allow 3rd-party implementations, except there are plenty of 3rd-party places that IReactorSSL is imported... they just happen to inherit our existing implementation of the interface, because it's the one everyone wants anyway.
+
+&gt;<i> And of course (assuming we're committed to this direction, which we seem to be) we need to fix the rest of the &quot;contextFactory&quot; documentation throughout Twisted.  I'll go file one ticket related to that now...
+</I>
+Yes, this seems like some necessary follow-up work; reverting at this point would be pretty pointless.
+
+-g
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20140520/3e874e2c/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="028363.html">[Twisted-Python] IOpenSSLClientConnectionCreator was ContextFactory, now it's IOpenSSLClientConnectionCreator not ContextFactory
+</A></li>
+	<LI>Next message (by thread): <A HREF="028367.html">[Twisted-Python] Porting Twisted to Python 3.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#60827">[ date ]</a>
+              <a href="thread.html#60827">[ thread ]</a>
+              <a href="subject.html#60827">[ subject ]</a>
+              <a href="author.html#60827">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

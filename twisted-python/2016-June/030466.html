@@ -1,0 +1,161 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Error handling in twisted.web.HTTPClient for bad certificates with TLSMemoryBIOProtocol
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Error%20handling%20in%20twisted.web.HTTPClient%20for%20bad%0A%20certificates%20with%20TLSMemoryBIOProtocol&In-Reply-To=%3C03db4ac9-07e3-4aaf-293f-80d48902a397%40contact.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="030465.html">
+   <LINK REL="Next"  HREF="030467.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Error handling in twisted.web.HTTPClient for bad certificates with TLSMemoryBIOProtocol</H1>
+    <B>Michael Schlenker</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Error%20handling%20in%20twisted.web.HTTPClient%20for%20bad%0A%20certificates%20with%20TLSMemoryBIOProtocol&In-Reply-To=%3C03db4ac9-07e3-4aaf-293f-80d48902a397%40contact.de%3E"
+       TITLE="[Twisted-Python] Error handling in twisted.web.HTTPClient for bad certificates with TLSMemoryBIOProtocol">msc at contact.de
+       </A><BR>
+    <I>Tue Jun 21 04:16:41 MDT 2016</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="030465.html">[Twisted-Python] Question about twistedchecker failures
+</A></li>
+        <LI>Next message (by thread): <A HREF="030467.html">[Twisted-Python] two minor things
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#30466">[ date ]</a>
+              <a href="thread.html#30466">[ thread ]</a>
+              <a href="subject.html#30466">[ subject ]</a>
+              <a href="author.html#30466">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+i just stumbled onto some issue while trying to use xmlrpc.Proxy
+together with the TLSMemoryBIOProtocol, but its probably the same for
+all wrapping protocols sitting on top of the old HTTP client.
+
+If the target certificate is invalid and cannot be verified, the errback
+just tells me 'ConnectionDone', as if all was okay, and simply drops the
+SSL Error. See below for details/tracebacks.
+
+The root cause is in twisted.web.HTTPClient.connectionLost:
+
+    def connectionLost(self, reason):
+	self.handleResponseEnd()
+
+it simply ignores the reason passed to it and tries to extract some
+reason from the response. But in the case of a TLS handshake problem,
+there is no valid response yet. Looks like a bug to me.
+
+Basically what should happen is similar to the clientConnectionLost()
+method of a ClientFactory, but the Protocol already got the
+connectionMade from the tls Layer...
+
+Now i want to find the best way to deal with it.
+
+- Fix HTTPClient.connectionLost to handle the reason properly if no
+  valid Response exists?
+- Wrap TLSMemoryBIOFactory to handle this?
+- Something else? Would the new connector API handle it better?
+
+The code is a bit older, so does not use the new connector APIs yet, but
+is running like this on Twisted 16.2. (Traceback is from 14.0.2 as i
+have reproduced it there first).
+
+Basically i do this:
+
+class MyTLSXMLRPCProxy(xmlrpc.Proxy):
+    queryFactory = xmlrpc._QueryFactory
+
+    def set_ssl_client_context(self, ctx):
+        self.ssl_ctx = ctx
+
+    def callRemote(self, method, *args):
+        query_factory = self.queryFactory(
+            self.path, self.host, method, self.user,
+            self.password, self.allowNone, args)
+
+        if self.secure:
+            port = self.port or 443
+            factory = sslsupport.TLSMemoryBIOFactory(self.ssl_ctx,
+                                                     True,
+                                                     query_factory)
+        else:
+            port = self.port or 80
+            factory = query_factory
+
+        reactor.connectTCP(self.host, port, factory)
+        return query_factory.deferred
+
+Now binding an errback to call_remote does only show something like this:
+
+[Failure instance: Traceback (failure with no frames): &lt;class
+'twisted.internet.error.ConnectionDone'&gt;: Connection was closed cleanly.
+
+But the true error, as seen in the connectionLost() handler of the
+TLSMemoryBIOProtocol looks like this:
+
+[Failure instance: Traceback: &lt;class 'OpenSSL.SSL.Error'&gt;: [('SSL
+routines', 'ssl3_get_server_certificate', 'certificate verify failed')]
+	...\site-packages\twisted-14.0.2-py2.7-win32.egg\twisted\internet\selectreactor.py:149:_doReadOrWrite
+	...\site-packages\twisted-14.0.2-py2.7-win32.egg\twisted\internet\tcp.py:214:doRead
+	...\site-packages\twisted-14.0.2-py2.7-win32.egg\twisted\internet\tcp.py:220:_dataReceived
+	...\site-packages\twisted-14.0.2-py2.7-win32.egg\twisted\protocols\tls.py:415:dataReceived
+	--- &lt;exception caught here&gt; ---
+	...\site-packages\twisted-14.0.2-py2.7-win32.egg\twisted\protocols\tls.py:554:_write
+	...\site-packages\pyopenssl-0.15.1-py2.7.egg\OpenSSL\SSL.py:1271:send
+	...\lib\site-packages\pyopenssl-0.15.1-py2.7.egg\OpenSSL\SSL.py:1187:_raise_ssl_error
+	...\site-packages\pyopenssl-0.15.1-py2.7.egg\OpenSSL\_util.py:48:exception_from_error_queue
+	]
+
+Michael
+
+---
+Michael Schlenker
+Senior Software Engineer
+
+CONTACT Software GmbH           Tel.:   +49 (421) 20153-80
+Wiener Stra&#223;e 1-3               Fax:    +49 (421) 20153-41
+28359 Bremen
+E-Mail: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">michael.schlenker at contact-software.com</A>
+<A HREF="http://www.contact-software.com/">http://www.contact-software.com/</A>
+
+Registered office: Bremen, Germany
+Managing directors: Karl Heinz Zachries, Ralf Holtgrefe
+Court of register: Amtsgericht Bremen HRB 1321
+
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="030465.html">[Twisted-Python] Question about twistedchecker failures
+</A></li>
+	<LI>Next message (by thread): <A HREF="030467.html">[Twisted-Python] two minor things
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#30466">[ date ]</a>
+              <a href="thread.html#30466">[ thread ]</a>
+              <a href="subject.html#30466">[ subject ]</a>
+              <a href="author.html#30466">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

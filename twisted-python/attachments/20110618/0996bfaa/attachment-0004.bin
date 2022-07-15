@@ -1,0 +1,120 @@
+
+from twisted.names.client import createResolver
+from twisted.internet import reactor
+reactor.installResolver(createResolver(servers=[('8.8.8.8', 53), ('8.8.4.4', 53)]))
+from twisted.internet import defer, task
+from twisted.python import log
+from twisted.web.resource import Resource
+from twisted.web.server import Site, NOT_DONE_YET
+from twisted.names.client import getHostByName
+import sys
+log.startLogging(sys.stdout)
+
+from httpget2 import get
+
+from sites import SITES
+
+class Index(Resource):
+    def __init__(self, *a, **kw):
+        Resource.__init__(self, *a, **kw)
+        self.dns_queue = defer.DeferredQueue()
+        self.get_queue = defer.DeferredQueue()
+
+    def got_site(self, data, site, agg):
+        agg['OK'] += 1
+        #return 'GOT %s (%d)\r\n' % (site, len(data))
+        return 'Y'
+
+    def got_get_error(self, failure, site, agg):
+        agg['GET_ERROR'] += 1
+        return 'GET ERROR %s (%s)\r\n' % (site, failure.getErrorMessage())
+
+    def got_dns_error(self, failure, site, agg):
+        agg['DNS_ERROR'] += 1
+        return 'DNS ERROR %s (%s)\r\n' % (site, failure.getErrorMessage())
+
+    def got_other_error(self, failure, site, agg):
+        agg['OTHER_ERROR'] += 1
+        return 'UNKNOWN ERROR %s (%s)\r\n' % (site, failure.getErrorMessage())
+
+    def _ping(self, request, agg):
+        request.write('---')
+        request.write(str(agg))
+        request.write('\r\n')
+        request.write('GET %d left\r\n' % len(self.get_queue.pending))
+        request.write('DNS %d left\r\n' % len(self.dns_queue.pending))
+        reactor.callLater(1, self._ping, request, agg)
+
+    def _getSite(self, (address, site), request, agg):
+        print 'getting', site, address
+        if address is None:
+            return defer.fail(Exception("SITE %s GOT none address" % site))
+        d = get(address, site, '/')
+        d.addCallbacks(self.got_site, self.got_get_error,
+            callbackArgs=(site, agg), errbackArgs=(site, agg))
+
+        d.addCallback(request.write)
+        return d
+
+
+    def _lookupName(self, site, request, agg):
+        print 'looking up', site
+        d = getHostByName(site, timeout=(1, 3, 7))
+        def put(address, site, agg):
+            if address is None:
+                request.write(self.got_dns_error(Exception("NONE ADDRESS"), site, agg))
+            else:
+                agg['DNS'] += 1
+                self.get_queue.put((address, site))
+        d.addCallbacks(put, self.got_dns_error,
+                callbackArgs=(site, agg), errbackArgs=(site, agg))
+        return d
+        
+
+
+    def _sites_to_lookup(self, request, agg):
+        while True:
+            yield self.dns_queue.get().addCallback(self._lookupName, request, agg)
+
+
+    def _sites_to_get(self, request, agg):
+        while True:
+            yield self.get_queue.get().addCallback(self._getSite, request, agg)
+        
+
+
+    def render_GET(self, request):
+        dl = []
+        AGG = {
+            'OK': 0,
+            'DNS': 0,
+            'DNS_ERROR': 0,
+            'GET_ERROR': 0,
+            'OTHER_ERROR': 0
+        }
+        self._ping(request, AGG)
+        for site in SITES:
+            self.dns_queue.put(site)
+        for i in range(12):
+            task.cooperate(self._sites_to_lookup(request, AGG))
+        for i in range(45):
+            c = task.cooperate(self._sites_to_get(request, AGG))
+            dl.append(c.whenDone())
+
+        dl = defer.DeferredList(dl)
+
+        def finished(results):
+            request.finish()
+        dl.addCallback(finished)
+
+        return NOT_DONE_YET
+
+
+
+root = Resource()
+root.putChild('', Index())
+factory = Site(root)
+
+reactor.listenTCP(8000, factory)
+reactor.run()
+

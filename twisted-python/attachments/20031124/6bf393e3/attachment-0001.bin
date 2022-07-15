@@ -1,0 +1,250 @@
+"""Woven pages for RatControl
+"""
+from twisted.cred import checkers
+from twisted.web.woven import page, guard, interfaces
+from twisted.web.woven.widgets import Widget
+from twisted.web.microdom import lmx
+from twisted.web import static, resource
+from twisted.web.util import Redirect
+from twisted.internet import defer, reactor
+from twisted.python import components, urlpath, log
+
+from ratcontrol.web import widgets, webinterfaces, session, controllers
+from ratcontrol import process, client
+
+import os
+
+theTemplateDirectory = os.path.join(os.path.split(__file__)[0], "templates")
+
+currentPage = None
+
+class Menu(page.LivePage):
+    """I display the lefthand menu.
+    """
+    templateFile = "menu.html"
+    templateDirectory = theTemplateDirectory
+
+    def wmfactory_action(self, request):
+        prefs = request.getSession(webinterfaces.IRatControlSession)
+        action = prefs.get('action', '')
+        return action
+
+class Header(page.LivePage):
+    """The header
+    """
+    templateFile = "header.html"
+    templateDirectory = theTemplateDirectory
+
+class Footer(page.LivePage):
+    """The footer
+    """
+    templateFile = "footer.html"
+    templateDirectory = theTemplateDirectory
+
+class Main(page.LivePage):
+    """The main page
+    """
+    templateFile = "main.html"
+    templateDirectory = theTemplateDirectory
+
+class Mkvob(page.LivePage):
+    """The mkvob form
+    """
+    templateFile = "mkvob.html"
+    templateDirectory = theTemplateDirectory
+
+
+class Rmvob(page.LivePage):
+    """The rmvob form
+    """
+    templateFile = "rmvob.html"
+    templateDirectory = theTemplateDirectory
+
+class Rmview(page.LivePage):
+    """The rmview form
+    """
+    templateFile = "rmview.html"
+    templateDirectory = theTemplateDirectory
+
+class BasePage(page.LivePage, client.RatControlClient):
+    """This page contains all information that isn't specific to
+       whether or not you are logged in.
+    """
+    templateFile = "index.html"
+    templateDirectory = theTemplateDirectory
+    isLeaf = 1
+
+    def __init__(self, *args):
+        page.LivePage.__init__(self, *args)
+        client.RatControlClient.__init__(self, "admin", "rational", widgets.ResultsTable)
+
+    def setUp(self, request, document):
+        """Automatically set any preferences on the Session object
+        """
+        prefs = request.getSession(webinterfaces.IRatControlSession)
+        prefs.handleRequest(request)
+
+    # Override status so we can pass in the page so LivePage
+    # can be used to update the ResultsTable.
+    def updateStatus(self, task, step, status, results=None):
+        #currentPage = None
+        #if hasattr(self, 'page'):
+        #    currentPage = self.page
+        #    log.msg("page is defined")
+        global currentPage
+        errors = None
+        if results:
+            errors = (task, step, results)
+        self.resultsTable.setStepStatus(task, step, status, errors=errors, page=currentPage)
+
+    def wvfactory_header(self, request, node, model):
+        return Header()
+
+    def wvfactory_footer(self, request, node, model):
+        return Footer()
+
+    def wvfactory_main(self, request, node, model):
+        return Main()
+
+    def wvfactory_mkvob(self, request, node, model):
+        return Mkvob()
+
+    def wmfactory_title(self, request):
+        return "RatControl"
+
+    def wmfactory_tasks(self, request):
+        return ["mkvob", "rmvob", "rmview"]
+
+    def wvupdate_test(self, request, widget, model):
+        lmx(widget.node).a(href="")
+
+    def wvupdate_ActionAnchor(self, request, widget, model):
+        prefs = request.getSession(webinterfaces.IRatControlSession)
+        action = prefs.get('action', None)
+
+        if action and action == model:
+            lmx(widget.node).a(href='/action/' + model, _class='sidenav-selected').text(model)
+        else:
+            lmx(widget.node).a(href='/action/' + model).text(model)
+
+    def wcfactory_action(self, request, node, model):
+        return controllers.BaseController(model)
+
+    def getDynamicChild(self, name, request):
+        prefs = request.getSession(webinterfaces.IRatControlSession)
+        prefs.handleRequest(request)
+        path = os.path.join(os.path.split(__file__)[0], name)
+
+        # Protect against malicious URLs like '..'
+        if static.isDangerous(name):
+            log.msg("Oh no!!! Dangerous path '%s'" % name)
+            return static.dangerousPathError
+        elif os.path.exists(path):
+            log.msg("Returning static.File '%s'" % name)
+            return static.File(path)
+        elif name.startswith('action'):
+            # Note, isLeaf must be true for postpath to exist
+            action = request.postpath[0]
+            prefs.set("action", action)
+            log.msg("Setting action to %s" % action)
+        elif name.startswith('pb'):
+            # Note, isLeaf must be true for postpath to exist
+            action = "pb-%s" % request.postpath[0]
+            prefs.set("action", action)
+            log.msg("Setting action to %s" % action)
+        log.msg("Redirecting to /")
+        return Redirect("/")
+
+class NotLoggedIn(BasePage):
+    """This is the page that you see if you're not logged in.
+    """
+    def wmfactory_welcome(self, request):
+        return " "
+
+    def wvupdate_login(self, request, widget, model):
+        lmx(widget.node).form(action=guard.INIT_PERSPECTIVE, model="form")
+
+    def wvupdate_logout(self, request, widget, model):
+        pass
+
+    def wvfactory_menu(self, request, node, model):
+        return ' '
+
+    def wmfactory_form(self, request):
+        return guard.newLoginSignature.method(None)
+
+class LoggedIn(BasePage):
+    """This is the page that you see if you're logged in.
+    """
+    def __init__(self, username):
+        BasePage.__init__(self)
+        self.username = username
+
+    def wmfactory_welcome(self, request):
+        return "Welcome, %s" % self.username
+
+    def wvupdate_login(self, request, widget, model):
+        pass
+
+    def wvupdate_logout(self, request, widget, data):
+        lmx(widget.node).a(href=guard.DESTROY_PERSPECTIVE).text("Log out")
+
+    def wvfactory_menu(self, request, node, model):
+        return Menu()
+
+    def wvfactory_main(self, request, node, model):
+        prefs = request.getSession(webinterfaces.IRatControlSession)
+        action = prefs.get('action', None)
+        if action == 'mkvob':
+            return Mkvob()
+        elif action == 'rmvob':
+            return Rmvob()
+        elif action == 'rmview':
+            return Rmview()
+        elif action == 'pb-mkvob':
+            # Initiate the request in the pb server
+            prefs = request.getSession(webinterfaces.IRatControlSession)
+            # Set the page so the ResultsTable can use it to send javascript
+            # updates back to the browser.
+            #self.page = request.getSession(interfaces.IWovenLivePage)
+            global currentPage
+            currentPage = request.getSession(interfaces.IWovenLivePage)
+
+            vobs = prefs.get('tag')
+            vobs = vobs.split(",")
+            #group = prefs.get("group")
+            group = r'UHCADAAA\ccvobad'
+            master_site = prefs.get('master_site')
+            other_sites = prefs.get('other_sites')
+            other_sites = other_sites.split(",")
+            self.mkvob(vobs, master_site, group, other_sites)
+            return page.LivePage(template=str(self.resultsTable))
+        elif action == 'pb-rmvob':
+            prefs = request.getSession(webinterfaces.IRatControlSession)
+            global currentPage
+            currentPage = request.getSession(interfaces.IWovenLivePage)
+
+            vobs = prefs.get('tag')
+            vobs = vobs.split(",")
+            sites = prefs.get('sites')
+            sites = sites.split(",")
+            self.rmvob(vobs, sites)
+            return page.LivePage(template=str(self.resultsTable))
+        elif action == 'pb-rmview':
+            prefs = request.getSession(webinterfaces.IRatControlSession)
+            global currentPage
+            currentPage = request.getSession(interfaces.IWovenLivePage)
+
+            views = prefs.get('tag')
+            views = vobs.split(",")
+            sites = prefs.get('sites')
+            sites = sites.split(",")
+            self.rmview(views, sites)
+            return page.LivePage(template=str(self.resultsTable))
+        else:
+            return ' '
+
+    def logout(self):
+        log.msg("%s's session timed out, or they logged out." %  self.username)
+
+

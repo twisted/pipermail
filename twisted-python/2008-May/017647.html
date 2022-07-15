@@ -1,0 +1,212 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] I'm stuck
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20I%27m%20stuck&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="017646.html">
+   <LINK REL="Next"  HREF="017648.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] I'm stuck</H1>
+    <B>Curt</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20I%27m%20stuck&In-Reply-To="
+       TITLE="[Twisted-Python] I'm stuck">curtferguson at cfl.rr.com
+       </A><BR>
+    <I>Tue May  6 09:56:22 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="017646.html">[Twisted-Python]The problem afer reactor stoped....
+</A></li>
+        <LI>Next message: <A HREF="017648.html">[Twisted-Python] I'm stuck
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#17647">[ date ]</a>
+              <a href="thread.html#17647">[ thread ]</a>
+              <a href="subject.html#17647">[ subject ]</a>
+              <a href="author.html#17647">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Ok, first, I'm a true newbie, I've been playing with twisted, and python
+for that matter, for about 3 days.  I've been trying to get this script
+to work, and I *know* I've got to be doing something simple wrong.  All
+it is, is a slap-together of various examples available in the twisted
+documentation to see if I can learn how this works.  Here's the script
+
+All it is supposed to do at this point is accept a normal telnet
+connection on one port and authenticate it, and an ssh on another, and
+authenticate, I'm attempting to write an interpreter to connect both
+inputs to, but right now I'm stuck getting the connections to hold.
+
+Any assistance would be most welcome.
+
+from zope.interface import implements
+
+from twisted.internet import protocol
+from twisted.application import service, strports
+from twisted.conch.ssh import session
+from twisted.conch import interfaces as iconch
+from twisted.cred import portal, checkers
+from twisted.python import usage
+
+from twisted.conch.insults import insults
+from twisted.conch import recvline, manhole_ssh, telnet
+
+class parseInput(recvline.HistoricRecvLine):
+
+    def connectionMade(self):
+        print(&quot;Got Connection to parseInput&quot;)
+        recvline.HistoricRecvLine.connectionMade(self)
+        print(&quot;Came back from the undercall&quot;)
+        self.interpreter=commandInterpreter
+
+    def handle_QUIT(self):
+        self.terminal.loseConnection()
+
+    def lineReceived(self, line):
+        print(&quot;Input, &quot; + line)
+        self.terminal.write(&quot;I got, &quot; + line)
+
+class makeTelnetProtocol:
+    def __init__(self, portal):
+        self.portal = portal
+
+    def __call__(self):
+        auth = telnet.AuthenticatingTelnetProtocol
+        args = (self.portal,)
+        return telnet.TelnetTransport(auth, *args)
+
+class chainedProtocolFactory:
+    def __init__(self, namespace):
+        self.namespace = namespace
+
+    def __call__(self):
+        return insults.ServerProtocol(parseInput, self.namespace)
+
+class _BaseTelnetRealm:
+    implements(portal.IRealm)
+
+    def __init__(self, proto, *a, **kw):
+        self.protocolFactory = proto
+        self.protocolArgs = a
+        self.protocolKwArgs = kw
+
+    def requestAvatar(self, avatarId, *interfaces):
+        if telnet.ITelnetProtocol in interfaces:
+            return (telnet.ITelnetProtocol,
+                    self.protocolFactory(*self.protocolArgs,
+**self.protocolKwArgs),
+                    lambda: None)
+        raise NotImplementedError()
+
+class Options(usage.Options):
+    optParameters = [
+        [&quot;telnetPort&quot;, &quot;t&quot;, None, &quot;strports description of the address
+on which to listen for telnet connections&quot;],
+        [&quot;sshPort&quot;, &quot;s&quot;, None, &quot;strports description of the address on
+which to listen for ssh connections&quot;]]
+
+    def __init__(self):
+        usage.Options.__init__(self)
+        self.users = []
+        self['namespace'] = None
+
+    def opt_user(self, name):
+        self.users.append(name)
+
+    def postOptions(self):
+        if self['telnetPort'] is None and self['sshPort'] is None:
+            raise usage.UsageError(&quot;At least one of --telnetPort and
+--sshPort must be specified&quot;)
+
+def makeService(options):
+    &quot;&quot;&quot;Create a server service.
+
+    @type options: C{dict}
+    @param options: A mapping describing the configuration of
+    the desired service.  Recognized key/value pairs are::
+
+        &quot;telnetPort&quot;: strports description of the address on which
+                      to listen for telnet connections.  If None,
+                      no telnet service will be started.
+
+        &quot;sshPort&quot;: strports description of the address on which to
+                   listen for ssh connections.  If None, no ssh
+                   service will be started.
+
+        &quot;namespace&quot;: dictionary containing desired initial locals
+                     for manhole connections.  If None, an empty
+                     dictionary will be used.
+
+    @rtype: L{twisted.application.service.IService}
+    @return: A server service.
+    &quot;&quot;&quot;
+
+    svc = service.MultiService()
+
+    namespace = options['namespace']
+    if namespace is None:
+        namespace = {}
+
+    checker = checkers.InMemoryUsernamePasswordDatabaseDontUse()
+    checker.addUser(&quot;guest&quot;, &quot;testing&quot;)
+
+    if options['telnetPort']:
+        telnetRealm = _BaseTelnetRealm(telnet.TelnetBootstrapProtocol,
+                                   insults.ServerProtocol,
+                                   parseInput,
+                                   namespace)
+
+        telnetPortal = portal.Portal(telnetRealm, [checker])
+
+        telnetFactory = protocol.ServerFactory()
+        telnetFactory.protocol = makeTelnetProtocol(telnetPortal)
+        telnetService = strports.service(options['telnetPort'],
+                                         telnetFactory)
+        telnetService.setServiceParent(svc)
+
+    if options['sshPort']:
+        sshRealm = manhole_ssh.TerminalRealm()
+        sshRealm.chainedProtocolFactory = chainedProtocolFactory(namespace)
+
+        sshPortal = portal.Portal(sshRealm, [checker])
+        sshFactory = manhole_ssh.ConchFactory(sshPortal)
+        sshService = strports.service(options['sshPort'],
+                                      sshFactory)
+        sshService.setServiceParent(svc)
+
+    return svc
+
+application = service.Application(&quot;Learn Twisted&quot;)
+makeService({&quot;telnetPort&quot;: &quot;tcp:9900&quot;,
+             &quot;sshPort&quot;: &quot;tcp:9901&quot;,
+             &quot;namespace&quot;: {&quot;foo&quot;: &quot;bar&quot;}}).setServiceParent(application)
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="017646.html">[Twisted-Python]The problem afer reactor stoped....
+</A></li>
+	<LI>Next message: <A HREF="017648.html">[Twisted-Python] I'm stuck
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#17647">[ date ]</a>
+              <a href="thread.html#17647">[ thread ]</a>
+              <a href="subject.html#17647">[ subject ]</a>
+              <a href="author.html#17647">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

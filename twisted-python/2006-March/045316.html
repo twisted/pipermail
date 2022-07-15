@@ -1,0 +1,164 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: [Twisted-commits] r16495 - test that scripts	wrapped in a CGIDirectory resource actually execute
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20%5BTwisted-commits%5D%20r16495%20-%20test%20that%20scripts%0A%09wrapped%20in%20a%20CGIDirectory%20resource%20actually%20execute&In-Reply-To=%3C442AC17D.1020309%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="045313.html">
+   <LINK REL="Next"  HREF="045317.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: [Twisted-commits] r16495 - test that scripts	wrapped in a CGIDirectory resource actually execute</H1>
+    <B>Cory Dodt</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20%5BTwisted-commits%5D%20r16495%20-%20test%20that%20scripts%0A%09wrapped%20in%20a%20CGIDirectory%20resource%20actually%20execute&In-Reply-To=%3C442AC17D.1020309%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Re: [Twisted-commits] r16495 - test that scripts	wrapped in a CGIDirectory resource actually execute">corydodt at twistedmatrix.com
+       </A><BR>
+    <I>Wed Mar 29 10:18:53 MST 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="045313.html">[Twisted-Python] Re: [Twisted-commits] r16495 - test that scripts wrapped in a CGIDirectory resource actually execute
+</A></li>
+        <LI>Next message (by thread): <A HREF="045317.html">anti-tab thing, Re: [Twisted-Python] Re: [Twisted-commits] r16495
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45316">[ date ]</a>
+              <a href="thread.html#45316">[ thread ]</a>
+              <a href="subject.html#45316">[ subject ]</a>
+              <a href="author.html#45316">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+For general discussion, I have attached a pre-commit hook that rejects commits
+of .py files containing leading tabs on any line.  It does not do anything to
+files not ending in .py.  It does check for tabs mixed with spaces.  It
+ignores tabs occurring anywhere but the leading whitespace.  Here's the regex:
+
+_tabs = re.compile(r'^\s*\t\s*.*$')
+
+I have used this, albeit lightly.
+
+C
+
+Jean-Paul Calderone wrote:
+&gt;&gt;<i>
+</I>&gt;<i> 
+</I>&gt;<i> Tabs?
+</I>&gt;<i> 
+</I>
+
+====
+#!/usr/bin/env python
+&quot;&quot;&quot;This is a pre-commit hook that checks whether py files being committed
+contain tabs in their significant whitespace.
+TODO?: check for a file property that says to ignore the significant tabs,
+in cases where they're actually needed (although I can't think of any).
+&quot;&quot;&quot;
+import sys
+import re
+
+from svn import core, fs, delta, repos
+
+_tabs = re.compile(r'^\s*\t\s*.*$')
+
+class ChangeReceiver(delta.Editor):
+    def __init__(self, txn_root, base_root, pool):
+        self.txn_root = txn_root
+        self.base_root = base_root
+        self.pool = pool
+
+    def add_file(self, path, parent_baton,
+                 copyfrom_path, copyfrom_revision, file_pool):
+        return [0, path]
+
+    def open_file(self, path, parent_baton, base_revision, file_pool):
+        return [0, path]
+
+    def apply_textdelta(self, file_baton, base_checksum):
+        file_baton[0] = 1
+        # no handler
+        return None
+
+    def close_file(self, file_baton, text_checksum):
+        changed, path = file_baton
+        if len(path) &lt; 3 or path.lower()[-3:] != '.py' or not changed:
+            # This is not a .py file, don't care about tabs
+            # TODO - only look inside trunk
+            return
+
+        # Read the file contents through a tab-finder
+        subpool = core.svn_pool_create(self.pool)
+
+        stream = core.Stream(fs.file_contents(self.txn_root, path, subpool))
+
+        data = stream.read()  # core.SVN_STREAM_CHUNK_SIZE)
+        for line in data.splitlines():
+            if _tabs.match(line):
+                core.svn_pool_destroy(subpool)
+                msg = (&quot;Python file contains lines that begin with tabs: '%s'\n&quot;
+                       &quot;There may be others as well.&quot; % (path,))
+                sys.stderr.write(msg)
+                sys.exit(1)
+
+        core.svn_pool_destroy(subpool)
+
+def check_tabs(pool, repos_path, txn):
+    def authz_cb(root, path, pool):
+        return 1
+
+    fs_ptr = repos.svn_repos_fs(repos.svn_repos_open(repos_path, pool))
+    txn_ptr = fs.open_txn(fs_ptr, txn, pool)
+    txn_root = fs.txn_root(txn_ptr, pool)
+    base_root = fs.revision_root(fs_ptr, fs.txn_base_revision(txn_ptr), pool)
+    editor = ChangeReceiver(txn_root, base_root, pool)
+    e_ptr, e_baton = delta.make_editor(editor, pool)
+    repos.svn_repos_dir_delta(base_root, '', '', txn_root, '',
+                              e_ptr, e_baton, authz_cb, 0, 1, 0, 0, pool)
+
+
+if __name__ == '__main__':
+    assert len(sys.argv) == 3
+    core.run_app(check_tabs, sys.argv[1], sys.argv[2])
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.4.2 (MingW32)
+Comment: Using GnuPG with Mozilla - <A HREF="http://enigmail.mozdev.org">http://enigmail.mozdev.org</A>
+
+iD8DBQFEKsF93A5SrXAiHQcRAtG2AJ9FJHBr8T7MD6MUpxx85y3T12QBKACeJqXB
+CxzYXpGospuBh7PUqQ1pYLk=
+=36Ya
+-----END PGP SIGNATURE-----
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="045313.html">[Twisted-Python] Re: [Twisted-commits] r16495 - test that scripts wrapped in a CGIDirectory resource actually execute
+</A></li>
+	<LI>Next message (by thread): <A HREF="045317.html">anti-tab thing, Re: [Twisted-Python] Re: [Twisted-commits] r16495
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45316">[ date ]</a>
+              <a href="thread.html#45316">[ thread ]</a>
+              <a href="subject.html#45316">[ subject ]</a>
+              <a href="author.html#45316">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

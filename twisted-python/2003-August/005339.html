@@ -1,0 +1,206 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] [PATCH] make syslog work
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20%5BPATCH%5D%20make%20syslog%20work&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005345.html">
+   <LINK REL="Next"  HREF="005340.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] [PATCH] make syslog work</H1>
+    <B>Tommi Virtanen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20%5BPATCH%5D%20make%20syslog%20work&In-Reply-To="
+       TITLE="[Twisted-Python] [PATCH] make syslog work">tv at twistedmatrix.com
+       </A><BR>
+    <I>Sat Aug  2 10:27:50 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005345.html">[Twisted-Python] [PATCH] SMTP cleanup, do not hide error messages
+</A></li>
+        <LI>Next message: <A HREF="005340.html">[Twisted-Python] [PATCH] make syslog work
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5339">[ date ]</a>
+              <a href="thread.html#5339">[ thread ]</a>
+              <a href="subject.html#5339">[ subject ]</a>
+              <a href="author.html#5339">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>	Hi. Here's a patch that does a few things to twistd and
+	twisted.python.syslog.
+
+	1) twistd: allow using -n and --syslog at the same time,
+	   by reordering the elif's.
+
+	2) rewrite twisted.python.syslog to save it from bitrot,
+	   I don't think it could have worked at all. To avoid
+	   code duplication, refactor twisted.python.log a bit;
+	   we don't want twistedy time stamps in syslog, but we
+	   want rest of the nice things.
+
+	You have at most a few days to protest, or I will
+	commit. Explicitly saying &quot;looks good&quot; appreciated.
+
+Index: twisted/scripts/twistd.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/scripts/twistd.py,v
+retrieving revision 1.53
+diff -u -u -r1.53 twistd.py
+--- twisted/scripts/twistd.py	19 Jul 2003 21:36:49 -0000	1.53
++++ twisted/scripts/twistd.py	2 Aug 2003 14:46:28 -0000
+@@ -282,11 +282,11 @@
+             print 'daemons cannot log to stdout'
+             os._exit(1)
+         logFile = sys.stdout
+-    elif config['nodaemon'] and not config['logfile']:
+-        logFile = sys.stdout
+     elif config['syslog']:
+         from twisted.python import syslog
+         syslog.startLogging(config['prefix'])
++    elif config['nodaemon'] and not config['logfile']:
++        logFile = sys.stdout
+     else:
+         logPath = os.path.abspath(config['logfile'] or 'twistd.log')
+         logFile = logfile.LogFile(os.path.basename(logPath), os.path.dirname(logPath))
+Index: twisted/python/log.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/python/log.py,v
+retrieving revision 1.50
+diff -u -u -r1.50 log.py
+--- twisted/python/log.py	17 Jul 2003 09:11:33 -0000	1.50
++++ twisted/python/log.py	2 Aug 2003 14:46:29 -0000
+@@ -235,6 +235,12 @@
+         self.write = f.write
+         self.flush = f.flush
+ 
++    def prefix(self, eventDict):
++        y,mon,d,h,min, iigg,nnoo,rree,daylight = time.localtime(eventDict['time'])
++        return (&quot;%0.4d/%0.2d/%0.2d %0.2d:%0.2d %s [%s] &quot; %
++                (y, mon, d, h, min, time.tzname[daylight],
++                 eventDict['system']))
++
+     def _emit(self, eventDict):
+         edm = eventDict['message']
+         if not edm:
+@@ -244,10 +250,10 @@
+                 text = eventDict['format'] % eventDict
+         else:
+             text = ' '.join(map(str, edm))
++        prefix = self.prefix(eventDict)
+         y,mon,d,h,min, iigg,nnoo,rree,daylight = time.localtime(eventDict['time'])
+-        self.write(&quot;%0.4d/%0.2d/%0.2d %0.2d:%0.2d %s [%s] %s\n&quot; %
+-                   (y, mon, d, h, min, time.tzname[daylight],
+-                    eventDict['system'], text.replace(&quot;\n&quot;,&quot;\n\t&quot;)))
++        self.write(&quot;%s%s\n&quot; %
++                   (self.prefix(eventDict), text.replace(&quot;\n&quot;,&quot;\n\t&quot;)))
+         self.flush()                    # hoorj!
+ 
+     def start(self):
+@@ -306,8 +312,14 @@
+     _oldshowwarning = None
+ 
+ 
+-def startLogging(file, setStdout=1):
+-    &quot;&quot;&quot;Initialize logging to a specified file. If setStdout is true 
++def startLogging(file, *a, **kw):
++    &quot;&quot;&quot;Initialize logging to a specified file.
++    &quot;&quot;&quot;
++    flo = FileLogObserver(file)
++    startLoggingToObserver(flo, *a, **kw)
++
++def startLoggingToObserver(obs, setStdout=1):
++    &quot;&quot;&quot;Initialize logging to a specified observer. If setStdout is true 
+        (defaults to yes), also redirect sys.stdout and sys.stderr 
+        to the specified file.
+     &quot;&quot;&quot;
+@@ -318,8 +330,7 @@
+     if defaultObserver:
+         defaultObserver.stop()
+         defaultObserver = None
+-    flo = FileLogObserver(file)
+-    flo.start()
++    obs.start()
+     msg(&quot;Log opened.&quot;)
+     if setStdout:
+         sys.stdout = logfile
+Index: twisted/python/syslog.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/python/syslog.py,v
+retrieving revision 1.1
+diff -u -u -r1.1 syslog.py
+--- twisted/python/syslog.py	23 Nov 2002 19:54:22 -0000	1.1
++++ twisted/python/syslog.py	2 Aug 2003 14:46:29 -0000
+@@ -18,33 +18,25 @@
+ import sys
+ import log
+ 
+-class SyslogLogger:
+-
++class SyslogLogger(log.FileLogObserver):
+     def __init__(self, prefix):
+-        self.prefix = prefix
++        syslog.openlog(prefix)
++
++    def prefix(self, eventDict):
++        return (&quot;[%s] &quot; % eventDict['system'])
+ 
+     def write(self, data):
+         if not data or data=='\n':
+             return
+-        logger = log.logOwner.owner()
+-        if logger:
+-            data = logger.log(data)
+         data = data.split('\n')
+         if not data[-1]:
+             data.pop()
+         for line in data:
+-            syslog.syslog(&quot;[%s] %s&quot; % (self.prefix, line))
+-
+-    def writelines(self, lines):
+-        for line in lines:
+-            self.write(line)
+-
+-    def close(self):
+-        pass
++            syslog.syslog(line)
+ 
+     def flush(self):
+         pass
+ 
+ 
+-def startLogging(prefix='Twisted'):
+-    sys.stdout = sys.stderr = log.logfile = SyslogLogger(prefix)
++def startLogging(prefix='Twisted', setStdout=1):
++    log.startLoggingToObserver(SyslogLogger(prefix), setStdout=setStdout)
+
+-- 
+:<i>(){ :|:&amp;};:
+</I>
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005345.html">[Twisted-Python] [PATCH] SMTP cleanup, do not hide error messages
+</A></li>
+	<LI>Next message: <A HREF="005340.html">[Twisted-Python] [PATCH] make syslog work
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5339">[ date ]</a>
+              <a href="thread.html#5339">[ thread ]</a>
+              <a href="subject.html#5339">[ subject ]</a>
+              <a href="author.html#5339">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

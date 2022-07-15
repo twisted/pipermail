@@ -1,0 +1,66 @@
+#!/usr/bin/env python
+
+import random
+
+from zope.interface import implements
+
+from twisted.cred import portal, checkers
+from twisted.spread import pb
+from twisted.internet import reactor
+
+
+class MyServer:
+
+    # emulate crash when server send data to client
+    crash_server_to_client = False
+
+    def __init__(self):
+        self.last_responses = {}  # indexed by name
+
+
+class MyRealm:
+    implements(portal.IRealm)
+    def requestAvatar(self, avatarID, mind, *interfaces):
+        assert pb.IPerspective in interfaces
+        avatar = User(avatarID)
+        avatar.server = self.server
+        return pb.IPerspective, avatar, lambda: None
+
+
+class User(pb.Avatar):
+
+    def __init__(self, name):
+        self.name = name
+
+    def perspectiveMessageReceived(self, *args, **kwargs):
+        '''Save last response.'''
+        response = pb.Avatar.perspectiveMessageReceived(self, *args, **kwargs)
+        self.server.last_responses[self.name] = response  # save last response
+
+        if self.server.crash_server_to_client:
+            self.server.crash_server_to_client = False  # emulate one error
+            raise NotImplementedError
+
+        return response
+
+    def perspective_get_data(self):
+        r = random.randint(0, 100)
+
+        print '%s: !!!SEND %d' % (self.name, r)
+
+        return r
+
+    def perspective_get_last_response(self):
+        last_response = self.server.last_responses[self.name]
+        print 'return last response: %s' % last_response
+        return last_response
+
+
+realm = MyRealm()
+realm.server = MyServer()
+checker = checkers.InMemoryUsernamePasswordDatabaseDontUse()
+checker.addUser('alice', '1234')
+p = portal.Portal(realm, [checker])
+
+reactor.listenTCP(8800, pb.PBServerFactory(p))
+reactor.run()

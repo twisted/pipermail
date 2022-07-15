@@ -1,0 +1,194 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: supporting start/stop/restart behavior
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20supporting%20start/stop/restart%20behavior&In-Reply-To=%3C20030320015956.GB29224%40doublegemini.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035822.html">
+   <LINK REL="Next"  HREF="035827.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: supporting start/stop/restart behavior</H1>
+    <B>Clark C. Evans</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20supporting%20start/stop/restart%20behavior&In-Reply-To=%3C20030320015956.GB29224%40doublegemini.com%3E"
+       TITLE="[Twisted-Python] Re: supporting start/stop/restart behavior">cce at clarkevans.com
+       </A><BR>
+    <I>Wed Mar 19 18:59:56 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035822.html">[Twisted-Python] supporting start/stop/restart behavior
+</A></li>
+        <LI>Next message (by thread): <A HREF="035827.html">[Twisted-Python] supporting start/stop/restart behavior
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35823">[ date ]</a>
+              <a href="thread.html#35823">[ thread ]</a>
+              <a href="subject.html#35823">[ subject ]</a>
+              <a href="author.html#35823">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>--- twistd.py.orig	Wed Mar 19 16:21:46 2003
++++ twistd.py	Wed Mar 19 20:19:15 2003
+@@ -211,6 +211,31 @@
+     import pdb
+     pdb.set_trace()
+ 
++def killApp(config, signal = 0):
++    if os.path.exists(config['pidfile']):
++        try:
++            pid = int(open(config['pidfile']).read())
++        except ValueError:
++            sys.exit('Pidfile %s contains non numeric value' % config['pidfile'])
++
++        try:
++            os.kill(pid, signal)
++        except OSError, why:
++            if why[0] == errno.ESRCH:
++                # The pid doesnt exists.
++                if not config['quiet']:
++                    print 'Removing stale pidfile %s' % config['pidfile']
++                    os.remove(config['pidfile'])
++            else:
++                sys.exit('Can\'t check status of PID %s from pidfile %s: %s' % (pid, config['pidfile'], why[1]))
++        else:
++            if not(signal):
++                sys.exit(&quot;&quot;&quot;\
++Another twistd server is running, PID %s\n
++This could either be a previously started instance of your application or a
++different application entirely. To start a new one, either run it in some other
++directory, or use my --pidfile and --logfile parameters to avoid clashes.
++&quot;&quot;&quot; %  pid)
+ 
+ def runApp(config):
+     global initRun
+@@ -248,29 +273,7 @@
+     # This will fix up accidental function definitions in evaluation spaces
+     # and the like.
+     initRun = 0
+-    if os.path.exists(config['pidfile']):
+-        try:
+-            pid = int(open(config['pidfile']).read())
+-        except ValueError:
+-            sys.exit('Pidfile %s contains non numeric value' % config['pidfile'])
+-
+-        try:
+-            os.kill(pid, 0)
+-        except OSError, why:
+-            if why[0] == errno.ESRCH:
+-                # The pid doesnt exists.
+-                if not config['quiet']:
+-                    print 'Removing stale pidfile %s' % config['pidfile']
+-                    os.remove(config['pidfile'])
+-            else:
+-                sys.exit('Can\'t check status of PID %s from pidfile %s: %s' % (pid, config['pidfile'], why[1]))
+-        else:
+-            sys.exit(&quot;&quot;&quot;\
+-Another twistd server is running, PID %s\n
+-This could either be a previously started instance of your application or a
+-different application entirely. To start a new one, either run it in some other
+-directory, or use my --pidfile and --logfile parameters to avoid clashes.
+-&quot;&quot;&quot; %  pid)
++    killApp(config)
+ 
+     if config['logfile'] == '-':
+         if not config['nodaemon']:
+@@ -472,3 +475,66 @@
+         os._exit(1)
+ 
+     runApp(config)
++
++def runDirect(save=1):
++    &quot;&quot;&quot; run directly from python file
++
++        You can use this function to include start/stop/restart
++        functionality directly from your twisted application.
++        Following is example code, let us call it test.py,
++
++            if '__main__' == __name__:
++                # run this before twisted.internet.reactor is imported
++                from twisted.scripts.twistd import runDirect
++                runDirect(save=1)
++
++            from twisted.internet import app
++            from twisted.web.server import Site
++            from twisted.web.static import File
++            
++            application = app.Application('test')
++            application.listenTCP(8080, Site(File('.')))
++            
++
++        Given this code, the following will now work,
++           python test.py          # runs the app directly (no daemon)
++           python test.py start    # runs the app as a deamon
++           python test.py stop     # stops the app as a deamon
++           python test.py restart  # restarts the app as a deamon 
++       
++        Options can be included as well, for example, 
++           python test.py --quiet start    # deamon
++           python test.py --quiet          # no deamon
++    &quot;&quot;&quot;
++    from sys import argv, exit
++    config = ServerOptions()
++    config.synopsis = &quot;Usage: %s [options] start|stop|restart&quot; % argv[0]
++    bStop = 0; bStart = 1; bDaemon = 0
++    cmd = argv[-1]
++    if cmd in ('start', 'stop', 'restart'):
++        argv.pop()
++        bDaemon = 1
++        if 'restart' == cmd:
++            bStop = 1
++        if 'stop' == cmd:
++            bStart = 0
++            bStop = 1
++    try:
++        config.parseOptions()
++    except usage.error, ue:
++        print config.opt_help()
++        exit(1)
++    if bStop:
++        from signal import SIGTERM
++        from os.path import exists
++        from time import sleep
++        killApp(config, SIGTERM)
++        nWait = 0  # processes do not die instantly
++        while exists(config['pidfile']) and nWait &lt; 20:
++            sleep(.1)
++            nWait += 1
++    if bStart:
++        if not save:    config[&quot;no_save&quot;] = 1
++        if not bDaemon: config['nodaemon'] = 1
++        config[&quot;python&quot;] = argv[0]
++        runApp(config)
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035822.html">[Twisted-Python] supporting start/stop/restart behavior
+</A></li>
+	<LI>Next message (by thread): <A HREF="035827.html">[Twisted-Python] supporting start/stop/restart behavior
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35823">[ date ]</a>
+              <a href="thread.html#35823">[ thread ]</a>
+              <a href="subject.html#35823">[ subject ]</a>
+              <a href="author.html#35823">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

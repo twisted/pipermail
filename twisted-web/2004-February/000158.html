@@ -1,0 +1,775 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Revamped ContextSerializer/TagSerializer and other contextish stuff
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   
+   <LINK REL="Previous"  HREF="000157.html">
+   <LINK REL="Next"  HREF="000164.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Revamped ContextSerializer/TagSerializer and other contextish stuff
+   </H1>
+    <B>James Y Knight
+    </B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com"
+       TITLE="[Twisted-web] Revamped ContextSerializer/TagSerializer and other contextish stuff">twisted-web@twistedmatrix.com
+       </A><BR>
+    <I>Tue, 3 Feb 2004 12:36:40 -0500</I>
+    <P><UL>
+        <LI> Previous message: <A HREF="000157.html">[Twisted-web] Different Session timeout for different users
+</A></li>
+        <LI> Next message: <A HREF="000164.html">[Twisted-web] Revamped ContextSerializer/TagSerializer and other contextish stuff
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#158">[ date ]</a>
+              <a href="thread.html#158">[ thread ]</a>
+              <a href="subject.html#158">[ subject ]</a>
+              <a href="author.html#158">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>--Apple-Mail-4-885836739
+Content-Transfer-Encoding: 7bit
+Content-Type: text/plain;
+	charset=US-ASCII;
+	format=flowed
+
+The HTTP output encoding is set to UTF-8 in renderer, and unicode 
+strings are
+automatically encoded in utf-8 for output. If any browsers can't deal 
+with
+UTF-8, screw them. ;)
+
+Revamping of TagSerializer and ContextSerializer to be more sensible.
+  1) Context chaining works properly now.
+   - Precompiling a stan tree,
+        html[body[ul(renderer=foo)[li[a(data=&quot;Bar&quot;)]]]]
+     will result in the following (paraphrased):
+       &quot;&lt;html&gt;&lt;body&gt;&quot;, WovenContext(parents=body,html, 
+tag=ul(renderer=foo)[
+           &quot;&lt;li&gt;&quot;,WovenContext(IData=&quot;Bar&quot;, parents=li, tag=a), &quot;&lt;/li&gt;&quot;],
+       &quot;&lt;/body&gt;&lt;/html&gt;&quot;
+     The thing to notice is that the parent context chain is cut off 
+whenever
+     a WovenContext is inserted into the actual tree, as it is 
+redundant, and
+     possibly wrong (since e.g. a renderer function could reparent its 
+subtrees)
+     In ContextSerializer, the rendering context is chained onto the end 
+of the
+      remembered context, thus creating the full context chain.
+  2) Because of the above change, stripContexts isn't needed anymore.
+  3) Contexts have an &quot;isAttrib&quot; field now, indicating whether the 
+context
+     is within an attribute value. This is used by StringSerializer to 
+properly
+     escape quotes.
+  4) Contexts don't erase their parent tag field when cloned.
+  5) ContextSerializer tells TagSerializer that the context is its own,
+     and not to make a new context.
+  6) Removed a bunch of rendundant cloning.
+      Renderer.precompile, WovenContext.patterns
+      ContextSerializer uses shallow clone.
+  7) Tag.clone(deep=False) copies its children list.
+
+James
+
+This fixed the following bugs that noone noticed yet:
+  - Attribute context doesn't contain tag.
+  - Attribute values don't always get &quot; quoted.
+  - Extra contexts got put in the chain by TagSerializer sometimes.
+
+Ideas for new tests:
+  1) Render multiple times from one precompiled document, with mutation 
+of
+     context.tag by renderer function.
+  2) Attribute context is the context of their own tag.
+  3) Renderer can check its context chain to make sure that it looks
+     proper (e.g. has the right parents from the stan tree).
+     With and without precompilation and dynamic elements.
+
+
+--Apple-Mail-4-885836739
+Content-Transfer-Encoding: 7bit
+Content-Type: application/octet-stream;
+	x-unix-mode=0644;
+	name=&quot;nevow3.patch&quot;
+Content-Disposition: attachment;
+	filename=nevow3.patch
+
+Index: .cvsignore
+===================================================================
+RCS file: /cvs/Quotient/nevow/.cvsignore,v
+retrieving revision 1.1
+diff -u -r1.1 .cvsignore
+--- .cvsignore	22 Oct 2003 01:01:54 -0000	1.1
++++ .cvsignore	3 Feb 2004 17:23:56 -0000
+@@ -1,2 +1,3 @@
+ *.pyc
++*.pyo
+ .DS_Store
+Index: appserver.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/appserver.py,v
+retrieving revision 1.24
+diff -u -r1.24 appserver.py
+--- appserver.py	23 Jan 2004 17:44:46 -0000	1.24
++++ appserver.py	3 Feb 2004 17:23:56 -0000
+@@ -3,7 +3,7 @@
+ import cgi
+ from copy import copy
+ from urllib import unquote
+-from types import StringTypes
++from types import StringType
+ 
+ from twisted.web import server
+ from twisted.web import resource
+@@ -56,7 +56,7 @@
+         from nevow.renderer import flatten
+         from nevow import failure
+         result = failure.formatFailure(reason)
+-        request.write(''.join(flatten(iwoven.ISerializable(result).serialize(context.WovenContext(), None))))
++        request.write(''.join(flatten(serialize(result, context.WovenContext()))))
+         request.write(&quot;&lt;/body&gt;&lt;/html&gt;&quot;)
+ 
+ 
+@@ -133,8 +133,10 @@
+         self.deferred.callback(&quot;&quot;)
+ 
+     def _cbFinishRender(self, html):
+-        if isinstance(html, StringTypes):
++        if isinstance(html, StringType):
+             self.write(html)
++        else:
++            print &quot;html is not a string: &quot;, str(html)
+         server.Request.finish(self)
+         return html
+ 
+@@ -166,6 +168,8 @@
+         request.prepath.append(request.postpath.pop(0))
+         res = self.original.getChildWithDefault(name, request)
+         request.postpath.insert(0, request.prepath.pop())
++        if isinstance(res, defer.Deferred):
++            return res.addCallback(lambda res: (res, segments[1:]))
+         return res, segments[1:]
+ 
+     def _handle_NOT_DONE_YET(self, data, request):
+Index: context.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/context.py,v
+retrieving revision 1.16
+diff -u -r1.16 context.py
+--- context.py	30 Jan 2004 18:52:47 -0000	1.16
++++ context.py	3 Feb 2004 17:23:56 -0000
+@@ -37,31 +37,11 @@
+     def __str__(self):
+         return &quot;More than one %r with the name %r was found.&quot; % tuple(self.args[:2])
+ 
+-
+-def _stripContexts(obj):
+-    if isinstance(obj, (list, tuple)):
+-        obj = [_stripContexts(x) for x in obj]
+-    else:
+-        if isinstance(obj, WovenContext):
+-            obj = obj.tag
+-        if isinstance(obj, Tag):
+-            return stripContexts(obj)
+-    return obj
+-
+-def stripContexts(tag):
+-    for i in range(len(tag.children)):
+-        tag.children[i] = _stripContexts(tag.children[i])
+-    for key in tag.attributes:
+-        tag.attributes[key] = _stripContexts(tag.attributes[key])
+-    return tag
+-
+-
+ class WovenContext(object):
+-    cloned = False
+     key = None
+     _remembrances = {}
+     tag = None
+-    def __init__(self, parent=None, tag=None, precompile=False, remembrances=None, key=None):
++    def __init__(self, parent=None, tag=None, precompile=False, remembrances=None, key=None, isAttrib=False):
+         self.tag = tag
+         self.parent = parent
+         if key is not None and key is not Unset:
+@@ -79,6 +59,7 @@
+         else:
+             self._remembrances = remembrances
+         self.precompile = precompile
++        self.isAttrib = isAttrib
+ 
+     def __repr__(self):
+         rstr = ''
+@@ -116,7 +97,7 @@
+         &quot;&quot;&quot;
+ #        data=None, renderer=None, observer=None, remembrances=None
+ 
+-        new = WovenContext(self, tag, self.precompile, key=tag.key)
++        new = WovenContext(self, tag, self.precompile, key=tag.key, isAttrib=self.isAttrib)
+         if tag.data is not Unset:
+             new.remember(tag.data, IData)
+         if tag.remember is not Unset:
+@@ -165,7 +146,7 @@
+         while top.parent is not None:
+             if top.parent.tag is None:
+                 ## If top.parent.tag is None, that means this context (top)
+-                ## has been cloned. We want to insert the current context
++                ## is just a marker. We want to insert the current context
+                 ## (context) as the parent of this context (top) to chain properly.
+                 break
+             top = top.parent
+@@ -181,9 +162,7 @@
+         otherwise, return clones of default, forever.
+ 
+         &quot;&quot;&quot;
+-        tag = self.tag.clone()
+-        stripContexts(tag)
+-        patterner = self._locatePatterns(tag, pattern, default)
++        patterner = self._locatePatterns(self.tag, pattern, default)
+         return PatternTag(patterner)
+ 
+     def slotted(self, slot):
+@@ -198,24 +177,27 @@
+         &quot;&quot;&quot;
+         return self._locateOne(key, self._locateKeys, 'key')
+ 
+-    def _generatePatterns(self, pattern):
+-        warnings.warn(&quot;use patterns instead&quot;, stacklevel=2)
+-        return self.patterns(pattern)
+-
+     def _locatePatterns(self, tag, pattern, default):
+         keeplooking = True
++        gen = specialMatches(tag, 'pattern', pattern)
++        produced = []
+         while keeplooking:
+             keeplooking = False
+-            for x in specialMatches(tag, 'pattern', pattern):
++            for x in gen or produced:
++                if gen:
++                    produced.append(x)
+                 keeplooking = True
+                 cloned = x.clone()
+                 cloned.pattern = Unset
+                 yield cloned
++            gen=None
+         if default is None:
+             raise RuntimeError, &quot;Pattern %s was not found.&quot; % pattern
+-        while True:
+-            yield default.clone()
+-
++        if hasattr(default, 'clone'):
++            while True:  yield default.clone()
++        else:
++            while True:  yield default
++                
+     def _locateOne(self, name, locator, descr):
+         found = False
+         for node in locator(name):
+@@ -235,19 +217,25 @@
+             if keySpecial.key.endswith(key):
+                 yield keySpecial        
+ 
+-    def clone(self, includeTag=True):
+-        if self.parent is None:
+-            parent = None
++    def clone(self, deep=True, cloneTags=True):
++        ## don't clone the tags of parent contexts. I *hope* code won't be
++        ## trying to modify parent tags so this should not be necessary.
++        ## However, *do* clone the parent contexts themselves.
++        ## This is necessary for chain(), as it mutates top-context.parent.
++        
++        if self.parent:
++            parent=self.parent.clone(cloneTags=False)
+         else:
+-            parent=self.parent.clone(includeTag=False)
+-        if includeTag:
+-            tag = self.tag.clone()
++            parent=None
++        if cloneTags:
++            tag = self.tag.clone(deep=deep)
+         else:
+-            tag = None
++            tag = self.tag
+         return WovenContext(
+             parent = parent,
+             tag = tag,
+-            remembrances=self._remembrances.copy()
++            remembrances=self._remembrances.copy(),
++            isAttrib=self.isAttrib
+         )
+ 
+ 
+Index: renderer.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/renderer.py,v
+retrieving revision 1.42
+diff -u -r1.42 renderer.py
+--- renderer.py	30 Jan 2004 18:52:47 -0000	1.42
++++ renderer.py	3 Feb 2004 17:23:56 -0000
+@@ -34,8 +34,6 @@
+ 
+ cachedAdapters = {}
+ def getSerializer(obj):
+-    registry = components.getRegistry(None)
+-    
+     if hasattr(obj, '__class__'):
+         klas = obj.__class__
+     else:
+@@ -46,6 +44,7 @@
+         return adapter
+     
+     # print &quot;Adding cache entry for &quot;,klas
++    registry = components.getRegistry(None)
+     fromInterfaces = components.classToInterfaces(klas)
+     for fromInterface in fromInterfaces:
+         # print &quot; trying: &quot;, fromInterface
+@@ -77,7 +76,7 @@
+                     results.append(xml(''.join(straccum)))
+                 results.append(item)
+                 del straccum[:]
+-    
++
+ def flatten(gen):
+     &quot;&quot;&quot;
+     I am a permissive flattener for precompilation.
+@@ -178,7 +177,7 @@
+ _documents = {}
+ 
+ 
+-class ChildPrefixMixin:
++class ChildPrefixMixin(object):
+     def getChild(self, name, request):
+         w = getattr(self, 'child_%s' %name, None)
+         if w:
+@@ -250,11 +249,12 @@
+     def precompile(self):
+         klsnm = qual(self.__class__)
+         if klsnm in _documents:
+-            return [hasattr(x, 'clone') and x.clone() or x for x in _documents[klsnm]]
++            return _documents[klsnm]
+         context = WovenContext(precompile=True)
+         context.remember(self, resource.IResource)
+         context.remember(self, IRendererFactory)
+         _documents[klsnm] = rv = flatten(serialize(self.document, context))
++        # print &quot;Precompiled:&quot;,rv
+         return rv
+ 
+     def getParentContext(self, request):
+@@ -266,6 +266,7 @@
+     beforeRender = None
+     afterRender = None
+     def render(self, request):
++        request.setHeader('content-type', &quot;text/html; charset=utf-8&quot;)
+         if self.beforeRender is not None:
+             self.beforeRender(request)
+         log.msg(http_render=None, uri=request.uri)
+@@ -410,13 +411,15 @@
+             dom = flatsax.parse(self.template)
+         else:
+             dom = flatsax.parse(open(os.path.join(self.templateDirectory, self.templateFile)))
+-        doc = flatten(ISerializable(dom).serialize(context, None))
++        doc = flatten(serialize(dom, context))
+         # Precompiled. Record the time so we know when to reload the template.
+         self.precompileTime = time.time()
+         return doc
+ 
+     def render(self, request):
+-        request.setHeader('content-type', 'text/xml')
++# cannot use text/xml because it breaks MSIE
++# TODO: use text/xml when browser sends &quot;Accept&quot; header indicating support.
++        # request.setHeader('content-type', 'text/xml')
+         return HTMLRenderer.render(self, request)
+ 
+     ## TODO use a different exception handler because browsers don't like it when you say the
+Index: simple.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/simple.py,v
+retrieving revision 1.4
+diff -u -r1.4 simple.py
+--- simple.py	16 Jan 2004 21:36:27 -0000	1.4
++++ simple.py	3 Feb 2004 17:23:56 -0000
+@@ -6,9 +6,8 @@
+ 
+ from twisted.application import service, internet
+ from twisted.web import server
+-from nevow import renderer
++from nevow import renderer, appserver, stan
+ from nevow.tags import *
+-from nevow import stan
+ 
+ import random
+ 
+@@ -22,7 +21,8 @@
+ 
+ 
+ def selectOptioner(context, data):
+-    tag = context.tag.clone(deep=False)
++    tag = context.tag
++    tag.clear()
+     tag(name=&quot;flavor&quot;)
+     for value, string in data:
+         tag[
+@@ -84,4 +84,4 @@
+ ]
+ 
+ application = service.Application(&quot;simple&quot;)
+-internet.TCPServer(8080, server.Site(Simple())).setServiceParent(application)
++internet.TCPServer(8080, appserver.NevowSite(Simple())).setServiceParent(application)
+Index: stan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/stan.py,v
+retrieving revision 1.18
+diff -u -r1.18 stan.py
+--- stan.py	30 Jan 2004 18:52:47 -0000	1.18
++++ stan.py	3 Feb 2004 17:23:56 -0000
+@@ -5,7 +5,6 @@
+ 
+ from __future__ import generators
+ 
+-
+ class Proto(str):
+     &quot;&quot;&quot;Proto is a string subclass. Instances of Proto, which are constructed
+     with a string, will construct Tag instances in response to __call__
+@@ -91,7 +90,7 @@
+             if kw.has_key(name):
+                 setattr(self, name, kw[name])
+                 del kw[name]
+-        for k, v in kw.items():
++        for k, v in kw.iteritems():
+             if k[0] == '_':
+                 k = k[1:]
+             self.attributes[k] = v
+@@ -139,13 +138,13 @@
+         
+     def clone(self, deep=True):
+         &quot;&quot;&quot;Return a clone of this tag. If deep is True, clone all of this
+-        tag's children. Otherwise, the children list of the clone will
+-        be empty.
++        tag's children. Otherwise, just shallow copy the children list
++        without copying the children themselves.
+         &quot;&quot;&quot;
+         if deep:
+             newchildren = [self._clone(x, True) for x in self.children]
+         else:
+-            newchildren = []
++            newchildren = self.children[:]
+         newattrs = self.attributes.copy()
+         for key in newattrs:
+             newattrs[key]=self._clone(newattrs[key], True)
+@@ -207,7 +206,8 @@
+ 
+ def specialMatches(tag, special, pattern):
+     &quot;&quot;&quot;Generate special attribute matches starting with the given tag;
+-    if a match is found, do not look any deeper below that match.
++    if a tag has special, do not look any deeper below that tag, whether
++    it matches pattern or not.
+     &quot;&quot;&quot;
+     for childOrContext in getattr(tag, 'children', []):
+         child = getattr(childOrContext, 'tag', childOrContext)
+@@ -230,7 +230,10 @@
+         ## No divider after the last thing.
+         content[-1] = content[-1][0]
+     footers = specialMatches(context.tag, 'pattern', 'footer')
+-    return context.tag.clone(deep=False)[ headers, content, footers ]
++    
++    # clone is necessary here because headers and footers are generators that
++    # haven't run yet, which depend on context.tag's contents.
++    return context.tag.clone(deep=False).clear()[ headers, content, footers ]
+ 
+ 
+ def mapping(context, data):
+Index: serial/flatstan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatstan.py,v
+retrieving revision 1.23
+diff -u -r1.23 flatstan.py
+--- serial/flatstan.py	30 Jan 2004 18:52:48 -0000	1.23
++++ serial/flatstan.py	3 Feb 2004 17:23:56 -0000
+@@ -14,7 +14,7 @@
+ from nevow.iwoven import IRendererFactory, IData
+ from nevow.renderer import flatten, serialize
+ from nevow.accessors import convertToData
+-
++from nevow.context import WovenContext
+ allowSingleton = ('img', 'br', 'hr', 'base', 'meta', 'link', 'param', 'area',
+                   'input', 'col', 'basefont', 'isindex', 'frame')
+ 
+@@ -22,76 +22,87 @@
+     yield xml('&lt;%s /&gt;' % original)
+ 
+ 
+-def TagSerializer(original, context):
++def TagSerializer(original, context, contextIsMine=False):
++    &quot;&quot;&quot;
++    Original is the tag.
++    Context is either:
++      - the context of someone up the chain (if contextIsMine is False)
++      - this tag's context (if contextIsMine is True)
++    &quot;&quot;&quot;
++
++#    print &quot;TagSerializer:&quot;,original, &quot;Context:&quot;,context
+     visible = bool(original.tagName)
+-    singleton =  not original.renderer and not original.children and not original.data and original.tagName in allowSingleton
+-    special = context.precompile and original._specials
+-    if original.renderer:
+-        ## If we have a renderer function we want to render what it returns, not our tag
+-        visible = False
+-    if special:
++
++    ## TODO: Do we really need to bypass precompiling for *all* specials?
++    ## Perhaps just renderer?
++    if context.precompile and original._specials:
++        ## The tags inside this one get a &quot;fresh&quot; parent chain, because
++        ## when the context yielded here is serialized, the parent
++        ## chain gets reconnected to the actual parents at that
++        ## point, since the renderer function here could change
++        ## the actual parentage hierarchy.
++        nestedcontext = WovenContext(precompile=context.precompile, isAttrib=context.isAttrib)
++        
+         context = context.with(original)
+-        context.tag.children = flatten(serialize(context.tag.children, context))
++        context.tag.children = flatten(serialize(context.tag.children, nestedcontext))
++
+         yield context
+-    else:
+-        if visible:
+-            yield xml('&lt;%s' % original.tagName)
+-            if original.attributes:
+-                for (k, v) in original.attributes.items():
+-                    if v is None:
+-                        warnings.warn(&quot;An attribute value for key %r on tag %r was None; ignoring attribute&quot; % (original.tagName, v))
+-                        continue
+-                    yield xml(' %s=&quot;' % k)
+-                    if context.precompile:
+-                        yield v
+-                    else:
+-                        flat = flatten(serialize(v, context))
+-                        if flat:
+-                            val = flat[0]
+-                            if isinstance(val, StringTypes):
+-                                val = val.replace('&quot;', '&amp;quot;')
+-                            yield xml(val)
+-                    yield xml('&quot;')
+-        if singleton:
+-            if visible:
+-                yield xml(' /&gt;')
+-        else:
+-            if visible:
+-                yield xml('&gt;')
+-            # TODO: Make this less buggy.
+-            try:
+-                if context.locate(IData) != original.data:
+-                    context = context.with(original)
+-            except KeyError:
+-                context = context.with(original)
+-            except TypeError:
+-                context = context.with(original)
+-            if original.renderer:
+-                toBeRenderedBy = original.renderer
+-                original.renderer = None
+-                yield serialize(toBeRenderedBy, context)
+-                original.wasRenderedBy = toBeRenderedBy
+-            elif original.children:
+-                for child in original.children:
+-                    yield serialize(child, context)
+-            if visible:
+-                yield xml('&lt;/%s&gt;' % original.tagName)
++        return
+ 
++    if not contextIsMine:
++        context = context.with(original)
++    if original.renderer:
++        ## If we have a renderer function we want to render what it returns,
++        ## not our tag
++        toBeRenderedBy = original.renderer
++        original.renderer = None
++        yield serialize(toBeRenderedBy,context)
++        original.wasRenderedBy = toBeRenderedBy
++        return
++
++    if not visible:
++        for child in original.children:
++            yield serialize(child, context)
++        return
++    
++    yield xml('&lt;%s' % original.tagName)
++    if original.attributes:
++        attribContext = WovenContext(parent=context, precompile=context.precompile, isAttrib=True)
++        for (k, v) in original.attributes.iteritems():
++            if v is None:
++                warnings.warn(&quot;An attribute value for key %r on tag %r was None; ignoring attribute&quot; % (original.tagName, v))
++                continue
++            yield xml(' %s=&quot;' % k)
++            yield serialize(v, attribContext)
++            yield xml('&quot;')
++    if not original.children:
++        if original.tagName in allowSingleton:
++            yield xml(' /&gt;')
++        else:
++            yield xml('&gt;&lt;/%s&gt;' % original.tagName)
++    else:
++        yield xml('&gt;')
++        for child in original.children:
++            yield serialize(child, context)        
++        yield xml('&lt;/%s&gt;' % original.tagName)
+ 
+ def StringSerializer(original, context):
+-    from twisted.xish.domish import escapeToXml
+     ## quote it
+-    yield escapeToXml(original)
++    if context.isAttrib:
++        return original.replace(&quot;&amp;&quot;, &quot;&amp;amp;&quot;).replace(&quot;&lt;&quot;, &quot;&amp;lt;&quot;).replace(&quot;&gt;&quot;, &quot;&amp;gt;&quot;)
++    else:
++        return original.replace(&quot;&amp;&quot;, &quot;&amp;amp;&quot;).replace(&quot;&lt;&quot;, &quot;&amp;lt;&quot;).replace(&quot;&gt;&quot;, &quot;&amp;gt;&quot;).replace(&quot;\&quot;&quot;, &quot;&amp;quot;&quot;)
++
++def UTF8Serializer(original, context):
++    return StringSerializer(original.encode('utf-8'), context)
+ 
+ 
+ def NoneWarningSerializer(original, context):
+-    yield xml('&lt;span style=&quot;position: relative; font-size: 100; font-weight: bold; color: red; border: thick solid red;&quot;&gt;None&lt;/span&gt;')
++    return xml('&lt;span style=&quot;position: relative; font-size: 100; font-weight: bold; color: red; border: thick solid red;&quot;&gt;None&lt;/span&gt;')
+ 
+ 
+ def StringCastSerializer(original, context):
+-    from twisted.xish.domish import escapeToXml
+-    ## quote it
+-    return escapeToXml(str(original))
++    return StringSerializer(str(original), context)
+ 
+ 
+ def ListSerializer(original, context):
+@@ -117,10 +128,9 @@
+         return PASS_SELF
+     return False
+ 
+-
+ def FunctionSerializer(original, context, nocontextfun=FunctionSerializer_nocontext):
+     if context.precompile:
+-        yield original
++        return original
+     else:
+         data = convertToData(context, context.locate(IData))
+         try:
+@@ -136,11 +146,11 @@
+         except StopIteration:
+             log.err()
+             raise RuntimeError, &quot;User function %r raised StopIteration.&quot; % original
+-        yield serialize(result, context)
++        return serialize(result, context)
+ 
+ 
+ def DeferredSerializer(original, context):
+-    yield original
++    return original
+ 
+ 
+ def MethodSerializer(original, context):
+@@ -149,7 +159,7 @@
+         code = getattr(func, 'func_code', None)
+         return code is None or code.co_argcount == 2
+     return FunctionSerializer(original, context, nocontext)
+-  
++
+ 
+ def CallableInstanceSerializer(original, context):
+     def nocontext(original):
+@@ -158,7 +168,6 @@
+         return code is None or code.co_argcount == 2
+     return FunctionSerializer(original, context, nocontext)
+ 
+-
+ def DirectiveSerializer(original, context):
+     rendererFactory = context.locate(IRendererFactory)
+     renderer = rendererFactory.renderer(context, original)
+@@ -166,22 +175,26 @@
+ 
+ 
+ def ContextSerializer(original, context):
+-    originalContext = original.clone()
++    originalContext = original.clone(deep=False)
+     originalContext.precompile = context and context.precompile or False
+     originalContext.chain(context)
+     try:
+-        yield flatten(serialize(originalContext.tag, originalContext))
++        return flatten(TagSerializer(originalContext.tag, originalContext, contextIsMine=True))
+     except:
+-            from twisted.python import failure
+-            fail = failure.Failure()
+-            from nevow import failure as nevfail
+-            yield serialize([
+-                xml(&quot;&quot;&quot;&lt;div style=&quot;border: 1px dashed red; clear: both&quot; onclick=&quot;this.childNodes[1].style.display = this.childNodes[1].style.display == 'none' ? 'block': 'none'&quot;&gt;&quot;&quot;&quot;),
+-                str(fail.value),
+-                xml('&lt;div style=&quot;display: none&quot;&gt;'),
+-                nevfail.formatFailure(fail),
+-                xml('&lt;/div&gt;&lt;/div&gt;')
+-            ], context)
++        from twisted.web import util
++        from twisted.python import failure
++        from twisted.internet import reactor, defer
++        d = defer.Deferred()
++        fail = failure.Failure()
++        reactor.callLater(0, lambda: d.callback(xml(util.formatFailure(fail))))
++        desc = str(fail.value)
++        return serialize([
++            xml(&quot;&quot;&quot;&lt;div style=&quot;border: 1px dashed red; color: red; clear: both&quot; onclick=&quot;this.childNodes[1].style.display = this.childNodes[1].style.display == 'none' ? 'block': 'none'&quot;&gt;&quot;&quot;&quot;),
++            desc,
++            xml('&lt;div style=&quot;display: none&quot;&gt;'),
++            d,
++            xml('&lt;/div&gt;&lt;/div&gt;')
++        ], context)
+ 
+ 
+ def CommentSerializer(original, context):
+Index: test/test_flatstan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/test/test_flatstan.py,v
+retrieving revision 1.20
+diff -u -r1.20 test_flatstan.py
+--- test/test_flatstan.py	30 Jan 2004 18:52:48 -0000	1.20
++++ test/test_flatstan.py	3 Feb 2004 17:23:56 -0000
+@@ -248,6 +248,7 @@
+                 render_test
+             ]
+         ]
++        document=self.render(document, precompile=True)
+         self.assertEquals(self.render(document), '&lt;html&gt;&lt;body&gt;&lt;ul&gt;&lt;li&gt;&lt;a href=&quot;test/one&quot;&gt;link&lt;/a&gt;&lt;/li&gt;&lt;li&gt;&lt;a href=&quot;test/two&quot;&gt;link&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;&lt;ul&gt;&lt;li&gt;fooone&lt;/li&gt;&lt;li&gt;footwo&lt;/li&gt;&lt;/ul&gt;&lt;/body&gt;&lt;/html&gt;')
+ 
+     def test_singletons(self):
+@@ -281,6 +282,5 @@
+         val = self.render(precompiled)
+         self.assertIn('1', val)
+         val2 = self.render(precompiled)
+-        self.assertIn('2', val)
+-    test_it.todo = &quot;fix multiple-renders with directives bug&quot;
++        self.assertIn('2', val2)
+ 
+
+--Apple-Mail-4-885836739--
+
+
+
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI> Previous message: <A HREF="000157.html">[Twisted-web] Different Session timeout for different users
+</A></li>
+	<LI> Next message: <A HREF="000164.html">[Twisted-web] Revamped ContextSerializer/TagSerializer and other contextish stuff
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#158">[ date ]</a>
+              <a href="thread.html#158">[ thread ]</a>
+              <a href="subject.html#158">[ subject ]</a>
+              <a href="author.html#158">[ author ]</a>
+         </LI>
+       </UL>
+</body></html>

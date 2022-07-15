@@ -1,0 +1,184 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Supporting a two-part client protocol.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Supporting%20a%20two-part%20client%20protocol.&In-Reply-To=%3CCAMTx_3AydBjqcfHo3_tUuuDKMR938e8qvB%3DFuH_zZoNVQnXB5w%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="065007.html">
+   <LINK REL="Next"  HREF="065009.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Supporting a two-part client protocol.</H1>
+    <B>Colin Dunklau</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Supporting%20a%20two-part%20client%20protocol.&In-Reply-To=%3CCAMTx_3AydBjqcfHo3_tUuuDKMR938e8qvB%3DFuH_zZoNVQnXB5w%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Supporting a two-part client protocol.">colin.dunklau at gmail.com
+       </A><BR>
+    <I>Tue Feb  4 15:49:50 MST 2020</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="065007.html">[Twisted-Python] Supporting a two-part client protocol.
+</A></li>
+        <LI>Next message (by thread): <A HREF="065009.html">[Twisted-Python] Supporting a two-part client protocol.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65008">[ date ]</a>
+              <a href="thread.html#65008">[ thread ]</a>
+              <a href="subject.html#65008">[ subject ]</a>
+              <a href="author.html#65008">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Tue, Feb 4, 2020 at 6:12 PM Go Luhng &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">goluhng at gmail.com</A>&gt; wrote:
+&gt;<i>
+</I>&gt;<i> Thanks Colin and Barry for the reply. I read the sans-io docs and it
+</I>&gt;<i> is an attractive approach.
+</I>&gt;<i>
+</I>&gt;<i> I believe I have a plan going forward, but I'm not sure what you mean
+</I>&gt;<i> by explicit vs implicit state machine, if you care to elaborate.
+</I>
+IntNStringReceiver has a state machine, but it's embedded in the
+protocol implementation, so it's implicit:
+<A HREF="https://github.com/twisted/twisted/blob/twisted-19.10.0/src/twisted/protocols/basic.py#L682">https://github.com/twisted/twisted/blob/twisted-19.10.0/src/twisted/protocols/basic.py#L682</A>
+It's not that easy to tell what's going on there, at first glance. The
+dataReceived method has _most_ of the state machine implementation,
+but it fiddles with instance attributes, and that length check in
+sendString could be considered a parser detail, rather than part of
+the protocol itself.
+
+The situation with LineOnlyReceiver is similar:
+<A HREF="https://github.com/twisted/twisted/blob/twisted-19.10.0/src/twisted/protocols/basic.py#L421">https://github.com/twisted/twisted/blob/twisted-19.10.0/src/twisted/protocols/basic.py#L421</A>
+Now that one is simple enough that it's reasonably clear what's going
+on... but it's a good candidate for a simple example (analysis first,
+code after).
+
+This is clearly more code, but the benefit from its clearer separation
+of concerns is a boon... especially given that this is a reeeeal
+simple example dealing with one of the simplest possible protocols.
+Your protocol will undoubtedly be much more complex, so the benefit
+should be a lot clearer.
+
+In the original, the parsing details are mixed in with the
+higher-level semantics of the protocol, especially with respect to the
+max line length handling. In the &quot;composed&quot; version (admittedly not
+the best name), the parser is explicit, and entirely divorced from the
+protocol. It's easier to understand, simpler (even trivial) to test in
+isolation, and winds up being reusable outside of a Twisted Protocol.
+Hey, this is starting to sound like that sans-io thingie!
+
+To map LineParser's semantics to sans-io terminology, readData is for
+getting &quot;input&quot;, and iterLines (actually the generator iterator it
+makes) produces &quot;events&quot;: a &quot;line event&quot;, or a &quot;line too darn long&quot;
+event (via the exception).
+
+Link for easier viewing
+(<A HREF="https://gist.github.com/cdunklau/4f8c72222295680ca20e3d4401f385b1">https://gist.github.com/cdunklau/4f8c72222295680ca20e3d4401f385b1</A>),
+reproduced here for list archive posterity:
+
+    import collections
+
+    from twisted.internet import protocol
+
+
+    class LineParser(object):
+        def __init__(self, delimiter, max_length):
+            self.delimiter = delimiter
+            self.max_length = max_length
+            self._buffer = b''
+            self._lines = collections.deque()
+
+        def readData(self, data):
+            lines = (self._buffer + data).split(self.delimiter)
+            self._buffer = lines.pop()
+            self._lines.extend(lines)
+
+        def iterLines(self):
+            while self._lines:
+                line = self._lines.popleft()
+                if len(line) &gt; self.max_length:
+                    raise LineLengthExceeded(line)
+                yield line
+            if len(self._buffer) &gt; self.max_length:
+                raise LineLengthExceeded(self._buffer)
+
+
+    class LineLengthExceeded(Exception):
+        def __init__(self, culprit):
+            super().__init__(culprit)
+            self.culprit = culprit
+
+
+    class ComposedLineOnlyReceiver(protocol.Protocol):
+        delimiter = b'\r\n'
+        MAX_LENGTH = 16384
+        _parser = None
+
+        def dataReceived(self, data):
+            &quot;&quot;&quot;
+            Translates bytes into lines, and calls lineReceived.
+            &quot;&quot;&quot;
+            if self._parser is None:
+                self._parser = LineParser(self.delimiter, self.MAX_LENGTH)
+
+            self._parser.readData(data)
+            try:
+                for line in self._parser.iterLines():
+                    if self.transport.disconnecting:
+                        # this is necessary because the transport may
+be told to lose
+                        # the connection by a line within a larger
+packet, and it is
+                        # important to disregard all the lines in that
+packet following
+                        # the one that told it to close.
+                        return
+                    self.lineReceived(line)
+            except LineLengthExceeded as e:
+                return self.lineLengthExceeded(e.culprit)
+
+        def lineReceived(self, line):
+            &quot;&quot;&quot;
+            Override this for when each line is received.
+            @param line: The line which was received with the delimiter removed.
+            @type line: C{bytes}
+            &quot;&quot;&quot;
+            raise NotImplementedError
+
+        def sendLine(self, line):
+            return self.transport.writeSequence((line, self.delimiter))
+
+        def lineLengthExceeded(self, line):
+            return self.transport.loseConnection()
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="065007.html">[Twisted-Python] Supporting a two-part client protocol.
+</A></li>
+	<LI>Next message (by thread): <A HREF="065009.html">[Twisted-Python] Supporting a two-part client protocol.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65008">[ date ]</a>
+              <a href="thread.html#65008">[ thread ]</a>
+              <a href="subject.html#65008">[ subject ]</a>
+              <a href="author.html#65008">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

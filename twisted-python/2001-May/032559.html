@@ -1,0 +1,217 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] smtp server -- pre-alpha version, please comment on design
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20smtp%20server%20--%20pre-alpha%20version%2C%20please%20comment%20on%20design&In-Reply-To=%3CE14uh22-0002yz-00%40darjeeling%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="032558.html">
+   <LINK REL="Next"  HREF="032560.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] smtp server -- pre-alpha version, please comment on design</H1>
+    <B>Moshe Zadka</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20smtp%20server%20--%20pre-alpha%20version%2C%20please%20comment%20on%20design&In-Reply-To=%3CE14uh22-0002yz-00%40darjeeling%3E"
+       TITLE="[Twisted-Python] smtp server -- pre-alpha version, please comment on design">moshez at zadka.site.co.il
+       </A><BR>
+    <I>Tue May  1 14:46:02 MDT 2001</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="032558.html">[Twisted-Python] twisted.web split
+</A></li>
+        <LI>Next message (by thread): <A HREF="032560.html">[Twisted-Python] &lt;homer&gt;Oooh, it's good news&lt;/homer&gt;
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#32559">[ date ]</a>
+              <a href="thread.html#32559">[ thread ]</a>
+              <a href="subject.html#32559">[ subject ]</a>
+              <a href="author.html#32559">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi, all!
+twisted.mail so far has not been coming along nicely. However,
+I now have some code which when tested will finally bring us to the
+point where we can have a working e-mail system.
+
+Well, not really -- we'll still need to handle *sending* e-mail, which
+isn't as easy async as you may think... :(
+
+Let me say a few general words about the way it works:
+I wanted to have the same seperation of responsibilities that brings
+us seperate handler/server/protocol-transformer to continue onto actually
+saving e-mails. Towards this end, I've made the server responsible for
+managing the list of domains, each of which is an object which can check
+if it wants to accepts for certain localparts, and to save the e-mail.
+This should bring us a higher level of testability, since we can have
+dummy domains which just remember the e-mail messages saved, and then
+we can bombard the handler with .handleData from us, and so on.
+
+But, off to a better life and so on, here is the code for the pre-alpha
+SMTP server:
+
+from twisted.protocols import smtp
+
+class VirtualSMTPHandler(smtp.SMTPHandler):
+
+    seq = 0
+
+    def validateTo(self, helo, destination):
+        try:
+            domain = string.split(destination, '@', 1)[1]
+        except IndexError:
+            return 0
+        if not self.handler.server.domains.has_key(domain):
+            return 0
+        if not self.handler.server.domains[domain].exists(user):
+            return 0
+        return 1
+
+    def handleMessage(self, helo, origin, recipients, message):
+        for recipient in recipients:
+            user, domain = string.split(destination, '@', 1)
+            self.handler.server.domains[domain].save_message(user, message)
+
+
+class SMTPNetHandler(net.GenericHandler):
+
+    handler = None
+
+    def handleData(self, data):
+        if self.handler is None:
+            self.handler = VirtualMaildirSMTPHandler(self)
+        self.handler.handleData(data)
+
+    def connectionLost(self, why):
+        self.handler = None
+        net.GenericHandler.connectionLost(self, why)
+
+
+class VirtualSMTPServer(net.GenericServer):
+
+    handler = SMTPNetHandler
+
+    def __init__(self, *args, **kw):
+        apply(net.GenericServer.__init__, (self,)+args, kw)
+        self.domains = {}
+
+    def addDomain(self, name, domain):
+        self.domains[name] = domain
+
+
+
+n = 0
+
+class AbstractMaildirDomain:
+
+    def __init__(self, root):
+        self.root = root
+
+    def user_directory(self, user):
+        return None
+
+    def exists(self, name):
+        return self.user_directory(user) is not None
+
+    def save_message(self, name, message):
+        dir = self.user_directory(user)
+        name = self._generateMaildirName() 
+        filename = os.path.join(dir, 'new', name)
+        fp = open(filename, 'w')
+        try:
+            fp.write(message)
+        finally:
+            fp.close()
+
+    def _generateMaildirName(self):
+        global n
+        t = str(int(time.time()))
+        s = socket.gethostname()
+        p = os.getpid()
+        n = n+1
+        return '%s.%s_%s.%s' % (t, p, n, s)
+
+
+class BounceDomain:
+
+    def exists(self, name):
+        return 0
+
+
+class DirectoryExistanceMaildirDomain(AbstractMaildirDomain):
+
+    def user_directory(self, name):
+	dir = os.path.join(self.root, name)):
+        if os.path.isdir(dir):
+            return dir
+
+
+class PostmasterMaildirDomain(AbstractMaildirDomain):
+
+    def user_directory(self, name):
+	dir = os.path.join(self.root, name)):
+        if os.path.isdir(dir):
+            return dir
+        return os.path.join(self.root, 'postmaster')
+
+# This wasn't in the original code, but is a nice example:
+
+class SubdomainManager:
+
+    def __init__(self, domains={}):
+        self.domains = {}
+        self.domains.update(domains)
+
+    def addDomain(self, name, domain):
+        self.domains[name] = domain
+
+    def exists(self, user):
+        if not '%' in user:
+             return 0
+        localpart, remote = string.split(user, '%', 1)
+        if not self.domains.has_key(remote):
+             return 0
+        if not self.domains[remote].exists(localpart):
+             return 0
+        return 1
+
+    def save_message(self, name, message):
+        localpart, remote = string.split(user, '%', 1)
+        return self.domains[remote].save_message(localpart, message)
+-- 
+&quot;I'll be ex-DPL soon anyway so I'm        |LUKE: Is Perl better than Python?
+looking for someplace else to grab power.&quot;|YODA: No...no... no. Quicker,
+   -- Wichert Akkerman (on debian-private)|      easier, more seductive.
+For public key, finger <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">moshez at debian.org</A>  |<A HREF="http://www.{python,debian,gnu">http://www.{python,debian,gnu</A>}.org
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="032558.html">[Twisted-Python] twisted.web split
+</A></li>
+	<LI>Next message (by thread): <A HREF="032560.html">[Twisted-Python] &lt;homer&gt;Oooh, it's good news&lt;/homer&gt;
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#32559">[ date ]</a>
+              <a href="thread.html#32559">[ thread ]</a>
+              <a href="subject.html#32559">[ subject ]</a>
+              <a href="author.html#32559">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

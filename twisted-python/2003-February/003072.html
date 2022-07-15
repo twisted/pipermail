@@ -1,0 +1,374 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Beginning of jabber client protocol
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Beginning%20of%20jabber%20client%20protocol&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003071.html">
+   <LINK REL="Next"  HREF="003074.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Beginning of jabber client protocol</H1>
+    <B>Neil Blakey-Milner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Beginning%20of%20jabber%20client%20protocol&In-Reply-To="
+       TITLE="[Twisted-Python] Beginning of jabber client protocol">nbm at mithrandr.moria.org
+       </A><BR>
+    <I>Tue Feb 25 14:30:33 EST 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003071.html">[Twisted-Python] problem with long-running threads]
+</A></li>
+        <LI>Next message: <A HREF="003074.html">[Twisted-Python] Beginning of jabber client protocol
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3072">[ date ]</a>
+              <a href="thread.html#3072">[ thread ]</a>
+              <a href="subject.html#3072">[ subject ]</a>
+              <a href="author.html#3072">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi all,
+
+Attached is some playing around I've done with twisted and jabber as a
+client.  Not pretty, but just wanted to explore how microdom could be
+used on the xml stream protocol jabber uses.
+
+It can:
+. connect
+. receive messages
+. send messages
+. understand subscription requests
+. understand rosters
+. set online
+
+That's about it, but I'm unlikely to have much time to spend on this for
+some time, so I'm looking for comments on how to do it better for when I
+do get time, and/or support for other functionality.
+
+One thing I do know could be done better is callbacks for queries and
+presence indicators.
+
+Cheers,
+
+Neil
+-- 
+Neil Blakey-Milner
+<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at mithrandr.moria.org</A>
+-------------- next part --------------
+#!/usr/local/bin/python
+#
+# Copyright (c) 2002 Neil Blakey-Milner
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+#
+
+#import sha
+import sys
+from twisted.internet import protocol, reactor
+from twisted.python import log
+from twisted.web import microdom
+
+LOGIN = 1
+AUTH_GET = 2
+GETROSTER = 3
+
+def jabberheader(host, namespace, id = None):
+    str = &quot;&lt;?xml version='1.0' encoding='UTF-8' ?&gt;   \
+            &lt;stream:stream to='%s' xmlns='%s'&quot; % (host, namespace)
+
+    if id: str = str + &quot; id='%s' &quot; % id
+    str = str + &quot; xmlns:stream='<A HREF="http://etherx.jabber.org/streams'">http://etherx.jabber.org/streams'</A>&gt;&quot;
+    return str
+
+def jabberlogin(jid, method, password, resource, queryid):
+    iq = microdom.Element(&quot;iq&quot;, { &quot;type&quot;: &quot;set&quot;, &quot;id&quot;: queryid })
+    query = microdom.Element(&quot;query&quot;, { &quot;xmlns&quot;: &quot;jabber:iq:auth&quot; })
+    username = ElementWithText(&quot;username&quot;, jid)
+    password = ElementWithText(method, password)
+    resource = ElementWithText(&quot;resource&quot;, resource)
+    iq.appendChild(query)
+    query.appendChild(username)
+    query.appendChild(password)
+    query.appendChild(resource)
+    return iq
+
+def jabbergetauthtypes(user, queryid):
+    iq = microdom.Element(&quot;iq&quot;, { &quot;type&quot;: &quot;get&quot;, &quot;id&quot;: queryid })
+    query = microdom.Element(&quot;query&quot;, { &quot;xmlns&quot;: &quot;jabber:iq:auth&quot; })
+    username = ElementWithText(&quot;username&quot;, user)
+    iq.appendChild(query)
+    query.appendChild(username)
+    return iq
+
+def jabbergetroster(queryid):
+    iq = microdom.Element(&quot;iq&quot;, { &quot;type&quot;: &quot;get&quot;, &quot;id&quot;: queryid })
+    query = microdom.Element(&quot;query&quot;, { &quot;xmlns&quot;: &quot;jabber:iq:roster&quot; })
+    iq.appendChild(query)
+    return iq
+
+def jabbersetonline():
+    presence = microdom.Element(&quot;presence&quot;, { &quot;type&quot;: &quot;available&quot; })
+    show = ElementWithText(&quot;show&quot;, &quot;online&quot;)
+    status = ElementWithText(&quot;status&quot;, &quot;online&quot;)
+    priority = ElementWithText(&quot;priority&quot;, &quot;5&quot;)
+    presence.appendChild(show)
+    presence.appendChild(status)
+    presence.appendChild(priority)
+    return presence
+
+def jabbermessage(to, body):
+    message = microdom.Element(&quot;message&quot;, { &quot;to&quot;: to })
+    body = ElementWithText(&quot;body&quot;, body)
+    message.appendChild(body)
+    return message
+
+class ElementWithText(microdom.Element):
+    def __init__(self, tagName, text, attributes=None, parentNode=None, filename=None, markpos=None):
+        microdom.Element.__init__(self, tagName, attributes, parentNode, filename, markpos)
+        self.text = microdom.Text(text)
+        self.appendChild(self.text)
+
+class Jabber(microdom.MicroDOMParser):
+    def __init__(self):
+        self.soonClosers = []
+        self.laterClosers = {}
+        microdom.MicroDOMParser.__init__(self, beExtremelyLenient = 1, caseInsensitive = 0)
+
+    def connectionMade(self):
+        self.queries = {}
+        microdom.MicroDOMParser.connectionMade(self)
+        self.factory.protocolobj = self
+        self.transport.write(jabberheader(self.factory.host, &quot;jabber:client&quot;))
+
+    def connectionLost(self, reason):
+        microdom.MicroDOMParser.connectionLost(self, reason)
+        self.factory.protocolobj = None
+
+    def gotTagStart(self, name, attributes):
+        microdom.MicroDOMParser.gotTagStart(self, name, attributes)
+        if name == &quot;stream:stream&quot;:
+            el = self.elementstack.pop()
+            self.jabberConnected(el)
+
+    def gotTagEnd(self, name):
+        microdom.MicroDOMParser.gotTagEnd(self, name)
+        #print &quot;Tag ended: %s&quot; % (name)
+        for document in self.documents:
+            func = getattr(self, &quot;jabber_%s&quot; % document.tagName, self.jabberUnhandled)
+            #print func
+            func(document)
+        self.documents = []
+
+    def jabberUnhandled(self, document):
+        print &quot;Unhandled: \n  %s&quot; % (document.toxml())
+
+    def jabber_iq(self, document):
+        queryid = document.attributes[&quot;id&quot;]
+        if document.attributes[&quot;type&quot;] == &quot;result&quot;:
+            if not self.queries.has_key(queryid):
+                # This shouldn't happen
+                return
+            if self.queries[queryid] == AUTH_GET:
+                self.jabber_gotauthtypes(document)
+                return
+            if self.queries[queryid] == LOGIN:
+                self.jabber_loginsuccessful(document)
+                return
+
+            if self.queries[queryid] == GETROSTER:
+                self.jabber_gotroster(document)
+                return
+
+        if document.attributes[&quot;type&quot;] == &quot;error&quot;:
+            if self.queries[queryid] == LOGIN:
+                self.jabber_loginfailed(document)
+                return
+
+        self.jabberUnhandled(document)
+
+    def jabber_gotroster(self, document):
+        self.jabberGotRosterStart(document)
+        for entry in document.childNodes[0].childNodes:
+            jid = entry.attributes[&quot;jid&quot;]
+            ask = entry.attributes[&quot;ask&quot;]
+            subscription = entry.attributes[&quot;subscription&quot;]
+            if subscription == &quot;none&quot;:
+                subscription = None
+            self.jabberGotRosterEntry(jid, ask, subscription, entry)
+        self.jabberGotRosterEnd(document)
+
+
+    def jabberGotRosterStart(self, document):
+        print &quot;Roster:&quot;
+        print &quot;---------------------------&quot;
+
+    def jabberGotRosterEntry(self, jid, ask, subscription, document):
+        print &quot;User %s: &quot; % (jid),
+        if subscription:
+            print &quot;%s&quot; % (subscription),
+        if ask:
+            print &quot;%s-request&quot; % (ask),
+        print
+        #print document.xml()
+
+    def jabberGotRosterEnd(self, document):
+        print &quot;---------------------------&quot;
+
+    def jabber_message(self, document):
+        # &lt;message to=&quot;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">test at jabber.moria.org</A>&quot; from=&quot;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at jabber.moria.org</A>/imcom&quot;&gt;&lt;body&gt;hello&lt;/body&gt;&lt;/message&gt;
+        print &quot;message&quot;
+        recipient = document.attributes[&quot;to&quot;]
+        sender = document.attributes[&quot;from&quot;]
+        body = document.childNodes[0].childNodes[0].nodeValue
+
+        self.jabberGotMessage(sender, recipient, body, document)
+
+    def jabberGotMessage(self, sender, recipient, body, document):
+        print &quot;Message from %s:&quot; % (sender)
+        print &quot;\t%s&quot; % (body)
+        #self.jabberSendMessage(sender, &quot;I got your message: %s&quot; % (body))
+
+    def jabberSendMessage(self, recipient, body):
+        message = jabbermessage(recipient, body)
+        self.transport.write(message.toxml())
+
+    def jabber_presence(self, document):
+        # &lt;message to=&quot;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">test at jabber.moria.org</A>&quot; from=&quot;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at jabber.moria.org</A>/imcom&quot;&gt;&lt;body&gt;hello&lt;/body&gt;&lt;/message&gt;
+        if document.attributes[&quot;type&quot;] == &quot;subscribe&quot;:
+            sender = document.attributes[&quot;from&quot;]
+            self.jabberSubscribeRequest(sender, document)
+            return
+
+        self.jabberUnhandled(document)
+
+    def jabberSubscribeRequest(self, sender, document):
+        print &quot;Subscribe request from %s:&quot; % (sender)
+
+    def jabber_loginsuccessful(self, document):
+        self.jabberLoggedIn(document)
+
+        queryid = &quot;getroster&quot;
+        roster = jabbergetroster(queryid)
+        self.transport.write(roster.toxml())
+        #print roster.toxml()
+        self.queries[queryid] = GETROSTER
+        
+        presence = jabbersetonline()
+        #print presence.toxml()
+        self.transport.write(presence.toxml())
+
+    def jabberLoggedIn(self, document):
+        print &quot;Logged in as %s on %s&quot; % (self.factory.jid, self.factory.host)
+        
+    def jabber_loginfailed(self, document):
+        error = document.childNodes[1]
+        code = error.attributes[&quot;code&quot;]
+        reason = error.childNodes[0].nodeValue
+        self.jabberFailedLogIn(error, code, reason, document)
+
+    def jabberFailedLogIn(self, error, code, reason, document):
+        print &quot;Login failed (code %s), reason: %s&quot; % (code, reason)
+
+    def jabberConnected(self, element):
+        self.logOn(element)
+
+    def jabber_gotauthtypes(self, document):
+        types = []
+        for child in document.childNodes[0].childNodes:
+            if child.tagName != &quot;username&quot;:
+                types.append(child.tagName)
+
+        self.jabberGotAuthenticationTypes(types, document)
+
+        #hd = sha.new(id+password).hexdigest()
+        queryid = &quot;auth&quot;
+        iq = jabberlogin(self.factory.jid, &quot;password&quot;, self.factory.password, self.factory.resource, queryid)
+        self.transport.write(iq.toxml())
+        self.queries[queryid] = LOGIN
+
+    def jabberGotAuthenticationTypes(self, types, document):
+        print &quot;Authentication types supported: &quot;,
+        print &quot;, &quot;.join(types)
+
+    def logOn(self, element):
+        queryid = &quot;auth-get&quot;
+        iq = jabbergetauthtypes(self.factory.jid, queryid)
+        self.queries[queryid] = AUTH_GET
+        self.transport.write(iq.toxml())
+
+    def everyTenSeconds(self):
+        print self.documents
+        for item in self.elementstack:
+            print item
+            #item.writexml(sys.stdout)
+
+class JabberClientFactory(protocol.ClientFactory):
+    protocol = Jabber
+
+    def __init__(self, host, jid, password, resource = &quot;tpjabber&quot;):
+        self.host = host
+        self.jid = jid
+        self.password = password
+        self.resource = resource
+
+    def everyTenSeconds(self):
+        if self.protocolobj:
+            self.protocolobj.everyTenSeconds()
+        reactor.callLater(10, self.everyTenSeconds)
+
+def main():
+    host = &quot;jabber.moria.org&quot;
+    log.startLogging(sys.stdout)
+    factory = JabberClientFactory(host, &quot;test&quot;, &quot;test&quot;)
+    reactor.connectTCP(host, 5222, factory)
+    reactor.callLater(2, factory.everyTenSeconds)
+    reactor.run()
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003071.html">[Twisted-Python] problem with long-running threads]
+</A></li>
+	<LI>Next message: <A HREF="003074.html">[Twisted-Python] Beginning of jabber client protocol
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3072">[ date ]</a>
+              <a href="thread.html#3072">[ thread ]</a>
+              <a href="subject.html#3072">[ subject ]</a>
+              <a href="author.html#3072">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,176 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Formless, custom form layout
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Formless%2C%20custom%20form%20layout&In-Reply-To=42C426C2.6070605%40colorstudy.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001602.html">
+   <LINK REL="Next"  HREF="001604.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Formless, custom form layout</H1>
+    <B>Valentino Volonghi aka Dialtone</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Formless%2C%20custom%20form%20layout&In-Reply-To=42C426C2.6070605%40colorstudy.com"
+       TITLE="[Twisted-web] Formless, custom form layout">dialtone at divmod.com
+       </A><BR>
+    <I>Thu Jun 30 12:35:56 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001602.html">[Twisted-web] Formless, custom form layout
+</A></li>
+        <LI>Next message: <A HREF="001604.html">[Twisted-web] Formless, custom form layout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1603">[ date ]</a>
+              <a href="thread.html#1603">[ thread ]</a>
+              <a href="subject.html#1603">[ subject ]</a>
+              <a href="author.html#1603">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Ian Bicking wrote:
+
+&gt;<i> I might encourage you to think about using the architecture I describe
+</I>&gt;<i> here: <A HREF="http://blog.ianbicking.org/a-theory-on-form-toolkits.html">http://blog.ianbicking.org/a-theory-on-form-toolkits.html</A> --
+</I>&gt;<i> either using FormEncode, pieces, or just the general idea.  E.g., I
+</I>&gt;<i> think something like FormEncode's htmlfill that used stan could be
+</I>&gt;<i> useful, and FormEncode doesn't currently include anything very good
+</I>&gt;<i> for actual HTML generation.
+</I>&gt;<i>
+</I>&gt;<i> Anyway, I think keeping the parts separate (blank HTML form
+</I>&gt;<i> generation, validation, final form rendering) is really important to
+</I>&gt;<i> making a usable system; without it people just keep creating form
+</I>&gt;<i> toolkits that they later come to hate because the abstraction
+</I>&gt;<i> boundaries don't fit the actual development process.
+</I>
+&gt;<i>From what Matt said when we talked about forms (quite a lot of times) it
+</I>is already resusing some concepts from htmlfill.
+
+The basic idea is to separate the types you want, from the widget used
+to represent them on the page.
+
+When you add a new form you choose a name (which is actually a key in
+the 'validated values'-dict), a type (that knows how to encode and
+decode from the python application and from the web), a widget (or a
+widgetFactory when you have grouped widgets).
+
+basically both the rendering and the processing share some code obviously:
+
+Let's use an example form:
+from nevow import rend
+import forms
+
+class ModifyPage(rend.Page, forms.ResourceMixin):
+    def form_modify(self, ctx):
+        form = forms.Form(self.modify)
+        contractor_view(form)
+        form.addAction(self.modify)
+        form.data = IContractor(ctx)
+        form.data['numero_contratto'] = self.original
+        return form
+
+    def modify(self, ctx, form, data):
+        db.ILogic(ctx).modify_contractor(self.original, data)
+
+In order to tell the system where to find the form there are 2 things you can do:
+
+during rendering you should use:
+&lt;nevow:invisible nevow:render=&quot;form formName&quot; /&gt;
+
+or during a POST/GET with an url like:
+<A HREF="http://localhost:8080/modify/__nevow_form__!!modify">http://localhost:8080/modify/__nevow_form__!!modify</A>
+
+what does the system do?
+
+During rendering:
+with nevow:render=&quot;form formName&quot;
+you are calling the method render_form defined in the base forms.ResourceMixin that takes the formName as an argument.
+
+During post/get processing:
+in the Modify's page locateChild the url is split to look for __nevow_form__ and the string after !! is the formName.
+
+
+Both do the same thing now:
+The Modify page is searched for form_formName method and its return value (a Form instance populated with fields).
+During form search the form instance is saved on the request to ensure that each form instance is reused during the same request (so that modifications are available at a later time when needed).
+
+Then the form is processed in 2 different ways (depending on what you need to do).
+
+Rendering:
+- form object is remembered in the context as iforms.IForm
+- thanks to the adapter for the form object to IRenderer the form object    
+  is directly passed in a stan tag. The Form renderer will take care of 
+  rendering.
+- A new context is created. and the data from the old context is 
+  remembered on it (errors, data inserted and such).
+- The form is rendered in this way:
+  - the form object is iterated through for each field.
+  - each field is rendered, if there are errors they are looked up in 
+    iforms.IFormErrors (which was remembered at the beginning).
+  - the render method of the widget is called and it does the following  
+    thing:
+    - One of the converters is gathered from the adaptators and the 
+      python type is converted into a string.
+    - the result is set as value, the stan representing the widget is 
+      returned and sent to the client browser.
+
+GET/POST processing:
+- the method process() is called on the return value of the 
+  form_formName method.
+- arguments are obtained from the request.
+- the callback in the rend.Page object is found
+- initialize the FormErrors 'dict'
+- for each field in the form:
+  - the widget is retrieved from the field name.
+  - the value is processed back to a python type (thanks to the same 
+    adapters registry and the same converter)
+  - it is then validated by the type used (remember that the converters 
+    adapter registry is made like this:
+    Converter &lt;adapts&gt; type &lt;to&gt; InterfaceForConverter)
+    _validation and coercion are really separate although both called in 
+    processInput method of the widget_
+    the result of validation is the data processed and ready to be used
+- the callback is called with the result of validation.
+- if there are errors in the result of validation then you are 
+  redirected to the same page with the form, and reusing the same form 
+  instance (that we remembered at the beginning of the locateForm) the 
+  page is rendered with error information.
+
+I think this is all. I could have made some mistakes though. 
+If you think I've talked too much because you already knew all then forgive me, but I'm sure Matt will like to add this stuff to some documentation or general idea, or edit this stuff for a bit of documentation and so on. :)
+
+It also helped me to understand forms a bit better.
+
+-- 
+Valentino Volonghi aka Dialtone
+Now Running MacOSX 10.4.1
+Blog: <A HREF="http://vvolonghi.blogspot.com">http://vvolonghi.blogspot.com</A>
+<A HREF="http://weever.berlios.de">http://weever.berlios.de</A>
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001602.html">[Twisted-web] Formless, custom form layout
+</A></li>
+	<LI>Next message: <A HREF="001604.html">[Twisted-web] Formless, custom form layout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1603">[ date ]</a>
+              <a href="thread.html#1603">[ thread ]</a>
+              <a href="subject.html#1603">[ subject ]</a>
+              <a href="author.html#1603">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

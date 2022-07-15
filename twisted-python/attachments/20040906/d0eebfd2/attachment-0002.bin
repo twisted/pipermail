@@ -1,0 +1,129 @@
+--- base.py	2004-09-06 18:05:05.780874552 +0200
++++ /tmp/base.py	2004-09-06 18:38:53.277528387 +0200
+@@ -26,7 +26,7 @@
+ 
+ import sys
+ import warnings
+-from bisect import insort
++from heapq import heappush, heappop, heapreplace
+ 
+ try:
+     import fcntl
+@@ -54,8 +54,7 @@
+     def __init__(self, time, func, args, kw, cancel, reset):
+         self.time, self.func, self.args, self.kw = time, func, args, kw
+         self.resetter = reset
+-        self.canceller = cancel
+-        self.cancelled = self.called = 0
++        self.cancelled = self.called = self.delayed = 0
+         if self.debug:
+             self.creator = traceback.format_stack()[:-2]
+ 
+@@ -81,7 +80,6 @@
+         elif self.called:
+             raise error.AlreadyCalled
+         else:
+-            self.canceller(self)
+             self.cancelled = 1
+ 
+     def reset(self, secondsFromNow):
+@@ -100,6 +98,7 @@
+             raise error.AlreadyCalled
+         else:
+             self.time = seconds() + secondsFromNow
++            self.delayed = 1
+             self.resetter(self)
+ 
+     def delay(self, secondsLater):
+@@ -118,6 +117,7 @@
+             raise error.AlreadyCalled
+         else:
+             self.time += secondsLater
++            self.delayed = 1
+             self.resetter(self)
+ 
+     def active(self):
+@@ -129,9 +129,8 @@
+         """
+         return not (self.cancelled or self.called)
+ 
+-    def __lt__(self, other):
+-        # Order reversed for efficiency concerns, see below
+-        return self.time >= other.time
++    def __le__(self, other):
++        return self.time <= other.time
+ 
+     def __str__(self):
+         try:
+@@ -160,7 +159,7 @@
+ 
+     def __init__(self):
+         self._eventTriggers = {}
+-        self._pendingTimedCalls = []
++        self._pendingTimedCalls = [] # heap
+         self.running = 0
+         self.waker = None
+         self.resolver = None
+@@ -366,15 +365,29 @@
+         assert sys.maxint >= _seconds >= 0, \
+                "%s is not greater than or equal to 0 seconds" % (_seconds,)
+         tple = DelayedCall(seconds() + _seconds, _f, args, kw,
+-                           self._pendingTimedCalls.remove,
++                           self._removeCallLater,
+                            self._resetCallLater)
+-        insort(self._pendingTimedCalls, tple)
++        heappush(self._pendingTimedCalls, tple)
+         return tple
+ 
++    def _cleanUpCallLater(self):
++        while self._pendingTimedCalls:
++            tple = self._pendingTimedCalls[0]
++            if tple.cancelled:
++                heappop(self._pendingTimedCalls)
++            elif tple.delayed:
++                tple.delayed = 0
++                heapreplace(self._pendingTimedCalls, tple)
++            else:
++                break
++
++    def _removeCallLater(self, tple):
++        if self._pendingTimedCalls and tple == self._pendingTimedCalls[0]:
++            self._cleanUpCallLater()
++
+     def _resetCallLater(self, tple):
+-        assert tple in self._pendingTimedCalls
+-        self._pendingTimedCalls.remove(tple)
+-        insort(self._pendingTimedCalls, tple)
++        if self._pendingTimedCalls and tple == self._pendingTimedCalls[0]:
++            self._cleanUpCallLater()
+         return tple
+ 
+     def cancelCallLater(self, callID):
+@@ -389,8 +402,9 @@
+         return tuple(self._pendingTimedCalls)
+ 
+     def timeout(self):
++        self._cleanUpCallLater()
+         if self._pendingTimedCalls:
+-            t = self._pendingTimedCalls[-1].time - seconds()
++            t = self._pendingTimedCalls[0].time - seconds()
+             if t < 0:
+                 t = 0
+             return t
+@@ -412,9 +426,14 @@
+                     log.err()
+                 count += 1
+             del self.threadCallQueue[:count]
++
+         now = seconds()
+-        while self._pendingTimedCalls and (self._pendingTimedCalls[-1].time <= now):
+-            call = self._pendingTimedCalls.pop()
++        while self._pendingTimedCalls and (self._pendingTimedCalls[0].time <= now):
++            call = heappop(self._pendingTimedCalls)
++            if call.cancelled or call.delayed:
++                self._cleanUpCallLater()
++                continue
++
+             try:
+                 call.called = 1
+                 call.func(*call.args, **call.kw)

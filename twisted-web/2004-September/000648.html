@@ -1,0 +1,200 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: [Web-SIG] WSGI woes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BWeb-SIG%5D%20WSGI%20woes&In-Reply-To=5.1.1.6.0.20040915190031.0215e7d0%40mail.telecommunity.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000646.html">
+   <LINK REL="Next"  HREF="000649.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: [Web-SIG] WSGI woes</H1>
+    <B>Donovan Preston</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BWeb-SIG%5D%20WSGI%20woes&In-Reply-To=5.1.1.6.0.20040915190031.0215e7d0%40mail.telecommunity.com"
+       TITLE="[Twisted-web] Re: [Web-SIG] WSGI woes">dp at ulaluma.com
+       </A><BR>
+    <I>Wed Sep 15 23:13:52 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000646.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+        <LI>Next message: <A HREF="000649.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#648">[ date ]</a>
+              <a href="thread.html#648">[ thread ]</a>
+              <a href="subject.html#648">[ subject ]</a>
+              <a href="author.html#648">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Sep 15, 2004, at 7:12 PM, Phillip J. Eby wrote:
+
+&gt;<i> At 06:48 PM 9/15/04 -0400, Peter Hunt wrote:
+</I>&gt;&gt;<i> It looks like WSGI is not well received over at twisted.web.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> <A HREF="http://twistedmatrix.com/pipermail/twisted-web/2004-September/">http://twistedmatrix.com/pipermail/twisted-web/2004-September/</A> 
+</I>&gt;&gt;<i> 000644.html
+</I>&gt;<i>
+</I>&gt;<i> Excerpting from that post:
+</I>&gt;<i>
+</I>&gt;<i> &quot;&quot;&quot;The WSGI spec is unsuitable for use with asynchronous servers and
+</I>&gt;<i> applications. Basically, once the application callable returns, the
+</I>&gt;<i> server (or &quot;gateway&quot; as wsgi calls it) must consider the page finished
+</I>&gt;<i> rendering.&quot;&quot;&quot;
+</I>&gt;<i>
+</I>&gt;<i> This is incorrect.
+</I>
+As I said in my original post, I hadn't mentioned anything about this  
+yet because I didn't have a solution or proposal to fix the problem,  
+which I maintain remains. I will attempt to suggest solutions, but I am  
+unsure whether they will work or make sense in all environments. Allow  
+me to explain:
+
+&gt;<i>   Here is a simple WSGI application that demonstrates yielding 50 data  
+</I>&gt;<i> blocks for transmission *after* the &quot;application callable returns&quot;.
+</I>&gt;<i>
+</I>&gt;<i>     def an_application(environ, start_response):
+</I>&gt;<i>         start_response(&quot;200 OK&quot;, [('Content-Type','text/plain')])
+</I>&gt;<i>         for i in range(1,51):
+</I>&gt;<i>             yield &quot;Block %d&quot; % i
+</I>&gt;<i>
+</I>&gt;<i> This has been a valid WSGI application since the August 8th posting of  
+</I>&gt;<i> the WSGI pre-PEP.
+</I>
+According to the spec, &quot;&quot;&quot;The application object must return an  
+iterable yielding strings.&quot;&quot;&quot; Whether the application callable calls  
+write before returning or yields strings to generate content, the  
+effect is the same -- there is no way for the application callable to  
+say &quot;Wait, hang on a second, I'm not ready to generate more content  
+yet. I'll tell you when I am.&quot; This means the only way the application  
+can pause for network activity is by blocking. For example, a page  
+which performed an XML-RPC call and transformed the output into HTML  
+would be required to perform the XML-RPC call synchronously. Or a page  
+which initiated a telnet session and streamed the results into a web  
+page would be required to perform reads on the socket synchronously.  
+The server or gateway, by calling next(), is assuming that the call  
+will yield a string value, and only a string value.
+
+Of course, Twisted has a canonical way of indicating that a result is  
+not yet ready, the Deferred. An asynchronous application could yield a  
+Deferred and an asynchronous server would attach a callback to this  
+Deferred which invoked the next() method upon resolution. This is how  
+Nevow handles Deferreds (in Nevow SVN head at  
+nevow.flat.twist.deferflatten).
+
+However, the WSGI spec says nothing about Deferred and indeed, Deferred  
+would be useless in the case of another asynchronous server such as  
+Medusa. I would suggest that WSGI include a simple Deferred  
+implementation, but WSGI is simply a spec which is not intended to have  
+any actual code. Thus, one solution would be for the WSGI spec to be  
+amended to state:
+
+&quot;&quot;&quot;The application object must return an iterable yielding strings or  
+objects implementing the following interface:
+
+def addCallback(callable):
+	'''Add 'callable' to the list of callables to be invoked when a string
+	is available. Callable should take a single argument, which will be a  
+string.'''
+
+The application object must invoke the callable passed to addCallback,  
+passing a string which will be written to the request.
+&quot;&quot;&quot;
+
+This places additional burdens upon implementors of WSGI servers or  
+gateways. In the case of a threaded HTTP server which uses blocking  
+writes, implementing support for these promises would have to look  
+something like this:
+
+import Queue
+
+def handle_request(inSocket, outSocket):
+     ... read inSocket, parse the request and dispatch ...
+
+     iterable = application(environ, start_response)
+
+     try:
+         while True:
+             val = iterable.next()
+             if isinstance(val, str):
+                 outSocket.write(val)
+             else:
+                 result = Queue.Queue()
+                 val.addCallback(result.put)
+                 outSocket.write(result.get())
+     except StopIteration:
+         outSocket.close()
+
+&gt;<i> It may be, however, that Mr. Preston means that applications which  
+</I>&gt;<i> want to use 'write()' or a similar push-oriented approach to produce  
+</I>&gt;<i> data cannot do so after the application returns.  If so, we should  
+</I>&gt;<i> discuss that use case further, preferably on the Web-SIG.
+</I>
+And now we come to my other half-baked proposal.
+
+Instead of merely returning a write callable, start_response could  
+return a tuple of (write, finish) callables. The application would be  
+free to call write at any time until it calls finish, at which point  
+calling either callable becomes illegal. Again, the synchronous server  
+support for this would have to use spin locking in a fashion such as  
+this:
+
+import threading
+
+def handle_request(inSocket, outSocket):
+     ... read request, dispatch ...
+     finished = threading.Semaphore()
+
+     def start_response(...):
+         ... write headers ...
+         return outSocket.write, finished.release
+
+     iterable = application(environ, start_response)
+     if iterable is None:
+         finished.acquire()
+         # Once we get here, the application is done with the request.
+
+Finally, we come to the task of implementing a server or gateway which  
+can asynchronously support either asynchronous or blocking  
+applications. Since there is no way for the server or gateway to know  
+whether the application object it is about to invoke will block,  
+starving the main loop and preventing network activity from being  
+serviced, it must invoke all applications in a new thread or process. A  
+solution to this would be to require application callables to provide  
+additional metadata, perhaps via function or object attributes, which  
+indicate whether they are capable of running in asynchronous, threaded,  
+or multiprocess environments. Since it's getting late and this message  
+is getting long I will leave this discussion for another day.
+
+dp
+
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000646.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+	<LI>Next message: <A HREF="000649.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#648">[ date ]</a>
+              <a href="thread.html#648">[ thread ]</a>
+              <a href="subject.html#648">[ subject ]</a>
+              <a href="author.html#648">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

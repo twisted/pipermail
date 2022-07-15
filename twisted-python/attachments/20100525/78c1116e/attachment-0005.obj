@@ -1,0 +1,121 @@
+#!/usr/bin/env python
+
+from twisted.spread import pb
+from twisted.internet import reactor, defer
+from twisted.cred import credentials
+
+class Client(pb.Referenceable):
+
+    count = 3
+    wait_response = False
+    already_logged = False
+
+    # emulate crash when client send data to server
+    crash_client_to_server = False
+
+    def print_reason(self, reason):
+        print 'error: %s' % reason.value
+        return reason
+
+    def connect(self):
+        factory = pb.PBClientFactory()
+        reactor.connectTCP('localhost', 8800, factory)
+        d = factory.login(credentials.UsernamePassword('alice', '1234'),
+                          client=self)
+        d.addCallback(self.connected)
+        d.addErrback(self.print_reason)
+        d.addErrback(self.schedule_reconnect)
+
+    def connected(self, perspective):
+
+        # this perspective is a reference to our User object
+        self.perspective = perspective
+
+        if not self.already_logged:
+            # its first connect
+            print 'first connection'
+            self.get_data()
+            self.already_logged = True
+        else:
+            # its reconnection
+            print 'reconnection'
+
+            if self.wait_response:
+                print 'get_last_response'
+                d = self.callRemote('get_last_response')
+                d.chainDeferred(self.callRemote_args['d'])
+            else:
+                # recall last function
+                print 'recall'
+                args = self.callRemote_args['args']
+                kwargs = self.callRemote_args['kwargs']
+                self.callRemote(*args, **kwargs).chainDeferred(d)
+
+    def get_data(self):
+        print 'get_data'
+        d = self.callRemote('get_data')
+        d.addCallback(self.got_data)
+
+    def callRemote(self, *args, **kwargs):
+        print 'callRemote'
+
+        if self.crash_client_to_server and self.count == 2:
+            self.crash_client_to_server = False  # emulate one error
+            return self.net_error(None, *args, **kwargs)
+
+        try:
+            d = self.perspective.callRemote(*args, **kwargs)
+        except pb.DeadReferenceError, reason:
+            self.print_reason(reason)
+            d = self.net_error(reason, *args, **kwargs)
+        else:
+            d.addErrback(self.print_reason)
+            d.addErrback(self.net_error, *args, **kwargs)
+
+        d.addCallback(self.got_remote)
+        return d
+
+    def net_error(self, reason, *args, **kwargs):
+        print 'net_error'
+
+        # ! 
+        # if server not recieved request:
+        #     pass  # after next connect recall func
+        # else:
+        #     self.wait_response = True  # after next connect get previos response
+        self.wait_response = True
+
+        d = defer.Deferred()
+        # save args for recall func after error
+        self.callRemote_args = dict(d=d, args=args, kwargs=kwargs)
+
+        self.schedule_reconnect()
+
+        return d
+
+    def schedule_reconnect(self, *args):
+        print 'net error, recconect after 2 seconds'
+        reactor.callLater(2, self.connect)
+
+    def got_remote(self, result):
+        '''Call when success callRemote.'''
+        print 'got_remote(%s)' % result
+
+        self.wait_response = False
+        return result
+
+    def got_data(self, data):
+        print '!!! GOT %d' % data
+
+        self.count -= 1
+        if self.count:
+            self.get_data()
+        else:
+            self.shutdown()
+
+    def shutdown(self):
+        reactor.stop()
+
+
+Client().connect()
+reactor.run()

@@ -1,0 +1,205 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Twisted OpenSSL Server and multiple clients
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%20OpenSSL%20Server%20and%20multiple%20clients&In-Reply-To=%3C717792.89947.qm%40web112509.mail.gq1.yahoo.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="053023.html">
+   <LINK REL="Next"  HREF="053025.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Twisted OpenSSL Server and multiple clients</H1>
+    <B>gary clark</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%20OpenSSL%20Server%20and%20multiple%20clients&In-Reply-To=%3C717792.89947.qm%40web112509.mail.gq1.yahoo.com%3E"
+       TITLE="[Twisted-Python] Twisted OpenSSL Server and multiple clients">burslem2001 at yahoo.com
+       </A><BR>
+    <I>Sun Sep 27 15:02:37 MDT 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="053023.html">[Twisted-Python] Twisted OpenSSL Server and multiple clients
+</A></li>
+        <LI>Next message (by thread): <A HREF="053025.html">[Twisted-Python] Knowing end of packet
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#53024">[ date ]</a>
+              <a href="thread.html#53024">[ thread ]</a>
+              <a href="subject.html#53024">[ subject ]</a>
+              <a href="author.html#53024">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Ok I'm answering my own questions:
+
+After browsing around I kinda pieced together what is going on.
+
+Basically the factory object manages the persistent information
+of protcols. You can use self.clients.append( newclient )
+to store when a connection is made and self.clients.remove( client ) when a client disconnects within the factory object to cycle through all the protocol (clients) in the factory:
+
+In the factory:
+
+for proto in self.clients
+    proto.transport.write( message )
+
+I found the below code very useful:
+
+import string
+from twisted.application import service, internet
+from twisted.internet import reactor, protocol
+from twisted.internet.protocol import Protocol, Factory
+
+port = 80
+
+class AirChat(Protocol):
+	
+	username = &quot;&quot;
+	session = False
+	
+	def connectionMade( self ):
+		self.factory.numProtocols = self.factory.numProtocols+1
+		self.factory.addClient(  self )
+		
+	def connectionLost( self , reason ):
+		self.factory.numProtocols = self.factory.numProtocols-1
+		self.factory.delClient( self )
+		
+	def dataReceived( self , data ):
+		
+		# parse out HTTP
+		a = data.split( '\x00' )[0].split(' ')
+		
+		# look for HTTP header
+		if a[0] == 'GET' or a[0] == 'POST':
+			self.transport.write( &quot;&quot;&quot;HTTP/1.1 200 OK\r\n\r\n&quot;&quot;&quot; )
+			self.transport.write( &quot;&quot;&quot;&lt;html&gt;&lt;strong&gt;AIR Chat 1.0&lt;/strong&gt;&lt;/html&gt;&quot;&quot;&quot; )
+			self.transport.loseConnection()
+			return
+			
+		a = data.split( '\x00' )[0].split( '||' )
+		
+		if a[0] == '1':
+			self.factory.sendAll( '1||' + self.factory.stripChars( a[1] ) + '||' + self.factory.stripChars( a[2] ) + '\x00'  )
+			
+		elif a[0] == '2':
+			self.transport.write( '2||' + str( self.factory.numProtocols )  + '\x00')
+
+
+class AirChatFactory(Factory):
+	protocol = AirChat
+	numProtocols = 0
+	clients = []
+	
+	def stripChars(self, textIn):
+		textIn = textIn.replace('&lt;', '')
+		textIn = textIn.replace('&lt;/', '')
+		textIn = textIn.replace('&gt;', '')
+		textIn = textIn.replace('/&gt;', '')
+		return textIn
+	
+	def addClient(self, newclient):
+		self.clients.append( newclient )
+	
+	def delClient(self, client):
+		self.clients.remove( client )
+	
+	def sendAll(self, message):
+		for proto in self.clients:
+			proto.transport.write( message )
+	
+	
+class AirChatService( internet.TCPServer ):
+	def __init__(self):
+		internet.TCPServer.__init__(self, 80, AirChatFactory())
+
+
+I think thats good for now. I dont have to create my own repository just manipulate the factory object, marvelous. Time for a pint.
+
+Thanks,
+Garyc
+
+--- On Sun, 9/27/09, gary clark &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">burslem2001 at yahoo.com</A>&gt; wrote:
+
+&gt;<i> From: gary clark &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">burslem2001 at yahoo.com</A>&gt;
+</I>&gt;<i> Subject: Twisted OpenSSL Server and multiple clients
+</I>&gt;<i> To: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python at twistedmatrix.com</A>
+</I>&gt;<i> Date: Sunday, September 27, 2009, 3:08 PM
+</I>&gt;<i> Hello,
+</I>&gt;<i> 
+</I>&gt;<i> I am new to Twisted, hence the red flag and patience card
+</I>&gt;<i> pulled out.
+</I>&gt;<i> 
+</I>&gt;<i> I have written a client that connects perfectly well to a
+</I>&gt;<i> twisted server thats using open-ssl to communicate to each
+</I>&gt;<i> other. Basically I took the open-ssl echo server example and
+</I>&gt;<i> tweaked it.
+</I>&gt;<i> 
+</I>&gt;<i> Thats all fine and dandy, but I want to have multiple
+</I>&gt;<i> clients that can connect to the server.
+</I>&gt;<i> 
+</I>&gt;<i> So I have a few questions:
+</I>&gt;<i> 
+</I>&gt;<i> 1) When a client connects to my server? What connection
+</I>&gt;<i> information
+</I>&gt;<i>    can be collected and stored persistently?
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i>    Upon a client connecting I want to store
+</I>&gt;<i> connection information and
+</I>&gt;<i>    I want to remove connection information
+</I>&gt;<i> when its disconnected from 
+</I>&gt;<i>    the persistent store.
+</I>&gt;<i> 
+</I>&gt;<i> 2) What persistent store is adopted for twisted if any?
+</I>&gt;<i> 
+</I>&gt;<i> 3) I want to know when a table has changed so I can then
+</I>&gt;<i> pull information
+</I>&gt;<i>    from a table and use the connection
+</I>&gt;<i> information if present to send data 
+</I>&gt;<i>    to my client. How is this accomplished in
+</I>&gt;<i> twisted?
+</I>&gt;<i> 
+</I>&gt;<i> Again I apologise in advance, if someone can shed some
+</I>&gt;<i> light into how twisted accomplishes the basic tasks of
+</I>&gt;<i> multiple clients thats great.
+</I>&gt;<i> 
+</I>&gt;<i> Oh boy.
+</I>&gt;<i> 
+</I>&gt;<i> Thanks,
+</I>&gt;<i> Garyc
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="053023.html">[Twisted-Python] Twisted OpenSSL Server and multiple clients
+</A></li>
+	<LI>Next message (by thread): <A HREF="053025.html">[Twisted-Python] Knowing end of packet
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#53024">[ date ]</a>
+              <a href="thread.html#53024">[ thread ]</a>
+              <a href="subject.html#53024">[ subject ]</a>
+              <a href="author.html#53024">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

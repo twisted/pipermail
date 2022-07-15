@@ -1,0 +1,166 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Sending longer messages in AMP
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Sending%20longer%20messages%20in%20AMP&In-Reply-To=%3C20141113181920.5924.1200765606.divmod.xquotient.45%40top%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="028941.html">
+   <LINK REL="Next"  HREF="061408.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Sending longer messages in AMP</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Sending%20longer%20messages%20in%20AMP&In-Reply-To=%3C20141113181920.5924.1200765606.divmod.xquotient.45%40top%3E"
+       TITLE="[Twisted-Python] Sending longer messages in AMP">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Thu Nov 13 11:19:20 MST 2014</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="028941.html">[Twisted-Python] Sending longer messages in AMP
+</A></li>
+        <LI>Next message (by thread): <A HREF="061408.html">[Twisted-Python] Sending longer messages in AMP
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#61406">[ date ]</a>
+              <a href="thread.html#61406">[ thread ]</a>
+              <a href="subject.html#61406">[ subject ]</a>
+              <a href="author.html#61406">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 02:57 pm, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">gavin at gromper.net</A> wrote:
+&gt;<i>Hi,
+</I>&gt;<i>
+</I>&gt;<i>We're using AMP and are starting to hit TooLong errors when scaling
+</I>&gt;<i>our application. In one respect it's a sign that we should do
+</I>&gt;<i>something like paging large requests and responses, but that's a lot
+</I>&gt;<i>more work, and comes with its own problems. We also don't need
+</I>&gt;<i>particularly large payloads: right now, a limit of ~500kiB would allow
+</I>&gt;<i>us to scale as far as we need and beyond.
+</I>&gt;<i>
+</I>&gt;<i>I've put together a fork of Twisted's AMP implementation that uses
+</I>&gt;<i>32-bit length prefixes everywhere, though it limits the maximum
+</I>&gt;<i>message size to 2MiB. Every other aspect of it is the same so it's a
+</I>&gt;<i>drop-in replacement, as long as both ends of a connection use it.
+</I>&gt;<i>However, there's no negotiation phase so it's completely incompatible
+</I>&gt;<i>on the wire. The overhead of a few extra bytes is negligible for our
+</I>&gt;<i>use cases, where the networks are all assumed to be low-latency
+</I>&gt;<i>high-bandwidth LANs.
+</I>&gt;<i>
+</I>&gt;<i>Are there any reasons that we shouldn't be doing this? Was there a
+</I>&gt;<i>good reason for 16-bit length prefixes that still holds? Should we be
+</I>&gt;<i>doing something else?
+</I>
+The short length limit is in place to encourage two things:
+
+  * messages that can be processed in a cooperative-multitasking-friendly 
+way
+
+  * the AMP channel can reliably used to multiplex multiple operations
+
+The limit encourages the former by limiting the total amount of data 
+it's possible to receive in a single command.  Of course, you can still 
+do ridiculously complicated work based on a small bit of data so this 
+doesn't guarantee that no matter what you do you'll be safe.  But doing 
+even something simple on a ridiculously large amount of data is probably 
+guaranteed to take a while.
+
+The limit encourages the latter by putting a limit on the data that 
+needs to be transferred to complete any one command (or answer).  Again, 
+this isn't a guarantee of safety (you could always have a `for i in 
+range(1e10): callRemote(...)` loop and clog up the channel for ages) but 
+it pushes things a bit more in that direction.
+
+At ClusterHQ we *also* maintained a fork of AMP with this limit raised. 
+Basically, it worked.  It did let us get into the kind of trouble that 
+the limit was supposed to try to avoid (in particular it let us send 
+around messages that would take longer and longer to be processed - in a 
+system where keeping latency down was actually sort of important; 
+fortunately we had *worse* problems introducing latency so this in 
+particular never bit us too hard ;).
+&gt;<i>If I assume that the answers are all no, would someone find this
+</I>&gt;<i>protocol useful if we submitted it for inclusion in Twisted itself?
+</I>
+There are better solutions to the problem.  The trouble is that they're 
+also more work to implement. ;)  I think Twisted should hold out for the 
+better solutions though, not adopt a like-AMP-but-with-different-hard- 
+coded-limits solution.
+
+What are the better solutions?  Library support for paging, basically. 
+Or, to consider things more generally, library support for streaming. 
+The AMP implementation in Twisted (note, not the *protocol*) should be 
+extended to make it easy to pass arbitrarily large streams of data 
+around - suitably broken into smaller pieces at the box level.
+
+As of right now, the way I'd do that is by introducing a new argument 
+type (or two) supporting `IProducer` and `IConsumer`.  Pass in an 
+`IProducer` and the library will take the necessary steps to read data 
+out of it, chunk it up into &lt;=16kB chunks, and re-assemble them on the 
+receiving side (as another `IProducer`).
+
+There are two reasons I'm not working on this right now (apart from the 
+standard reasons of not having time to do so ;):
+
+  1) IProducer / IConsumer aren't amenable to this kind of decoupling. 
+You can register a producer with a consumer but you can't register a 
+consumer with a producer.  By the time you give the IProducer to AMP, 
+it's too late to tell it you want it to send its data into the AMP 
+implementation for the necessary handling.  We worked around this in 
+twisted.web.client.Agent by introducing a new IProducer-like interface. 
+It solves the basic problem but it doesn't go any further to improve the 
+usability of the interfaces.
+
+  2) Tubes.  Glyph is working on a replacement for IProducer/IConsumer 
+that does go a lot further to improve usability.  With this promise of a 
+bright, prosperous future looming, it's hard to get excited about 
+implementing for AMP a just-barely-good-enough solution like the one 
+used by Agent (in particular, with the knowledge that the tubes solution 
+will be API incompatible and we'll most likely want to deprecate the 
+IProducer/IConsumer thing).
+
+Jean-Paul
+&gt;<i>The code right now is a straight copy of amp.py and test_amp.py with
+</I>&gt;<i>changes to 32-bit length prefixes everywhere, but for upstreaming we'd
+</I>&gt;<i>probably propose instead to modify the original to have an optional
+</I>&gt;<i>negotiation phase, and to make the maximum message size a parameter.
+</I>&gt;<i>
+</I>&gt;<i>Thanks!
+</I>&gt;<i>
+</I>&gt;<i>Gavin.
+</I>&gt;<i>
+</I>&gt;<i>_______________________________________________
+</I>&gt;<i>Twisted-Python mailing list
+</I>&gt;<i><A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i><A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="028941.html">[Twisted-Python] Sending longer messages in AMP
+</A></li>
+	<LI>Next message (by thread): <A HREF="061408.html">[Twisted-Python] Sending longer messages in AMP
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#61406">[ date ]</a>
+              <a href="thread.html#61406">[ thread ]</a>
+              <a href="subject.html#61406">[ subject ]</a>
+              <a href="author.html#61406">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,146 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20A%20Python%20metaclass%20for%20Twisted%20allowing%20__init__%0A%09to%20return%20a%20Deferred&In-Reply-To=%3C18704.35166.505202.308830%40jon.es%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051139.html">
+   <LINK REL="Next"  HREF="051143.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20A%20Python%20metaclass%20for%20Twisted%20allowing%20__init__%0A%09to%20return%20a%20Deferred&In-Reply-To=%3C18704.35166.505202.308830%40jon.es%3E"
+       TITLE="[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred">terry at jon.es
+       </A><BR>
+    <I>Tue Nov  4 10:41:50 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051139.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+        <LI>Next message (by thread): <A HREF="051143.html">[Twisted-Python] Re: A Python metaclass for Twisted allowing __init__ to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51142">[ date ]</a>
+              <a href="thread.html#51142">[ thread ]</a>
+              <a href="subject.html#51142">[ subject ]</a>
+              <a href="author.html#51142">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi again Glyph
+
+&gt;&gt;&gt;&gt;&gt;<i> &quot;glyph&quot; == glyph  &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at divmod.com</A>&gt; writes:
+</I>
+glyph&gt; You may want to create some _other_ configuration object, loaded
+glyph&gt; from the remote database, in the middle of startService.  You may
+glyph&gt; even want to have a multi-phase internal startup procedure to
+glyph&gt; generate that object.  But you need to keep track of what state
+glyph&gt; those things are in so that the infrastructure can come around and
+glyph&gt; say stopService to you in the middle of that procedure and still get
+glyph&gt; a clean, ordered shutdown.  If the infrastructure were to get back a
+glyph&gt; Deferred, there's nothing to call stopService on.
+
+Sorry to post so much on this - I do hope it's useful to other people.
+
+Here's what I think you were saying, but in my own words:
+
+I could do more complex work in startService, including dealing with
+Deferreds. So to give a simple (non-working) example based on your earlier
+classmethod suggestion, here's some sample code:
+
+    from myservice import myhandler
+
+    class MyService(internet.TCPServer):
+        def __init__(self, port, dbURI):
+            self.port = port
+            self.dbURI = dbURI
+
+        @defer.inlineCallbacks
+        def startService(self):
+            self.handler = yield myhandler.Handler.fromDbURI(self.dbURI)
+            internet.TCPServer.__init__(self, self.port, self.handler.getFactory())
+            yield self.handler.startDB()
+            yield self.handler.createTables()
+            # Perhaps do other init things...
+            internet.TCPServer.startService(self)
+
+        def stopService(self):
+            self.handler.exit()
+            return internet.TCPServer.stopService(self)
+
+As you suggested, myhandler.Handler.fromDbURI is a classmethod that gets a
+Deferred and adds a callback to it that will return an instance of
+myhandler.Handler. Then I do a couple of other Deferred-producing
+operations and finally start a TCP server.
+
+The problem with this is that the caller of startService gets a Deferred
+back immediately after myhandler.Handler.fromDbURI returns its Deferred.
+As far as I can see, no-one looks at the return result of startService. So
+the calling code may proceed willy nilly on the assumption that the service
+has started, when in fact it hasn't. I.e., when startService returns its
+Deferred, the myhandler.Handler.fromDbURI likely wont have completed, and
+the subsequent calls (startDB, createTables) wont have even started.
+
+You went on to say:
+
+glyph&gt; You may even want to have a multi-phase internal startup procedure
+glyph&gt; to generate that object.  But you need to keep track of what state
+glyph&gt; those things are in so that the infrastructure can come around and
+glyph&gt; say stopService to you in the middle of that procedure and still get
+glyph&gt; a clean, ordered shutdown.
+
+Which I guess you'd just repeat again now?
+
+IOW, if my startService is going to do various operations with Deferreds,
+then as those things happen I should be (for example) updating
+handler.state to indicate whether the handler is actually ready. And if a
+stopService call comes along, I have the handler object and can examine its
+state to shut things down properly, depending on where I am in setting
+things up.  To close a further hole, I'd put an attribute onto the
+MyService instance to indicate when the yield that will result in
+self.handler being assigned is still awaiting the generator send in
+inlineCallbacks.
+
+Unfortunately this seems to imply that I also then need to put checks into
+handler methods to make sure it's actually ready before trying anything. I
+suppose I'd just log and ignore those early calls, maybe checking that they
+actually were early. And/or add a timer. What an involved mess!
+
+Is all this a reasonable summary of what you were imagining / describing?
+
+Thanks again, and apologies for so many mails.
+
+Terry
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051139.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+	<LI>Next message (by thread): <A HREF="051143.html">[Twisted-Python] Re: A Python metaclass for Twisted allowing __init__ to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51142">[ date ]</a>
+              <a href="thread.html#51142">[ thread ]</a>
+              <a href="subject.html#51142">[ subject ]</a>
+              <a href="author.html#51142">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

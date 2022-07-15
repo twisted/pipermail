@@ -1,0 +1,99 @@
+from twisted.internet import reactor
+from twisted.internet.defer import Deferred, succeed
+from twisted.internet.protocol import Factory, ClientCreator
+from twisted.protocols.basic import LineReceiver
+
+class ActualServer(LineReceiver):
+    def lineReceived(self, line):
+        self.sendLine('ECHO: ' + repr(line))
+
+class ProxyServer(LineReceiver):
+    def __init__(self, clientManager):
+        self.clientManager = clientManager
+        self.clientID = clientManager.assignClientID()
+
+    def lineReceived(self, line):
+        d = self.clientManager.forwardLine(line)
+        def forwarded(result):
+            self.sendLine('(%d) PROXY: %s' % (self.clientID, result))
+        d.addCallback(forwarded)
+
+class ProxyClient(LineReceiver):
+    def connectionMade(self):
+        self.requestQueue = []
+
+    def forwardLine(self, line):
+        self.sendLine(line)
+        d = Deferred()
+        self.requestQueue.append(d)
+        return d
+
+    def lineReceived(self, line):
+        self.requestQueue.pop(0).callback(line)
+
+class ClientManager(object):
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.proxyClient = None
+        self.connecting = None
+        self.clientCounter = 0
+
+    def assignClientID(self):
+        self.clientCounter += 1
+        return self.clientCounter
+
+    def forwardLine(self, line):
+        d = self.whenConnected()
+        def doForward(proxyClient):
+            return proxyClient.forwardLine(line)
+        d.addCallback(doForward)
+        return d
+
+    def whenConnected(self):
+        if self.proxyClient is None:
+            return self.connect()
+        else:
+            return succeed(self.proxyClient)
+
+    def connect(self):
+        if self.connecting is not None:
+            d = Deferred()
+            def callbackit(result):
+                d.callback(result)
+                return result
+            def errbackit(result):
+                d.errback(result)
+                return result
+            self.connecting.addCallbacks(callbackit, errbackit)
+            return d
+        else:
+            self.connecting = ClientCreator(
+                reactor, ProxyClient).connectTCP(self.host, self.port)
+            def cleanup(result):
+                self.connecting = None
+                return result
+            def done(proxyClient):
+                self.proxyClient = proxyClient
+                return proxyClient
+            self.connecting.addCallback(done)
+            self.connecting.addBoth(cleanup)
+            return self.connect()
+
+class ProxyServerFactory(Factory):
+    def __init__(self, clientManager):
+        self.clientManager = clientManager
+
+    def buildProtocol(self, addr):
+        return ProxyServer(self.clientManager)
+
+class ActualServerFactory(Factory):
+    protocol = ActualServer
+
+def main():
+    reactor.listenTCP(4321, ActualServerFactory())
+    reactor.listenTCP(4322,
+                      ProxyServerFactory(ClientManager('127.0.0.1', 4321)))
+    reactor.run()
+
+main()

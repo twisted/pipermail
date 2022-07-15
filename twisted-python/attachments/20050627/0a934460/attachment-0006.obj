@@ -1,0 +1,117 @@
+"""
+This script should be used as the basis for a py2exe frozen twistd server
+implementation. Simply use this script as the py2exe target:
+
+test_twisted = Target(
+    # used for the versioninfo resource
+    description = "A twisted server implementation",
+
+    # what to build
+    script = "twisted/scripts/arc_twistw.py",
+    dest_base = "twistd")
+
+and include the python modules that expose an application variable as necessary.
+Your application modules will then be stored in the zipfile created by py2exe.
+
+After producing the exe run your server as follows:
+
+twistd.exe -y <name>
+
+where <name> is the name of your python application module without the .py
+
+e.g.
+
+twistd.exe -y dispatcher
+
+would run a frozen application with an application module in the py2exe zipfile
+called dispatcher.pyo
+
+"""
+
+from twisted.python import log
+from twisted.application import app, service, internet
+import twisted.scripts._twistw as twistw
+from twisted import copyright
+import sys, os
+
+class ExeArcServerOptions(twistw.ServerOptions):
+    synopsis = "Usage: twistd.exe [options]"
+
+    for path in sys.path:
+        if '.zip' in path:
+            optParameters = [['zipfile','z', path,
+                              "Read python byte code from a zipfile"]]
+            break
+
+    
+    def opt_version(self):
+        """Print version information and exit.
+        """
+        print 'twistd.exe (the Twisted Windows runner) %s' % copyright.version
+        print copyright.copyright
+        sys.exit()
+
+def loadApplicationFromZip(filename, zipfile):
+    import zipimport
+    zi = zipimport.zipimporter(zipfile)
+    code = zi.get_code(filename)
+    d = {}
+    exec code in d
+    application = d['application']
+    return application
+
+def getApplication(config, passphrase):
+    if not config['python']:
+        s = """
+Note: you are running a frozen twisted server! This implementation expects that
+server modules that expose an application variable have been stored in the py2exe
+created archive. To run these files on the frozen server use: twistd.exe -y <name>,
+where <name> is the name of your python file without the .py
+"""
+        sys.exit(s)
+
+    try:
+        log.msg("Loading %s..." % config['python'])
+        application = loadApplicationFromZip(config['python'], config['zipfile'])
+        log.msg("Loaded.")
+    except Exception, e:
+        s = "Failed to load application: %s" % e
+        if isinstance(e, KeyError) and e.args[0] == "application":
+            s += """
+Could not find 'application' in the file. To use 'twistd -y', your .tac
+file must create a suitable object (e.g., by calling service.Application())
+and store it in a variable named 'application'. twistd loads your .tac file
+and scans the global variables for one of this name.
+
+Please read the 'Using Application' HOWTO for details.
+"""
+        import traceback
+        traceback.print_exc(file=log.logfile)
+        log.msg(s)
+        log.deferr()
+        sys.exit('\n' + s + '\n')
+    return application
+
+def runApp(config):
+    passphrase = app.getPassphrase(config['encrypted'])
+    app.installReactor(config['reactor'])
+    application = getApplication(config, passphrase)
+    oldstdout = sys.stdout
+    oldstderr = sys.stderr
+    twistw.startLogging(config['logfile'])
+    app.initialLog()
+    os.chdir(config['rundir'])
+    service.IService(application).privilegedStartService()
+    app.startApplication(application, not config['no_save'])
+    app.startApplication(internet.TimerService(0.1, lambda:None), 0)
+    app.runReactorWithLogging(config, oldstdout, oldstderr)
+    app.reportProfile(config['report-profile'],
+                      service.IProcess(application).processName)
+    log.msg("Server Shut Down.")
+
+
+def run():
+    app.run(runApp, ExeArcServerOptions)
+    
+if __name__ == "__main__":
+    run()

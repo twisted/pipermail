@@ -1,0 +1,142 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] overkill context switches
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20overkill%20context%20switches&In-Reply-To=20050927002501.GC24353%40trogdor.home.puzzling.org">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001938.html">
+   <LINK REL="Next"  HREF="001944.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] overkill context switches</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20overkill%20context%20switches&In-Reply-To=20050927002501.GC24353%40trogdor.home.puzzling.org"
+       TITLE="[Twisted-web] overkill context switches">andrea at cpushare.com
+       </A><BR>
+    <I>Tue Sep 27 04:07:02 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001938.html">[Twisted-web] overkill context switches
+</A></li>
+        <LI>Next message: <A HREF="001944.html">[Twisted-web] overkill context switches
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1943">[ date ]</a>
+              <a href="thread.html#1943">[ thread ]</a>
+              <a href="subject.html#1943">[ subject ]</a>
+              <a href="author.html#1943">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Tue, Sep 27, 2005 at 10:25:01AM +1000, Andrew Bennetts wrote:
+&gt;<i> On Mon, Sep 26, 2005 at 05:50:24PM +0200, Andrea Arcangeli wrote:
+</I>&gt;<i> [...]
+</I>&gt;<i> &gt; This should be a python or twisted-thread-pool bug. I'm not sure about the best
+</I>&gt;<i> &gt; way to track it down, especially because so far I can reproduce it only on the
+</I>&gt;<i> &gt; server, that is a bit slower and that I cannot use for debugging.
+</I>&gt;<i> 
+</I>&gt;<i> Twisted's threadpools are pretty straightforward wrappers around Python's
+</I>&gt;<i> threading module.  See twisted.python.threadpool.
+</I>&gt;<i> 
+</I>&gt;<i> I'd expect you could reproduce this with a simple python script that starts
+</I>&gt;<i> two threads, with one putting items on a Queue.Queue, and the other reading
+</I>&gt;<i> them off, as a simple approximation of the threadpool arrangement.
+</I>&gt;<i> 
+</I>&gt;<i> In fact, here's a script that does this:
+</I>&gt;<i> 
+</I>&gt;<i> ----
+</I>&gt;<i> import threading
+</I>&gt;<i> import Queue
+</I>&gt;<i> 
+</I>&gt;<i> q = Queue.Queue()
+</I>&gt;<i> 
+</I>&gt;<i> def producer():
+</I>&gt;<i>     # Count from 0 to 99, over and over.
+</I>&gt;<i>     i = 0
+</I>&gt;<i>     while True:
+</I>&gt;<i>         q.put(i)
+</I>&gt;<i>         i += 1
+</I>&gt;<i>         i %= 100
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> def consumer():
+</I>&gt;<i>     while True:
+</I>&gt;<i>         i = q.get()
+</I>&gt;<i>         i * 2
+</I>&gt;<i> 
+</I>&gt;<i> p = threading.Thread(target=producer)
+</I>&gt;<i> c = threading.Thread(target=consumer)
+</I>&gt;<i> p.setDaemon(True)
+</I>&gt;<i> c.setDaemon(True)
+</I>&gt;<i> p.start()
+</I>&gt;<i> c.start()
+</I>&gt;<i> 
+</I>&gt;<i> import time; time.sleep(10)
+</I>&gt;<i> ----
+</I>&gt;<i> 
+</I>&gt;<i> vmstat reports lines like:
+</I>&gt;<i> 
+</I>&gt;<i>  1  1 350740  18828  38260 204880    0    0  2696     0 1099 100315 83 17  0  0
+</I>&gt;<i>  3  2 350740  16852  38336 206760    0    0  1956    20 1133 100174 86 14  0  0
+</I>&gt;<i>  1  1 350740  15116  38444 208352    0    0  1684   592 1106 99901 85 15  0  0
+</I>&gt;<i>  1  1 350740  12760  38520 210640    0    0  2364     0 1119 100183 87 13  0  0
+</I>&gt;<i>  1  1 350740  11024  38612 212336    0    0  1792     0 1123 100255 85 15  0  0
+</I>&gt;<i>  1  1 350740   9048  38696 214216    0    0  1964     0 1129 100057 85 15  0  0
+</I>&gt;<i> 
+</I>&gt;<i> (it also appears that the producer adds to the queue faster than the consumer
+</I>&gt;<i> gets from it.  Doesn't really matter, aside from the memory cost.)
+</I>&gt;<i> 
+</I>&gt;<i> I don't see it with a simple script that has two threads running in parallel
+</I>&gt;<i> with no inter-thread communication at all, however.  I'd say the place to
+</I>&gt;<i> look is Python's implementation of thread synchronisation primitives.
+</I>
+Thanks for the example but the above looks quite normal and expected,
+this passes a token at a fast rate from one thread to the next. In my
+workload there are say 5/6 queries, two through pb, the others through
+psycopg2, so it should schedule a dozen times, not 20k times.
+
+If I were to pass 10k separate tokens (similar to above testcase) then
+20k schedules would have been normal.
+
+I even tried pgasync and it also schedules &gt;20k times. I tracked it down
+by executing multiple sql queries simultaneously. So now I wonder if
+it's postgres scheduling so fast and not twisted... Unfortunately
+I have no kernel knob installed to know who is scheduling so fast and
+strace alters the runtime as well.
+
+I'll try to serialize the sql queries, so that no more than one query
+runs at once, and I guess that'll fix it just fine. (working on making
+this change right now)
+
+It still looks to me that something could be optimized because on such a
+basic workload that many schedules are not needed (the futex syscalls
+as well makes no sense, especially with pgasync) but perhaps that's not
+on the twisted side that generates the overscheduling.
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001938.html">[Twisted-web] overkill context switches
+</A></li>
+	<LI>Next message: <A HREF="001944.html">[Twisted-web] overkill context switches
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1943">[ date ]</a>
+              <a href="thread.html#1943">[ thread ]</a>
+              <a href="subject.html#1943">[ subject ]</a>
+              <a href="author.html#1943">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

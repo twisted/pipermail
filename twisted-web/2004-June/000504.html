@@ -1,0 +1,219 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] civil guards
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20civil%20guards&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000503.html">
+   <LINK REL="Next"  HREF="000513.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] civil guards</H1>
+    <B>Andy Gayton</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20civil%20guards&In-Reply-To="
+       TITLE="[Twisted-web] civil guards">andy at thecablelounge.com
+       </A><BR>
+    <I>Sun Jun 27 21:03:49 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000503.html">[Twisted-web] Patch for the new tree.tac example
+</A></li>
+        <LI>Next message: <A HREF="000513.html">[Twisted-web] Nevow 0.2.0 tarball and tag mismatch?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#504">[ date ]</a>
+              <a href="thread.html#504">[ thread ]</a>
+              <a href="subject.html#504">[ subject ]</a>
+              <a href="author.html#504">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I'm looking for a convenient way to show login error messages.  I've 
+made an attempt in the attached civilguard.tac which is a modified 
+version of examples/guarded.tac.
+
+It abuses that checkers.ANONYMOUS is really an empty tuple, and instead 
+of returning failure.Failure(error.UnauthorizedLogin()) returns a tuple 
+with the appropiate error message.
+
+The realm then stretches its definition of ANONYMOUS to be any tuple, 
+and hands the NotLoggedIn page this tuple so it gets a chance to render 
+the error messages.
+
+It seems like a pretty round about way of doing things though.
+
+Just hoping to get feedback on how others are doing this sort of thing.
+
+cheers!
+
+Andy.
+-------------- next part --------------
+from twisted.internet import defer
+from twisted.application import service, internet
+from twisted.cred import portal, checkers, credentials
+from nevow import inevow, rend, tags, appserver, guard, loaders
+
+
+### Renderers
+
+class NotLoggedIn(rend.Page):
+
+    def __init__( self, errors=() ):
+        rend.Page.__init__( self )
+        self.errors = errors
+
+    def render_errors( self, ctx, data ):
+        if self.errors:
+            return [
+                &quot;Login Error:&quot;,
+                tags.br(),
+                [ tags.strong[error] for error in self.errors ]
+            ]
+        return &quot;&quot;
+
+
+    docFactory = loaders.stan(
+    tags.html[
+        tags.head[tags.title[&quot;Not Logged In&quot;]],
+        tags.body[
+            render_errors,
+            tags.form(action=guard.LOGIN_AVATAR)[
+                tags.table[
+                    tags.tr[
+                        tags.td[ &quot;Username:&quot; ],
+                        tags.td[ tags.input(type='text',name='username') ],
+                    ],
+                    tags.tr[
+                        tags.td[ &quot;Password:&quot; ],
+                        tags.td[ tags.input(type='password',name='password') ],
+                    ]
+                ],
+                tags.input(type='submit'),
+                tags.p,
+            ]
+        ]
+    ]
+)
+
+
+class LoggedIn(rend.Page):
+    &quot;&quot;&quot;The resource that is returned when you login&quot;&quot;&quot;
+    docFactory = loaders.stan(
+    tags.html[
+        tags.head[tags.title[&quot;Logged In&quot;]],
+        tags.body[
+            tags.h3(render=tags.directive(&quot;welcome&quot;)),
+            tags.a(href=guard.LOGOUT_AVATAR)[&quot;Logout&quot;]
+        ]
+    ]
+)
+
+    def render_welcome(self, context, data):
+        return context.tag[ &quot;Hello, %s!&quot; % data]
+
+    def logout(self):
+        ## self.original is the page's main data -- the object that was passed in to the constructor, and
+        ## the object that is initially passed as the 'data' parameter to renderers
+        print &quot;%s logged out!&quot; % self.original
+
+
+### Users
+
+class User:
+    def __init__( self, name, password ):
+        self.name      = name
+        self.password  = password
+
+
+userdb = {
+    &quot;fred&quot; : User( &quot;fred&quot;, &quot;fred&quot; ),
+    &quot;ned&quot; :  User( &quot;ned&quot;,  &quot;ned&quot; ),
+}
+
+
+### Authentication
+
+class SimpleChecker:
+    __implements__ = checkers.ICredentialsChecker
+    credentialInterfaces = (credentials.IUsernamePassword,)
+
+    def __init__(self, userdb):
+        self.userdb = userdb
+
+    def requestAvatarId(self, credentials):
+        user = self.userdb.get( credentials.username, None )
+        if user is not None:
+            return defer.maybeDeferred(
+                credentials.checkPassword, user.password).addCallback(
+                self._cbPasswordMatch, credentials.username)
+        else:
+            return ( &quot;No user named: %s&quot; % credentials.username, )
+
+
+    def _cbPasswordMatch(self, matched, username):
+        if matched: return username
+        return ( &quot;password didn't match: %s&quot; % username, )
+
+
+class SimpleRealm:
+    __implements__ = portal.IRealm,
+
+    def requestAvatar(self, avatarId, mind, *interfaces):
+        for iface in interfaces:
+            if iface is inevow.IResource:
+                if type(avatarId) is type(checkers.ANONYMOUS):
+                    resc = NotLoggedIn( avatarId )
+                    resc.realm = self
+                    return ( inevow.IResource, resc, lambda : None )
+                else:
+                    resc = LoggedIn( avatarId )
+                    resc.realm = self
+                    return ( inevow.IResource, resc, resc.logout )
+
+        raise NotImplementedError(&quot;Can't support that interface.&quot;)
+
+
+
+### Application setup
+
+realm = SimpleRealm()
+portal = portal.Portal(realm)
+myChecker = SimpleChecker( userdb )
+
+portal.registerChecker(checkers.AllowAnonymousAccess(), credentials.IAnonymous)
+portal.registerChecker(myChecker)
+
+site = appserver.NevowSite(
+    resource=guard.SessionWrapper(portal)
+)
+
+application = service.Application(&quot;guarded&quot;)
+internet.TCPServer(8080, site).setServiceParent(application)
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000503.html">[Twisted-web] Patch for the new tree.tac example
+</A></li>
+	<LI>Next message: <A HREF="000513.html">[Twisted-web] Nevow 0.2.0 tarball and tag mismatch?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#504">[ date ]</a>
+              <a href="thread.html#504">[ thread ]</a>
+              <a href="subject.html#504">[ subject ]</a>
+              <a href="author.html#504">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

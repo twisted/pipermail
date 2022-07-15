@@ -1,0 +1,209 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Deferred fun
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Deferred%20fun&In-Reply-To=200601161956.15174.cso%40netcenturion.biz">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002314.html">
+   <LINK REL="Next"  HREF="002327.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Deferred fun</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Deferred%20fun&In-Reply-To=200601161956.15174.cso%40netcenturion.biz"
+       TITLE="[Twisted-web] Deferred fun">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Mon Jan 16 19:41:38 MST 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002314.html">[Twisted-web] Deferred fun
+</A></li>
+        <LI>Next message: <A HREF="002327.html">[Twisted-web] Deferred fun
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2315">[ date ]</a>
+              <a href="thread.html#2315">[ thread ]</a>
+              <a href="subject.html#2315">[ subject ]</a>
+              <a href="author.html#2315">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, Jan 16, 2006 at 07:56:14PM -0600, James R. Saker Jr. wrote:
+&gt;<i> Per new years resolution 'I will learn how to use deferreds in twisted', I've 
+</I>&gt;<i> got a little puzzle in an xmlrpc remote nmap tool that I put together to try 
+</I>&gt;<i> to learn deferreds (as well as automate scans on my firewall from outside my 
+</I>&gt;<i> net), figuring the speed of nmap returning the results of a scan can be 
+</I>&gt;<i> excessively long and should make for a good deferred experiment. Except I 
+</I>&gt;<i> keep hitting an AssertionError and think it may have to do with what happens 
+</I>&gt;<i> to my deferred when it completes:
+</I>
+I'll point out the problems that jumped out at me:
+
+&gt;<i> #!/usr/bin/python
+</I>&gt;<i> &quot;&quot;&quot;
+</I>&gt;<i> pyrscand.py
+</I>&gt;<i> Python remote scanner: Nmap XML-RPC module for processing scan requests from a 
+</I>&gt;<i> remote host
+</I>&gt;<i> &quot;&quot;&quot;
+</I>&gt;<i> import os
+</I>&gt;<i> from twisted.internet import defer
+</I>&gt;<i> from twisted.web import xmlrpc, server
+</I>&gt;<i> 
+</I>&gt;<i> NMAP_PATH = '/usr/bin/nmap' # location of nmap binary on host
+</I>&gt;<i> 
+</I>&gt;<i> class ScanServer(xmlrpc.XMLRPC):
+</I>&gt;<i>     &quot;&quot;&quot;
+</I>&gt;<i>     XMLRPC server for remote scan processing
+</I>&gt;<i>     &quot;&quot;&quot;
+</I>&gt;<i> 
+</I>&gt;<i>     def handleScan(self, type, ip, detectOS, timing):
+</I>&gt;<i> 	&quot;&quot;&quot;
+</I>&gt;<i> 	Simplistic scans only for now!
+</I>&gt;<i> 	&quot;&quot;&quot;
+</I>&gt;<i>         result = ''
+</I>&gt;<i>         print &quot;running scanner...&quot;
+</I>&gt;<i>         scandata = os.popen('%s -%s -A -T%s %s -oX -' % \
+</I>&gt;<i>             (NMAP_PATH, type, timing, ip), 'r')
+</I>
+os.popen is not safe to use with Twisted, due to the joys of signal handling.
+See the Using Processes developer guide for details:
+<A HREF="http://twistedmatrix.com/projects/core/documentation/howto/process.html">http://twistedmatrix.com/projects/core/documentation/howto/process.html</A>
+
+The short answer in this case is to use twisted.internet.utils.getProcessOutput:
+
+    def handleScan(self, type, ip, detectOS, timing):
+        return getProcessOutput(NMAP_PATH, 
+            args=['-' + type, '-A', '-T' + timing, ip, '-oX', '-'])
+
+(docstring omitted for brevity)
+
+&gt;<i>     def handleFailure(self, f):
+</I>&gt;<i>         print &quot;errback&quot;
+</I>&gt;<i>         print &quot;we got an exception: %s&quot; % (f.getTraceback(),)
+</I>&gt;<i>         f.trap(RuntimeError)
+</I>&gt;<i>         return 'Error'
+</I>
+I'm not sure why you're catching RuntimeError, as it's never raised anywhere
+that I can see.
+
+&gt;<i>     def xmlrpc_scan(self, type, ip, detectOS, timing):
+</I>&gt;<i>         &quot;&quot;&quot;
+</I>&gt;<i>         Inputs: type (sS, sT, sP), ip, detectOS flag, timing performance (0-5)
+</I>&gt;<i>         Outputs: XML formatted report value compliant with nmap schema
+</I>&gt;<i>         &quot;&quot;&quot;
+</I>&gt;<i>         print &quot;scanner&quot;
+</I>&gt;<i>         d = defer.Deferred()
+</I>&gt;<i>         d.addCallback(self.handleScan(type, ip, detectOS, timing))
+</I>
+In general, when you want a callback to be run with arguments, you say:
+
+    d.addCallback(func, arg1, arg2)
+
+*not*:
+
+    d.addCallback(func(arg1, arg2))
+
+Because the latter will call the function immediately, rather than make it all
+callback.
+
+Also, a callback function needs to expect the result of the deferred as its
+first argument, before any extras you pass to addCallback.
+
+But this is all moot, because what you really want is for handleScan to *create*
+and *return* a Deferred, not be a callback, because it is handleScan that is the
+operation that you are waiting for the result from, rather than being an action
+you want to take when you get a result.  Helpfully, getProcessOutput returns a
+deferred of the process output for you, so your xmlrpc_scan function can become:
+
+    def xmlrpc_scan(self, type, ip, detectOS, timing):
+        d = self.handleScan(type, ip, detectOS, timing)
+        d.addErrback(self.handleFailure)
+        return d
+
+-Andrew.
+
+
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002314.html">[Twisted-web] Deferred fun
+</A></li>
+	<LI>Next message: <A HREF="002327.html">[Twisted-web] Deferred fun
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2315">[ date ]</a>
+              <a href="thread.html#2315">[ thread ]</a>
+              <a href="subject.html#2315">[ subject ]</a>
+              <a href="author.html#2315">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

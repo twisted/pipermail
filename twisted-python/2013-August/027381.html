@@ -1,0 +1,138 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python]  Raising exception from a Deferred canceller.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20%20Raising%20exception%20from%20a%20Deferred%20canceller.&In-Reply-To=%3CCAK_130SBGydUrCiDTV8srqcYq7KNCFP6MuN_b5s4scG5sMSzNw%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="059841.html">
+   <LINK REL="Next"  HREF="059843.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python]  Raising exception from a Deferred canceller.</H1>
+    <B>zhang kai</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20%20Raising%20exception%20from%20a%20Deferred%20canceller.&In-Reply-To=%3CCAK_130SBGydUrCiDTV8srqcYq7KNCFP6MuN_b5s4scG5sMSzNw%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python]  Raising exception from a Deferred canceller.">kylerzhang11 at gmail.com
+       </A><BR>
+    <I>Thu Aug 29 03:27:46 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="059841.html">[Twisted-Python] Graceful shutdown
+</A></li>
+        <LI>Next message (by thread): <A HREF="059843.html">[Twisted-Python] Raising exception from a Deferred canceller.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27381">[ date ]</a>
+              <a href="thread.html#27381">[ thread ]</a>
+              <a href="subject.html#27381">[ subject ]</a>
+              <a href="author.html#27381">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+As itamar mentioned in ticket #6676 &lt;<A HREF="http://tm.tl/#6676">http://tm.tl/#6676</A>&gt;, If a cancellation
+function for a Deferred throws an exception(the cancel() method of
+Deferred won&#8217;t
+throw exceptions, but the canceller may), behavior is undefined. If the
+cancellation function throws an exception it is currently not caught, and
+cancellation does not occur.
+
+We can catch the exception and log it, and fallback to just firing Deferred
+ withCancelledError. This won&#8217;t break any old code. But an exception
+raising from the cancellation function often means the cancellation is
+failed.
+
+Another option we have is taking this opportunity to make the cancellation
+being able to fail. There is the motivation:
+
+There are cases where a Deferred is uncancellable. For example, we can call
+twisted.mail.imap4.IMAP4Client.delete to delete a mailbox. When the
+operation is waiting in the queue, we can cancel it by removing it from the
+queue. However, when the operation is already sent and is waiting for the
+response, it becomes uncancellable.
+
+If we allow the canceller(NOT the cancel() method of the Deferred) to raise
+an exception, we can tell the user the cancellation is failed and the
+Deferredwon&#8217;t be fired with a CancelledError.
+
+Raising an exception from cancel() may break the old code. So we can catch
+the exception raised by the canceller, then return a False without firing
+theDeferred to tell the user that the cancellation is failed.
+
+In order to avoid missing unexpected exceptions, we can create a
+CancellationFailedError. When the canceller raises CancellationFailedError,
+we catch it and return False. When the canceller raises others exceptions,
+we catch it, log it then return False.
+
+Something like this:
+
+def cancel(self):
+    if not self.called:
+        canceller = self._canceller
+        if canceller:
+            try:
+                canceller(self)
+            except CancellationFailedError:
+                return False
+            except Exception:
+                log.err(None, &quot;Unexpected exception from canceller.&quot;)
+                return False
+        else:
+            # Arrange to eat the callback that will eventually be fired
+            # since there was no real canceller.
+            self._suppressAlreadyCalled = True
+        if not self.called:
+            # There was no canceller, or the canceller didn't call
+            # callback or errback.
+            self.errback(failure.Failure(CancelledError()))
+        return True
+    elif isinstance(self.result, Deferred):
+        # Waiting for another deferred -- cancel it instead.
+        return self.result.cancel()
+    else:
+        return False
+
+This won&#8217;t break any code by raising an exception from cancel(), although
+some code may rely on cancel() not returning any value.
+
+So, what&#8217;s your opinion on raising an exception from the canceller?
+
+
+Regards,
+
+-Kai
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20130829/6f9a2d84/attachment-0001.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20130829/6f9a2d84/attachment-0001.html</A>&gt;
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="059841.html">[Twisted-Python] Graceful shutdown
+</A></li>
+	<LI>Next message (by thread): <A HREF="059843.html">[Twisted-Python] Raising exception from a Deferred canceller.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27381">[ date ]</a>
+              <a href="thread.html#27381">[ thread ]</a>
+              <a href="subject.html#27381">[ subject ]</a>
+              <a href="author.html#27381">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,135 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Improving spawnProcess and friends
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Improving%20spawnProcess%20and%20friends&In-Reply-To=%3C20060719155414.29014.863402158.divmod.quotient.44373%40ohm%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="046200.html">
+   <LINK REL="Next"  HREF="046202.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Improving spawnProcess and friends</H1>
+    <B>glyph at divmod.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Improving%20spawnProcess%20and%20friends&In-Reply-To=%3C20060719155414.29014.863402158.divmod.quotient.44373%40ohm%3E"
+       TITLE="[Twisted-Python] Improving spawnProcess and friends">glyph at divmod.com
+       </A><BR>
+    <I>Wed Jul 19 09:54:14 MDT 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="046200.html">[Twisted-Python] Improving spawnProcess and friends
+</A></li>
+        <LI>Next message (by thread): <A HREF="046202.html">[Twisted-Python] Re: Improving spawnProcess and friends
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#46201">[ date ]</a>
+              <a href="thread.html#46201">[ thread ]</a>
+              <a href="subject.html#46201">[ subject ]</a>
+              <a href="author.html#46201">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, 19 Jul 2006 11:09:35 +0300, Nuutti Kotivuori &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">naked at iki.fi</A>&gt; wrote:
+
+&gt;<i>I'd like to write an improvement to spawnProcess - but I thought I
+</I>&gt;<i>should check with the devs here first to get comments and to see if it
+</I>&gt;<i>would be something that could be merged to the mainline at some point.
+</I>
+Thanks :).
+
+It's probably worth mentioning these:
+   <A HREF="http://twistedmatrix.com/trac/ticket/1218">http://twistedmatrix.com/trac/ticket/1218</A>
+   <A HREF="http://twistedmatrix.com/trac/ticket/950">http://twistedmatrix.com/trac/ticket/950</A>
+   <A HREF="http://twistedmatrix.com/trac/ticket/1478">http://twistedmatrix.com/trac/ticket/1478</A>
+as long as we're talking about this API.
+
+&gt;<i>The primary thing I want to do is to improve the childFDs
+</I>&gt;<i>handling. Instead of the childFDs being a dictionary, I'd like to make
+</I>&gt;<i>it be an object that is set up beforehand.
+</I>
+I'd like to see a proposed API for setting up this object.  A different way of doing this (which I think I prefer) would be to add a feature to ProcessProtocol rather than modifying the behavior of the childFDs argument.  After all, it's generally a particular process protocol that wants to be able to communicate on various channels.  This way it would be possible - although not necessarily easy - to allow your ProcessProtocol object to have a few of its methods called post-fork, but pre-exec.
+
+&gt;<i>In addition to the current functionality of duplicating one of the
+</I>&gt;<i>parent's fds and providing simple pipes, I'd like to add features to
+</I>&gt;<i>configure arbitrary PTYs to be set up, for socketpairs to be set up
+</I>&gt;<i>and to allow the duplication of some pipe into multiple child fds. To
+</I>&gt;<i>clarify a bit, I'd like for a way to be able to start a process and
+</I>&gt;<i>say that a socketpair should be created, it should be dup'd to fd 0
+</I>&gt;<i>and fd 1 on the child and a pipe should be created for reading and it
+</I>&gt;<i>should be dup'd to fd 2 on the child. The same with PTYs as well, so
+</I>&gt;<i>this change would unify Process and PTYProcess.
+</I>
+&gt;<i>Also, I would want to make it possible for each created reader,
+</I>&gt;<i>writer, PTY, socketpair, whatever to have a separate protocol. That
+</I>&gt;<i>is, I want to be able to say that this PTY should be handled by my
+</I>&gt;<i>protocol here that inherits from LineReceiver - instead of having to
+</I>&gt;<i>implement all of those in the ProcessProtocol.
+</I>
+I believe that putting this into spawnProcess is operating at the wrong layer of abstraction.  The feature you're describing is highly useful though, so providing a utility implementation of ProcessProtocol that allows you to hook up regular protocols to various FDs would be very good.  IMHO ProcessProtocol looks deceptively like a regular protocol, and probably its dataReceived and connectionLost methods should be (softly) deprecated.  The right way to write a ProcessProtocol is to override childDataReceived, childConnectionLost and processEnded.  A ProcessProtocol that could hook up _arbitrary_ FDs as input and output to a Protocol would be incredibly useful but it would be a good start just to have a better-defined way to deal with separating process control from protocol logic; so useful it might even be worth putting this functionality on the base ProcessProtocol.
+
+It seems like a good first step here would be refactoring the various flavors of file descriptor (including the mess in _pollingfile and _dumbwin32proc) so that they can be easily and portably invoked by users wanting to create out-of-band (non stdin/stdout) channels of communication between their processes.  I think it would be best if these channels could have a &quot;flavor requirement&quot; specified (i.e. pipe, socketpair, PTY), but also have a general stream-based transport API that would work the same from a high-level application's point of view on Windows and Mac and Linux; for example, use pipes if available, numeric unix sockets if not, localdomain sockets if that's not available either, depending on platform.
+
+All of this is leaning towards making 0,1,2 as un-special as possible, which I like very much.  That also implies that you'll need to clean up stdio.StandardIO, and instead add an API like reactor.connectParentFD(factory, fileno, flavor=None).  On my first read through I started trying to describe a way to communicate the expected list of file descriptors and their settings to the child process but that seems best left up to the application.
+
+&gt;<i>Backwards compatibility would be obtained by still allowing the dict
+</I>&gt;<i>type in childFDs and just mapping them to the new object inside
+</I>&gt;<i>spawnProcess. Also the custom protocols would be optional and the
+</I>&gt;<i>default protocol would just call childDataReceived and
+</I>&gt;<i>childConnectionLost on the ProcessProtocol.
+</I>
+This is why I'd strongly prefer the logic remain in ProcessProtocol.  There should be _one_ location for dealing with the state of a running subprocess and its shared FD map; the ProcessProtocol seems the logical place.  We could hide it all inside the reactor, but I am pretty sure that important aspects will forget to be exposed.
+
+&gt;<i>The other feature I would like to implement while mucking around with
+</I>&gt;<i>the process module is the preexec_fn feature of the subprocess
+</I>&gt;<i>module. That is, a function that gets executed just before the child
+</I>&gt;<i>is exec'd. There can probably be other uses for this as well, but the
+</I>&gt;<i>main usage for this would be a chroot call. I'm considering if it
+</I>&gt;<i>should be a list of functions executed in order - since there might be
+</I>&gt;<i>a need to do a chroot, a chdir and another chroot or something similar
+</I>&gt;<i>- but of course the user can just supply a function that does that.
+</I>
+This gives me another good idea.  Right now there's a bunch of stuff that happens in the guts of the process module; chdir, setuid, fdmap setup.  Most of this could be factored into an UNIX-specific ProcessProtocol, centralized in &quot;beforeFork&quot; and &quot;beforeExec&quot; methods.  I'm not really sure how to best clearly expose that non-portable features are required when invoking spawnProcess, but the obvious idea is that if IUNIXProcessProtocol.providedBy(yourProtocol), barf on Windows, Jython (if they ever do another release and we add support for it again), etc.  Then you could explicitly  subclass either UNIXProcessProtocol if you explicitly needed nonportable features (which would still allow you to use them on UNIX; UNIXProcessProtocol == ProcessProtocol, on platforms which support it); but subclassing ProcessProtocol would select a more platform-appropriate method.
+
+Originally I thought that the process-communication logic would be specific to a reactor, which is why it's factored as it is; after a few years of working with process spawning closely though it is clear to me that differences are entirely a feature of the OS and not of the reactor.
+
+&gt;<i>The actual API for these isn't finalized, I was thinking of making it
+</I>&gt;<i>up as I go and seeing how it turns out.
+</I>
+I'd certainly like to see how a stab at this which can actually run turns out.
+
+&gt;<i>So, what do you think?
+</I>
+Well, I liked your ideas, and then they made me think of some ideas that I liked even more :).  I hope that you'll continue to work on this.  Please feel free to copy and paste chunks of this (both your ideas and mine) into a ticket.
+
+I'm working on at least 3 projects right now which use process spawning and these changes would improve all of them; although only one will be running long enough to actually see any of these implemented, I'm still pretty excited about the idea.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="046200.html">[Twisted-Python] Improving spawnProcess and friends
+</A></li>
+	<LI>Next message (by thread): <A HREF="046202.html">[Twisted-Python] Re: Improving spawnProcess and friends
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#46201">[ date ]</a>
+              <a href="thread.html#46201">[ thread ]</a>
+              <a href="subject.html#46201">[ subject ]</a>
+              <a href="author.html#46201">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

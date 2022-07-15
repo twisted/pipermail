@@ -1,0 +1,220 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Flush socket
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Flush%20socket&In-Reply-To=%3C634914A010D0B943A035D226786325D422BFBFC331%40EXVMBX020-12.exch020.serverdata.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="056877.html">
+   <LINK REL="Next"  HREF="056879.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Flush socket</H1>
+    <B>Tobias Oberstein</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Flush%20socket&In-Reply-To=%3C634914A010D0B943A035D226786325D422BFBFC331%40EXVMBX020-12.exch020.serverdata.net%3E"
+       TITLE="[Twisted-Python] Flush socket">tobias.oberstein at tavendo.de
+       </A><BR>
+    <I>Fri Aug 12 07:08:06 MDT 2011</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="056877.html">[Twisted-Python] Flush socket
+</A></li>
+        <LI>Next message (by thread): <A HREF="056879.html">[Twisted-Python] Flush socket
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56880">[ date ]</a>
+              <a href="thread.html#56880">[ thread ]</a>
+              <a href="subject.html#56880">[ subject ]</a>
+              <a href="author.html#56880">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thanks for the tip, I've gone that route as it was the simplest to realize. Since I had centralized all calls
+to transport.write() in a wrapper in the code, I didn't had to implement an ITransport ..
+
+It seems to &quot;work&quot; (modulo the cautions you iterated) .. and I no longer use reactor internals.
+
+I had to introduce a layer of buffering though (which kicks in as soon as I do a &quot;synch&quot;/&quot;chopped&quot; send .. test prg below.
+
+Thanks again, cheers
+
+=== CLIENT ===
+
+import binascii, time
+from collections import deque
+from twisted.internet import reactor, protocol
+from twisted.internet.defer import inlineCallbacks, Deferred
+
+
+class TricklingClientProtocol(protocol.Protocol):
+
+   def __init__(self):
+      self.send_queue = deque()
+      self.triggered = False
+
+   def _trigger(self):
+      if not self.triggered:
+         self.triggered = True
+         self._send()
+
+   def _send(self):
+      if len(self.send_queue) &gt; 0:
+         e = self.send_queue.popleft()
+         self.transport.write(e)
+         reactor.callLater(0.000001, self._send)
+      else:
+         self.triggered = False
+
+   def send(self, data, sync = False, chopsize = None):
+      if chopsize &gt; 0:
+         i = 0
+         n = len(data)
+         done = False
+         while not done:
+            j = i + chopsize
+            if j &gt;= n:
+               done = True
+               j = n
+            self.send_queue.append(data[i:j])
+            i += chopsize
+         self._trigger()
+         #print &quot;chopped send&quot;
+      else:
+         if sync or len(self.send_queue) &gt; 0:
+            self.send_queue.append(data)
+            self._trigger()
+            #print &quot;synced send&quot;
+         else:
+            self.transport.write(data)
+            #print &quot;normal send&quot;
+
+   def connectionMade(self):
+      self.transport.setTcpNoDelay(True)
+      self.part1()
+
+   def part1(self):
+      LEN = 50
+      self.send(&quot;123&quot; * LEN)
+      for i in xrange(0, LEN):
+         self.send(&quot;456&quot;, sync = True)
+      self.send(&quot;789&quot; * LEN, chopsize = 1)
+      self.send(&quot;123&quot; * LEN)
+      reactor.callLater(0.3, self.part2)
+
+   def part2(self):
+      self.send(&quot;xyz&quot; * 5)
+      self.send(&quot;abc&quot; * 5, chopsize = 1)
+      reactor.callLater(5, self.transport.loseConnection)
+
+
+class TricklingClientFactory(protocol.ClientFactory):
+
+   protocol = TricklingClientProtocol
+
+   def clientConnectionFailed(self, connector, reason):
+     reactor.stop()
+
+   def clientConnectionLost(self, connector, reason):
+      reactor.stop()
+
+
+if __name__ == '__main__':
+   factory = TricklingClientFactory()
+   reactor.connectTCP(&quot;localhost&quot;, 9000, factory)
+   reactor.run()
+
+=== SERVER ====
+
+import binascii
+from twisted.internet import reactor, protocol
+
+class TricklingServerProtocol(protocol.Protocol):
+
+   def __init__(self):
+      pass
+
+   def connectionMade(self):
+      print &quot;client accepted&quot;
+      self.transport.setTcpNoDelay(True)
+      self.stats = {}
+
+   def connectionLost(self, reason):
+      print &quot;client lost&quot;
+      for s in sorted(self.stats):
+         print &quot;%dx chop of length %d&quot; % (self.stats[s], s)
+
+   def dataReceived(self, data):
+      l = len(data)
+      self.stats[l] = self.stats.get(l, 0) + 1
+      #print data
+
+
+class TricklingServerFactory(protocol.ServerFactory):
+
+   protocol = TricklingServerProtocol
+
+   def __init__(self):
+      pass
+
+   def startFactory(self):
+      pass
+
+   def stopFactory(self):
+      pass
+
+
+if __name__ == '__main__':
+   factory = TricklingServerFactory()
+   reactor.listenTCP(9000, factory)
+   reactor.run()
+
+
+Von: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A> [mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>] Im Auftrag von Glyph Lefkowitz
+Gesendet: Freitag, 12. August 2011 06:06
+An: Twisted general discussion
+Betreff: Re: [Twisted-Python] Flush socket
+
+On Aug 11, 2011, at 7:43 PM, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A>&lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A>&gt; wrote:
+
+
+This will always be a somewhat unreliable way to test a remote process's
+handling of packetization, since there are still two TCP/IP stacks which
+can mess around with the data in a variety of ways, but it's as good as
+you can do if you want to use normal sockets for this testing.
+
+
+This bears repeating.  It's really unreliable.  Really.  The sizes of buffers passed to send() and recv() bear only a coincidental resemblance to each other; one test setup may reproduce them reliably when the next will suddenly behave completely differently.  If you want even a reasonably reliable heuristic here, you need to send() and then introduce a delay.  You can do this without your own IWriteDescriptor implementation though; just implement an ITransport that does its write() by breaking things up and then calling the underlying write() with callLater()s in-between.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20110812/bb7102d0/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="056877.html">[Twisted-Python] Flush socket
+</A></li>
+	<LI>Next message (by thread): <A HREF="056879.html">[Twisted-Python] Flush socket
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56880">[ date ]</a>
+              <a href="thread.html#56880">[ thread ]</a>
+              <a href="subject.html#56880">[ subject ]</a>
+              <a href="author.html#56880">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

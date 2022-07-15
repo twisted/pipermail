@@ -1,0 +1,147 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Log out on guard login.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Log%20out%20on%20guard%20login.&In-Reply-To=20050201002908.7026.1313443574.divmod.quotient.15915%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001128.html">
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Log out on guard login.</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Log%20out%20on%20guard%20login.&In-Reply-To=20050201002908.7026.1313443574.divmod.quotient.15915%40ohm"
+       TITLE="[Twisted-web] Log out on guard login.">andrea at cpushare.com
+       </A><BR>
+    <I>Mon Jan 31 18:22:48 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001128.html">[Twisted-web] Log out on guard login.
+</A></li>
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1129">[ date ]</a>
+              <a href="thread.html#1129">[ thread ]</a>
+              <a href="subject.html#1129">[ subject ]</a>
+              <a href="author.html#1129">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Tue, Feb 01, 2005 at 12:29:08AM +0000, Jonathan Lange wrote:
+&gt;<i> Hello,
+</I>&gt;<i> 
+</I>&gt;<i> We recently had some problems with the ISession hanging around even after a new login. Also IE has had some weird behaviour: when you login in with one set of credentials, hit back, then log in again (with incorrect credentials), you are still logged in with your original (correct) credentials.
+</I>&gt;<i> 
+</I>&gt;<i> To work around this, we've monkey-patched guard to logout and expire the session on login.
+</I>&gt;<i> 
+</I>&gt;<i> Below is a patch that adds this change to nevow SVN.
+</I>&gt;<i> 
+</I>&gt;<i> Known problems: 
+</I>&gt;<i> - line 295 calls portal.login straight-up, and so this patch doesn't help with certain http auth cases.
+</I>&gt;<i> - I may be doing weird evil wrong stuff with context, mostly because I don't understand it.
+</I>&gt;<i> 
+</I>&gt;<i> cheers,
+</I>&gt;<i> jml
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> Index: nevow/guard.py
+</I>&gt;<i> ===================================================================
+</I>&gt;<i> --- nevow/guard.py      (revision 1123)
+</I>&gt;<i> +++ nevow/guard.py      (working copy)
+</I>&gt;<i> @@ -362,6 +362,11 @@
+</I>&gt;<i>          return UsernamePassword(username, password)
+</I>&gt;<i> 
+</I>&gt;<i>      def login(self, request, session, credentials, segments, anonymous=False):
+</I>&gt;<i> +        session.portalLogout(self.portal)
+</I>&gt;<i> +        from twisted.python import context
+</I>&gt;<i> +        ctxSession = inevow.ISession(context, None)
+</I>&gt;<i> +        if ctxSession:
+</I>&gt;<i> +            ctxSession.expire()
+</I>&gt;<i>          mind = self.mindFactory(request, credentials)
+</I>&gt;<i>          session.mind = mind
+</I>&gt;<i>          return self.portal.login(credentials, mind, self.credInterface).addCallback(
+</I>
+With my usage I had apparently no problem regardless of the above, but I can
+imagine some other app may have a problem. My only problem was the logout, that
+didn't drop the privilegied stuff from the session. But a re-login without a
+logout in between would overwrite everything privilegied so I cannot notice any
+difference. Though the problem is very similar to the one I had on the logout
+side and you also did a session expiry in nevow like I did originally.
+
+I believe the login can refresh the session with the avatar code like I'm doing
+for solving the logout problem too.
+
+I can see the second below unsetComponent not raising the exception during a
+re-login without a logout in between, which means it's making a difference
+(even if it makes no difference for my site) and it should allow you to fixup
+your code optimally without regenerating the cookie.
+
+If you copy my below code and you adapt it to your app, you should be able to
+cleanup your session during both the logout and the re-login procedures.
+
+Probably there should be a dumb-mode that expires the sessions both during
+login and logout. I don't mind anymore myself since I just learnt how to solve
+it, but the below stuff may not be worth it for simple sites.
+
+For how to setup the Mind see the logout_guard2 example. I guess the
+logout_guard2 example should be updated too with the session cleanup during
+login.
+
+	def requestAvatar(self, avatar_id, mind, *interfaces):
+		#print avatar_id, mind, interfaces
+		for interface in interfaces:
+			if interface is inevow.IResource:
+				def logout(session):
+					def _logout():
+						# account
+						try:
+							session.unsetComponent(iweb.IAccount)
+						except KeyError:
+							pass
+
+						# force a full session expiry
+						#del session.guard.sessions[session.uid]
+					return _logout
+
+				if avatar_id is checkers.ANONYMOUS or avatar_id.shutdown:
+					resc = guest.root_page_class()
+					resc.realm = self
+					return (inevow.IResource, resc, lambda : None)
+				else:
+					resc = account.root_page_class(avatar_id)
+					resc.remember(avatar_id, iweb.IAccount)
+					resc.realm = self
+					session = mind.request.getSession()
+					try:
+						session.unsetComponent(iweb.IAccount)
+					except KeyError:
+						pass
+					return (inevow.IResource, resc, logout(session))
+
+		raise NotImplementedError(&quot;Can't support that interface.&quot;)
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001128.html">[Twisted-web] Log out on guard login.
+</A></li>
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1129">[ date ]</a>
+              <a href="thread.html#1129">[ thread ]</a>
+              <a href="subject.html#1129">[ subject ]</a>
+              <a href="author.html#1129">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

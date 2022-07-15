@@ -1,0 +1,136 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Raising exception from a Deferred canceller.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Raising%20exception%20from%20a%20Deferred%20canceller.&In-Reply-To=%3C7FE9F2EF-88ED-4642-A106-705C4CA1F12C%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="027390.html">
+   <LINK REL="Next"  HREF="027385.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Raising exception from a Deferred canceller.</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Raising%20exception%20from%20a%20Deferred%20canceller.&In-Reply-To=%3C7FE9F2EF-88ED-4642-A106-705C4CA1F12C%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Raising exception from a Deferred canceller.">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Thu Aug 29 23:49:31 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="027390.html">[Twisted-Python] Raising exception from a Deferred canceller.
+</A></li>
+        <LI>Next message: <A HREF="027385.html">[Twisted-Python] Twisted serialport dataReceived() provides	fragmented data
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27391">[ date ]</a>
+              <a href="thread.html#27391">[ thread ]</a>
+              <a href="subject.html#27391">[ subject ]</a>
+              <a href="author.html#27391">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thank you, Kai, for a great post describing the issue in detail.
+
+On Aug 29, 2013, at 2:27 AM, zhang kai &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">kylerzhang11 at gmail.com</A>&gt; wrote:
+
+&gt;<i> So, what&#8217;s your opinion on raising an exception from the canceller?
+</I>
+I feel pretty strongly that it ought to be handled in this manner:
+
+Index: twisted/internet/defer.py
+===================================================================
+--- twisted/internet/defer.py	(revision 39819)
++++ twisted/internet/defer.py	(working copy)
+@@ -456,7 +456,10 @@
+         if not self.called:
+             canceller = self._canceller
+             if canceller:
+-                canceller(self)
++                try:
++                    canceller(self)
++                except:
++                    log.err(failure.Failure(), &quot;Canceller raised exception.&quot;)
+             else:
+                 # Arrange to eat the callback that will eventually be fired
+                 # since there was no real canceller.
+
+Raising an exception from a canceller is a bug.  It was never really supposed to do anything.  I guess you could be relying on the behavior right now where raising an exception will allow you to avoid callbacking or errbacking the Deferred, but only at the cost of delivering some random exception to some unsuspecting application code.
+
+As Jean-Paul already pointed out, turning this into a boolean flag is not useful to anybody.  The way that you tell a cancelled operation has been cancelled is to add a callback to a point in the chain and then observe that it has been cancelled.
+
+So, separately from how to handle unhandled exceptions, there's the question of making a Deferred 'atomic', by which I mean, a Deferred whose .cancel() method has no apparent external effect; no result is obtained.  (I am using the term 'atomic' because it seems like half the uses in this thread use &quot;uncancellable&quot; to mean &quot;doesn't have an explicit canceller&quot; and the other half of the uses mean &quot;cancellation has no effect&quot;).
+
+Currently, it is, at least, possible to construct a Deferred that will continue waiting for a result after .cancel() has been invoked.  However, it's surprisingly challenging.  You have to do this, or something like it:
+
+def atomize(deferred):
+    def complete(result):
+        complete.done = True
+        complete.result = result
+        public.cancel()
+        return result
+    complete.result = None
+    complete.done = False
+    def again():
+        return (Deferred(lambda x: x.callback(complete.result))
+                .addCallback(await))
+    def await(result):
+        if complete.done:
+            return result
+        else:
+            return again()
+    public = again()
+    deferred.addBoth(complete)
+    return public
+
+This took *me* like an hour to construct again from memory, so I have to assume that ~75% of Twisted users will either never realize it's possible or not really figure it out.  And I'm still not quite sure what sort of resource consumption this involves; will each .cancel() stack up another Deferred or will they be tail-recursed out somehow (/me pours out a 40 for tm.tl/411)?
+
+Asking all these questions to implement something apparently simple seems an undue burden.  So it does seem reasonable that a canceller have some way to communicate that it doesn't actually want to callback or errback a Deferred.
+
+We didn't want to make this too easy, because a no-op canceller is a crummy default behavior, but I think that the current mechanism is too difficult to implement and has too many moving parts.
+
+So then the question is: is raising a new kind of exception a good way to do this?  That raises the question: what are good criteria for raising an exception versus returning a value in an API?
+
+The main distinction for when to return a value versus when to raise an exception is what the default behavior of the next stack frame up should be.  If an API calls another API that exhibits a certain behavior, does it make more sense to, by default, continue up the stack towards an error handler, or to move on to the next statement?  In other words, does the termination in the manner in question indicate the sort of error that one should not attempt to recover from unless one knows how?
+
+In the example you gave in the original post, the caller always has to check the 'did cancellation work' flag, so that flag should be an exception.  Forgetting to check it is an error, so by default it makes sense to jump over the stack.
+
+In this case though, &quot;I didn't call .callback or .errback&quot; is not a type of exception that should ever propagate through multiple stack frames.  It's just an API safety feature, to make sure that you really intended to do things that way.  Also, in terms of going through multiple frames, a canceller can't really meaningfully call another canceller, unless it's very explicitly implementing some kind of delegation pattern; with such a pattern, failing to propagate the result is quite likely the intentional behavior.  So I can't see a reason to use an exception to indicate this.
+
+Instead, I think perhaps a new constant value would be useful, so a canceller could return a constant to indicate that it really meant to not invoke either a callback or an errback.  'return NOT_CANCELLED' would indicate that the canceller intentionally took no action to call .callback or .errback, and could be called again.
+
+Sorry for the long email.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20130829/70cbfa07/attachment.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20130829/70cbfa07/attachment.html</A>&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="027390.html">[Twisted-Python] Raising exception from a Deferred canceller.
+</A></li>
+	<LI>Next message: <A HREF="027385.html">[Twisted-Python] Twisted serialport dataReceived() provides	fragmented data
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27391">[ date ]</a>
+              <a href="thread.html#27391">[ thread ]</a>
+              <a href="subject.html#27391">[ subject ]</a>
+              <a href="author.html#27391">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

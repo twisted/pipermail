@@ -1,0 +1,182 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] internal vs. external hostname in	Request.getHost9)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20internal%20vs.%20external%20hostname%20in%0A%09Request.getHost9%29&In-Reply-To=%3CCAOG7vkwe5EXOirbaniA6_bPeNhGQGb8MRKU%3DApjaoOMrk9bqzA%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005280.html">
+   <LINK REL="Next"  HREF="005282.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] internal vs. external hostname in	Request.getHost9)</H1>
+    <B>Ilya Skriblovsky</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20internal%20vs.%20external%20hostname%20in%0A%09Request.getHost9%29&In-Reply-To=%3CCAOG7vkwe5EXOirbaniA6_bPeNhGQGb8MRKU%3DApjaoOMrk9bqzA%40mail.gmail.com%3E"
+       TITLE="[Twisted-web] internal vs. external hostname in	Request.getHost9)">ilyaskriblovsky at gmail.com
+       </A><BR>
+    <I>Tue Mar 14 16:00:00 MDT 2017</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005280.html">[Twisted-web] internal vs. external hostname in	Request.getHost9)
+</A></li>
+        <LI>Next message: <A HREF="005282.html">[Twisted-web] internal vs. external hostname in	Request.getHost9)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5281">[ date ]</a>
+              <a href="thread.html#5281">[ thread ]</a>
+              <a href="subject.html#5281">[ subject ]</a>
+              <a href="author.html#5281">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Tickets you have mentioned and forwarded-for-5807 branch are mostly about
+parsing X-Forwarded-For in order to obtain correct client IP. While it is
+valuable task, it is not what strikes me right now.
+
+I'm now more concerned with an absence of API for getting user-visible
+server's name, not client's ip.
+
+Look, I'm currently porting my app from Django to Klein and noticed strange
+behavior of Klein. For example:
+@app.route('/alias', alias=True)
+@app.route('/path')
+def path(request): return b'42'
+
+When /alias is requested werkzeug generates a redirect to /path. But Klein
+is passing Request.getHost() to Werkzeug, so redirect gets internal
+hostname and exposes backend's internal hostname and port to the user.
+Seems like Klein is passing incorrect hostname to Werkzeug. But how can we
+fix that?
+
+There are two methods in Request:
+&#8226; Request.getHost() &#8212; &quot;Get my originally requesting transport's host&quot; as
+doc says. Ok, seems like this method intentionally returns server's
+internal address.
+&#8226; Request.getRequestHostname() &#8212;doc says:
+&gt;&gt;<i> &quot;Get the hostname that the user passed in to the request. This will
+</I>either use the Host: header (if it is available) or the host we are
+listening on if the header is unavailable.&quot;
+Cool, but why does this method only returns a hostname without a port? It
+intentionally strips out the port number from Host header. What is the
+point of such implementation? This method is used only a couple of times
+inside Twisted itself, and in both places Twisted gets what
+getRequestHostname() returned and mixes it with request.getHost().port
+which is *definitely* incorrect, because the former is user-visible while
+latter is internal. So if my backend server is using different port than a
+fronend, it is impossible to use getRequestHostname() to build user-visible
+URL. I think current getRequestHostname() implementation is broken.
+
+So I have two proposals:
+
+Proposal #1 (fixing current behavior):
+&#8226; Variant #1: Change Request.getRequestHostname() to return
+b&quot;hostname:port&quot;. I think this is the correct thing to do, but this is a
+backward-incompatible change.
+- or -
+&#8226; Variant #2: Change Klein to use Request.getHeader(b'Host') with fallback
+to Request.getHost()
+
+Proposal #2 (adding new feature if Variant #1 is choosed):
+&#8226; Add useXForwardedHost=False argument to Request.getRequestHostname() and
+useXForwardedProto=False to Request.isSecure(). If True is passed, these
+methods will obey corresponding request headers that are de-facto standard
+for reverse proxies. Also add corresponding options to Klein app. This can
+simplify reverse proxy configuration a bit.
+
+-- ilya
+
+&#1074;&#1090;, 14 &#1084;&#1072;&#1088;. 2017 &#1075;. &#1074; 10:33, Ilya Skriblovsky &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">ilyaskriblovsky at gmail.com</A>&gt;:
+
+&gt;<i> Thanks, I will study tickets you mentioned and hopefully fix it.
+</I>&gt;<i> Quick-n-dirty fix gave me only two failed tests and in both cases it seems
+</I>&gt;<i> to be a wrong assumption in tests. So I hope this change won't break the
+</I>&gt;<i> world.
+</I>&gt;<i>
+</I>&gt;<i> -- ilya
+</I>&gt;<i>
+</I>&gt;<i> &#1074;&#1090;, 14 &#1084;&#1072;&#1088;. 2017 &#1075;. &#1074; 10:12, Glyph Lefkowitz &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">glyph at twistedmatrix.com</A>&gt;:
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> On Mar 13, 2017, at 11:01 PM, Ilya Skriblovsky &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">ilyaskriblovsky at gmail.com</A>&gt;
+</I>&gt;<i> wrote:
+</I>&gt;<i>
+</I>&gt;<i> Hi,
+</I>&gt;<i>
+</I>&gt;<i> I'm using Twisted Web server behind Nginx reverse-proxy and I'm getting
+</I>&gt;<i> backend's internal host:port from Request.getHost().
+</I>&gt;<i>
+</I>&gt;<i> Seems like Request.host is explicitly set to socket's address (i.e.
+</I>&gt;<i> internal address) here: &#8203;
+</I>&gt;<i> <A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/web/http.py#L838">https://github.com/twisted/twisted/blob/trunk/src/twisted/web/http.py#L838</A>
+</I>&gt;<i> But comment at &#8203;
+</I>&gt;<i> <A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/web/http.py#L1297">https://github.com/twisted/twisted/blob/trunk/src/twisted/web/http.py#L1297</A>
+</I>&gt;<i> and what this method does points that Request.host meant to reflect Host
+</I>&gt;<i> header of the request, i.e. user-visible hostname and port.
+</I>&gt;<i>
+</I>&gt;<i> This creates problems for me when using Klein because it correctly uses
+</I>&gt;<i> Request.getHost() to create host part of URLs for redirects.
+</I>&gt;<i>
+</I>&gt;<i> It seems like inconsistency in Twisted code. I'd expect Request.host
+</I>&gt;<i> should be only set from the Host request header to reflect user-visible
+</I>&gt;<i> hostname, not the internal backend server's address. Or may be I'm missing
+</I>&gt;<i> something?
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> You're absolutely correct!  I even filed a ticket for this functionality,
+</I>&gt;<i> 5 years ago: <A HREF="https://twistedmatrix.com/trac/ticket/5807">https://twistedmatrix.com/trac/ticket/5807</A>  There's even a
+</I>&gt;<i> branch for it.  Oddly enough we *do* have a *private*
+</I>&gt;<i> _XForwardedForRequest, but... it's only used for logging, for some reason.
+</I>&gt;<i>
+</I>&gt;<i> If you want accurate access logging and request information,
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/trac/ticket/7704">https://twistedmatrix.com/trac/ticket/7704</A> will probably also be of
+</I>&gt;<i> interest to you.
+</I>&gt;<i>
+</I>&gt;<i> I'm so sorry you've hit this glaring deficiency in Twisted.
+</I>&gt;<i>
+</I>&gt;<i> On the other hand: I'm so glad that you've hit this glaring deficiency in
+</I>&gt;<i> Twisted!  I hope you will be motivated to fix it :-).  It's bothered me for
+</I>&gt;<i> quite some time that we don't play nicely with proxying setups, when such
+</I>&gt;<i> setups are so *incredibly* common.  If you can write pull requests to fix
+</I>&gt;<i> these issues and put them into review, I'm pretty sure you will find an
+</I>&gt;<i> enthusiastic reviewer quickly.
+</I>&gt;<i>
+</I>&gt;<i> -glyph
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-web mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">Twisted-web at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web</A>
+</I>&gt;<i>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-web/attachments/20170314/4641784d/attachment.html">http://twistedmatrix.com/pipermail/twisted-web/attachments/20170314/4641784d/attachment.html</A>&gt;
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005280.html">[Twisted-web] internal vs. external hostname in	Request.getHost9)
+</A></li>
+	<LI>Next message: <A HREF="005282.html">[Twisted-web] internal vs. external hostname in	Request.getHost9)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5281">[ date ]</a>
+              <a href="thread.html#5281">[ thread ]</a>
+              <a href="subject.html#5281">[ subject ]</a>
+              <a href="author.html#5281">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

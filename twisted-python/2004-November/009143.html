@@ -1,0 +1,177 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Simple multiplex-relayer with
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Simple%20multiplex-relayer%20with&In-Reply-To=20041129080815.GA7549%40borg.intra.stinghorn.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009134.html">
+   <LINK REL="Next"  HREF="009145.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Simple multiplex-relayer with</H1>
+    <B>Mika Bostrom</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Simple%20multiplex-relayer%20with&In-Reply-To=20041129080815.GA7549%40borg.intra.stinghorn.com"
+       TITLE="[Twisted-Python] Simple multiplex-relayer with">bostik at stinghorn.com
+       </A><BR>
+    <I>Tue Nov 30 09:18:15 EST 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009134.html">[Twisted-Python] Simple multiplex-relayer with
+</A></li>
+        <LI>Next message: <A HREF="009145.html">[Twisted-Python] Simple multiplex-relayer with
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9143">[ date ]</a>
+              <a href="thread.html#9143">[ thread ]</a>
+              <a href="subject.html#9143">[ subject ]</a>
+              <a href="author.html#9143">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, 29 Nov 2004, Mika Bostrom wrote:
+&gt;<i> On Fri, 26 Nov 2004, Jp Calderone wrote:
+</I>&gt;<i> &gt;   ESMTP will call getMessageDelivery on its deliveryFactory attribute,
+</I>&gt;<i> &gt;   now that it isn't None.  On the object it returns, it will call
+</I>&gt;<i> &gt;   receivedHeader, validateFrom, and validateTo.  And on the object
+</I>&gt;<i> &gt;   returned by calling the object returned by validateTo, it will pass
+</I>&gt;<i> &gt;   the contents of the message being delivered, letting you relay it
+</I>&gt;<i> &gt;   wherever is appropriate.
+</I>&gt;<i> 
+</I>&gt;<i>   This part felt a little like black magic, [...]
+</I>
+  This part still feels a little voodooish, but I have figured out at
+least something. I don't need to use SMTPClient at all; just use
+smtp.sendmail() to forward the mail to next point of entry.
+
+  However, since my intention was to multiplex outgoing mails to
+different scanning engines, just forwarding blindly is not exactly
+productive. Let's assume I have 5 or 6 different scanning engines
+running in localhost, all of them accepting inbound mail via SMTP in
+irregular ports. smtp.sendmail() uses the standard port, so I came up
+with this:
+
+[--snip--]
+diff -uN twisted/protocols/smtp.py twisted/protocols/smtp.py.new 
+--- twisted/protocols/smtp.py   2004-04-09 06:06:54.000000000 +0300
++++ twisted/protocols/smtp.py.new       2004-11-29 14:16:01.000000000 +0200
+@@ -1318,7 +1318,7 @@
+         p.factory = self
+         return p
+ 
+-def sendmail(smtphost, from_addr, to_addrs, msg):
++def sendmail(smtphost, from_addr, to_addrs, msg, port=25):
+     &quot;&quot;&quot;Send an email
+ 
+     This interface is intended to be a direct replacement for
+@@ -1338,6 +1338,9 @@
+         to pass an email.Message directly, but doing the conversion with
+         email.Generator manually will give you more control over the
+         process).
++    @param port: The port to connect to on smtphost. If none is
++        provided, standard 25 is used.
++    
+ 
+     @rtype: L{Deferred}
+     @returns: A L{Deferred}, its callback will be called if a message is sent
+@@ -1354,7 +1357,7 @@
+ 
+     d = defer.Deferred()
+     factory = SMTPSenderFactory(from_addr, to_addrs, msg, d)
+-    reactor.connectTCP(smtphost, 25, factory)
++    reactor.connectTCP(smtphost, port, factory)
+ 
+     return d
+
+[--snap--]
+
+  It should allow me to inject the mail to any destination, host:port
+not being a hindrance. It should also retain compatibility with all
+existing scripts that use smtp.sendmail()
+
+  Now, to _use_ that, I came up with something like this: (referring to
+previous mails with complete code)
+
+[--schnippel--]
+class RelayMessage:
+  __implements__ = smtp.IMessage
+
+  def __init__(self):
+    # Clear before adding
+    util.connup()
+    self.msg = []
+
+  def lineReceived(self, line):
+    self.msg.append(line)
+
+  def eomReceived(self):
+    # Add message to outgoing queue
+    # XXX Does not work yet, address information needs to be dug out
+    dd = smtp.sendmail('localhost', self._from, self._to, self.msg, 
+      10050)
+    dd.addCallBack(util.conndown) # When mail has been passed, update counter
+
+    # Return a success
+    return defer.succeed('Tally ho.')
+
+  def connectionLost(self):
+    # If connection is ever lost in this stage, it is a delivery error
+    self.conndown()
+    self.msg = []
+    
+[--schnappel--]
+
+  The problem here is naturally that to use smtp.sendmail() I need to
+extract addresses for sender and recipient(s). I *know* they are there
+somewhere, but after experimentation and minor excavation I feel utterly
+lost.
+
+  smtp.SMTP.{_cbFromValidate,_cbToValidate} routines place these strings
+in SMTP._from and SMTP._to, but I haven't been able to dig them out so I
+could use them. This feels like the most straightforward way of doing
+this and as such, one I would like to implement.
+
+  There must be some clean path from smtp.IMessage interfaces to access
+items in a smtp.STMP instance. If anyone feels generous and
+knowledgeable, I for one would gladly welcome the hint as to how this is
+done.
+
+  For what it's worth, if the patch really works I'll naturally try to 
+submit it for inclusion. 
+
+
+-- 
+ Mika Bostr&#246;m         \-/  &quot;World peace will be achieved
+ <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Bostik at stinghorn.com</A>  X    when the last man has killed
+ Software slave       /-\   the second-to-last.&quot; -anon?
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: Digital signature
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20041130/cf8d124f/attachment.pgp">http://twistedmatrix.com/pipermail/twisted-python/attachments/20041130/cf8d124f/attachment.pgp</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009134.html">[Twisted-Python] Simple multiplex-relayer with
+</A></li>
+	<LI>Next message: <A HREF="009145.html">[Twisted-Python] Simple multiplex-relayer with
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9143">[ date ]</a>
+              <a href="thread.html#9143">[ thread ]</a>
+              <a href="subject.html#9143">[ subject ]</a>
+              <a href="author.html#9143">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

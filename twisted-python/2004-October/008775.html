@@ -1,0 +1,149 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] epoll and other questions
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20epoll%20and%20other%20questions&In-Reply-To=20041006192454.GA29178%40dualathlon.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="008774.html">
+   <LINK REL="Next"  HREF="008780.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] epoll and other questions</H1>
+    <B>Tommi Virtanen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20epoll%20and%20other%20questions&In-Reply-To=20041006192454.GA29178%40dualathlon.random"
+       TITLE="[Twisted-Python] epoll and other questions">tv at twistedmatrix.com
+       </A><BR>
+    <I>Wed Oct  6 16:02:27 EDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="008774.html">[Twisted-Python] epoll and other questions
+</A></li>
+        <LI>Next message: <A HREF="008780.html">[Twisted-Python] epoll and other questions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8775">[ date ]</a>
+              <a href="thread.html#8775">[ thread ]</a>
+              <a href="subject.html#8775">[ subject ]</a>
+              <a href="author.html#8775">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Andrea Arcangeli wrote:
+&gt;<i> Is there any plan to use epoll instead of poll to make twisted
+</I>&gt;<i> scalabile with hundred thousand simultanous sockets connected?
+</I>
+There has been some work (I personally wrote a partial epoll python
+library at the time epoll was very new). I think the progress stopped
+then because of epoll API instability; now that epoll is no longer a
+moving target, someone should get back on the case.
+
+&gt;<i> twisted use epoll. I assume my application would require no change,
+</I>&gt;<i> so I can start developing with current twisted, I can test it with
+</I>&gt;<i> poll, and then later fix the internals when the slowdown becomes
+</I>&gt;<i> noticeable.  Right?
+</I>
+Yes. All the different reactors implement the same interface.
+
+Also, notice that the default reactor most likely uses select, not poll:
+
+$ python -c 'from twisted.internet import reactor; print reactor'
+&lt;twisted.internet.default.SelectReactor instance at 0x401fb16c&gt;
+$ python -c 'from twisted.internet import pollreactor; \
+  pollreactor.install(); from twisted.internet import reactor; \
+  print reactor'
+&lt;twisted.internet.pollreactor.PollReactor instance at 0x401f33ec&gt;
+
+&gt;<i> I understand there's no limitation on the number of sockets 
+</I>&gt;<i> simultanously open, I just need to use ulimit to boost the limit of
+</I>&gt;<i> fds.
+</I>
+My gut feeling is you'll either hit an OS limit or sys.maxint,
+and the latter is pretty huge. Haven't looked at the details.
+
+&gt;<i> A slightly separated issue: I assume it's best for me not to do any 
+</I>&gt;<i> blocking I/O in the main network server handling the 100k connections
+</I>&gt;<i> and to create a secondary internal server communicating again through
+</I>&gt;<i> tcp/ip (loopback device) with the primary server to do the real
+</I>&gt;<i> blocking I/O. Is this correct? Best would be to use asynchronous I/O
+</I>&gt;<i> for the IO, but I think using a second process will be a lot simpler
+</I>&gt;<i> in practice since I don't need bulk I/O performance (I only need to
+</I>&gt;<i> avoid blocking). I only want to keep the network pipeline full even
+</I>&gt;<i> when some disk-read is happening. Best would be to use threading (or
+</I>&gt;<i> shared memory with MAP_SHARED in tmpfs), but it seems twisted is not
+</I>&gt;<i> mature enough for threading and shared memory communication using
+</I>&gt;<i> futex, right?  If I would write it in C I could probably get various
+</I>&gt;<i> performance bits faster but I doubt the time spent on those bits
+</I>&gt;<i> would payoff significantly, opinions?
+</I>
+Well, there's nothing Twisted- or even Python-specific in that.
+The solution probably depends heavily on your dataset size, access
+patterns, and available RAM. Some people advocate heavy RAM caching.
+Sendfile might be the solution, but I don't think there's any
+integration of sendfile with python, far less with twisted.
+
+Your plan on isolating disk IO to separate process(es) sounds quite
+sane. Your master process could receive the file data from the IO
+workers in blocks via a shared mmap, to avoid passing it through a
+socket (even if the socket was a local TCP connection or UNIX domain).
+Don't know if that optimization is worth it; I would delay writing
+any extra code until the problem actually shows up.
+
+Note that python threading is very likely _not_ what you want;
+the threads synchronize in the interpreter level quite a lot.
+
+Sadly, not even <A HREF="http://www.kegel.com/c10k.html">http://www.kegel.com/c10k.html</A> (which is normally
+_the_ resource for things like this) talks that much about disk IO.
+
+&gt;<i> Another thing I plan doing is to ship the public key (matching the 
+</I>&gt;<i> private key stored only on the server) on the client source tarball, 
+</I>&gt;<i> this way as far as people downloaded the right tarball, they will be 
+</I>&gt;<i> able to securely connect to the server since they will be able to
+</I>&gt;<i> check the signature. Is there any example of this idea (public key
+</I>&gt;<i> stored in a file in the client package) available somewhere?
+</I>
+SFS (secure file system) does something like that. The info page
+included has this:
+
+	SFS clients require no configuration.  Simply run the program
+	`sfscd', and a directory `/sfs' should appear on your system.
+	To test your client, access our SFS test server.  Type the
+	following commands:
+
+	  % cd /sfs/@sfs.fs.net,uzwadtctbjb3dg596waiyru8cx5kb4an
+	  % cat CONGRATULATIONS
+	  You have set up a working SFS client.
+	  %
+
+	Note that the `/sfs/@sfs.fs.net,...' directory does not need to
+	exist before you run the `cd' command.  SFS transparently mounts
+	new servers as you access them.
+
+The part after the comma is a hash of the public key the server at
+sfs.fs.net must present, in order to be accepted.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="008774.html">[Twisted-Python] epoll and other questions
+</A></li>
+	<LI>Next message: <A HREF="008780.html">[Twisted-Python] epoll and other questions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8775">[ date ]</a>
+              <a href="thread.html#8775">[ thread ]</a>
+              <a href="subject.html#8775">[ subject ]</a>
+              <a href="author.html#8775">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

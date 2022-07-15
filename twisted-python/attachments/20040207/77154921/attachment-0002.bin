@@ -1,0 +1,97 @@
+Index: protocols/policies.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/protocols/policies.py,v
+retrieving revision 1.17
+diff -u -w -r1.17 policies.py
+--- protocols/policies.py	4 Jan 2004 23:28:08 -0000	1.17
++++ protocols/policies.py	7 Feb 2004 01:34:07 -0000
+@@ -158,14 +158,14 @@
+         self.transport.startReading()
+ 
+     def throttleWrites(self):
+-        if hasattr(self, "producer"):
+-            self.producer.pauseProducing()
++        if hasattr(self, "producer") and not self.producer is None:
++            self.producer.pauseProducing(pause=1)
+ 
+     def unthrottleWrites(self):
+-        if hasattr(self, "producer"):
++        if hasattr(self, "producer") and not self.producer is None:
++            self.producer.pauseProducing(pause=0)
+             self.producer.resumeProducing()
+ 
+-
+ class ThrottlingFactory(WrappingFactory):
+     """Throttles bandwidth and number of connections.
+ 
+@@ -260,13 +260,13 @@
+         WrappingFactory.unregisterProtocol(self, p)
+         self.connectionCount -= 1
+         if self.connectionCount == 0:
+-            if self.unthrottleReadsID is not None:
++            if self.unthrottleReadsID is not None and self.unthrottleReadsID.active():
+                 self.unthrottleReadsID.cancel()
+-            if self.checkReadBandwidthID is not None:
++            if self.checkReadBandwidthID is not None and self.checkReadBandwidthID.active():
+                 self.checkReadBandwidthID.cancel()
+-            if self.unthrottleWritesID is not None:
++            if self.unthrottleWritesID is not None and self.unthrottleWritesID.active():
+                 self.unthrottleWritesID.cancel()
+-            if self.checkWriteBandwidthID is not None:
++            if self.checkWriteBandwidthID is not None and self.checkWriteBandwidthID.active():
+                 self.checkWriteBandwidthID.cancel()
+ 
+ class SpewingProtocol(ProtocolWrapper):
+Index: web/server.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/web/server.py,v
+retrieving revision 1.108
+diff -u -w -r1.108 server.py
+--- web/server.py	27 Dec 2003 01:02:03 -0000	1.108
++++ web/server.py	7 Feb 2004 01:34:09 -0000
+@@ -263,6 +263,8 @@
+         return self.notifications[-1]
+ 
+     def connectionLost(self, reason):
++        self.unregisterProducer()
++        self.finish()
+         for d in self.notifications:
+             d.errback(reason)
+         self.notifications = []
+Index: web/static.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/web/static.py,v
+retrieving revision 1.117
+diff -u -w -r1.117 static.py
+--- web/static.py	25 Nov 2003 23:03:23 -0000	1.117
++++ web/static.py	7 Feb 2004 01:34:10 -0000
+@@ -415,12 +415,17 @@
+         self.size = size
+         self.request = request
+         self.written = self.file.tell()
++        self.paused = 0
+         request.registerProducer(self, 0)
+ 
+     def resumeProducing(self):
++        if self.paused:
++            return
++
+         if not self.request:
+             return
+-        data = self.file.read(min(abstract.FileDescriptor.bufferSize, self.size - self.written))
++        #data = self.file.read(min(abstract.FileDescriptor.bufferSize, self.size - self.written))
++        data = self.file.read(min(4096, self.size - self.written))
+         if data:
+             self.written += len(data)
+             self.request.write(data)
+@@ -429,8 +434,8 @@
+             self.request.finish()
+             self.request = None
+ 
+-    def pauseProducing(self):
+-        pass
++    def pauseProducing(self, pause=1):
++        self.paused = pause
+ 
+     def stopProducing(self):
+         self.file.close()

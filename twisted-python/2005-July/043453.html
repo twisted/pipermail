@@ -1,0 +1,137 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted.names and multicast DNS
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.names%20and%20multicast%20DNS&In-Reply-To=%3C0516cbe8d34da0d0de64f7c7a772cfdf%40froup.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="043491.html">
+   <LINK REL="Next"  HREF="043456.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted.names and multicast DNS</H1>
+    <B>Tim Allen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.names%20and%20multicast%20DNS&In-Reply-To=%3C0516cbe8d34da0d0de64f7c7a772cfdf%40froup.com%3E"
+       TITLE="[Twisted-Python] twisted.names and multicast DNS">screwtape at froup.com
+       </A><BR>
+    <I>Sat Jul  9 01:08:15 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="043491.html">[Twisted-Python] conch example of sftp
+</A></li>
+        <LI>Next message (by thread): <A HREF="043456.html">[Twisted-Python] twisted.names and multicast DNS
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#43453">[ date ]</a>
+              <a href="thread.html#43453">[ thread ]</a>
+              <a href="subject.html#43453">[ subject ]</a>
+              <a href="author.html#43453">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>So after two years of leaving it alone, I decided to have another look 
+at the multicast DNS module I was writing for Twisted, and lo and 
+behold I discover a serious design flaw in my response cache. Here's 
+the basic situation I'm dealing with:
+
+Suppose I have two hosts on my network, called ford and arthur. I'm 
+sitting at arthur, and I'm looking for SSH servers advertised via 
+DNS-based Service Discovery and Multicast DNS. At the present moment, 
+ford is switched off.
+
+I turn on ford, and when the SSH server starts up, ford broadcasts an 
+announcement DNS datagram that says, &quot;In the zone '_ssh._tcp.local', 
+there is a PTR record with the data 'Ford._ssh._tcp.local'. This 
+information expires in 7200 seconds.&quot; (it mentions the class too, of 
+course, but the class doesn't affect the discussion below so we'll 
+ignore it from here on).
+
+arthur receives the announcement, records the transmission time and the 
+TTL, and caches the PTR record. Thereafter, any program on arthur that 
+requests PTR records in '_ssh._tcp.local' will be given the PTR record 
+about 'Ford._ssh._tcp.local'.
+
+Now I turn off Ford, and when the SSH server shuts down, ford 
+broadcasts a goodbye datagram that says, &quot;In the zone 
+'_ssh._tcp.local', there is a PTR record with the data 
+'Ford._ssh._tcp.local'. This information expires in 0 seconds.&quot; - that 
+is to say, exactly the same as the previous announcement but with a TTL 
+of 0. The cache on arthur needs to compare this new record to its 
+cache, see that it matches the definition of an existing record, and 
+update the TTL of the existing record so that it will expire 
+immediately.
+
+I'm trying to implement the record cache on arthur at the moment. It 
+needs to be queried by (name, type, class) tuples, so I use such a 
+tuple as the key of a dictionary. Since there can be multiple records 
+available for a particular (name, type, class), the value associated 
+with this key is a list of resource records. Because the 
+t.names.dns.DNSDatagramProtocol gives me instances of the various 
+t.names.dns.Record_* classes, I figured that those instances would be a 
+good representation of the resource records I need to store.
+
+In psuedo-python, then, the ideal data structure would look like this:
+
+cache = {
+	('_ssh._tcp.local', PTR, IN): [
+			(&lt;Record_PTR name=Ford._ssh._tcp.local&gt;, 7200),
+	]
+}
+
+...then, when I get a new record from the network, I can look up its 
+(name, type, class) tuple and get the list of records. Then I compare 
+the new record to each of the records in the list: if it matches a 
+record I update the TTL, otherwise I add the record to the list.
+
+The problem is this: the Record_PTR class (just like all the other 
+Record_* classes) in t.names.dns stores the TTL as an instance 
+variable! Therefore, when I have an existing record and an updated 
+record, they never match, and I wind up with two identical records in 
+my data structure that differ only by TTL.
+
+As far as I can tell, I have three options from here:
+
+1. Write my own versions of all the Record_* classes that don't 
+maintain a TTL value, and translate backwards and forwards whenever I 
+need to talk to Twisted's DNS layer. I'd need to update this code 
+whenever a new DNS record type was added.
+2. Write a comparison function for comparing resource records that 
+compares instance variables that aren't named 'ttl'. This would 
+probably need to be updated less frequently, but is horribly hacky.
+3. Complain on the twisted-list and hope that somebody has a better 
+suggestion, or changes the code to be more mDNS-friendly.
+
+As you can see, I'm trying Option 3 at the moment, but I'm open to 
+suggestions. :)
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="043491.html">[Twisted-Python] conch example of sftp
+</A></li>
+	<LI>Next message (by thread): <A HREF="043456.html">[Twisted-Python] twisted.names and multicast DNS
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#43453">[ date ]</a>
+              <a href="thread.html#43453">[ thread ]</a>
+              <a href="subject.html#43453">[ subject ]</a>
+              <a href="author.html#43453">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,92 @@
+#!/bin/env python
+# coding: utf-8
+import os, os.path, re, sys
+import win32file, win32con, win32event
+from twisted.spread import pb
+from twisted.internet import reactor, defer
+
+class DirWatcher:
+    def __init__(self, path='.', filter=None, callback=None, start=True):
+        """path: absolute or relative path to watch
+        filter: re object
+        callback: function (1 parameter), gets filename
+        start: start watching?
+        """
+        if not os.path.isdir(path):
+            raise pb.Error('Invalid directory: %s' % path)
+        self.path = os.path.abspath(path)
+        if not filter: filter = re.compile('.*')
+        self.filter = filter
+        print 'Watching %s with filter %s' % (self.path, self.filter)
+        self.running = False
+        self.handle = win32file.FindFirstChangeNotification(
+            self.path, 0, win32con.FILE_NOTIFY_CHANGE_FILE_NAME)
+        if start: self.start(callback)
+
+    def __del__(self):
+        win32file.FindCloseChangeNotification(self.handle)
+
+    def start(self, callback):
+        self.callback = callback
+        self.addedFiles = []
+        #self.deletedFiles = []
+        self.running = True
+        reactor.callLater(0, self._OnStart)
+        d = self._watch()
+        d.addCallback(self.callback)
+        return d
+
+    def stop(self):
+        self.running = False
+
+    def _watch(self):
+        d = defer.Deferred()
+        if self.running:
+            reactor.callInThread(self._wait, d.callback)
+            d.addCallback(self._check)
+        return d
+
+    def _wait(self, callback):
+        """blocking wait for file event (max. 1 min)"""
+        callback(win32event.WaitForSingleObject(self.handle, 60000))
+
+    def _check(self, val):
+        if not self.running: return None
+        if val == win32con.WAIT_OBJECT_0: # file found?
+            newContent = os.listdir(self.path)
+            #print "%d file(s) found in %s" % (len(newContent), self.path)
+            added = [f for f in newContent if (not f in self.pathContent) and self.filter.match(f, re.I)]
+            #deleted = [f for f in self.pathContent if not f in newContent]
+            self.pathContent = newContent
+            self.addedFiles.append(added)
+            #self.deletedFiles.append(deleted)
+            for p in added:
+                reactor.callLater(0, self.callback, p)
+        win32file.FindNextChangeNotification(self.handle)
+        reactor.callLater(0, self._watch)
+
+    def _OnStart(self):
+        """run callback for every existing file
+        a bit blocking, but not too much
+        """
+        self.pathContent = os.listdir(self.path)
+        for p in self.pathContent:
+            if self.filter.match(p, re.I): reactor.callLater(0, self.callback, p)
+
+if __name__ == '__main__':
+    import time
+
+    def printFile(filename):
+        print "FILE %s" % filename
+
+    def printTime():
+        print time.asctime()
+        reactor.callLater(10,printTime)
+
+    printTime() # show that nothing blocks
+    wp = sys.argv[1] or '.'
+    f = sys.argv[2] or '.*'
+    f = re.compile('.*\.'+f)
+    dw = DirWatcher(path=wp, callback=printFile, filter=f)
+    #reactor.callLater(180, lambda _: reactor.stop()) # run 3 min then stop
+    reactor.run()

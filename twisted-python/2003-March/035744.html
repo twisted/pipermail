@@ -1,0 +1,160 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] t.i.process uid/gid suckiness
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20t.i.process%20uid/gid%20suckiness&In-Reply-To=%3C20030311132510.GA11040%40lapdog%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035752.html">
+   <LINK REL="Next"  HREF="035745.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] t.i.process uid/gid suckiness</H1>
+    <B>Tommi Virtanen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20t.i.process%20uid/gid%20suckiness&In-Reply-To=%3C20030311132510.GA11040%40lapdog%3E"
+       TITLE="[Twisted-Python] t.i.process uid/gid suckiness">tv at twistedmatrix.com
+       </A><BR>
+    <I>Tue Mar 11 06:25:10 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035752.html">[Twisted-Python] www.twistedmatrix.com down
+</A></li>
+        <LI>Next message (by thread): <A HREF="035745.html">[Twisted-Python] t.i.process uid/gid suckiness 
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35744">[ date ]</a>
+              <a href="thread.html#35744">[ thread ]</a>
+              <a href="subject.html#35744">[ subject ]</a>
+              <a href="author.html#35744">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>	The handling of uid/gid changes and SIGCHLD all around twisted
+	are in an appalling state. I've tried to bitch at the right
+	people, but that hasn't helped, so I'm taking the more
+	heavyhanded approach of just fixing stuff. Let the code talk.
+
+	However, I still don't consider myself an authority on what
+	Twisted should do, don't have that much time longer term (I
+	will not maintain this code permanently), and don't know what
+	silly limitations the windows port of python has. So, I'll try
+	to write down what changes I'm planning on doing, so you have
+	a chance of vetoing. If I get no comments, I'll just basically
+	go ahead and commit what I happen to want to, touching a many
+	areas of mktap/t.i.process/procmon/whatever. If you want to
+	avoid a de facto hijack-fix-abandon process, TALK NOW
+
+	0) make the t.i.process setuid/setgid code actually work (see
+	   patch; BTW is the initgroups part really needed? I feel my
+	   pure-python 6-liner does the same thing.)
+
+	1) make all places that take uid/gid just silently take in
+	   strings, too, and use pwd/grp to convert them to uids and
+	   gids as necessary
+
+	2) make .taps store uids and gids as strings
+
+	3) defer procmon startup so the processes are forked only
+           after setuid has happened.
+
+	4) try to fix the child process races, atleast including
+           deferring signal-triggered processing to happen outside the
+           actual signal handler, rewriting the reap logic silliness,
+	   and stopping procmon from trying to kill reaped children.
+
+	5) fix whatever problems I noticed while fixing the above
+
+	6) whatever else I feel like improving at the time
+
+	7) ???
+
+	8) profit!
+
+diff -u -u -r1.50 process.py
+--- twisted/internet/process.py	10 Mar 2003 20:16:57 -0000	1.50
++++ twisted/internet/process.py	11 Mar 2003 13:08:00 -0000
+@@ -33,10 +33,25 @@
+     pty = None
+ 
+ try:
+-    from initgroups import initgroups
+     import pwd
++    try:
++        from initgroups import initgroups
++    except:
++        import grp
++        def initgroups(username, dummy):
++            l=[]
++            for groupname, password, gid, userlist in grp.getgrall():
++                if username in userlist:
++                    l.append(gid)
++            os.setgroups(l)
++    def switch_uid(uid, gid):
++        os.setgid(gid)
++        initgroups(pwd.getpwuid(uid)[0], gid)
++        os.setuid(uid)
+ except:
+-    def initgroups(*args): pass
++    def switch_uid(uid, gid):
++        os.setgid(gid)
++        os.setuid(uid)
+ 
+ from twisted.persisted import styles
+ from twisted.python import log, failure
+@@ -229,9 +244,7 @@
+                     os.chdir(path)
+                 # set the UID before I actually exec the process
+                 if settingUID:
+-                    os.setgid(gid)
+-                    initgroups(pwd.getpwuid(uid)[0], gid)
+-                    os.setuid(uid)
++                    switch_uid(uid, gid)
+                 os.execvpe(command, args, environment)
+             except:
+                 # If there are errors, bail and try to write something
+@@ -482,9 +495,7 @@
+ 
+                 # set the UID before I actually exec the process
+                 if settingUID:
+-                    os.setgid(gid)
+-                    initgroups(pwd.getpwuid(uid)[0], gid)
+-                    os.setuid(uid)
++                    switch_uid(uid, gid)
+                 os.execvpe(command, args, environment)
+             except:
+                 stderr = os.fdopen(1, 'w')
+
+
+-- 
+:<i>(){ :|:&amp;};:
+</I>
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035752.html">[Twisted-Python] www.twistedmatrix.com down
+</A></li>
+	<LI>Next message (by thread): <A HREF="035745.html">[Twisted-Python] t.i.process uid/gid suckiness 
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35744">[ date ]</a>
+              <a href="thread.html#35744">[ thread ]</a>
+              <a href="subject.html#35744">[ subject ]</a>
+              <a href="author.html#35744">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

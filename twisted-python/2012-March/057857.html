@@ -1,0 +1,154 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] questions about twisted usage
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20questions%20about%20twisted%20usage&In-Reply-To=%3C20120322113714.GB25379%40boombah.thristian.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="057855.html">
+   <LINK REL="Next"  HREF="057858.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] questions about twisted usage</H1>
+    <B>Tim Allen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20questions%20about%20twisted%20usage&In-Reply-To=%3C20120322113714.GB25379%40boombah.thristian.org%3E"
+       TITLE="[Twisted-Python] questions about twisted usage">screwtape at froup.com
+       </A><BR>
+    <I>Thu Mar 22 05:37:14 MDT 2012</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="057855.html">[Twisted-Python] questions about twisted usage
+</A></li>
+        <LI>Next message (by thread): <A HREF="057858.html">[Twisted-Python] questions about twisted usage
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#57857">[ date ]</a>
+              <a href="thread.html#57857">[ thread ]</a>
+              <a href="subject.html#57857">[ subject ]</a>
+              <a href="author.html#57857">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Thu, Mar 22, 2012 at 12:20:37PM +0200, Uri Okrent wrote:
+&gt;<i> 1. Is deferToThread running the function in a real python thread?
+</I>&gt;<i> Should this be used (rather than a standard deferred) for any function
+</I>&gt;<i> that might block?
+</I>
+Yes, deferToThread() runs things in a real Python thread. If you have
+code that runs very quickly, or is written in Twisted's asynchronous
+style (with Deferreds), you should be fine; if you have something that
+takes a while to run you should use deferToThread().
+
+&gt;<i> 2. I understand that deferreds run &quot;later&quot;.  However, once a deferred
+</I>&gt;<i> (or a deferToThread) is picked up and run, does it run from start to
+</I>&gt;<i> finish?  Can it be interrupted in the middle of the function?  How
+</I>&gt;<i> about its callback/errback?  Can another deferred jump in for
+</I>&gt;<i> processing in between a deferred and it's callback/errback, or in the
+</I>&gt;<i> middle of processing another deferred?
+</I>
+A Deferred can wait on the result of other Deferreds; while one Deferred
+is waiting (say, waiting for a timer to go off, or waiting for network
+activity), others may be running. Each individual callback/errback
+function is run in its entirety, though.
+
+&gt;<i> 3. Are there any guarantees regarding the order of execution of
+</I>&gt;<i> deferreds? (I.e., are deferreds processed in the order in which they
+</I>&gt;<i> are created?)
+</I>
+Maybe, but whenever a Deferred waits on the result of another Deferred,
+you're at the mercy of whatever they're waiting for.
+
+For example, say you use Twisted to retrieve the contents of two
+web-pages:
+
+    getPage(&quot;<A HREF="http://a.example.com">http://a.example.com</A>&quot;).addCallback(process_data)
+    getPage(&quot;<A HREF="http://b.example.com">http://b.example.com</A>&quot;).addCallback(process_data)
+
+The request for &quot;<A HREF="http://a.example.com">http://a.example.com</A>&quot; will be launched first, but if
+that server takes longer to respond, process_data() might receive the
+response from server B first.
+	
+
+&gt;<i> 4. Related to #2, and #3, does it make sense to use twisted when
+</I>&gt;<i> requests that are serviced may depend on one another.  For example, a
+</I>&gt;<i> client makes a request 'add-A' which is deferred (so that the server
+</I>&gt;<i> can keep processing requests), and immediately afterwards makes a
+</I>&gt;<i> request 'modify-A' (which is also run as a deferred).  Can I count on
+</I>&gt;<i> add-A being done so that modify-A doesn't attempt to work on something
+</I>&gt;<i> which hasn't been created yet?
+</I>
+In general, no. For example, if you get a request from the network that
+causes you to send &quot;insert into table&quot; to the database, and meanwhile
+get another request from the network that causes you to send &quot;update
+table&quot; to the database, you have no way of knowing whether one will
+complete before the other. Twisted's asynchronous database wrapper uses
+a connection pool, so the two requests might be sent down separate
+connections in parallel, so the database could actively prevent the
+&quot;update&quot; from seeing the results of the &quot;insert&quot;.
+
+If you're getting stateful requests without any kind of stateful
+framing (say, 'begin transaction'/'commit transaction' messages, or some
+kind of session ID, or something like that), you have a problem Twisted
+cannot help with.
+
+If you *do* have some kind of session, you can set up your server so
+that you have a DeferredSemaphore per session, which will ensure that
+the next Deferred until you've finished with the previous one. For
+example:
+
+    ds = DeferredSemaphore()
+
+    def got_message(msg):
+	newDefer = ds.acquire()
+	newDefer.addCallback(lambda _: processMsg(msg))
+	newDefer.addBoth(lambda _: ds.release())
+	
+
+&gt;<i> 5. Related to all of the above.  What If I want to modify a database
+</I>&gt;<i> inside a deferred?  Is that incorrect usage?  Specifically, if all my
+</I>&gt;<i> requests run as deferred, and they all start a transaction and the
+</I>&gt;<i> beginning, and commit the transaction at the end, will I run into
+</I>&gt;<i> problems due to context switching in the middle of deferreds? (such as
+</I>&gt;<i> one request committing for both requests, starting two transactions in
+</I>&gt;<i> a row, committing twice in a row, and so on.)
+</I>
+As somebody else mentioned, what you want is twisted.enterprise.adbapi.
+It maintains a connection pool, and every database call you make
+(usually via the .runQuery() or .runOperation() methods) will be run in
+a separate connection, so .commit() or .rollback() will be run on the
+correct connection, and you won't have problems with cross-talk between
+concurrent requests.
+
+
+Tim.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="057855.html">[Twisted-Python] questions about twisted usage
+</A></li>
+	<LI>Next message (by thread): <A HREF="057858.html">[Twisted-Python] questions about twisted usage
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#57857">[ date ]</a>
+              <a href="thread.html#57857">[ thread ]</a>
+              <a href="subject.html#57857">[ subject ]</a>
+              <a href="author.html#57857">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

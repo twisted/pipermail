@@ -1,0 +1,509 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: communication idioms with Perspective Broker
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20communication%20idioms%20with%20Perspective%20Broker&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="011043.html">
+   <LINK REL="Next"  HREF="011032.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: communication idioms with Perspective Broker</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20communication%20idioms%20with%20Perspective%20Broker&In-Reply-To="
+       TITLE="[Twisted-Python] Re: communication idioms with Perspective Broker">db3l at fitlinxx.com
+       </A><BR>
+    <I>Mon Jul 25 18:42:39 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="011043.html">[Twisted-Python] Re: communication idioms with Perspective Broker
+</A></li>
+        <LI>Next message: <A HREF="011032.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11046">[ date ]</a>
+              <a href="thread.html#11046">[ thread ]</a>
+              <a href="subject.html#11046">[ subject ]</a>
+              <a href="author.html#11046">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Antony Kummel &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">antonykummel at yahoo.com</A>&gt; writes:
+
+&gt;<i> This is how I understand the registry/manager/wrappers system:
+</I>&gt;<i>
+</I>&gt;<i> The meaning of the wrappers is that referenceables are
+</I>&gt;<i> transferable to third parties who get their flow pass through the
+</I>&gt;<i> middle process, and that the wrappers get reconnected automatically
+</I>
+Close (IMO) - the referenceable to the original object (which is
+created as a result of passing that object through PB to a third
+party) is placed in a wrapper which is then given to client code.
+For example (in ASCII):
+
++---------+                      +---Wrapper-----+
+|<i> Manager |---[ PB transport ]---|[Referenceable]|&lt;---- Client code
+</I>+---------+                      +---------------+
+
+So the only reference most of the client code maintains is to the
+wrapper object, which can remain consistent across outages.  It
+handles reconnections to the original object when needed, which will
+technically create a new referenceable (since PB referenceables can't
+continue to be used across a disconnect/reconnect), but that is
+transparent to the client code.
+
+&gt;<i> If I understand correctly, the only purpose of the registry is to
+</I>&gt;<i> provide an interface to enable the re-connection of the wrappers.
+</I>&gt;<i> The purpose of managers is simply to dispense data and state
+</I>&gt;<i> objects.
+</I>
+The primary reason for the registry in our system is to act as a
+single management object to retrieve references to our registerable
+objects (such as managers), whether the request to locate a given
+registerable object is coming locally or remotely.  Much as any other
+central registry, it permits us to pass a single object reference
+around to various parts in the system (including remote clients)
+through which access to other official entry points can be retrieved.
+
+But yes, it also simplifies the remote connection process since all we
+need to do is provide a remote reference to a registry and through
+that remote (wrapped) references to objects such as managers may be
+retrieved through the same code that would be used if the registry was
+local.
+
+And yes, as I've described managers are largely data management
+objects.  We do also have higher order registerables (we call them
+packages) which implement high level functionality - generally to
+simplify common operations that would otherwise need to interact with
+several managers simultaneously.
+
+&gt;<i> Questions:
+</I>&gt;<i>
+</I>&gt;<i> Do managers only dispense state and data, or do they also provide
+</I>&gt;<i> state control?
+</I>
+I suppose it depends on what you would consider covered by &quot;state
+control,&quot; but the general answer would be there's no single rule.
+Some managers are almost entirely pure data storage/retrieval, while
+others provide for the retrieval of objects that themselves are fairly
+complex (such as our cacheable models/controllers).
+
+&gt;<i> Do cacheables (state objects) re-connect? Is there any reason why
+</I>&gt;<i> they shouldn&#146;t?
+</I>
+Yes, they can be wrapped as well.  To the server side instance of the
+cacheable, a reconnection is just another &quot;new&quot; observer.
+
+&gt;<i> Regarding multi-layer wrapping, how do cacheables go from the
+</I>&gt;<i> original server to the final client without becoming unjellyable in
+</I>&gt;<i> the middle?
+</I>
+(warning - this got very long after I started writing it...)
+
+I'm not sure if you meant copyable here instead of cacheable since a
+cacheable controls it's own transmission of state to the client, as
+opposed to a copyable which has to be directly jellyable.
+
+For the cacheable, as long as it implements the Cacheable support, it
+controls what gets transmitted to any observer, so whether it's the
+original instance or a client reference to the original instance, it's
+transmitting the same data.
+
+But we have to date handled cacheables with an additional layer.  Since
+we use cacheables typically for models for which users need to monitor
+changes, we needed something that works the same locally and remotely.
+We tend to use pydispatcher for signals (or some of our older objects
+handle the observer pattern directly), and implement our models using
+that, so all monitoring is technically local.  We then have a generic
+server side wrapper that is a pb.Cacheable, and can observe any such
+model as its data for the cacheable clients.  This might also work by
+just having the models be directly cacheable, but it's the way the
+system has grown to date.
+
+The key to most of this is that we built a structure where the remote
+wrapped instance of an object uses the same class definition (directly
+through inheritance) as the original instance, just with a wrapper
+mixed-in.  Not only does the client side wrapped object &quot;work&quot; like the
+local object, with the use of callRemote hidden behind the normal
+interface, but it then can be remotely referenced itself and behave just
+like the original reference.
+
+To try to strip down to a simple example, we were able to encapsulate
+pretty much everything about the distributed processing part of the
+system into two package modules - remoteable.py for a server side
+support, and remote.py for client side.
+
+remoteable is thin - we've have copyable/referenceable/cacheable
+subclasses just to isolate some custom code (lets classes define some
+fields that should automatically pickle to avoid PB not knowing how to
+transmit them) and for future expansion.  This also houses the server
+side observer/cacheable wrapper I mentioned above.
+
+remote handles the client side.  It defines the key wrapper classes (for
+client side copyable copies, referenceable references, and cacheable
+caches :-)).  These wrapper classes implement reconnections
+(cacheable/referenceable) and other custom support (like unpickling for
+copies).  They also themselves inherit from the remoteable classes so
+they can also be passed over a PB session.
+
+remote then defines classes that multiply inherit from each of the
+original classes for those classes that may be distributed, as well as
+the appropriate wrapper class.  In most cases these definitions are
+simply &quot;pass&quot; but they sometimes define slightly custom functionality
+for the client side.  The only really detailed one is the
+remote.Registry, which has the knowledge to automatically wrap any
+retrieved object in the appropriate wrapper.
+
+An example may help.  Assuming the following classes in
+remoteable/remote as mentioned above:
+
+           - - - - - - - - - - - - - - - - - - - - - - - - -
+remoteable.Copyable, Cacheable, Referenceable - subclasses of pb.*
+remoteable.ModelCache - wraps an model as a cacheable.  We have
+   subclasses of this for each model (so we can register the unjellying)
+
+remote.CopyObject - mirror on the remote side for remoteable.Copyable.
+   Is itself also a remoteable.Copyable
+remote.RemoteWrapper - remote side wrapper for a Referenceable.
+   Is itself also a remoteable.Referenceable.
+           - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Then, if in a core module in our package (call it aurora.User) in the
+system we defined some user related objects (that are meant to be
+distributable), it might look like:
+
+           - - - - - - - - - - - - - - - - - - - - - - - - -
+class User(remoteable.Copyable):
+    &quot;&quot;&quot;A typical data object&quot;&quot;&quot;
+    # Attributes and simple methods for manipulating as needed
+    pass
+
+class UserModel(remoteable.Cacheable):
+    &quot;&quot;&quot;A typical cached model&quot;&quot;&quot;
+    # Attributes and signal support for notification on changes
+    pass
+
+class UserManager(interfaces.IUserManager, remotable.Referenceable):
+    &quot;&quot;&quot;A typical manager.  IUserManager is an interface definition for
+    the public API&quot;&quot;&quot;
+    # Methods for accessing/changing User and UserModel objects
+    # Assume that getUser retrieves  user and getModel retrievs a UserModel
+           - - - - - - - - - - - - - - - - - - - - - - - - -
+
+As it stands above, the user objects would be fully usable in a local
+context.  Access to the UserManager would be through a Registry in which
+it had been registered, and the UserManager would provide access to
+either User or UserModel objects.
+
+To permit distribution, we'd first add appropriate remote_* (or view_*)
+entry points to the UserManager.  Most would simply mirror their
+original methods (leaving it up to pb to construct the references).  But
+any methods that returned models would be adjusted so that instead of
+just returning the model, they wrapped that model in an appropriate
+remoteable.ModelCache subclass and returned that instead.  So something like:
+
+           - - - - - - - - - - - - - - - - - - - - - - - - -
+    remote_getUser = getUser
+
+    def remote_getModel(self, *args, **kwargs):
+        return remoteable.UserModel(self.getModel(*args, **kwargs))
+           - - - - - - - - - - - - - - - - - - - - - - - - -
+
+That's the extent to which original objects need to be touched.  The
+only remote entry points are in managers (our referenceables), with data
+objects being handled by PB as copyable or cacheable.
+
+Then in the remote.py module we'd add the following:
+
+           - - - - - - - - - - - - - - - - - - - - - - - - -
+class User(aurora.User.User, CopyObject):
+    # CopyObject is our own mirror to remoteable.Copyable
+    pass
+
+pb.setUnjellyableForClass(aurora.User.User, User)
+# Note that a remote copy can be a copy of itself (this handles hops 2+)
+pb.setUnjellyableForClass(User, User)
+
+class UserModel(aurora.User.UserModel, pb.RemoteCache):
+    # Depending on how the model detects state changes, you may need to
+    # do some processing in setCopyableState or you may not.
+    pass
+
+pb.setUnjellyableForClass(remoteable.UserModel, UserModel)
+
+class UserManager(RemoteWrapper, interfaces.IUserManager):
+    exclude = &quot;remote_getModel&quot;
+
+    # We still need to locally wrap as a cacheable for hops 2+
+    def remote_getModel(self, *args, **kwargs):
+        return remoteable.UserModel(self.getModel(*args, **kwargs))
+           - - - - - - - - - - - - - - - - - - - - - - - - -
+
+The last one could probably use some explaining.  Our RemoteWrapper
+class intercepts attribute lookups, and based on any superclass that is
+one of our interfaces, uses the interface definition to reflect method
+calls (as well as remote_* versions of them) over callRemote.  We permit
+certain methods to be excluded from the wrapping (via an &quot;exclude&quot;
+attribute) which lets us handle them locally in the wrapper. In this
+case, just as the original user object did, we need to wrap the local
+cache of a UserModel in the cacheable before trying to return to any
+further remote callers.  (This is where having our remote.UserModel be
+directly a pb.Cacheable might simplify things).  But the getUser method
+is basically for free, since PB will handle making a copyable of the
+original user object which will end up coming across to the client
+wrapped as a remote.User object.
+
+Overall, we don't do that much overriding of the remote methods.  One
+case where we do is for the remote.Registry since it's responsible for
+always wrapping returned managers in the right remote class.  Since our
+registry lookup method is given an interface to find a manager for, the
+remote.Registry looks in the local module (remote) for a class
+definition inheriting from the same interface and then uses that to wrap
+the returned referenceable, thus more or less transparently making the
+returned referenceable look just like the original object.
+
+These remote.* objects are all themselves copy/cache/referenceable since
+they also inherit from their remoteable counterparts (or are wrapped by
+such as in the getModel call).  So this can go on for many hops.
+
+Now let me see if I can put this together with a few other components.
+For example, in a two hop setup, you'd get:
+
+    Server [&lt;--A--&gt;] Client 1   [&lt;---B---&gt;]  Client 2
+(a) Registry &lt;------ remote.Registry &lt;------ remote.Registry
+(b) UserManager &lt;--- remote.UserManager &lt;--- remote.UserManager
+(c) User &lt;---------- remote.User &lt;---------- remote.User
+(d) UserModel &lt;----- remote.UserModel &lt;----- remote.UserModel  (etc...)
+
+The connections &quot;A&quot; and &quot;B&quot; are actually paired Server and Client
+objects of our own (that I mentioned in my last note).
+
+During a startup sequence, Server creates the master registry (including
+instantiating and registering any managers).  It then establishes a
+Server object that provides access to the Registry for network clients.
+Simultaneously the Registry may be used by local processing.
+
+At some point, Client 1 uses its Client object to connect to Server's
+Server object and retrieve a reference to Registry (a), which is wrapped
+in a remote.Registry by the Client object.  That remote.Registry can
+then be published by Client 1's Server object (the Server object just
+knows it has a registry, but can't or needn't distinguish between
+Registry and remote.Registry), which can be retrieved by Client 2's
+Client object.  Client 2 also gets a remote.Registry, but it's an extra
+&quot;hop&quot; removed from the original Registry instance.
+
+Now sticking with 2 hops, say Client 2 needs some information.  First,
+it'll ask its registry for a reference to the UserManager.  The call is
+reflected by Client 2's remote.Registry up to Client 1, whose
+remote.Registry reflects it up to Server's Registry.  That Registry
+returns a reference to UserManager which PB sends as a referenceable
+(shared only between Server and Client 1).  The remote.Registry on
+Client 1 wraps that as a remote.UserManager and then returns it to
+Client 2, which again causes PB to send a referenceable (shared only
+between Client 1 and Client 2), which Client 2's remote.Registry again
+wraps as a remote.UserManager.
+
+Now, Client 2 asks its UserManager for a User object.  The call reflects
+up to the Server the same way, but the response this time is a copyable,
+so PB copies it across Server-&gt;Client 1 (which instantiates a
+remote.User), which is then copied by PB from Client 1-&gt;Client 2
+(creating another remote.User).
+
+And perhaps now Client 2 wants a UserModel (asking the UserManager).
+Call again reflects up to Server, but the remote entry point on the main
+UserManager wraps the UserModel in a remoteable.UserModel to return to
+PB, which then treats it as a cacheable down to Client 1, which
+instantiates it as remote.UserModel.  Client 1's remote.UserManager then
+wraps it in a local remoteable.UserModel to return (as a cacheable) to
+Client 2, which gets a remote.UserModel.  From Server's perspective
+there is a remoteable.UserModel instance (which is watching signals on
+the original UserModel) which has Client 1 as a PB observer, and from
+Client 1's perspective there is a remoteable.UserModel instance (which
+is watching signals on the local remote.UserModel) which has Client 2 as
+a PB observer.
+
+Still with me?  :-)
+
+Now let's say there's an outage - say between Server and Client 1.
+Whatever the next attempt is to use callRemote in any wrapped object
+will detect the problem and emit a disconnected signal.  We also have a
+periodic Client-&gt;Server object &quot;ping&quot; that will pick up an outage in the
+absence of other calls, which occurs periodically or is triggered
+automatically upon receiving the disconnected signal from any wrapper object.
+
+Upon detection by the Client object of the outage, it then emits its own
+disconnected signal, upon which various application level operations may
+take place, officially disconnects the PB socket, and starts attempting
+to reconnect.
+
+Any operations on wrapped objects past this point will generate the
+normal PB DeadReferenceError exception since we shut down the connection.
+
+When Client 1's Client object manages to reconnect, it will immediately
+re-query the registry from the Server's Server object.  Once it has
+successfully retrieved the new registry, it then emits a newly connected
+signal which includes the new registry reference.
+
+Our remote.Registry object (along with other application level stuff)
+listens for this signal and upon receipt, updates its internal wrapped
+reference, and automatically issues a requery to that reference for any
+managers that had previously been queried through it.  When it gets new
+references to them it updates its internal information, as well as any
+wrappers that it had previously handed out (it keeps a cache).  Once
+this final step is completed, any application code that had been
+attempting to use those wrapped references will be working again.
+
+The remote copyables don't need any special support since they are still
+legitimate copies.  But remote cacheables also need to be re-connected,
+and are trickier since it's harder to come up with a single way to
+retrieve new cacheables, since they are less regular than manager
+references retrieved through the registry.  To date we've handled this
+on a case by case basis either through the wrapper of the responsible
+manager, or via application level support for re-retrieving the model
+upon receipt of the reconnection signal.
+
+&gt;<i> P.S.
+</I>&gt;<i>
+</I>(...)
+&gt;<i> The system I had in mind:
+</I>&gt;<i>
+</I>&gt;<i> I like and want to adhere to the data/state distinction you made.
+</I>&gt;<i> Events will be handled locally by remote caches, based on changes in
+</I>&gt;<i> the cached data (this may be accomplished degenerately, by not
+</I>&gt;<i> exposing anything other than the event).
+</I>
+As mentioned above, in our case we make use of pydispatcher for
+signals/events within each local application space, using the PB
+cacheable setup (with wrappers on each end) to reflect the data.  This
+lets client code be written as if it was handling local signals
+regardless of whether the model object is a cache of a remote object or
+truly the local instance.
+
+&gt;<i> Differences from your system:
+</I>&gt;<i>
+</I>&gt;<i> I would like all of my referenceables and cacheables in my system to
+</I>&gt;<i> be re-connecting. This to some extent cancels the need for managers,
+</I>&gt;<i> because any dynamically changing object is re-connecting.
+</I>
+We're pretty much auto-reconnecting (as above).  I think you'll probably
+need something akin to a manager, or at least a registry to perform the
+reconnection though, or else you won't have a well-defined point at the
+original to which you can re-issue the original request to get a new
+referenceable/cacheable on the reconnecting client.
+
+&gt;<i> Instead of (or possibly in addition to) manager objects, I want to
+</I>&gt;<i> have what I call Seed objects, which represent a combination of state,
+</I>&gt;<i> data and referenceables (all optional). These seeds will be copyable,
+</I>&gt;<i> and will include the knowledge required to retrieve their components.
+</I>
+Sounds reasonable.  I still think you'll need a separate construct to
+&quot;own&quot; access to these Seed objects, or else what is the remote seed
+reference going to issue a query against in order to rebuild its remote
+references following an outage?
+
+(...)
+&gt;<i>    The main reasons for seeds are:
+</I>&gt;<i> 
+</I>&gt;<i> I want state, data and control to be provided by the same object for
+</I>&gt;<i> clarity, and not have each of them require an individual query. For
+</I>&gt;<i> example, a user will have Name, email address, etc. as data,
+</I>&gt;<i> online/offline as state, and a send_message method.
+</I>
+One thing to consider is the creation of the information/state that the
+seeds are encapsulating.  One of the reasons we ended up going more
+heavily towards copyable objects (rather than references) is that we can
+end up creating such objects at various points within the distributed
+system.  So it's very convenient to be able to instantiate a local
+object instance (say of a user object) in order to begin the process of
+creating a user, and populating its information, without bringing in the
+rest of the baggage of the remote connection until it comes time for the
+&quot;store&quot; operation.  Likewise we found it much easier to manage
+reconnections upon &quot;active&quot; objects with well-defined APIs as opposed to
+the data objects such as a user record.
+
+So even if you have the construct of a seed object to encapsulate remote
+handling, you might want to consider separating out the data object
+components into their own class for simpler manipulation, prior to
+assigning that data to a seed object to become part of the distributed
+system.
+
+&gt;<i> I want state objects, referenceables, and possibly data associated
+</I>&gt;<i> with a Seed to be retrievable from a Server different from the one who
+</I>&gt;<i> dispensed the Seed (for example, the database may provide a seed and
+</I>&gt;<i> the associated user-changeable data, but the state may be kept by a
+</I>&gt;<i> different server). For example, the user&#146;s data may be stored in a
+</I>&gt;<i> database, his online/offline state retrieved from a presence server,
+</I>&gt;<i> and sending him a message may require connecting to his workstation.
+</I>
+This sounds like more of a reason to split some of the functionality
+into separable entities than trying to combine them all into a single
+seed object, although I could probably see some argument for combining
+in order to hide the origin of the data from the end user.  But then
+you're going to have to keep a lot of information in that seed object
+about where each of its information pieces originally came from and be
+able to reconstitute the references when needed.  And handle what
+happens if you lose contact with the owner of one piece of the
+information but not another.
+
+To a large extent, permitting this sort of breakout is where we headed
+with our registry/manager structure.  To a client, it only has a
+registry reference, and asks it for managers in order to
+retrieve/manipulate state.  But it doesn't know how the registry locates
+managers nor how the managers locate their state.  So when I ask my
+&quot;local&quot; registry for a user manager, for all I know that request is
+replicated across 5 hosts and I eventually get what appears to be a
+local user manager but is a remote reference to an object instance 5
+hosts away.  At the same time that same registry when asked for a
+session manager, might return me a local object from my own local
+process.
+
+The decision about where the managers are located is up to top
+level application code that instantiates the registry and makes it
+available on the network (and we have various registry variants for
+different ways of combining local and remote managers).  This lets each
+&quot;hop&quot; along the way make some of its own decisions independent of other
+parts of the system, with a given node running a registry in control of
+what any nodes &quot;behind&quot; it sees, or even what managers are available.
+
+This can certainly be incorporated into a single seed object, but I
+think you'll have to make some decisions about how the original data
+sources are configured (and does that itself need to be capable of being
+distributed).  If you can own that configuration amongst various
+centrally maintained servers, and you're operating from primarily a hub
+and spoke system it'll probably work well.  But if you might end up with
+independently operating clusters of nodes or want to distribute
+administrative domains over various sorts of data, it might be more of a
+challenge.
+
+Hope this has spurred some more thoughts.  Best of luck with your
+project!
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="011043.html">[Twisted-Python] Re: communication idioms with Perspective Broker
+</A></li>
+	<LI>Next message: <A HREF="011032.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11046">[ date ]</a>
+              <a href="thread.html#11046">[ thread ]</a>
+              <a href="subject.html#11046">[ subject ]</a>
+              <a href="author.html#11046">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

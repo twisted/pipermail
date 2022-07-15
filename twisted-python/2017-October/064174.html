@@ -1,0 +1,164 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted.internet.ssl
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.internet.ssl&In-Reply-To=%3C4FAF7ED7-0C2B-4D11-B0D8-24B662270136%40gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="064178.html">
+   <LINK REL="Next"  HREF="064176.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted.internet.ssl</H1>
+    <B>ex vito</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.internet.ssl&In-Reply-To=%3C4FAF7ED7-0C2B-4D11-B0D8-24B662270136%40gmail.com%3E"
+       TITLE="[Twisted-Python] twisted.internet.ssl">ex.vitorino at gmail.com
+       </A><BR>
+    <I>Thu Oct 26 03:20:01 MDT 2017</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="064178.html">[Twisted-Python] twisted.internet.ssl
+</A></li>
+        <LI>Next message (by thread): <A HREF="064176.html">[Twisted-Python] twisted.internet.ssl
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64174">[ date ]</a>
+              <a href="thread.html#64174">[ thread ]</a>
+              <a href="subject.html#64174">[ subject ]</a>
+              <a href="author.html#64174">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 2017-10-25, at 21:07, Enoch W. &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ixew at hotmail.com</A>&gt; wrote:
+
+&gt;<i> Hi,
+</I>&gt;<i> 
+</I>&gt;<i> I am using a self-signed CA to issue server and client(s) certificates. 
+</I>&gt;<i> 
+</I>&gt;<i> My server is using the standard Python ssl module. 
+</I>&gt;<i> One client, that is using twisted.internet.ssl, consistently fails to connect with: 
+</I>&gt;<i> On the Server:    [SSL: TLSV1_ALERT_UNKNOWN_CA] tlsv1 alert unknown ca (_ssl.c:661), 
+</I>&gt;<i> On the Client:    [WARNING] [('SSL routines', 'tls_process_server_certificate', 'certificate verify failed')]
+</I>&gt;<i> 
+</I>&gt;<i> This is my code:
+</I>&gt;<i> 
+</I>&gt;<i> path = getModule(__name__).filePath.sibling(u'data')
+</I>&gt;<i> 
+</I>&gt;<i> txt = path.child(u'ca.crt').getContent()
+</I>&gt;<i> cacert = ssl.Certificate.loadPEM(txt)
+</I>&gt;<i> root = ssl.trustRootFromCertificates([cacert])
+</I>&gt;<i> 
+</I>&gt;<i> txt = path.child(u'client.pem').getContent()
+</I>&gt;<i> mycert = ssl.PrivateCertificate.loadPEM(txt)
+</I>&gt;<i> 
+</I>&gt;<i> ctx = ssl.optionsForClientTLS(hostName, trustRoot=root, clientCertificate=mycert)
+</I>&gt;<i> 
+</I>&gt;<i> reactor.connectSSL(hostName, portNumber, factory, ctx)
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> I am using the latest git trunk code.
+</I>&gt;<i> With a regular ssl client I don't have an issue.
+</I>&gt;<i> 
+</I>&gt;<i> A known bug?
+</I>
+I would review a few things before suspecting a bug.
+
+Your code is using client side certificates (nice, not often seen) so both server and client need to validate each other's certificates on connection establishment. It seems they are both failing, but we're only looking at your client code though.
+
+Here are a few ideas:
+
+1. Double check your certificates: Issuers, Subjects, Dates, SANs, etc.
+
+2. Check that the hostName in optionsForClientTLS matches the name in the server certificate.
+
+3. Use the latest Twisted release instead of trunk, if possible.
+   Do the same for pyOpenSSL and other dependencies.
+
+4. On the client side try using SSL4ClientEndpoint instead of connectSSL.
+   I'm almost sure they behave differently regarding validation (could not quickly find
+   docs on that, though: I've had your problem before and I think I addressed it this way).
+
+   Instead of reactor.connectSSL(...) go for something like:
+
+   ep = endpoints.SSL4ClientEndpoint(
+       reactor,
+       host=hostName,
+       port=portNumber,
+       sslContextFactory=ctx,
+   )
+   client = yield ep.connect(factory)
+
+   For completeness, even though my client skeleton is mostly your client code with
+   this diff, a quick test shows that my client also establishes the TLS connection
+   if I do the reverse: replace SSL4ClientEndpoint with connectSSL in my code.
+
+   This may not be the culprit, but I would try and see if anything changes.
+
+5. On the server side I have the following Twisted code skeleton:
+
+   dhFile = filepath.FilePath(...)
+   dhParams = ssl.DiffieHellmanParameters.fromFile(dhFile)
+   caCert = ssl.Certificate.loadPEM(...)
+   privateCert = ssl.PrivateCertificate.loadPEM(...)
+   cf = ssl.CertificateOptions(
+       privateKey=privateCert.privateKey.original,
+       certificate=privateCert.original,
+       trustRoot=caCert,
+       dhParameters=dhParams,
+   )
+   ep = endpoints.SSL4ServerEndpoint(
+       reactor,
+       port=...,
+       sslContextFactory=cf,
+   )
+   f = protocol.Factory.forProtocol(...)
+   ep.listen(f)
+   reactor.run()
+
+   Your code is obviously different, if based on the standard library's ssl module.
+   If 1 to 4 don't produce results, this is a good candidate for needing some work.
+   Can you share a minimal version of that? I'll be glad to take it for a spin.
+
+6. Double check your certificates, again. Triple-check them if managed manually.
+
+
+For completeness and reference:
+- See <A HREF="http://twistedmatrix.com/documents/current/core/howto/ssl.html">http://twistedmatrix.com/documents/current/core/howto/ssl.html</A> as a starting point
+  Twisted TLS, containing useful information and working examples.
+- My working test environment runs Linux with OpenSSL 1.0.1t.
+
+
+Cheers,
+--
+exvito
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="064178.html">[Twisted-Python] twisted.internet.ssl
+</A></li>
+	<LI>Next message (by thread): <A HREF="064176.html">[Twisted-Python] twisted.internet.ssl
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64174">[ date ]</a>
+              <a href="thread.html#64174">[ thread ]</a>
+              <a href="subject.html#64174">[ subject ]</a>
+              <a href="author.html#64174">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

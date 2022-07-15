@@ -1,0 +1,200 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] XMLRPC server help neede
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20XMLRPC%20server%20help%20neede&In-Reply-To=8a18b942611d65e9b75baec6e7e6f3ae%40adm.umu.se">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="010233.html">
+   <LINK REL="Next"  HREF="010234.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] XMLRPC server help neede</H1>
+    <B>Brett Viren</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20XMLRPC%20server%20help%20neede&In-Reply-To=8a18b942611d65e9b75baec6e7e6f3ae%40adm.umu.se"
+       TITLE="[Twisted-Python] XMLRPC server help neede">bv at bnl.gov
+       </A><BR>
+    <I>Wed Apr 27 11:19:58 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="010233.html">[Twisted-Python] XMLRPC server help neede
+</A></li>
+        <LI>Next message: <A HREF="010234.html">[Twisted-Python] blocking and threads
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10239">[ date ]</a>
+              <a href="thread.html#10239">[ thread ]</a>
+              <a href="subject.html#10239">[ subject ]</a>
+              <a href="author.html#10239">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Roland Hedberg &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">roland.hedberg at adm.umu.se</A>&gt; writes:
+&gt;<i> If the packet is well formed and the server knows what to do with it,
+</I>&gt;<i> it should reply to the client and then perform the action.
+</I>&gt;<i>
+</I>&gt;<i> My problem is how I would go about doing this. Conceptually I could
+</I>&gt;<i> imaging having a workqueue where I would place the message and then
+</I>&gt;<i> from the point of view of the client-sever communication just forget
+</I>&gt;<i> about it.
+</I>&gt;<i>
+</I>&gt;<i> Anyone who has done anything similar or has an idea on how to do this ?
+</I>
+I do this by subclassing twisted.web.xmlrpc.XMLRPC and handling the
+query in a work queue (appended below) that runs in its own thread.
+In my case the client doesn't care if it sent me well formed data or
+not, so immediately after putting the query in the work queue I return
+from the xmlrpc method and the client is free.  In my case, I do some
+sanity checking of the query inside the queue.  In your case you'd do
+the checking before stuffing the queue so you could inform the client.
+
+Here is a sketch of the server chopped out from my code:
+
+from twisted.web import xmlrpc
+class DataSource(xmlrpc.XMLRPC):
+    &quot;The XML-RPC listener&quot;
+
+    def __init__(self,services,sem):
+        xmlrpc.XMLRPC.__init__(self)
+        xmlrpc.addIntrospection(self)
+        self.data_cq = CommandQueue()
+        self.sem = sem
+        self.services = services
+
+    def _handle_sem_release(self,x):
+        #print &quot;DataSource._handle_sem_release(%s)&quot;%str(x)
+        self.sem.release()
+        from twisted.python.failure import Failure
+        if x.__class__ == Failure:
+            if x.value[0] == &quot;DEBUG&quot;: return x
+            log.error(x)
+        return x
+
+    def xmlrpc_method(self,idstr,values):
+        &quot;Accept callbacks from Export API&quot;
+        d = self.sem.acquire()
+        d.addCallback(lambda x: self.data_cq(self.services.method,idstr,values))
+        d.AddBoth(self._handle_sem_release)
+        return 0
+
+All the real work is done in the &quot;services.method&quot; method.  You'll
+note that I use a Semaphore class (appended below).  This is keep
+other operations not shown here from being executed in the middle of
+handling the query.
+
+BTW, the Semaphore and CommandQueue classes were developed with much
+help from this list.  Thanks again!
+
+-Brett.
+
+# ------------------------------------------------
+
+from twisted.internet import defer
+from Queue import Queue, Empty
+from twisted.python import failure
+
+class Semaphore(object):
+    &quot;&quot;&quot;Asynchronous semaphore stolen from:
+    <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2003-August/005323.html">http://twistedmatrix.com/pipermail/twisted-python/2003-August/005323.html</A>
+    &quot;&quot;&quot;
+    def __init__(self, value=1, verbose=None):
+        self.queue = []
+        self.value = value
+
+    def acquire(self):
+        d = defer.Deferred()
+        if self.value:
+            self.value -= 1
+            d.callback(False)
+        else:
+            self.queue.append(d)
+        return d
+
+    def release(self):
+        if self.queue:
+            self.queue.pop(0).callback(True)
+        else:
+            self.value += 1
+
+
+class CommandQueue:
+
+    '''Queue up commands for serial calling.  One must call the
+    drain() method to start reading the internal queue.  Most likely
+    one wants to call this in a thread.'''
+
+    all_queues = []
+
+    def __init__(self):
+        &quot;Create a CommandQueue&quot;
+        self.queue = Queue()
+        self.stop = False
+        CommandQueue.all_queues.append(self)
+        from twisted.internet import reactor
+        reactor.callInThread(self.drain)
+        return
+
+    def __call__(self,meth,*a,**k):
+
+        '''Call meth(*a,**k) when it reaches end of queue.  Returns a
+        Deferred that will pass the return of meth.'''
+
+        deferred = defer.Deferred()
+        deferred.addErrback(self._error)
+        self.queue.put((deferred,meth,a,k))
+        return deferred
+
+    def _error(self,a):
+        try:
+            a.printTraceback(sys.stderr)
+        except:
+            print str(a)
+        return a
+
+    def drain(self):
+        'Drain the command queue until CommandQueue.stop is True'
+        while not self.stop:
+            try:
+                d,meth,a,k = self.queue.get(True,1)
+            except Empty:
+                continue
+            #print &quot;calling %s(%s,%s)&quot;%(meth.__name__,str(a),str(k))
+            try:
+                res = meth(*a,**k)
+            except Exception,err:
+                res = failure.Failure(sys.exc_value)
+            reactor.callFromThread(d.callback,res)
+            #d.callback(meth(*a,**k))
+            #print &quot;callback done&quot;
+        #print &quot;drain closing&quot;
+        return 0
+
+
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="010233.html">[Twisted-Python] XMLRPC server help neede
+</A></li>
+	<LI>Next message: <A HREF="010234.html">[Twisted-Python] blocking and threads
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10239">[ date ]</a>
+              <a href="thread.html#10239">[ thread ]</a>
+              <a href="subject.html#10239">[ subject ]</a>
+              <a href="author.html#10239">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

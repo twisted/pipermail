@@ -1,0 +1,212 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Ldaptor: [PATCH] Extend test driver send_multiResponse() to return deferred and throw errors
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Ldaptor%3A%20%5BPATCH%5D%20Extend%20test%20driver%0A%20send_multiResponse%28%29%20to%20return%20deferred%20and%20throw%20errors&In-Reply-To=%3CAANLkTinv5qfzhwW8jUmrA8dqRPy4rhTLHAQZ18xdmZ0_%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="055306.html">
+   <LINK REL="Next"  HREF="055307.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Ldaptor: [PATCH] Extend test driver send_multiResponse() to return deferred and throw errors</H1>
+    <B>Anton Gyllenberg</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Ldaptor%3A%20%5BPATCH%5D%20Extend%20test%20driver%0A%20send_multiResponse%28%29%20to%20return%20deferred%20and%20throw%20errors&In-Reply-To=%3CAANLkTinv5qfzhwW8jUmrA8dqRPy4rhTLHAQZ18xdmZ0_%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Ldaptor: [PATCH] Extend test driver send_multiResponse() to return deferred and throw errors">anton at iki.fi
+       </A><BR>
+    <I>Thu Sep  2 03:28:56 MDT 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="055306.html">[Twisted-Python] multiple workers
+</A></li>
+        <LI>Next message (by thread): <A HREF="055307.html">[Twisted-Python] Telnet MCCP Transport
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55302">[ date ]</a>
+              <a href="thread.html#55302">[ thread ]</a>
+              <a href="subject.html#55302">[ subject ]</a>
+              <a href="author.html#55302">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>The deferred returned by the LDAP client send_multiResponse() method was
+previously unused in all code covered by tests, and so the replacement
+method in the test driver just returned None. The deferred is now used
+in search() and this change makes the test driver also return a deferred
+instead of None in order to make things work when run within the test
+framework.
+
+To make it possible to test failures in the client send() and
+send_multiResponse() methods, the test driver is changed to accept Failure
+instances in place of lists of LDAPProtocolResponses.  Doing this causes
+the errback on the deferred to be called with this failure.
+
+The LDAPSyntaxSearch and Bind test cases are augmented with one test each
+to use the new failure functionality in the client test driver. As the
+search() code a while back did not handle errors in the send_multiResponse()
+deferred chain the test case would time out if run against older code.
+Therefore a smaller timeout of 3 seconds is set for the LDAPSyntaxSearch test
+case.
+---
+
+Discussion: With this change the old test cases pass and the code path
+introduced by my modifications to send_multiResponse() is tested by a
+new test case. I am still a bit unsure if I am testing the right thing
+and if the original fix is the right thing to do. Any comments
+welcome!
+
+Code published on <A HREF="http://github.com/antong/ldaptor/tree/pu">http://github.com/antong/ldaptor/tree/pu</A>
+
+
+ ldaptor/test/test_ldapsyntax.py |   25 +++++++++++++++++++++++++
+ ldaptor/testutil.py             |   18 +++++++++++++++++-
+ 2 files changed, 42 insertions(+), 1 deletions(-)
+
+diff --git a/ldaptor/test/test_ldapsyntax.py b/ldaptor/test/test_ldapsyntax.py
+index b8bcf53..46be06c 100755
+--- a/ldaptor/test/test_ldapsyntax.py
++++ b/ldaptor/test/test_ldapsyntax.py
+@@ -7,6 +7,7 @@ from ldaptor import config, testutil, delta
+ from ldaptor.protocols.ldap import ldapsyntax, ldaperrors
+ from ldaptor.protocols import pureldap, pureber
+ from twisted.internet import defer
++from twisted.internet import error
+ from twisted.python import failure
+ from ldaptor.testutil import LDAPClientTestDriver
+
+@@ -366,6 +367,7 @@ class
+LDAPSyntaxAttributesModificationOnWire(unittest.TestCase):
+
+
+ class LDAPSyntaxSearch(unittest.TestCase):
++    timeout = 3
+     def testSearch(self):
+         &quot;&quot;&quot;Test searches.&quot;&quot;&quot;
+
+@@ -641,6 +643,17 @@ class LDAPSyntaxSearch(unittest.TestCase):
+         d.addCallbacks(testutil.mustRaise, eb)
+         return d
+
++    def testSearch_err(self):
++        client=LDAPClientTestDriver([
++                failure.Failure(error.ConnectionLost())
++                ])
++        o = ldapsyntax.LDAPEntry(client=client, dn='dc=example,dc=com')
++        d = o.search(filterText='(foo=a)')
++        def eb(fail):
++            fail.trap(error.ConnectionLost)
++        d.addCallbacks(testutil.mustRaise, eb)
++        return d
++
+ class LDAPSyntaxDNs(unittest.TestCase):
+     def testDNKeyExistenceSuccess(self):
+         client = LDAPClientTestDriver()
+@@ -1516,3 +1529,15 @@ class Bind(unittest.TestCase):
+             fail.trap(ldaperrors.LDAPInvalidCredentials)
+         d.addCallbacks(testutil.mustRaise, eb)
+         return d
++
++    def test_err(self):
++        client = LDAPClientTestDriver([
++                failure.Failure(error.ConnectionLost())])
++
++        o=ldapsyntax.LDAPEntry(client=client,
++                               dn='cn=foo,dc=example,dc=com')
++        d = defer.maybeDeferred(o.bind, 'whatever')
++        def eb(fail):
++            fail.trap(error.ConnectionLost)
++        d.addCallbacks(testutil.mustRaise, eb)
++        return d
+diff --git a/ldaptor/testutil.py b/ldaptor/testutil.py
+index 8307cb9..cb25aa3 100644
+--- a/ldaptor/testutil.py
++++ b/ldaptor/testutil.py
+@@ -1,6 +1,7 @@
+ &quot;&quot;&quot;Utilities for writing Twistedy unit tests and debugging.&quot;&quot;&quot;
+
+ from twisted.internet import defer
++from twisted.python import failure
+ from twisted.trial import unittest
+ from twisted.test import proto_helpers
+ from ldaptor import config
+@@ -36,23 +37,37 @@ class LDAPClientTestDriver:
+     messages are stored in self.sent, so you can assert that the sent
+     messages are what they are supposed to be.
+
++    It is also possible to include a Failure instance instead of a list
++    of LDAPProtocolResponses to cause which will cause the errback
++    to be called with the failure.
++
+     &quot;&quot;&quot;
+     def __init__(self, *responses):
+         self.sent=[]
+         self.responses=list(responses)
+         self.connected = None
+         self.transport = FakeTransport(self)
++
+     def send(self, op):
+         self.sent.append(op)
+         l = self._response()
+         assert len(l) == 1, \
+                &quot;got %d responses for a .send()&quot; % len(l)
+-        return defer.succeed(l[0])
++        r = l[0]
++        if isinstance(r, failure.Failure):
++            return defer.fail(r)
++        else:
++            return defer.succeed(r)
++
+     def send_multiResponse(self, op, handler, *args, **kwargs):
++        d = defer.Deferred()
+         self.sent.append(op)
+         responses = self._response()
+         while responses:
+             r = responses.pop(0)
++            if isinstance(r, failure.Failure):
++                d.errback(r)
++                break
+             ret = handler(r, *args, **kwargs)
+             if responses:
+                 assert not ret, \
+@@ -60,6 +75,7 @@ class LDAPClientTestDriver:
+             else:
+                 assert ret, \
+                        &quot;no more responses to give, but handler still
+wants more (got %r).&quot; % ret
++        return d
+
+     def send_noResponse(self, op):
+         responses = self.responses.pop(0)
+-- 
+1.7.1.5.g49342
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="055306.html">[Twisted-Python] multiple workers
+</A></li>
+	<LI>Next message (by thread): <A HREF="055307.html">[Twisted-Python] Telnet MCCP Transport
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55302">[ date ]</a>
+              <a href="thread.html#55302">[ thread ]</a>
+              <a href="subject.html#55302">[ subject ]</a>
+              <a href="author.html#55302">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,367 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20OT%20-%20adbapi%2C%20connection%20timeouts%2C%20mysql%20-%20OT&In-Reply-To=%3C812f32000908241158nf2c879eh75a74fe6a780fae3%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="052775.html">
+   <LINK REL="Next"  HREF="052780.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT</H1>
+    <B>Garret Heaton</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20OT%20-%20adbapi%2C%20connection%20timeouts%2C%20mysql%20-%20OT&In-Reply-To=%3C812f32000908241158nf2c879eh75a74fe6a780fae3%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT">powdahound at gmail.com
+       </A><BR>
+    <I>Mon Aug 24 12:58:14 MDT 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="052775.html">[Twisted-Python] twisted-wave?
+</A></li>
+        <LI>Next message (by thread): <A HREF="052780.html">[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52778">[ date ]</a>
+              <a href="thread.html#52778">[ thread ]</a>
+              <a href="subject.html#52778">[ subject ]</a>
+              <a href="author.html#52778">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>There is a solution to the reconnection issue posted
+here&lt;<A HREF="http://www.gelens.org/2008/09/12/reinitializing-twisted-connectionpool/">http://www.gelens.org/2008/09/12/reinitializing-twisted-connectionpool/</A>&gt;which
+one of my friends improved upon. He wasn't on the list at the time of
+this posting so I'm replying to this on his behalf. The improved solution
+is:
+
+class ReconnectingConnectionPool(adbapi.ConnectionPool):
+
+    def _runInteraction(self, interaction, *args, **kw):
+        try:
+            return adbapi.ConnectionPool._runInteraction(self,
+interaction, *args, **kw)
+        except MySQLdb.OperationalError, e:
+            if e[0] not in (2006, 2013):
+                raise
+            log.msg(&quot;RCP: got error %s, retrying operation&quot; %(e))
+            conn = self.connections.get(self.threadID())
+            self.disconnect(conn)
+
+            # try the interaction again
+            return adbapi.ConnectionPool._runInteraction(self,
+interaction, *args, **kw)
+
+Also on GitHub: <A HREF="http://gist.github.com/174056">http://gist.github.com/174056</A>
+
+It's working well for both of us so far.
+
+
+On Wed, Jul 22, 2009 at 7:06 AM, Clay Gerrard &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">clay.gerrard at rackspace.com</A>&gt;wrote:
+
+&gt;<i> In my experience &quot;re-running the query&quot; has not been sufficient.
+</I>&gt;<i>
+</I>&gt;<i> All of the connections in the pool time out around the same time.
+</I>&gt;<i>
+</I>&gt;<i> Using cp_reconnect just forces the &quot;idle&quot; connection (cursor) to be removed
+</I>&gt;<i> from the pool before raising the generic &quot;ConnectionLost&quot;:
+</I>&gt;<i>
+</I>&gt;<i>    def rollback(self):
+</I>&gt;<i>        if not self._pool.reconnect:
+</I>&gt;<i>            self._connection.rollback()
+</I>&gt;<i>            return
+</I>&gt;<i>
+</I>&gt;<i>        try:
+</I>&gt;<i>            self._connection.rollback()
+</I>&gt;<i>            curs = self._connection.cursor()
+</I>&gt;<i>            curs.execute(self._pool.good_sql)
+</I>&gt;<i>            curs.close()
+</I>&gt;<i>            self._connection.commit()
+</I>&gt;<i>            return
+</I>&gt;<i>        except:
+</I>&gt;<i>            log.err(None, &quot;Rollback failed&quot;)
+</I>&gt;<i>
+</I>&gt;<i>        self._pool.disconnect(self._connection)
+</I>&gt;<i>
+</I>&gt;<i>        if self._pool.noisy:
+</I>&gt;<i>            log.msg(&quot;Connection lost.&quot;)
+</I>&gt;<i>
+</I>&gt;<i>        raise ConnectionLost()
+</I>&gt;<i>
+</I>&gt;<i> But when I go to re-run the query it's very unlikely that I'll get that
+</I>&gt;<i> same thread id again (and therefore a fresh connection).  More than likely
+</I>&gt;<i> I'll get another stale connection which will also get dropped.  Repeat ad
+</I>&gt;<i> infinitum
+</I>&gt;<i>
+</I>&gt;<i> I'm fairly sure the right thing to do is to make adbapi.Connection objects
+</I>&gt;<i> aware of their created time, and allow adbapi.ConnectionPool.connect to
+</I>&gt;<i> potentially refresh &quot;old&quot; connections based on an optional kwarg when
+</I>&gt;<i> creating the connection pool:
+</I>&gt;<i>
+</I>&gt;<i> &quot;pool_recycle&quot;
+</I>&gt;<i>
+</I>&gt;<i> That's what I'm working on anyway...
+</I>&gt;<i>
+</I>&gt;<i> Clay Gerrard
+</I>&gt;<i> Office: 210-312-3443
+</I>&gt;<i> Mobile: 210-788-9431
+</I>&gt;<i> -----Original Message-----
+</I>&gt;<i> From: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A> [mailto:
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>] On Behalf Of Gabriel Rossetti
+</I>&gt;<i> Sent: Wednesday, July 22, 2009 1:34 AM
+</I>&gt;<i> To: Twisted general discussion
+</I>&gt;<i> Subject: Re: [Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+</I>&gt;<i>
+</I>&gt;<i> Hello Garret,
+</I>&gt;<i>
+</I>&gt;<i> yes, I finally did did something like that, I am currently testing the
+</I>&gt;<i> code.
+</I>&gt;<i>
+</I>&gt;<i> Thanks,
+</I>&gt;<i> Gabriel
+</I>&gt;<i>
+</I>&gt;<i> Garret Heaton wrote:
+</I>&gt;<i> &gt; Instead of trying to keep the connection alive you can also just
+</I>&gt;<i> &gt; reconnect when necessary. Example code here:
+</I>&gt;<i> &gt;
+</I>&gt;<i> <A HREF="http://stackoverflow.com/questions/207981/how-to-enable-mysql-client-auto-re-connect-with-mysqldb/982873#982873">http://stackoverflow.com/questions/207981/how-to-enable-mysql-client-auto-re-connect-with-mysqldb/982873#982873</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; On Tue, Jul 21, 2009 at 2:18 PM, Clay Gerrard
+</I>&gt;<i> &gt; &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">clay.gerrard at rackspace.com</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">clay.gerrard at rackspace.com</A>&gt;&gt; wrote:
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     Regarding the original question:
+</I>&gt;<i> &gt;     &quot;how to make mysql's idle timeouts shorter so that I can debug my
+</I>&gt;<i> &gt;     code?&quot;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     You should be able to do that in the mysql shell:
+</I>&gt;<i> &gt;     mysql&gt; show variables like '%timeout%';
+</I>&gt;<i> &gt;     +----------------------------+-------+
+</I>&gt;<i> &gt;     | Variable_name              | Value |
+</I>&gt;<i> &gt;     +----------------------------+-------+
+</I>&gt;<i> &gt;     | connect_timeout            | 5     |
+</I>&gt;<i> &gt;     | delayed_insert_timeout     | 300   |
+</I>&gt;<i> &gt;     | innodb_lock_wait_timeout   | 50    |
+</I>&gt;<i> &gt;     | innodb_rollback_on_timeout | OFF   |
+</I>&gt;<i> &gt;     | interactive_timeout        | 600   |
+</I>&gt;<i> &gt;     | net_read_timeout           | 30    |
+</I>&gt;<i> &gt;     | net_write_timeout          | 60    |
+</I>&gt;<i> &gt;     | slave_net_timeout          | 3600  |
+</I>&gt;<i> &gt;     | table_lock_wait_timeout    | 50    |
+</I>&gt;<i> &gt;     | wait_timeout               | 600   |
+</I>&gt;<i> &gt;     +----------------------------+-------+
+</I>&gt;<i> &gt;     10 rows in set (0.00 sec)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     &gt; set global variable interactive_timeout = 5;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     But in my experience MySQLdb makes the idle connection timeout
+</I>&gt;<i> &gt;     very difficult to debug effectively.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     Will twisted.adbapi.ConnectionPool ever offer a pool_recycle kw
+</I>&gt;<i> &gt;     like sqlalchemy?
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     Clay Gerrard
+</I>&gt;<i> &gt;     Office: 210-312-3443
+</I>&gt;<i> &gt;     Mobile: 210-788-9431
+</I>&gt;<i> &gt;     -----Original Message-----
+</I>&gt;<i> &gt;     From: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>
+</I>&gt;<i> &gt;     &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>&gt;
+</I>&gt;<i> &gt;     [mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>
+</I>&gt;<i> &gt;     &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>&gt;] On Behalf Of
+</I>&gt;<i> &gt;     Werner Thie
+</I>&gt;<i> &gt;     Sent: Tuesday, July 21, 2009 4:05 PM
+</I>&gt;<i> &gt;     To: Twisted general discussion
+</I>&gt;<i> &gt;     Subject: Re: [Twisted-Python] OT - adbapi, connection timeouts,
+</I>&gt;<i> &gt;     mysql - OT
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     Hi Gabriel
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     had the same problem, solved it by having keepalive() called in a
+</I>&gt;<i> &gt;     LoopingCall(), MySQL sitting at defaults timingwise.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     DB_DRIVER = &quot;MySQLdb&quot;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     USERDB_ARGS = {
+</I>&gt;<i> &gt;       'host': '',
+</I>&gt;<i> &gt;       'db': '',
+</I>&gt;<i> &gt;       'user': '',
+</I>&gt;<i> &gt;       'passwd': '',
+</I>&gt;<i> &gt;       'cp_reconnect': True
+</I>&gt;<i> &gt;     }
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     storekeeper = StoreKeeper(DB_DRIVER, **USERDB_ARGS)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     ka = task.LoopingCall(storekeeper.store.keepAlive)
+</I>&gt;<i> &gt;     ka.start(300)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     class StoreKeeper(object):
+</I>&gt;<i> &gt;       def __init__(self, dbapiName, **params):
+</I>&gt;<i> &gt;         self.store = Store(dbapiName, **params)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;       def dbdisconn(self, reason):
+</I>&gt;<i> &gt;         print 'db disconnected for ', reason
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;       def keepAlive(self):
+</I>&gt;<i> &gt;         d = self.store.runQuery('SELECT 1')
+</I>&gt;<i> &gt;         d.addErrback(self.dbdisconn)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     #with store being something like:
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     class Store(object):
+</I>&gt;<i> &gt;       def __init__(self, dbapiName, **params):
+</I>&gt;<i> &gt;         self.__pool   = adbapi.ConnectionPool(dbapiName, **params)
+</I>&gt;<i> &gt;         print self.__pool.__getstate__()
+</I>&gt;<i> &gt;         self.runOperation('SET autocommit = %s', 1)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;       def runQuery(self, query, *args):
+</I>&gt;<i> &gt;         d = self.__pool.runInteraction(self.mapQuery, query, args)
+</I>&gt;<i> &gt;         return d
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;       def mapQuery(self, curs, query, *args):
+</I>&gt;<i> &gt;         try:
+</I>&gt;<i> &gt;           curs.execute(query, *args)
+</I>&gt;<i> &gt;         except adbapi.ConnectionLost:
+</I>&gt;<i> &gt;           print
+</I>&gt;<i> &gt;           print '++++++++++++ rerunning query'
+</I>&gt;<i> &gt;           print
+</I>&gt;<i> &gt;           curs.execute(query, *args)                    #simply resend
+</I>&gt;<i> &gt;     query, assuming cp_reconnect=True
+</I>&gt;<i> &gt;         result = curs.fetchall()
+</I>&gt;<i> &gt;         columns = [d[0] for d in curs.description]
+</I>&gt;<i> &gt;         return [dict(zip(columns, r)) for r in result]
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;       def runOperation(self, query, *args):
+</I>&gt;<i> &gt;         d = self.__pool.runOperation(query, args)
+</I>&gt;<i> &gt;         return d
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;       def runInteraction(self, fun, queries=(), args=()):
+</I>&gt;<i> &gt;         d = self.__pool.runInteraction(fun, queries, args)
+</I>&gt;<i> &gt;         return d
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     HTH, Werner
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     Gabriel Rossetti wrote:
+</I>&gt;<i> &gt;     &gt; Hello everyone,
+</I>&gt;<i> &gt;     &gt;
+</I>&gt;<i> &gt;     &gt; I have been experiencing the ConnectionError with adbapi &amp;
+</I>&gt;<i> &gt;     &gt; cp_reconnect=True. I know that because of the cp_reconnect=True
+</I>&gt;<i> &gt;     param
+</I>&gt;<i> &gt;     &gt; tha is reconnects and that the query is not re-run. I have
+</I>&gt;<i> &gt;     written some
+</I>&gt;<i> &gt;     &gt; code that should re-run the query in that case (if I get a
+</I>&gt;<i> &gt;     Failure back
+</I>&gt;<i> &gt;     &gt; because of a ConnectionError), but it doesn't seem to work. My
+</I>&gt;<i> &gt;     question
+</I>&gt;<i> &gt;     &gt; is if anyone knows how to make mysql's idle timeouts shorter so
+</I>&gt;<i> &gt;     that I
+</I>&gt;<i> &gt;     &gt; can debug my code? I searched google and the mysql site with no
+</I>&gt;<i> &gt;     luck.
+</I>&gt;<i> &gt;     &gt;
+</I>&gt;<i> &gt;     &gt; thank you,
+</I>&gt;<i> &gt;     &gt; Gabriel
+</I>&gt;<i> &gt;     &gt;
+</I>&gt;<i> &gt;     &gt; _______________________________________________
+</I>&gt;<i> &gt;     &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt;     &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt;     &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>&gt;
+</I>&gt;<i> &gt;     &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     _______________________________________________
+</I>&gt;<i> &gt;     Twisted-Python mailing list
+</I>&gt;<i> &gt;     <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt;     &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>&gt;
+</I>&gt;<i> &gt;     <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     Confidentiality Notice: This e-mail message (including any attached
+</I>&gt;<i> or
+</I>&gt;<i> &gt;     embedded documents) is intended for the exclusive and confidential
+</I>&gt;<i> &gt;     use of the
+</I>&gt;<i> &gt;     individual or entity to which this message is addressed, and
+</I>&gt;<i> &gt;     unless otherwise
+</I>&gt;<i> &gt;     expressly indicated, is confidential and privileged information of
+</I>&gt;<i> &gt;     Rackspace.
+</I>&gt;<i> &gt;     Any dissemination, distribution or copying of the enclosed
+</I>&gt;<i> &gt;     material is prohibited.
+</I>&gt;<i> &gt;     If you receive this transmission in error, please notify us
+</I>&gt;<i> &gt;     immediately by e-mail
+</I>&gt;<i> &gt;     at <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">abuse at rackspace.com</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">abuse at rackspace.com</A>&gt;, and delete
+</I>&gt;<i> &gt;     the original message.
+</I>&gt;<i> &gt;     Your cooperation is appreciated.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     _______________________________________________
+</I>&gt;<i> &gt;     Twisted-Python mailing list
+</I>&gt;<i> &gt;     <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt;     &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>&gt;
+</I>&gt;<i> &gt;     <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; ------------------------------------------------------------------------
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; _______________________________________________
+</I>&gt;<i> &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> Confidentiality Notice: This e-mail message (including any attached or
+</I>&gt;<i> embedded documents) is intended for the exclusive and confidential use of
+</I>&gt;<i> the
+</I>&gt;<i> individual or entity to which this message is addressed, and unless
+</I>&gt;<i> otherwise
+</I>&gt;<i> expressly indicated, is confidential and privileged information of
+</I>&gt;<i> Rackspace.
+</I>&gt;<i> Any dissemination, distribution or copying of the enclosed material is
+</I>&gt;<i> prohibited.
+</I>&gt;<i> If you receive this transmission in error, please notify us immediately by
+</I>&gt;<i> e-mail
+</I>&gt;<i> at <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">abuse at rackspace.com</A>, and delete the original message.
+</I>&gt;<i> Your cooperation is appreciated.
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20090824/97e94adb/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="052775.html">[Twisted-Python] twisted-wave?
+</A></li>
+	<LI>Next message (by thread): <A HREF="052780.html">[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52778">[ date ]</a>
+              <a href="thread.html#52778">[ thread ]</a>
+              <a href="subject.html#52778">[ subject ]</a>
+              <a href="author.html#52778">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

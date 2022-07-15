@@ -1,0 +1,102 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] SSL4ClientEndpoint not updating the	transport's connected flag on connection lost
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20SSL4ClientEndpoint%20not%20updating%20the%0A%09transport%27s%20connected%20flag%20on%20connection%20lost&In-Reply-To=%3C094897E6-0B90-43CF-B88D-2B9B8C8E2F44%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="030701.html">
+   <LINK REL="Next"  HREF="030746.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] SSL4ClientEndpoint not updating the	transport's connected flag on connection lost</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20SSL4ClientEndpoint%20not%20updating%20the%0A%09transport%27s%20connected%20flag%20on%20connection%20lost&In-Reply-To=%3C094897E6-0B90-43CF-B88D-2B9B8C8E2F44%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] SSL4ClientEndpoint not updating the	transport's connected flag on connection lost">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Sat Aug 20 01:37:59 MDT 2016</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="030701.html">[Twisted-Python] SSL4ClientEndpoint not updating the transport's connected flag on connection lost
+</A></li>
+        <LI>Next message: <A HREF="030746.html">[Twisted-Python] SSL4ClientEndpoint not updating the transport's connected flag on connection lost
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#30745">[ date ]</a>
+              <a href="thread.html#30745">[ thread ]</a>
+              <a href="subject.html#30745">[ subject ]</a>
+              <a href="author.html#30745">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Aug 11, 2016, at 06:59, Adi Roiban &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">adi at roiban.ro</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Hi,
+</I>&gt;<i> 
+</I>&gt;<i> I have observed that when a SSL4ClientEndpoint was used, the
+</I>&gt;<i> protocol's transport `connected` attribute is not updated by the
+</I>&gt;<i> wrapper when the connection is lost.
+</I>
+Hey Adi,
+
+I took a look through the code, and I think it's a lot simpler than you realize :-).
+
+&gt;<i> My current finding is that the reactor will call connection lost on
+</I>&gt;<i> t.i.abstract.FileDescriptor.connectionLost and not on
+</I>&gt;<i> t.protocols.policies.ProtocolWrapper
+</I>
+This is definitely not true, or dropping the connection just wouldn't work at all, and you wouldn't get connectionLost on your protocol.  The call path is FileDescriptor.connectionLost -&gt; endpoint wrapper protocol.connectionLost -&gt; *TLS wrapper protocol.connectionLost* -&gt; your protocol connectionLost.
+
+The bold-faced protocol is the interesting one, because that is the 'transport' object that your protocol sees.  Here's that object's connectionLost method:
+
+<A HREF="https://github.com/twisted/twisted/blob/6022f65903eda2f8df74b2d284b8ef359df24904/src/twisted/protocols/tls.py#L488">https://github.com/twisted/twisted/blob/6022f65903eda2f8df74b2d284b8ef359df24904/src/twisted/protocols/tls.py#L488</A> &lt;<A HREF="https://github.com/twisted/twisted/blob/6022f65903eda2f8df74b2d284b8ef359df24904/src/twisted/protocols/tls.py#L488">https://github.com/twisted/twisted/blob/6022f65903eda2f8df74b2d284b8ef359df24904/src/twisted/protocols/tls.py#L488</A>&gt;
+
+As you can see, neither it, nor the superclass that it upcalls to &lt;<A HREF="https://github.com/twisted/twisted/blob/6022f65903eda2f8df74b2d284b8ef359df24904/src/twisted/protocols/policies.py#L123">https://github.com/twisted/twisted/blob/6022f65903eda2f8df74b2d284b8ef359df24904/src/twisted/protocols/policies.py#L123</A> &lt;<A HREF="https://github.com/twisted/twisted/blob/6022f65903eda2f8df74b2d284b8ef359df24904/src/twisted/protocols/policies.py#L123">https://github.com/twisted/twisted/blob/6022f65903eda2f8df74b2d284b8ef359df24904/src/twisted/protocols/policies.py#L123</A>&gt;&gt; sets the &quot;connected&quot; attribute.  So the method is totally called, it just doesn't do what you expect.
+
+&gt;<i> so it seems that when SSL is used the wrapped protocol is registered
+</I>&gt;<i> instead of the wrapping protocol.
+</I>
+I'm not sure what you mean here.
+
+&gt;<i> I am doing something wrong here?
+</I>
+&gt;<i> Is this the expected behavior or this is a bug?
+</I>
+Probably both, kinda?  This attribute is undocumented; probably an old implementation accident.  Technically it's public, but you probably shouldn't be depending on it.  However, it's silly that this is inconsistent between TLS transports and raw TCP transports, so fixing up ProtocolWrapper.connectionLost to set 'connected' to False is probably not a bad change.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20160820/af59d3ce/attachment.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20160820/af59d3ce/attachment.html</A>&gt;
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="030701.html">[Twisted-Python] SSL4ClientEndpoint not updating the transport's connected flag on connection lost
+</A></li>
+	<LI>Next message: <A HREF="030746.html">[Twisted-Python] SSL4ClientEndpoint not updating the transport's connected flag on connection lost
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#30745">[ date ]</a>
+              <a href="thread.html#30745">[ thread ]</a>
+              <a href="subject.html#30745">[ subject ]</a>
+              <a href="author.html#30745">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.0 (GNU/Linux)
+
+iD8DBQE+5XnBedcO2BJA+4YRAt5jAKDDqfP5VKI+ocrVcWbANxG7bzwgEwCgsiMS
+G1FNhKdE+hu8UFr3bS3QNOw=
+=55GM
+-----END PGP SIGNATURE-----

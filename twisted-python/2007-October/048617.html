@@ -1,0 +1,191 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] stdio.StandardIO, ServerProtocol and Services.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20stdio.StandardIO%2C%20ServerProtocol%20and%20Services.&In-Reply-To=%3C491db6c90710051145p56f37195he89903503564df25%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="048616.html">
+   <LINK REL="Next"  HREF="048626.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] stdio.StandardIO, ServerProtocol and Services.</H1>
+    <B>kgi</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20stdio.StandardIO%2C%20ServerProtocol%20and%20Services.&In-Reply-To=%3C491db6c90710051145p56f37195he89903503564df25%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] stdio.StandardIO, ServerProtocol and Services.">iacovou at gmail.com
+       </A><BR>
+    <I>Fri Oct  5 12:45:13 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="048616.html">[Twisted-Python] Re: Collecting all results from a DeferredList
+</A></li>
+        <LI>Next message (by thread): <A HREF="048626.html">[Twisted-Python] stdio.StandardIO, ServerProtocol and Services.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48617">[ date ]</a>
+              <a href="thread.html#48617">[ thread ]</a>
+              <a href="subject.html#48617">[ subject ]</a>
+              <a href="author.html#48617">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi all.
+
+I'm trying to write a &quot;terminal&quot; component, wrapped in a
+service.Service, to drop into an application framework so that I can
+use it to build interactive command-line tools. I've almost, but not
+quite, got it working.
+
+I know about manhole, but I want to write a simple command-based
+syntax, rather than exposing a python namespace and interpreter. I
+could also just go with  a telnet or ssh interface, but that would
+require an additional step (the actual telnet or ssh). There's also
+stdiodemo.py, but that doesn't offer readline-like functionality,
+which would be a Very Good Thing.
+
+(Besides, I'm really curious as to why this approach is not working!)
+
+The code below is a minimal stripped-down example of what I've got so
+far through frantic grepping and glimpseing through the Twisted
+codebase. (although there are some fragmentary holdovers from various
+experiments; ignore these). At the moment, the command handler (the
+lineReceived() method) just echoes the argument with some '+' signs
+prepended.
+
+The termios stuff comes from twisted/conch/stdio.py, via a mailing
+list post saying something to the effect of, &quot;this is the minimal
+amount you have to do in order to hook up your terminal to your
+process's stdio&quot;; I don't have the ML link handy right now, sorry.
+
+Note that whereas stdio.py passes a Protocol argument to
+ServerProtocol, I've created an intermediate class, CLIServerProtocol,
+which has a protocolFactory attribute. An examination of
+twisted/conch/insults/insults.py shows that this should be equivalent.
+
+For the curious bystanders, HistoricRecvLine is derived as follows:
+
+  HistoricRecvLine -&gt; RecvLine -&gt; TerminalProtocol
+
+... and TerminalProtocol implements things like connectionMade, etc.
+
+Here's the behaviour I see:
+
+With the code as is, I can type in lines and get a reply from
+lineReceived. However, none of the cursor keys or other things for
+which there is special code in twisted/conch/recvline.py work; I just
+get control codes all over the terminal.
+
+If I uncomment the &quot;reactor.run()&quot;, however, the behaviour changes
+completely, and becomes much closer to what I expect: keypresses like
+Home, cursor keys, etc, are honoured, as well as the history. However,
+Ctrl-C merely loses the connection, and the terminal hangs and I have
+to kill the twistd process externally.
+
+The fact that adding reactor.run() (which shouldn't be needed in a
+Service, right?) implies to me that the reactor isn't starting up
+properly without it, and I can't see why.
+
+Any advice would be greatly appreciated.
+
+Ricky
+
+--
+
+import os, tty, sys, termios
+
+from twisted.application import service
+
+from twisted.internet import reactor, stdio, protocol, defer
+from twisted.python import failure, reflect, log
+from twisted.protocols import basic
+from twisted.application import internet
+
+from twisted.conch.insults import insults
+from twisted.conch.manhole import ColoredManhole
+# from twisted.conch.stdio import ConsoleManhole
+
+from twisted.application                import service
+from twisted.conch import recvline
+
+
+class CLIProtocol ( recvline.HistoricRecvLine ):
+
+    service = None
+
+    def connectionMade ( self ):
+        recvline.HistoricRecvLine.connectionMade ( self )
+        self.keyHandlers [ '\x01' ] = self.handle_HOME
+        self.keyHandlers [ '\x03' ] = self.handle_QUIT
+        self.keyHandlers [ '\x1a' ] = self.handle_QUIT
+
+
+    def connectionLost ( self, reason ):
+        log.msg ( &quot;Connection Lost&quot; )
+
+
+    def handle_QUIT ( self ):
+        self.terminal.loseConnection()
+
+    def lineReceived ( self, line ):
+        self.terminal.write ( '+++' + line )
+
+
+class CLIServerProtocol ( insults.ServerProtocol ):
+    protocolFactory = CLIProtocol
+
+
+class CLIService ( service.Service ):
+
+    def startService ( self ):
+        fd = sys.__stdin__.fileno()
+        oldSettings = termios.tcgetattr ( fd )
+        tty.setraw ( fd )
+        try:
+            p = CLIServerProtocol()
+            stdio.StandardIO ( p )
+            # reactor.run()
+        finally:
+            termios.tcsetattr ( fd, termios.TCSANOW, oldSettings )
+            os.write ( fd, &quot;\r\x1bc\r&quot; )
+
+        return service.Service.startService ( self )
+
+######################################################################
+# Create the application service hierarchy.
+######################################################################
+
+application       = service.Application ( 'cliapp' )
+
+cs = CLIService()
+cs.setServiceParent ( application )
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="048616.html">[Twisted-Python] Re: Collecting all results from a DeferredList
+</A></li>
+	<LI>Next message (by thread): <A HREF="048626.html">[Twisted-Python] stdio.StandardIO, ServerProtocol and Services.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48617">[ date ]</a>
+              <a href="thread.html#48617">[ thread ]</a>
+              <a href="subject.html#48617">[ subject ]</a>
+              <a href="author.html#48617">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

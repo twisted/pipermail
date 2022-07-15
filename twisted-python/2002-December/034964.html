@@ -1,0 +1,198 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] SNMP support
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20SNMP%20support&In-Reply-To=%3C20021223214602.GA20819%40mithrandr.moria.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="034960.html">
+   <LINK REL="Next"  HREF="002453.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] SNMP support</H1>
+    <B>Neil Blakey-Milner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20SNMP%20support&In-Reply-To=%3C20021223214602.GA20819%40mithrandr.moria.org%3E"
+       TITLE="[Twisted-Python] SNMP support">nbm at mithrandr.moria.org
+       </A><BR>
+    <I>Mon Dec 23 14:46:02 MST 2002</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="034960.html">[Twisted-Python] SNMP support
+</A></li>
+        <LI>Next message (by thread): <A HREF="002453.html">[Twisted-Python] ReconnectingClientFactory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#34964">[ date ]</a>
+              <a href="thread.html#34964">[ thread ]</a>
+              <a href="subject.html#34964">[ subject ]</a>
+              <a href="author.html#34964">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon 2002-12-23 (17:26), Neil Blakey-Milner wrote:
+&gt;<i> Anyway, I'd like to know how people would like this reworked, especially
+</I>&gt;<i> if they can tell me how to think about it in a more twisted and/or
+</I>&gt;<i> pythonic way.
+</I>
+Thanks to Itamar and Moshez for comments.  Updated to 1.0.1 udp (much
+nicer), and added multiple oid queries.
+
+I don't like the way things fail when they do.  If the host does not
+exist in DNS, I get:
+exceptions.AttributeError: 'NoneType' object has no attribute 'getHost'
+because the transport doesn't exist if the DNS fails.
+
+If the server is not running SNMP, I get:
+socket.error: (61, 'Connection refused')
+from udp.Port.doRead(), since it excepts to calling log.deferr.  My
+requests do subsequently timeout, though, but I can't remove them from
+my queries list.
+
+Am I doing anything wrong? I just copied the general idea from the DNS
+code again.
+
+I also wonder whether I should be setting a timeout within the &quot;boss&quot;,
+even a configurable one.  Would it be better to leave it to the user as
+to whether to wait, or assume a default if they don't pass a timeout to
+the query and/or &quot;boss&quot;?
+
+Thanks again,
+
+Neil
+-- 
+Neil Blakey-Milner
+<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at mithrandr.moria.org</A>
+-------------- next part --------------
+#!/usr/local/bin/python
+#
+# Copyright (c) 2002 Neil Blakey-Milner
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+#
+
+from twisted.internet import defer, protocol, reactor, udp
+
+from pysnmp.proto import v1, v2c
+
+class SNMPv1Boss:
+    def __init__(self, server, port = 161, community = &quot;public&quot;):
+        self.snmp = v1
+        self.community = community
+
+        self.queries = {}
+        self.server = server
+        self.port = port
+
+    def gotResponse(self, peerinfo, data):
+        if self.queries.has_key(peerinfo):
+            (snmp, deferred) = self.queries[peerinfo]
+            rsp = snmp.GetResponse()
+            rsp.decode(data)
+            deferred.callback(rsp)
+            del self.queries[peerinfo]
+
+    def makeRequest(self, oids):
+        d = defer.Deferred()
+        req = SNMPRequest()
+        req.boss = self
+        reactor.connectUDP(self.server, self.port, req)
+        req.id = req.transport.getHost()
+        self.queries[req.id] = (self.snmp, d)
+        req.query(self.snmp, self.community, oids)
+        d.setTimeout(5)
+        return d
+
+class SNMPv2Boss(SNMPv1Boss):
+    def __init__(self, server, port = 161, community = &quot;public&quot;):
+        SNMPv1Boss.__init__(self, server, port, community)
+        self.snmp = v2c
+
+class SNMPRequest(protocol.ConnectedDatagramProtocol):
+    def query(self, snmp, community, oids):
+        self.snmp = snmp
+        self.req = snmp.GetRequest()
+        self.req['community'].set(community)
+        self.req['pdu']['get_request']['variable_bindings'].extend(map(lambda x: snmp.VarBind(name=snmp.ObjectName(x)), oids))
+        self.transport.write(self.req.encode())
+
+    def datagramReceived(self, answer):
+        self.boss.gotResponse(self.id, answer)
+        self.transport.loseConnection()
+
+def success(rsp):
+    oids = map(lambda x: x['name'].get(), \
+        rsp['pdu'].values()[0]['variable_bindings'])
+    vals = map(lambda x: x['value'], \
+        rsp['pdu'].values()[0]['variable_bindings'])
+    # Print out results
+    for (oid, val) in map(None, oids, vals):
+        print oid, ' ---&gt; ', val.values()[0]
+
+def failed(reason):
+    print reason
+
+def makeQuery(boss):
+    d = boss.makeRequest([&quot;1.3.6.1.2.1.2.2.1.10.2&quot;])
+    d2 = boss.makeRequest([&quot;1.3.6.1.2.1.2.2.1.10.3&quot;])
+    d.addCallbacks(success, failed)
+    d2.addCallbacks(success, failed)
+    d3 = boss.makeRequest([&quot;1.3.6.1.2.1.2.2.1.10.2&quot;, &quot;1.3.6.1.2.1.2.2.1.10.3&quot;])
+    d3.addCallbacks(success, failed)
+    reactor.callLater(5, makeQuery, (boss))
+
+def main():
+    boss = SNMPv2Boss(&quot;archive&quot;, 161)
+    reactor.callLater(1, makeQuery, (boss))
+    reactor.run()
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="034960.html">[Twisted-Python] SNMP support
+</A></li>
+	<LI>Next message (by thread): <A HREF="002453.html">[Twisted-Python] ReconnectingClientFactory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#34964">[ date ]</a>
+              <a href="thread.html#34964">[ thread ]</a>
+              <a href="subject.html#34964">[ subject ]</a>
+              <a href="author.html#34964">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

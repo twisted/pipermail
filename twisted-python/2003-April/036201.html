@@ -1,0 +1,163 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] newbie -- trying to do async ldap operations
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20newbie%20--%20trying%20to%20do%20async%20ldap%20operations&In-Reply-To=%3C20030423005154.GA31760%40meson.dyndns.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="036217.html">
+   <LINK REL="Next"  HREF="036203.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] newbie -- trying to do async ldap operations</H1>
+    <B>Jp Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20newbie%20--%20trying%20to%20do%20async%20ldap%20operations&In-Reply-To=%3C20030423005154.GA31760%40meson.dyndns.org%3E"
+       TITLE="[Twisted-Python] newbie -- trying to do async ldap operations">exarkun at intarweb.us
+       </A><BR>
+    <I>Tue Apr 22 18:51:54 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="036217.html">[Twisted-Python] newbie -- trying to do async ldap operations
+</A></li>
+        <LI>Next message (by thread): <A HREF="036203.html">[Twisted-Python] newbie -- trying to do async ldap operations
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36201">[ date ]</a>
+              <a href="thread.html#36201">[ thread ]</a>
+              <a href="subject.html#36201">[ subject ]</a>
+              <a href="author.html#36201">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Tue, Apr 22, 2003 at 06:19:28PM -0500, Allan Streib wrote:
+&gt;<i> First to set my perspective -- I never heard of Twisted before two days
+</I>&gt;<i> ago.
+</I>&gt;<i> 
+</I>&gt;<i> I have an XMLRPC server built with the Medusa framework.  I am looking at
+</I>&gt;<i> moving the methods to Twisted in order to take advantage of Deferreds, SSL
+</I>&gt;<i> support, and based on my brief exposure, the overall framework seems
+</I>&gt;<i> cleaner.
+</I>&gt;<i> 
+</I>&gt;<i> This is a simplification, but to keep this short I have an XMLRPC method
+</I>&gt;<i> that returns results from an LDAP search.  Currently the searches are
+</I>&gt;<i> synchronous but they are fast enough that it has not been a problem.  Now
+</I>&gt;<i> I need to expand the search filter options which will (could) result in a
+</I>&gt;<i> slower search.
+</I>&gt;<i> 
+</I>&gt;<i> The OpenLDAP API (and python-ldap) supports asynchronus searching.  Sounds
+</I>&gt;<i> perfect.  A call to ldap.search_s() returns a message ID which is later
+</I>&gt;<i> used in a call to result() to get the results.  ldap.result() takes the
+</I>&gt;<i> message ID, and a timeout argument which if zero is in effect a poll.
+</I>&gt;<i> 
+</I>&gt;<i> So what I want is for my XMLRPC method to invoke search_s and get the
+</I>&gt;<i> message ID.  Then create a defered and provide its callback and the
+</I>&gt;<i> message ID to something that will poll ldap.result() until it returns
+</I>&gt;<i> results (if results are not ready it will return [None, None]) and then
+</I>&gt;<i> pass those to the callback.  Here's where I get confused; I think the call
+</I>&gt;<i> to ldap.result() needs to be done by reactor somehow since ldap.result()
+</I>&gt;<i> may need to be called repeatedly before results are ready) but I'm not
+</I>&gt;<i> sure.
+</I>&gt;<i> 
+</I>&gt;<i> The whole deferred light bulb has not quite come on for me yet, so I
+</I>&gt;<i> appreciate any guidance.  The defer HOWTO examples all use something like
+</I>&gt;<i> reactor.callLater() to represent a &quot;delayed result&quot; which is not really
+</I>&gt;<i> helping me.  The XMLRPC example of returning a defered just returns
+</I>&gt;<i> defer.succeed(&quot;hello&quot;), again not quite a rich enough example.
+</I>&gt;<i> 
+</I>&gt;<i> I thought about adapting the adbapi stuff for LDAP, but the notion is in
+</I>&gt;<i> my head that I should be able to do this without threads since the ldap
+</I>&gt;<i> API supports async operations.
+</I>&gt;<i> 
+</I>
+  Here's something that might help (note that I am not familiar with the
+python-ldap API, so I'm just guessing at how it is laidd out):
+
+    from twisted.internet import reactor, defer
+
+    class LDAPQueryTracker:
+        def __init__(self):
+            self._ids = {}
+
+        # Wrapper around python-ldap's search function
+        # returns a Deferred whose callback will be invoked
+        # with the result
+        def search(self, args):
+            id = ldap.search_s(args)
+            self._ids[id] = defer.Deferred()
+            reactor.callLater(0, self.poll)
+            return self._ids[id]
+
+        # A method to poll any &quot;live&quot; queries,
+        # and to schedule another poll if there are any
+        # remaining outstanding queries
+        def poll(self):
+            for (id, d) in self._ids.items():
+                r = ldap.result(id, timeout=0):
+                if r is not None:
+                    del self._ids[id]
+                    d.callback(r)
+            if self._ids:
+                reactor.callLater(0, self.poll)
+
+    # Two trivial callbacks to handle the result
+    def printResult(result):
+        print 'LDAP result:', result
+    def printFailure(failure):
+        print 'LDAP failed!'
+        failure.printTraceback()
+
+    # Make a tracker, perform a query, and add some callbacks
+    qt = LDAPQueryTracker()
+    d = qt.search(&quot;humm, I have no idea what an ldap query looks like&quot;)
+    d.addCallbacks(printResult, printFailure)
+
+    # Do it.
+    reactor.run()
+
+
+  Hope this helps,
+
+  Jp
+
+-- 
+&quot;If you find a neighbor in need, you're responsible for serving that
+neighbor in need, you're responsible for loving a neighbor just like you'd
+like to love yourself.&quot; -- George W. Bush, Sept. 16, 2002
+-- 
+ up 33 days, 21:03, 5 users, load average: 2.01, 1.90, 1.90
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: not available
+URL: &lt;/pipermail/twisted-python/attachments/20030422/f76cf7e1/attachment.sig&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="036217.html">[Twisted-Python] newbie -- trying to do async ldap operations
+</A></li>
+	<LI>Next message (by thread): <A HREF="036203.html">[Twisted-Python] newbie -- trying to do async ldap operations
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36201">[ date ]</a>
+              <a href="thread.html#36201">[ thread ]</a>
+              <a href="subject.html#36201">[ subject ]</a>
+              <a href="author.html#36201">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

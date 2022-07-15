@@ -1,0 +1,155 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Error (and response) handling in protocols
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Error%20%28and%20response%29%20handling%20in%20protocols&In-Reply-To=%3CAANLkTim6fdrx87zPwUO0ou__vGqXErbZzG1hR1F-r5Qy%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="056061.html">
+   <LINK REL="Next"  HREF="056064.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Error (and response) handling in protocols</H1>
+    <B>Jason Heeris</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Error%20%28and%20response%29%20handling%20in%20protocols&In-Reply-To=%3CAANLkTim6fdrx87zPwUO0ou__vGqXErbZzG1hR1F-r5Qy%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Error (and response) handling in protocols">jason.heeris at gmail.com
+       </A><BR>
+    <I>Sun Feb 20 23:26:45 MST 2011</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="056061.html">[Twisted-Python] ANN: MV3D 0.50 released!
+</A></li>
+        <LI>Next message (by thread): <A HREF="056064.html">[Twisted-Python] Error (and response) handling in protocols
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56063">[ date ]</a>
+              <a href="thread.html#56063">[ thread ]</a>
+              <a href="subject.html#56063">[ subject ]</a>
+              <a href="author.html#56063">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I'm still a little confused about exactly how to deal with errors and
+responses using protocols and factories. I think a lot of my
+misunderstanding stems from the fact that I'm using serial (and
+inter-process) communications, both of which Twisted treats rather
+differently from TCP based connections — and all of the documentation
+is TCP-centric.
+
+Anyway, say I have a serial device that I send a single-line command
+to, and expect a certain format of response. There are about a hundred
+possible commands, but they all follow the same pattern, so I have a
+CommandProtocol (some details omitted):
+
+    class CommandProtocol(LineOnlyReceiver, TimeoutMixin):
+
+        # For LineOnlyReceiver
+        MAX_LENGTH = 20
+
+        def parseReply(self, line):
+            if line[0:4] != self.command:
+                raise CommandReplyError(self.command, self.line)
+
+            # Parse rest of response
+            return reply
+
+        def lineReceived(self, line):
+            self.setTimeout(None)
+            try:
+                reply = self.parseReply(line)
+            except:
+                # ...?
+            else:
+                self.factory.commandCompleted(reply)
+                # ...maybe?
+            finally:
+                self.loseConnection()
+
+        def connectionMade(self):
+            self.sendLine(self.construct_message())
+            self.setTimeout(self.DEFAULT_TIMEOUT)
+
+So I can then write a factory with a buildProtocol method that takes
+an object with the command string, sets the appropriate attributes on
+the protocol, and returns that for use with the SerialPort transport.
+
+Peticolas' tutorial[1] shows the protocol calling a factory method
+when the correct data is received. I understand that part fine. But as
+far as I can tell, all the error handling relies on the
+ClientFactory's clientConnectionFailed method — and I have no idea
+when or how this is triggered. I *am* under the impression that it
+won't ever be triggered on a SerialTransport, though, which means it
+won't work for me.
+
+[1] <A HREF="https://github.com/jdavisp3/twisted-intro/blob/master/twisted-client-8/get-poetry.py#L64">https://github.com/jdavisp3/twisted-intro/blob/master/twisted-client-8/get-poetry.py#L64</A>
+
+What should my protocol do if there's an error? I notice that
+protocols like LineReceiver and NetstringReceiver just silently ignore
+such problems and let whatever handles connection failures sort it
+out; but again, this won't work for a serial transport. Even
+explicitly calling &quot;loseConnection&quot; won't trigger a subsequent
+&quot;connectionLost&quot; call.
+
+So how should I handle reply parsing errors, timeouts,
+LineReceiver-internal errors (eg. a too-long line) and whatever else
+might happen?
+
+One approach I considered was for my factory to pass my protocol a
+deferred. The factory would chain another deferred to this one which
+it could return to the caller. The protocol could then callback or
+errback *it's* deferred with a result or error. I know how to
+implement this, but I see that none of the protocols in Twisted (or
+any of the examples, or the tutorials) do anything like this — it's
+all just assembly and disassembly of the data and a call to a factory
+method. This makes me think that I'm doing it wrong. There's also the
+fact that protocol errors will be handled inconsistently: errors in
+*my* parsing methods will show up to callers of the factory methods,
+but errors in Twisted's parsing will pass silently.
+
+Another thing I could do is to have something like:
+
+    def lineReceived(self, line):
+        try:
+            reply = self.parseReply(line)
+        except:
+            self.factory.commandFailed(failure.Failure())
+        # ...other stuff from above
+
+But again, this is inconsistent, and I've not seen anything else in
+Twisted doing it this way.
+
+So how I do I deal with protocol errors in a connectionless protocol?
+
+Cheers,
+Jason
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="056061.html">[Twisted-Python] ANN: MV3D 0.50 released!
+</A></li>
+	<LI>Next message (by thread): <A HREF="056064.html">[Twisted-Python] Error (and response) handling in protocols
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56063">[ date ]</a>
+              <a href="thread.html#56063">[ thread ]</a>
+              <a href="subject.html#56063">[ subject ]</a>
+              <a href="author.html#56063">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

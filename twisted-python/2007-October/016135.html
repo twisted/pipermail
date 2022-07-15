@@ -1,0 +1,353 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Running commands (ssh) from a GUI client
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Running%20commands%20%28ssh%29%20from%20a%20GUI%20client&In-Reply-To=684b0a740710071104k54a47a79se4070a0f58334f8b%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="016133.html">
+   <LINK REL="Next"  HREF="016136.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Running commands (ssh) from a GUI client</H1>
+    <B>Paul_S_Johnson at mnb.uscourts.gov</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Running%20commands%20%28ssh%29%20from%20a%20GUI%20client&In-Reply-To=684b0a740710071104k54a47a79se4070a0f58334f8b%40mail.gmail.com"
+       TITLE="[Twisted-Python] Running commands (ssh) from a GUI client">Paul_S_Johnson at mnb.uscourts.gov
+       </A><BR>
+    <I>Tue Oct  9 13:39:38 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="016133.html">[Twisted-Python] Running commands (ssh) from a GUI client
+</A></li>
+        <LI>Next message: <A HREF="016136.html">[Twisted-Python] Running commands (ssh) from a GUI client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16135">[ date ]</a>
+              <a href="thread.html#16135">[ thread ]</a>
+              <a href="subject.html#16135">[ subject ]</a>
+              <a href="author.html#16135">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Raul,
+
+This is simply some work-in-progress code, but is basically what you are 
+looking for even written for PythonCard. This takes a list of three 
+commands and runs them in the order given using deferreds to wait for the 
+previous to complete before executing the next.
+
+This took me about forever to get it this far. If you make and significant 
+improvements, please share.
+
+One remaining mystery is how to switch users once logged in. For example, 
+I need to run some things as root.
+
+Paul
+
+============================================
+from twisted.conch import error
+from twisted.conch.ssh import transport, connection, keys, userauth, 
+channel, common
+from twisted.internet import defer, protocol, reactor
+import sys, getpass, os, string
+
+from PythonCard import model, twistedModel
+
+
+class ClientCommandTransport(transport.SSHClientTransport):
+    def __init__(self, username, password, cmds, caller):
+        self.username = username
+        self.password = password
+        self.cmds = cmds
+        self.caller = caller
+ 
+    def verifyHostKey(self, pubKey, fingerprint):
+        # in a real app, you should verify that the fingerprint matches
+        # the one you expected to get from this server
+        return defer.succeed(True)
+
+    def connectionSecure(self):
+        self.requestService(PasswordAuth(self.username, self.password, 
+ClientConnection(self.cmds, self.caller)))
+
+class PasswordAuth(userauth.SSHUserAuthClient):
+    def __init__(self, user, password, connection):
+        userauth.SSHUserAuthClient.__init__(self, user, connection)
+        self.password = password
+ 
+    def getPassword(self, prompt=None):
+        return defer.succeed(self.password)
+
+class ClientConnection(connection.SSHConnection):
+    def __init__(self, cmds, caller, *args, **kwargs):
+        connection.SSHConnection.__init__(self)
+        self.cmds = cmds
+        self.caller = caller
+
+    #======================
+    def serviceStarted(self):
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbFirst)
+        self.d.addErrback(self._ebFirst)
+        self.openChannel(CommandChannel(self.cmds[0], lastcmd=0, 
+conn=self))
+
+    def _cbFirst(self, result):
+        print 'CALLBACK Result 1:', result
+        self.caller.responses.append(result.rstrip())
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbSecond)
+        self.d.addErrback(self._ebSecond)
+        self.openChannel(CommandChannel(self.cmds[1], lastcmd=0, 
+conn=self))
+
+    def _ebFirst(self, f):
+        self.caller.responses.append(None)
+        print &quot;Error 1&quot;
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbSecond)
+        self.d.addErrback(self._ebSecond)
+        self.openChannel(CommandChannel(self.cmds[1], lastcmd=0, 
+conn=self))
+        #log.err()
+
+    def _cbSecond(self, result):
+        print 'CALLBACK Result 2:', result
+        self.caller.responses.append(result.rstrip())
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbThird)
+        self.d.addErrback(self._ebThird)
+        self.openChannel(CommandChannel(self.cmds[2], lastcmd=1, 
+conn=self))
+
+    def _ebSecond(self, f):
+        self.caller.responses.append(None)
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbThird)
+        self.d.addErrback(self._ebThird)
+        self.openChannel(CommandChannel(self.cmds[2], lastcmd=1, 
+conn=self))
+        #log.err()
+
+    def _cbThird(self, result):
+        self.caller.responses.append(result.rstrip())
+        print 'CALLBACK Result 3:', result
+        #reactor.stop()
+
+    def _ebThird(self, f):
+        self.caller.responses.append(None)
+        log.err()
+        #reactor.stop()
+    #======================
+
+class CommandChannel(channel.SSHChannel):
+    name = 'session'
+ 
+    def __init__(self, command, lastcmd, *args, **kwargs):
+        channel.SSHChannel.__init__(self, *args, **kwargs)
+        self.command = command
+        self.lastcmd = lastcmd
+        self.data = &quot;&quot;
+
+    def channelOpen(self, data):
+        self.conn.sendRequest(self, 'exec', common.NS(self.command), 
+wantReply=True).addCallback(self._gotResponse)
+
+    def _gotResponse(self, _):
+        #print &quot;RESPONSE&quot;
+        self.conn.sendEOF(self)
+
+    def dataReceived(self, data):
+        #print &quot;Data Received:&quot;, data
+        self.data += data
+
+    def closed(self):
+        self.conn.d.callback(self.data)
+        self.loseConnection()
+        ##        if self.lastcmd:
+        ##            print &quot;closing reactor.&quot;
+        ##            reactor.stop()
+
+class ClientCommandFactory(protocol.ClientFactory):
+    def __init__(self, username, password, cmds, caller):
+        self.username = username
+        self.password = password
+        self.cmds = cmds
+        self.caller = caller
+
+    def buildProtocol(self, addr):
+        protocol = ClientCommandTransport(self.username, self.password, 
+self.cmds, self.caller)
+        return protocol
+
+ 
+class SSH():
+    &quot;&quot;&quot; Contains a SSH connection, runs commands, and stores results. &quot;&quot;&quot;
+    def __init__(self, host, username, password, cmds):
+        self.host = host
+        self.username = username
+        self.password = password
+        self.cmds = cmds
+        self.responses = []
+        self.run_commands()
+
+    def run_commands(self):
+        factory = ClientCommandFactory(self.username, self.password, 
+self.cmds, self)
+        reactor.connectTCP(self.host, 22, factory)
+        #reactor.registerWxApp(app)
+        #reactor.run()
+
+
+
+#from PythonCard import model
+
+class Dashboard(model.Background):
+
+    def on_initialize(self, event):
+        self.responses = []
+ 
+    def on_btSend_mouseClick(self, event):
+        print &quot;Hello World!&quot;
+        self.run_commands(&quot;myhost&quot;, &quot;myusername&quot;, &quot;mypassword&quot;, [&quot;id&quot;, 
+&quot;pwd&quot;, &quot;ls -l&quot;])
+        #for i, response in enumerate(self.ssh.responses):
+        #    print i, response
+        #    print &quot;=&quot; * 25
+
+    def on_btCheck_mouseClick(self, event):
+        &quot;&quot;&quot; Check it out! &quot;&quot;&quot;
+        for i, response in enumerate(self.responses):
+            print i, response
+            print &quot;=&quot; * 25
+        print &quot;Done.&quot;
+ 
+    &quot;&quot;&quot; Contains a SSH connection, runs commands, and stores results. &quot;&quot;&quot;
+    #def __init__(self, host, username, password, cmds):
+
+    def run_commands(self, host, username, password, cmds):
+        self.host = host
+        self.username = username
+        self.password = password
+        self.cmds = cmds
+        self.responses = []
+ 
+
+        self.factory = ClientCommandFactory(self.username, self.password, 
+self.cmds, self)
+        reactor.connectTCP(self.host, 22, self.factory)
+        #reactor.run()
+        for i, response in enumerate(self.responses):
+            print i, response
+            print &quot;=&quot; * 25
+
+#print &quot;\nDone.&quot;
+
+if __name__ == '__main__':
+    app = twistedModel.TwistedApplication(Dashboard)
+    app.MainLoop()
+
+
+Here's the PythonCard resource file:
+
+{'application':{'type':'Application',
+          'name':'Minimal',
+    'backgrounds': [
+    {'type':'Background',
+          'name':'bgMin',
+          'title':'Minimal PythonCard Application',
+          'size':(382, 271),
+
+        'menubar': {'type':'MenuBar',
+         'menus': [
+             {'type':'Menu',
+             'name':'menuFile',
+             'label':'&amp;File',
+             'items': [
+                  {'type':'MenuItem',
+                   'name':'menuFileExit',
+                   'label':'E&amp;xit\tAlt+X',
+                   'command':'exit',
+                  },
+              ]
+             },
+         ]
+     },
+         'components': [
+
+{'type':'Button', 
+    'name':'btCheck', 
+    'position':(210, 186), 
+    'label':u'Check', 
+    },
+
+{'type':'Button', 
+    'name':'btSend', 
+    'position':(102, 185), 
+    'label':u'Send', 
+    },
+
+{'type':'CodeEditor', 
+    'name':'ceReponse', 
+    'position':(6, 33), 
+    'size':(360, 141), 
+    'backgroundColor':(255, 255, 255, 255), 
+    },
+
+{'type':'TextField', 
+    'name':'field1', 
+    'position':(5, 5), 
+    'size':(150, -1), 
+    'text':u'Hello PythonCard', 
+    },
+
+] # end components
+} # end background
+] # end backgrounds
+} }
+
+
+<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A> wrote on 10/07/2007 01:04:56 PM:
+
+&gt;<i> Hi list, this is my first post :p
+</I>&gt;<i> 
+</I>&gt;<i> I'm new to Twisted/Conch and I was wondering how can I modify the 
+</I>&gt;<i> sshsimpleclient.py in order to run several commands, on a user 
+</I>&gt;<i> request mode, without the need to authenticate just before every 
+</I>&gt;<i> command, just like a normal interactive ssh session. This is for a 
+</I>&gt;<i> GUI front end I'm writing (PythonCard) that will execute some 
+</I>&gt;<i> benchmarks on a remote server. 
+</I>&gt;<i> 
+</I>&gt;<i> Thanks in advance...
+</I>&gt;<i> 
+</I>&gt;<i> Raul_______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20071009/8fea0ee3/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20071009/8fea0ee3/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="016133.html">[Twisted-Python] Running commands (ssh) from a GUI client
+</A></li>
+	<LI>Next message: <A HREF="016136.html">[Twisted-Python] Running commands (ssh) from a GUI client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16135">[ date ]</a>
+              <a href="thread.html#16135">[ thread ]</a>
+              <a href="subject.html#16135">[ subject ]</a>
+              <a href="author.html#16135">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

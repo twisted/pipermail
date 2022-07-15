@@ -1,0 +1,175 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] sharing a dict between child processes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20sharing%20a%20dict%20between%20child%20processes&In-Reply-To=%3C21852660.zPVIgxvv2X%40barry-scott-desktop%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="032494.html">
+   <LINK REL="Next"  HREF="032496.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] sharing a dict between child processes</H1>
+    <B>Scott, Barry</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20sharing%20a%20dict%20between%20child%20processes&In-Reply-To=%3C21852660.zPVIgxvv2X%40barry-scott-desktop%3E"
+       TITLE="[Twisted-Python] sharing a dict between child processes">barry.scott at forcepoint.com
+       </A><BR>
+    <I>Wed Nov  6 10:07:17 MST 2019</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="032494.html">[Twisted-Python] sharing a dict between child processes
+</A></li>
+        <LI>Next message (by thread): <A HREF="032496.html">[Twisted-Python] sharing a dict between child processes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#32495">[ date ]</a>
+              <a href="thread.html#32495">[ thread ]</a>
+              <a href="subject.html#32495">[ subject ]</a>
+              <a href="author.html#32495">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wednesday, 6 November 2019 16:43:52 GMT Waqar Khan wrote:
+&gt;<i> Hi Barry,
+</I>&gt;<i>         Thanks for the response. Where can I read more about (1). It seems
+</I>&gt;<i> like that is something I need to explore.
+</I>&gt;<i> As we already have (2) (cache for each process).
+</I>&gt;<i> Thanks again for your help.
+</I>
+We use the UDS (Unix domain sockets) to talk to a master process.
+Twisted has support for this. But you need a small patch to avoid data lose.
+
+UDS does not lose data and is message based, not bytes based. We
+use pickle to encode requests and responses.
+
+Barry
+
+The patch is:
+
+--- Twisted-18.4.0.orig/src/twisted/internet/unix.py.orig       2018-08-01 
+12:45:38.711115425 +0100
++++ Twisted-18.4.0/src/twisted/internet/unix.py 2018-08-01 12:45:47.946115123 
++0100
+@@ -509,11 +509,6 @@
+                 return self.write(datagram, address)
+             elif no == EMSGSIZE:
+                 raise error.MessageLengthError(&quot;message too long&quot;)
+-            elif no == EAGAIN:
+-                # oh, well, drop the data. The only difference from UDP
+-                # is that UDP won't ever notice.
+-                # TODO: add TCP-like buffering
+-                pass
+             else:
+                 raise
+
+You then have to handle the EAGAIN error and do retries yourself.
+As it stands the patch is not good enough to put into twisted as a
+full fix would need to put the handling of the retries into twisted.
+
+I guess (2) does not work for you as the cache hit rate is low
+and you need to share the cache to get a benefit. Cache entries
+only get used a few times?
+
+In our case the hit rate is high (99%+) and we just pay the cost of
+populating the caches on process start up, which ends up being
+noise.
+
+Barry
+
+&gt;<i> 
+</I>&gt;<i> On Wed, Nov 6, 2019 at 8:39 AM Scott, Barry &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">barry.scott at forcepoint.com</A>&gt;
+</I>&gt;<i> 
+</I>&gt;<i> wrote:
+</I>&gt;<i> &gt; On Wednesday, 6 November 2019 14:21:22 GMT Maarten ter Huurne wrote:
+</I>&gt;<i> &gt; &gt; On Wednesday, 6 November 2019 07:19:56 CET Waqar Khan wrote:
+</I>&gt;<i> &gt; &gt; &gt; Hi,
+</I>&gt;<i> &gt; &gt; &gt; So, I am writing a twisted server. This server spawn multiple child
+</I>&gt;<i> &gt; &gt; &gt; processes using reactor spawnProcess that initializes a process
+</I>&gt;<i> &gt; &gt; &gt; protocol.
+</I>&gt;<i> &gt; &gt; &gt; 
+</I>&gt;<i> &gt; &gt; &gt; Now, each of the childprocess receives some REST requests. Each
+</I>&gt;<i> &gt; &gt; &gt; process has a dict that acts as cache.
+</I>&gt;<i> &gt; &gt; &gt; Now, I want to share dict across processes.
+</I>&gt;<i> &gt; &gt; &gt; In general, python has SharedMemoryManager in multiprocessing module
+</I>&gt;<i> &gt; &gt; &gt; which would have helped.
+</I>&gt;<i> &gt; &gt; &gt; <A HREF="https://docs.python.org/3/library/multiprocessing.shared_memory.html#m">https://docs.python.org/3/library/multiprocessing.shared_memory.html#m</A>
+</I>&gt;<i> &gt; &gt; &gt; ultiprocessing.managers.SharedMemoryManager.SharedMemory But since I
+</I>&gt;<i> &gt; &gt; &gt; am using twisted internal process implementation, how do I share this
+</I>&gt;<i> &gt; &gt; &gt; dict across the processes so that all the processes use this common
+</I>&gt;<i> &gt; &gt; &gt; cache?
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt; Keeping a dictionary in SharedMemoryManager seems far from trivial. I
+</I>&gt;<i> &gt; &gt; don't think you can allocate arbitrary Python objects in the shared
+</I>&gt;<i> &gt; &gt; memory and even if you could, you would run into problems when one
+</I>&gt;<i> &gt; &gt; process mutates the dictionary while another is looking up something or
+</I>&gt;<i> &gt; &gt; also mutating it.
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt; It could in theory work if you implement a custom lock-less dictionary,
+</I>&gt;<i> &gt; &gt; but that would be a lot of work and hard to get right. Also having
+</I>&gt;<i> &gt; &gt; shared memory mutations be synced between multiple CPU cores could
+</I>&gt;<i> &gt; &gt; degrade performance, since keeping core-local CPU caches in sync is
+</I>&gt;<i> &gt; &gt; expensive.
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt; Would it be an option to have only one process accept the REST requests,
+</I>&gt;<i> &gt; &gt; check whether the result is in the cache and only distribute work to the
+</I>&gt;<i> &gt; &gt; other processes if you get a cache miss? Typically the case where an
+</I>&gt;<i> &gt; &gt; answer is cached is pretty fast, so perhaps you don't need multiple
+</I>&gt;<i> &gt; &gt; processes to handle incoming requests.
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt; We have used a couple of ways to cache.
+</I>&gt;<i> &gt; 1. Use a singleton process to hold the cache and ask it, via IPC, for
+</I>&gt;<i> &gt; answers
+</I>&gt;<i> &gt; from the other process.
+</I>&gt;<i> &gt; 2. have a cache in each process
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt; Barry
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt; &gt; Bye,
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt;               Maarten
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt; _______________________________________________
+</I>&gt;<i> &gt; &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt; &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt; &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt; _______________________________________________
+</I>&gt;<i> &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="032494.html">[Twisted-Python] sharing a dict between child processes
+</A></li>
+	<LI>Next message (by thread): <A HREF="032496.html">[Twisted-Python] sharing a dict between child processes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#32495">[ date ]</a>
+              <a href="thread.html#32495">[ thread ]</a>
+              <a href="subject.html#32495">[ subject ]</a>
+              <a href="author.html#32495">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

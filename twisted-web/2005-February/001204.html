@@ -1,0 +1,511 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] caching branch
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20caching%20branch&In-Reply-To=20050218053735.GV2071%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001203.html">
+   <LINK REL="Next"  HREF="001205.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] caching branch</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20caching%20branch&In-Reply-To=20050218053735.GV2071%40opteron.random"
+       TITLE="[Twisted-web] caching branch">andrea at cpushare.com
+       </A><BR>
+    <I>Thu Feb 17 23:31:51 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001203.html">[Twisted-web] caching branch
+</A></li>
+        <LI>Next message: <A HREF="001205.html">[Twisted-web] caching branch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1204">[ date ]</a>
+              <a href="thread.html#1204">[ thread ]</a>
+              <a href="subject.html#1204">[ subject ]</a>
+              <a href="author.html#1204">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, Feb 18, 2005 at 06:37:35AM +0100, Andrea Arcangeli wrote:
+&gt;<i> I'll post an updated patch suitable for merging with the
+</I>&gt;<i> high-performance code as soon as I finish to port it and test it.
+</I>
+here we go, I improved it even further, now it handles 225-230req/sec vs
+180req/sec with still full html caching with the cleaner but
+significantly slower ICache adapter. I found that not doing any deferred
+stuff at all, even if it risks to call multiple rendering paysoff
+measurably since the fast path won't have to execute a number of checks.
+I doubt it can get any faster than 230req/sec without moving into
+twisted space. But 230 are more than enough ;), not comparable to the
+~5req/sec I get w/o caching.
+
+This below is the diff against the caching branch (and it should really
+be applied at least to the caching branch since there's no way the
+ICache on top of tags.cached like in current caching branch can reach
+the same performance I get with the below). Note the API is absolutely
+unchanged, I had not to change a line of my app after I ported it to the
+caching branch the first time. Don't get me wrong the ICache is nice,
+but the only point of the cache is to go _fast_, the nicer (and slower)
+stuff already happens during the real rendering. Still it's fine to use
+ICache in the tags.cached since tags.cached has somewhat lower
+performance priority and it remains a very significant optimization.
+
+--- Nevow/nevow/rend.py.~1~	2005-02-18 04:39:54.208615490 +0100
++++ Nevow/nevow/rend.py	2005-02-18 07:13:57.082073549 +0100
+@@ -30,6 +30,7 @@ from nevow import tags
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -375,6 +376,8 @@ class ChildLookupMixin(FreeformChildMixi
+         self.children[name] = child
+     
+ 
++_CACHE = {}
++
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+     via the document factory (docFactory).
+@@ -387,11 +390,38 @@ class Page(Fragment, ConfigurableFactory
+     beforeRender = None
+     afterRender = None
+     addSlash = None
++
+     cache = False
+     lifetime = -1
++    __lastCacheRendering = 0
+ 
+     flattenFactory = flat.flattenFactory
+ 
++    def hasCache(self, ctx):
++        if not self.cache:
++            return
++
++        _now = now() # run gettimeofday only once
++        timeout = _now &gt; self.__lastCacheRendering + self.lifetime and \
++                  self.lifetime &gt;= 0
++        c = self.lookupCache(ctx)
++        if timeout or c is None:
++            # stop other renders
++            self.__lastCacheRendering = _now
++            c = None
++        return c
++    def cacheRendered(self, ctx, c):
++        if not self.cache:
++            return
++        # overwrite the deferred with the data
++        self.storeCache(ctx, c)
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def storeCache(self, ctx, c):
++        _CACHE[self.cacheIDX(ctx)] = c
++    def lookupCache(self, ctx):
++        return _CACHE.get(self.cacheIDX(ctx))
++
+     def renderHTTP(self, ctx):
+         ## XXX request is really ctx now, change the name here
+         request = inevow.IRequest(ctx)
+@@ -413,11 +443,18 @@ class Page(Fragment, ConfigurableFactory
+             if self.afterRender is not None:
+                 self.afterRender(ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c is not None:
++            finishRequest()
++            return c
++
++        if self.buffered or self.cache:
+             io = StringIO()
+             writer = io.write
+-            def finisher(result):                
+-                request.write(io.getvalue())
++            def finisher(result):
++                c = io.getvalue()
++                self.cacheRendered(ctx, c)
++                request.write(c)
+                 finishRequest()
+                 return result
+         else:
+@@ -427,9 +464,6 @@ class Page(Fragment, ConfigurableFactory
+                 return result
+ 
+         doc = self.docFactory.load()
+-        if self.cache:
+-            name = url.URL.fromContext(ctx).path
+-            doc = tags.cached(name, self.lifetime)[doc]
+         ctx =  WovenContext(ctx, tags.invisible[doc])
+ 
+         return self.flattenFactory(doc, ctx, writer, finisher)
+@@ -504,7 +538,6 @@ class Page(Fragment, ConfigurableFactory
+             else:
+                 ## Use the redirectAfterPost url
+                 ref = str(redirectAfterPost)
+-            from nevow import url
+             refpath = url.URL.fromString(ref)
+             magicCookie = str(now())
+             refpath = refpath.replace('_nevow_carryover_', magicCookie)
+
+
+
+And this below is the patch of caching branch from dialtone + my above
+incremental patch that speedup the rend.Page caching without changing
+the API at all, all against trunk (i.e. the code that's going online in
+a few more minutes ;).
+
+Note that the original bugreport I sent in this thread is still
+unsolved, I've no idea why the current caching branch doesn't work in
+rend.Page, and I recommend dialtone to look into it, just in case the
+same bug can happen even while using tags.cached normally (and I use
+tags.cached normally too to cache some component).
+
+I think the below might be good enough for merging into trunk too.
+
+Index: Nevow/nevow/tags.py
+===================================================================
+--- Nevow/nevow/tags.py	(revision 1228)
++++ Nevow/nevow/tags.py	(working copy)
+@@ -25,7 +25,7 @@
+ &quot;&quot;&quot;
+ 
+ 
+-from nevow.stan import Proto, Tag, directive, raw, xml, CommentProto, invisible, slot, cdata
++from nevow.stan import Proto, Tag, directive, raw, xml, CommentProto, invisible, slot, cdata, cached
+ 
+ 
+ comment = CommentProto()
+@@ -62,7 +62,9 @@
+ def inlineJS(s):
+     return script(type=&quot;text/javascript&quot;, language=&quot;JavaScript&quot;)[xml('\n//&lt;![CDATA[\n%s\n//]]&gt;\n' % s)]
+ 
+-__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object', '_map', 'drange', 'Tag', 'directive', 'xml', 'raw', 'slot', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
++__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object',
++                  '_map', 'drange', 'Tag', 'directive', 'xml', 'raw',
++                  'slot', 'cached', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
+ 
+ 
+ ########################
+Index: Nevow/nevow/__init__.py
+===================================================================
+--- Nevow/nevow/__init__.py	(revision 1228)
++++ Nevow/nevow/__init__.py	(working copy)
+@@ -138,6 +138,8 @@
+ nevow.util.remainingSegmentsFactory  nevow.context.RequestContext   nevow.inevow.IRemainingSegments
+ nevow.util.currentSegmentsFactory  nevow.context.RequestContext   nevow.inevow.ICurrentSegments
+ 
++nevow.cache.SiteCache   nevow.context.SiteContext   nevow.inevow.ICache
++
+ nevow.query.QueryContext    nevow.context.WovenContext  nevow.inevow.IQ
+ nevow.query.QueryLoader     nevow.inevow.IDocFactory      nevow.inevow.IQ
+ nevow.query.QueryList       __builtin__.list        nevow.inevow.IQ
+@@ -186,6 +188,7 @@
+ nevow.flat.flatstan.RendererSerializer            nevow.inevow.IRenderer
+ nevow.flat.flatstan.DirectiveSerializer           nevow.stan.directive
+ nevow.flat.flatstan.SlotSerializer                nevow.stan.slot
++nevow.flat.flatstan.CachedSerializer              nevow.stan.cached 
+ nevow.flat.flatstan.ContextSerializer             nevow.context.WovenContext
+ nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.Deferred
+ nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.DeferredList
+Index: Nevow/nevow/flat/flatstan.py
+===================================================================
+--- Nevow/nevow/flat/flatstan.py	(revision 1228)
++++ Nevow/nevow/flat/flatstan.py	(working copy)
+@@ -8,11 +8,15 @@
+ 
+ from nevow import util
+ from nevow.stan import Proto, Tag, xml, directive, Unset, invisible
+-from nevow.inevow import IRenderer, IRendererFactory, IGettable, IData
+-from nevow.flat import precompile, serialize
++from nevow.inevow import IRenderer, IRendererFactory, IGettable, IData, ICache
++from nevow.flat import precompile, serialize, iterflatten
+ from nevow.accessors import convertToData
+ from nevow.context import WovenContext
+ 
++from time import time as now
++from cStringIO import StringIO
++from twisted.internet import defer
++
+ allowSingleton = ('img', 'br', 'hr', 'base', 'meta', 'link', 'param', 'area',
+                   'input', 'col', 'basefont', 'isindex', 'frame')
+ 
+@@ -226,6 +230,43 @@
+         return serialize(original.default, context)
+     return serialize(data, context)
+ 
++def CachedSerializer(original, context):
++    cache = ICache(original.scope(context))
++    cached = cache.get(original.key, original.lifetime)
++    if cached:
++        yield cached
++        return
++    io = StringIO()
++    for child in iterflatten(original.children, context, io.write,
++                             lambda item: True):
++        if isinstance(child, tuple):
++            childDeferred, childReturner = child
++ 
++            d = defer.Deferred() ## A new deferred for the outer loop, whose result
++            ## we don't care about, because we don't want the outer loop to write
++            ## anything when this deferred fires -- only when the entire for loop
++            ## has completed and we have all the &quot;children&quot; flattened
++ 
++            def innerDeferredResultAvailable(result):
++                childReturner(result) ## Cause the inner iterflatten to continue
++                d.callback('') ## Cause the outer iterflatten to continue
++                return ''
++ 
++            childDeferred.addCallback(innerDeferredResultAvailable)
++ 
++            ## Make the outer loop wait on our new deferred.
++            ## We call the new deferred back with ''
++            ## Which will cause the outer loop to write '' to the request,
++            ## which doesn't matter. It will then call our &quot;returner&quot;,
++            ## which is just the noop lambda below, because we don't care
++            ## about the return result of the new deferred, which is just
++            ## ''
++ 
++            yield d, lambda result: ''    
++    result = io.getvalue()
++    cache.set(result, original.key)
++    yield result
++
+ def ContextSerializer(original, context):
+     originalContext = original.clone(deep=False)
+     originalContext.precompile = context and context.precompile or False
+Index: Nevow/nevow/stan.py
+===================================================================
+--- Nevow/nevow/stan.py	(revision 1228)
++++ Nevow/nevow/stan.py	(working copy)
+@@ -119,8 +119,40 @@
+         &quot;&quot;&quot;
+         raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
+ 
++def passThrough(_):
++    return _
+ 
++class cached(object):
++    &quot;&quot;&quot;Marker for cached content
++    &quot;&quot;&quot;
++    __slots__ = ['key', 'children', 'lifetime', 'scope']
+ 
++    def __init__(self, key, scope=None, lifetime=-1):
++        self.key = key
++        self.children = []
++        self.lifetime = lifetime
++        self.scope = scope
++        if not scope:
++            self.scope = passThrough
++            
++
++    def __repr__(self):
++        return &quot;cached('%s','%s')&quot; % self.key, self.lifetime
++
++    def __getitem__(self, children):
++        &quot;&quot;&quot;cached content is what is being cached
++        &quot;&quot;&quot;
++        if not isinstance(children, (list, tuple)):
++            children = [children]
++        self.children.extend(children)
++        return self
++
++    def __iter__(self):
++        &quot;&quot;&quot;Prevent an infinite loop if someone tries to do
++            for x in cached('foo'):
++        &quot;&quot;&quot;
++        raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
++
+ class Tag(object):
+     &quot;&quot;&quot;Tag instances represent XML tags with a tag name, attributes,
+     and children. Tag instances can be constructed using the Prototype
+Index: Nevow/nevow/inevow.py
+===================================================================
+--- Nevow/nevow/inevow.py	(revision 1228)
++++ Nevow/nevow/inevow.py	(working copy)
+@@ -98,8 +98,24 @@
+     
+     ANY python object is said to implement IData.
+     &quot;&quot;&quot;
++class ICache(compy.Interface):
++    &quot;&quot;&quot;This object represents the cache that contains all the
++    pre-flattened fragments
++    &quot;&quot;&quot;
++    def get(self, index, lifetime):
++        &quot;&quot;&quot; Get an object from the cache with the given index only if
++        it is less old than lifetime, otherwise return None.
++        &quot;&quot;&quot;
+ 
++    def set(self, toBeCached, *indexes):
++        &quot;&quot;&quot; Register toBeCached with each of the indexes passed &quot;&quot;&quot;
+ 
++    def clear(self, what):
++        &quot;&quot;&quot; Clear what keyed element from the cache, or search for
++        what in sequences in all the keys and clear the item
++        &quot;&quot;&quot;
++        
++
+ class IGettable(compy.Interface):
+     def get(self, context):
+         &quot;&quot;&quot;Return the data
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 1228)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -30,6 +30,7 @@
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -375,6 +376,8 @@
+         self.children[name] = child
+     
+ 
++_CACHE = {}
++
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+     via the document factory (docFactory).
+@@ -388,8 +391,37 @@
+     afterRender = None
+     addSlash = None
+ 
++    cache = False
++    lifetime = -1
++    __lastCacheRendering = 0
++
+     flattenFactory = flat.flattenFactory
+ 
++    def hasCache(self, ctx):
++        if not self.cache:
++            return
++
++        _now = now() # run gettimeofday only once
++        timeout = _now &gt; self.__lastCacheRendering + self.lifetime and \
++                  self.lifetime &gt;= 0
++        c = self.lookupCache(ctx)
++        if timeout or c is None:
++            # stop other renders
++            self.__lastCacheRendering = _now
++            c = None
++        return c
++    def cacheRendered(self, ctx, c):
++        if not self.cache:
++            return
++        # overwrite the deferred with the data
++        self.storeCache(ctx, c)
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def storeCache(self, ctx, c):
++        _CACHE[self.cacheIDX(ctx)] = c
++    def lookupCache(self, ctx):
++        return _CACHE.get(self.cacheIDX(ctx))
++
+     def renderHTTP(self, ctx):
+         ## XXX request is really ctx now, change the name here
+         request = inevow.IRequest(ctx)
+@@ -411,11 +443,18 @@
+             if self.afterRender is not None:
+                 self.afterRender(ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c is not None:
++            finishRequest()
++            return c
++
++        if self.buffered or self.cache:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = io.getvalue()
++                self.cacheRendered(ctx, c)
++                request.write(c)
+                 finishRequest()
+                 return result
+         else:
+@@ -499,7 +538,6 @@
+             else:
+                 ## Use the redirectAfterPost url
+                 ref = str(redirectAfterPost)
+-            from nevow import url
+             refpath = url.URL.fromString(ref)
+             magicCookie = str(now())
+             refpath = refpath.replace('_nevow_carryover_', magicCookie)
+Index: Nevow/nevow/guard.py
+===================================================================
+--- Nevow/nevow/guard.py	(revision 1228)
++++ Nevow/nevow/guard.py	(working copy)
+@@ -24,7 +24,7 @@
+ from twisted.protocols import http
+ 
+ # Nevow imports
+-from nevow import inevow, url, stan
++from nevow import inevow, url, stan, cache
+ 
+ 
+ def _sessionCookie():
+@@ -315,6 +315,7 @@
+                               path=&quot;/%s&quot; % '/'.join(request.prepath),
+                               secure=secure)
+         sz = self.sessions[newCookie] = self.sessionFactory(self, newCookie)
++        sz.setComponent(inevow.ICache, cache.SessionCache())
+         sz.args = request.args
+         sz.fields = getattr(request, 'fields', {})
+         sz.content = request.content
+
+
+As usual this below nosense, no idea why it fixed things for me...
+
+Index: Nevow/nevow/vhost.py
+===================================================================
+--- Nevow/nevow/vhost.py	(revision 1228)
++++ Nevow/nevow/vhost.py	(working copy)
+@@ -19,7 +19,7 @@
+ &quot;&quot;&quot;
+ 
+     def getStyleSheet(self):
+-        return self.stylesheet
++        return VirtualHostList.stylesheet
+  
+     def data_hostlist(self, context, data):
+         return self.nvh.hosts.keys()
+
+</PRE>
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001203.html">[Twisted-web] caching branch
+</A></li>
+	<LI>Next message: <A HREF="001205.html">[Twisted-web] caching branch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1204">[ date ]</a>
+              <a href="thread.html#1204">[ thread ]</a>
+              <a href="subject.html#1204">[ subject ]</a>
+              <a href="author.html#1204">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

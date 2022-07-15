@@ -1,0 +1,142 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] pushing out same message on 100k TCPs
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20pushing%20out%20same%20message%20on%20100k%20TCPs&In-Reply-To=%3C634914A010D0B943A035D226786325D42D597546D4%40EXVMBX020-12.exch020.serverdata.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="057697.html">
+   <LINK REL="Next"  HREF="057693.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] pushing out same message on 100k TCPs</H1>
+    <B>Tobias Oberstein</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20pushing%20out%20same%20message%20on%20100k%20TCPs&In-Reply-To=%3C634914A010D0B943A035D226786325D42D597546D4%40EXVMBX020-12.exch020.serverdata.net%3E"
+       TITLE="[Twisted-Python] pushing out same message on 100k TCPs">tobias.oberstein at tavendo.de
+       </A><BR>
+    <I>Sat Feb 11 05:37:38 MST 2012</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="057697.html">[Twisted-Python] pushing out same message on 100k TCPs
+</A></li>
+        <LI>Next message (by thread): <A HREF="057693.html">[Twisted-Python] pushing out same message on 100k TCPs
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#57700">[ date ]</a>
+              <a href="thread.html#57700">[ thread ]</a>
+              <a href="subject.html#57700">[ subject ]</a>
+              <a href="author.html#57700">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&gt;<i> Now, as I understand it, sendfile() will perform zero-copy IO; since the contents
+</I>&gt;<i> of the file will undoubtedly be in the page cache, it should in theory DMA the
+</I>&gt;<i> data straight from the (single copy of the) data in RAM to the NIC buffers.
+</I>&gt;<i> 
+</I>&gt;<i> It should also handle refcounting for you - you unlink the filename after
+</I>&gt;<i> obtaining a descriptor, and close() the FD once you've called sendfile, and the
+</I>&gt;<i> kernel *should* in theory free the inode and page containing file data once all
+</I>&gt;<i> TCP ACKs have been received.
+</I>&gt;<i> 
+</I>&gt;<i> You'll still have to make 100k syscalls, and you may find the kernel chooses to
+</I>&gt;<i> copy the data anyway.
+</I>
+I see.
+
+So using sendfile .. probably with message as file on RAMFS .. or using the Linux
+syscalls you mention below, it _might_ be possible to avoid copy overhead,
+but not context switching overhead .. ok.
+
+&gt;<i> 
+</I>&gt;<i> However - AFAIK Twisted does not support sendfile(), and it can be tricky to
+</I>&gt;<i> make it work with non-blocking IO.
+</I>
+;(
+
+Apart from that, we're on FreeBSD .. guess there are similar syscalls (maybe with
+slightly different semantics) there also.
+
+&gt;<i> 
+</I>&gt;<i> :o(
+</I>&gt;<i> 
+</I>&gt;<i> You may also want to look at the splice() vmsplice() and tee() syscalls added to
+</I>&gt;<i> recent Linux kernels. tee() in particular can copy data from pipe to pipe without
+</I>&gt;<i> consuming, so can be repeated multiple times. It may be possible to assemble
+</I>&gt;<i> something that will do this task efficiently from those building blocks, but the
+</I>&gt;<i> APIs aren't available in Twisted.
+</I>
+Thanks alot! This is all very interesting .. from the &quot;tee&quot; man page:
+
+&quot;&quot;&quot;
+Though we talk of copying, actual copies are generally avoided. The kernel does this by implementing a pipe buffer as a set of reference-counted pointers to pages of kernel memory. The kernel creates &quot;copies&quot; of pages in a buffer by creating new pointers (for the output buffer) referring to the pages, and increasing the reference counts for the pages: only pointers are copied, not the pages of the buffer. 
+&quot;&quot;&quot;
+
+Which sounds alot like in your other reply talking about refcounting etc .. 
+
+For ref., these guys are talking about PACKET_MMAP
+
+<A HREF="http://www.linuxquestions.org/questions/programming-9/vectored-write-to-many-sockets-with-tee-splice-915702/">http://www.linuxquestions.org/questions/programming-9/vectored-write-to-many-sockets-with-tee-splice-915702/</A>
+<A HREF="http://dank.qemfd.net/dankwiki/index.php/Fast_UNIX_Servers">http://dank.qemfd.net/dankwiki/index.php/Fast_UNIX_Servers</A>
+
+The former (very end of page) claims that it achieves zero-copy (which I get),
+and also claims you could reduce context switch overheader for the 1 msg
+TX to many clients case .. which I can't see how it's done.
+
+&gt;<i> 
+</I>&gt;<i> &gt;&gt; and not useful.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; When using VM pages (_if_ that would be possible) and thus no data
+</I>&gt;<i> &gt; duplication, then why not useful?
+</I>&gt;<i> 
+</I>&gt;<i> Sorry, I should have been more precise - it's probably not often useful.
+</I>&gt;<i> There are not very many applications where sending the same TCP stream to
+</I>&gt;<i> that many clients at the same time is helpful - realtime video/audio over TCP
+</I>&gt;<i> spring to mind, and typically those need to adapt to slow clients by dropping
+</I>&gt;<i> them to a lower rate i.e. not the same stream any more.
+</I>&gt;<i> 
+</I>&gt;<i> As Glyph has mentioned, encryption is also a factor in todays internet.
+</I>&gt;<i> 
+</I>&gt;<i> I'm kind of curious about what your application is!
+</I>
+The application is PubSub over WebSockets with massive numbers of clients ..
+
+Application message payloads are short (&lt;1k) and JSON/UTF-8. Those are then
+framed into WebSocket messages (which basically means prepending a WS
+frame header).
+
+&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="057697.html">[Twisted-Python] pushing out same message on 100k TCPs
+</A></li>
+	<LI>Next message (by thread): <A HREF="057693.html">[Twisted-Python] pushing out same message on 100k TCPs
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#57700">[ date ]</a>
+              <a href="thread.html#57700">[ thread ]</a>
+              <a href="subject.html#57700">[ subject ]</a>
+              <a href="author.html#57700">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

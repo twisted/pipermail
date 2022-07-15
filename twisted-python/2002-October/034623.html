@@ -1,0 +1,162 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] DNSServerBoss.getAnswers with non-authoritative requests
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20DNSServerBoss.getAnswers%20with%20non-authoritative%20requests&In-Reply-To=%3C20021025090413.GC28466%40mithrandr.moria.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="034622.html">
+   <LINK REL="Next"  HREF="034624.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] DNSServerBoss.getAnswers with non-authoritative requests</H1>
+    <B>Neil Blakey-Milner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20DNSServerBoss.getAnswers%20with%20non-authoritative%20requests&In-Reply-To=%3C20021025090413.GC28466%40mithrandr.moria.org%3E"
+       TITLE="[Twisted-Python] DNSServerBoss.getAnswers with non-authoritative requests">nbm at mithrandr.moria.org
+       </A><BR>
+    <I>Fri Oct 25 03:04:13 MDT 2002</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="034622.html">[Twisted-Python] Twisted: We Reinvent NIH
+</A></li>
+        <LI>Next message (by thread): <A HREF="034624.html">[Twisted-Python] reactor installation
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#34623">[ date ]</a>
+              <a href="thread.html#34623">[ thread ]</a>
+              <a href="subject.html#34623">[ subject ]</a>
+              <a href="author.html#34623">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+Since I've just guessed how the DNS Server stuff works in twisted, I may
+be doing something stupid.
+
+Example program:
+
+from twisted.protocols import dns
+from twisted.names.dns import DNSServerBoss, DNSServerFactory, SimpleDomain
+from twisted.internet import reactor
+
+a = DNSServerFactory()
+s = SimpleDomain(&quot;example.net&quot;, &quot;192.168.8.26&quot;)
+a.boss.addDomain(&quot;example.net&quot;, s)
+a.boss.createBothFactories()
+a.boss.startListeningBoth(53)
+reactor.run()
+
+
+This works great for example.net:
+
+(<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at pike</A>) /home/nbm&gt; host example.net 127.0.0.1
+Using domain server 127.0.0.1:
+example.net has address 192.168.8.26
+example.net mail is handled (pri=5) by example.net
+
+This works non-great for other domains - it just sits there, slowly
+timing out for each query made (due to 'search' or 'domain' in
+resolv.conf).
+
+Traceback makes it obvious where the problem is:
+
+  File &quot;/usr/local/lib/python2.2/site-packages/twisted/names/dns.py&quot;,
+line 370, in getAnswers
+    name = string.split(name, '.', 1)[1]
+exceptions.IndexError: list index out of range
+
+Ok, that's easy, and that's the first patch
+(twisted.names.dns.py-noerror.patch).
+
+Once applied, it still doesn't quite work:
+
+(<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at pike</A>) /home/nbm&gt; host example.org 127.0.0.1
+Using domain server 127.0.0.1:
+There is an entry for this host, but it doesn't have a Mail Exchanger record.
+
+Second patch (no idea if this is what DNS is supposed to do) makes that
+more like I expect it to return:
+
+(<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at pike</A>) /home/nbm&gt; host example.org 127.0.0.1
+Using domain server 127.0.0.1:
+Host not found.
+
+I'll probably look into what is the correct response, but not soon.  I'm
+not sure how the multiple-queries bit factors into it either.
+
+Neil
+-- 
+Neil Blakey-Milner
+<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at mithrandr.moria.org</A>
+-------------- next part --------------
+Index: dns.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/names/dns.py,v
+retrieving revision 1.37
+diff -u -r1.37 dns.py
+--- dns.py	2 Oct 2002 05:55:19 -0000	1.37
++++ dns.py	25 Oct 2002 08:43:15 -0000
+@@ -367,7 +367,10 @@
+                 continue # internet
+             name = query.name.name
+             while name and not self.domains.has_key(name):
+-                name = string.split(name, '.', 1)[1]
++                try:
++                    name = string.split(name, '.', 1)[1]
++                except IndexError:
++                    name = None
+             if not name:
+                 continue
+             self.domains[name].getAnswers(message, query.name.name, query.type)
+-------------- next part --------------
+Index: dns.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/names/dns.py,v
+retrieving revision 1.37
+diff -u -r1.37 dns.py
+--- dns.py	2 Oct 2002 05:55:19 -0000	1.37
++++ dns.py	25 Oct 2002 08:47:01 -0000
+@@ -367,8 +367,12 @@
+                 continue # internet
+             name = query.name.name
+             while name and not self.domains.has_key(name):
+-                name = string.split(name, '.', 1)[1]
++                try:
++                    name = string.split(name, '.', 1)[1]
++                except IndexError:
++                    name = None
+             if not name:
++                message.rCode = dns.ENAME
+                 continue
+             self.domains[name].getAnswers(message, query.name.name, query.type)
+         protocol.writeMessage(message)
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="034622.html">[Twisted-Python] Twisted: We Reinvent NIH
+</A></li>
+	<LI>Next message (by thread): <A HREF="034624.html">[Twisted-Python] reactor installation
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#34623">[ date ]</a>
+              <a href="thread.html#34623">[ thread ]</a>
+              <a href="subject.html#34623">[ subject ]</a>
+              <a href="author.html#34623">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,330 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Conch SFTP Questions
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Conch%20SFTP%20Questions&In-Reply-To=%3CCAAXGW-ycf3zJao0Gatc-jH3UfSE1EDEWnYGdU-T62JA1B6o%2B8g%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="065244.html">
+   <LINK REL="Next"  HREF="065246.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Conch SFTP Questions</H1>
+    <B>Robert DiFalco</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Conch%20SFTP%20Questions&In-Reply-To=%3CCAAXGW-ycf3zJao0Gatc-jH3UfSE1EDEWnYGdU-T62JA1B6o%2B8g%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Conch SFTP Questions">robert.difalco at gmail.com
+       </A><BR>
+    <I>Tue Sep 22 09:42:55 MDT 2020</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="065244.html">[Twisted-Python] Only run Azure, Travis, or CircleCI if GitHub actions pass
+</A></li>
+        <LI>Next message (by thread): <A HREF="065246.html">[Twisted-Python] Conch SFTP Questions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65245">[ date ]</a>
+              <a href="thread.html#65245">[ thread ]</a>
+              <a href="subject.html#65245">[ subject ]</a>
+              <a href="author.html#65245">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hey folks, I've cobbled together an SFTP client based on bits and pieces
+I've found around the web. The issue is that it appears to be almost one
+shot. I will need to send many files (the number not known ahead of time).
+It's not clear to me when the connection is closed or how many factories
+I'm creating. All the code I've grabbed looks like it's creating a new
+factory for every SFTP file I send. Here's some of the code I have. It's
+fairly straight forward in that it creates a directory if it doesn't exist
+and then writes a file.
+
+@attr.s(frozen=True)
+class FileInfo(object):
+    &quot;&quot;&quot;
+    Class that tells SFTP details about the file to send.
+    &quot;&quot;&quot;
+    directory = attr.ib(converter=str)  # type: str
+    name = attr.ib(converter=str)  # type: str
+    data = attr.ib()  # type: str
+    chunk_size = attr.ib(converter=int, default=CHUNK_SIZE)  # type: int
+
+    def to_path(self):
+        &quot;&quot;&quot;
+        Turns the folder and file name into a file path.
+        &quot;&quot;&quot;
+        return self.directory + &quot;/&quot; + self.name
+
+
+@attr.s(frozen=True)
+class SFTPClientOptions(object):
+    &quot;&quot;&quot;
+    Client options for sending SFTP files.
+
+    :param host: the host of the SFTP server
+    :param port: the port ofo the SFTP server
+    :param fingerprint: the expected fingerprint of the host
+    :param user: the user to login as
+    :param identity: the identity file, optional and like the &quot;-i&quot;
+command line option
+    :param password: an optional password
+    &quot;&quot;&quot;
+    host = attr.ib(converter=str)  # type: str
+    port = attr.ib(converter=int)  # type: int
+    fingerprint = attr.ib(converter=str)  # type: str
+    user = attr.ib(converter=str)  # type: str
+    identity = attr.ib(converter=optional(str), default=None)  # type:
+Optional[str]
+    password = attr.ib(converter=optional(str), default=None)  # type:
+Optional[str]
+
+
+@inlineCallbacks
+def sftp_send(client_options, file_info):
+    # type: (SFTPClientOptions, FileInfo)-&gt;Deferred
+    &quot;&quot;&quot;
+    Primary function to send an file over SFTP. You can send a
+password, identity, or both.
+    :param client_options: the client connection options
+    :param file_info: contains the file info to write
+    :return: A deferred that signals &quot;OK&quot; if successful.
+    &quot;&quot;&quot;
+    options = ClientOptions()
+    options[&quot;host&quot;] = client_options.host
+    options[&quot;port&quot;] = client_options.port
+    options[&quot;password&quot;] = client_options.password
+    options[&quot;fingerprint&quot;] = client_options.fingerprint
+
+    if client_options.identity:
+        options.identitys = [client_options.identity]
+
+    conn = SFTPConnection()
+    auth = SFTPUserAuthClient(client_options.user, options, conn)
+    yield connect(client_options.host, client_options.port, options,
+_verify_host_key, auth)
+
+    sftpClient = yield conn.getSftpClientDeferred()
+    yield _send_file(sftpClient, file_info)
+
+    returnValue(&quot;OK&quot;)
+
+
+def _verify_host_key(transport, host, pubKey, fingerprint):
+    &quot;&quot;&quot;
+    Verify a host's key. Based on what is specified in options.
+
+    @param host: Due to a bug in L{SSHClientTransport.verifyHostKey}, this is
+    always the dotted-quad IP address of the host being connected to.
+    @type host: L{str}
+
+    @param transport: the client transport which is attempting to connect to
+    the given host.
+    @type transport: L{SSHClientTransport}
+
+    @param fingerprint: the fingerprint of the given public key, in
+    xx:xx:xx:... format.
+
+    @param pubKey: The public key of the server being connected to.
+    @type pubKey: L{str}
+
+    @return: a L{Deferred} which is success or error
+    &quot;&quot;&quot;
+    expected = transport.factory.options.get(&quot;fingerprint&quot;, &quot;no_fingerprint&quot;)
+    if fingerprint == expected:
+        return succeed(1)
+
+    log.error(
+        &quot;SSH Host Key fingerprint of ({fp}) does not match the
+expected value of ({expected}).&quot;,
+        fp=fingerprint, expected=expected)
+
+    return fail(ConchError(&quot;Host fingerprint is unexpected.&quot;))
+
+
+class SFTPSession(SSHChannel):
+    &quot;&quot;&quot;
+    Creates an SFTP session.
+    &quot;&quot;&quot;
+    name = &quot;session&quot;
+
+    @inlineCallbacks
+    def channelOpen(self, whatever):
+        &quot;&quot;&quot;
+        Called when the channel is opened.  &quot;whatever&quot; is any data that the
+        other side sent us when opening the channel.
+
+        @type whatever: L{bytes}
+        &quot;&quot;&quot;
+        yield self.conn.sendRequest(self, &quot;subsystem&quot;, NS(&quot;sftp&quot;),
+wantReply=True)
+
+        client = FileTransferClient()
+        client.makeConnection(self)
+        self.dataReceived = client.dataReceived
+        self.conn.notifyClientIsReady(client)
+
+
+class SFTPConnection(SSHConnection):
+    def __init__(self):
+        &quot;&quot;&quot;
+        Adds a deferred here so client can add a callback when the
+SFTP client is ready.
+        &quot;&quot;&quot;
+        SSHConnection.__init__(self)
+        self._sftpClient = Deferred()
+
+    def serviceStarted(self):
+        &quot;&quot;&quot;
+        Opens an SFTP session when the SSH connection has been started.
+        &quot;&quot;&quot;
+        self.openChannel(SFTPSession())
+
+    def notifyClientIsReady(self, client):
+        &quot;&quot;&quot;
+        Trigger callbacks associated with our SFTP client deferred. It's ready!
+        &quot;&quot;&quot;
+        self._sftpClient.callback(client)
+
+    def getSftpClientDeferred(self):
+        return self._sftpClient
+
+
+class SFTPUserAuthClient(SSHUserAuthClient):
+    &quot;&quot;&quot;
+    Twisted Conch doesn't have a way of getting a password. By default
+it gets it from stdin. This allows it
+    to be retrieved from options instead.
+    &quot;&quot;&quot;
+    def getPassword(self, prompt = None):
+        &quot;&quot;&quot;
+        Get the password from the client options, is specified.
+        &quot;&quot;&quot;
+        if &quot;password&quot; in self.options:
+            return succeed(self.options[&quot;password&quot;])
+
+        return SSHUserAuthClient.getPassword(self, prompt)
+
+
+@inlineCallbacks
+def _send_file(client, file_info):
+    # type: (FileTransferClient, FileInfo) -&gt; Deferred
+    &quot;&quot;&quot;
+    Creates a directory if required and then creates the file.
+    :param client: the SFTP client to use
+    :param file_info: contains file name, directory, and data
+    &quot;&quot;&quot;
+    try:
+        yield client.makeDirectory(file_info.directory, {})
+
+    except SFTPError as e:
+        # In testing on various system, either a 4 or an 11 will
+indicate the directory
+        # already exist. We are fine with that and want to continue if
+it does. If we misinterpreted
+        # error code here we are probably still ok since we will just
+get the more systemic error
+        # again on the next call to openFile.
+        if e.code != 4 and e.code != 11:
+            raise e
+
+    f = yield client.openFile(file_info.to_path(), FXF_WRITE |
+FXF_CREAT | FXF_TRUNC, {})
+
+    try:
+        yield _write_chunks(f, file_info.data, file_info.chunk_size)
+
+    finally:
+        yield f.close()
+
+
+@inlineCallbacks
+def _write_chunks(f, data, chunk_size):
+    # type: (ClientFile, str, int) -&gt; Deferred
+    &quot;&quot;&quot;
+    Convenience function to write data in chunks
+
+    :param f: the file to write to
+    :param data: the data to write
+    :param chunk_size: the chunk size
+    &quot;&quot;&quot;
+    for offset in range(0, len(data), chunk_size):
+        chunk = data[offset: offset + chunk_size]
+        yield f.writeChunk(offset, chunk)
+
+
+It gets called like this:
+
+return sftp.sftp_send(
+    client_options=SFTPClientOptions(
+        host=self.options.host,
+        port=self.options.port,
+        user=self.options.user,
+        fingerprint=self.options.fingerprint,
+        identity=getattr(self.options, &quot;identity&quot;, None),
+        password=self._getPassword()),
+    file_info=sftp.FileInfo(
+        directory=self.options.directory,
+        name=fileName,
+        data=data,
+        chunk_size=getattr(self.options, &quot;chunkSize&quot;, sftp.CHUNK_SIZE)))
+
+But I supposed I'd like to see something more like this:
+
+sftpClient = self.getSftpClient(
+    client_options=SFTPClientOptions(
+        host=self.options.host,
+        port=self.options.port,
+        user=self.options.user,
+        fingerprint=self.options.fingerprint,
+        identity=getattr(self.options, &quot;identity&quot;, None),
+        password=self._getPassword()))
+
+return sftpClient.send(
+    file_info=sftp.FileInfo(
+        directory=self.options.directory,
+        name=fileName,
+        data=data,
+        chunk_size=getattr(self.options, &quot;chunkSize&quot;, sftp.CHUNK_SIZE)))
+
+Where sftpClient reuses the existing SSH connection if it is active (rather
+than logging in each time). But maybe the sftp service doesn't multiplex so
+I have to create a new SSHClientFactory every time I want to send a
+distinct file?
+
+Sorry for all the questions, new to twisted and a bit confused. Thanks!
+
+Robert
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20200922/22e56931/attachment-0001.htm&gt;
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="065244.html">[Twisted-Python] Only run Azure, Travis, or CircleCI if GitHub actions pass
+</A></li>
+	<LI>Next message (by thread): <A HREF="065246.html">[Twisted-Python] Conch SFTP Questions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65245">[ date ]</a>
+              <a href="thread.html#65245">[ thread ]</a>
+              <a href="subject.html#65245">[ subject ]</a>
+              <a href="author.html#65245">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

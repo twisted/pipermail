@@ -1,0 +1,147 @@
+"""
+An asynchronous mapping to U{python-ldap <http://python-ldap.sourceforge.net>}.
+"""
+
+from twisted.spread import pb
+from twisted.internet import task, main, defer, threads
+from twisted.python import log, reflect
+
+import thread, ldap
+
+
+class ConnectionPool(pb.Referenceable):
+    """I represent a pool of connections to a OpenLDAP server.
+    """
+
+    def __init__(self, host="", who="", password=""):
+        """See ConnectionPool.__doc__
+        """
+        self.host = host
+        self.who = who
+        self.passwd = password
+
+        log.msg("Connecting to LDAP server: %s %s" % (self.host, self.who))
+
+        self.threadID = thread.get_ident
+        self.connections = {}
+
+        main.callDuringShutdown(self.close)
+
+    def __getstate__(self):
+        return {'host' : self.host, 'who' : self.who,
+                'passwd' : self.passwd}
+
+    def __setstate__(self, state):
+        self.__dict__ = state
+        self.__init__(self.host, self.who, self.passwd)
+
+    def connect(self):
+        tid = self.threadID()
+        conn = self.connections.get(tid)
+
+        if not conn:
+            conn = ldap.open(self.host)
+            conn.protocol_version = ldap.VERSION3
+            conn.simple_bind_s(self.who, self.passwd)
+            self.connections[tid] = conn
+
+            log.msg('ldapapi connecting %s' % self.host)
+
+        return conn
+
+    def _search(self, args, kw):
+        conn = self.connect()
+        rez = apply(conn.search_s, args, kw)
+        return rez
+
+    def _add(self, args, kw):
+        conn = self.connect()
+        rez = apply(conn.add_s, args, kw)
+        return rez
+
+    def _modify(self, args, kw):
+        conn = self.connect()
+        rez = apply(conn.modify_s, args, kw)
+        return rez
+
+    def _delete(self, args):
+        conn = self.connect()
+        rez = apply(conn.delete_s, args)
+        return rez
+
+    def _rename(self, args, kw):
+        conn = self.connect()
+        rez = apply(conn.rename_s, args, kw)
+        return rez
+
+    def search(self, callback, errback, *args, **kw):
+        threads.deferToThread(self._search, args, kw).addCallbacks(callback,
+                                                                   errback)
+
+    def add(self, callback, errback, *args, **kw):
+        threads.deferToThread(self._add, args, kw).addCallbacks(callback,
+                                                                errback)
+
+    def modify(self, callback, errback, *args, **kw):
+        threads.deferToThread(self._modify, args, kw).addCallbacks(callback,
+                                                                   errback)
+
+    def delete(self, callback, errback, *args):
+        threads.deferToThread(self._delete, args).addCallbacks(callback,
+                                                               errback)
+
+    def rename(self, callback, errback, *args, **kw):
+        threads.deferToThread(self._rename, args, kw).addCallbacks(callback,
+                                                                   errback)
+
+    def close(self):
+        for i in self.connections.values():
+            i.unbind()
+
+
+class Augmentation:
+
+    def __init__(self, pool):
+        """A class which augments a LDAP connector with some functionality.
+        """
+        self.pool = pool
+
+    def __setstate__(self, state):
+        self.__dict__ = state
+
+    def operationDone(self, done):
+        """Default callback for LDAP operation success.
+        """
+        log.msg("%s Operation Done: %s" % (reflect.qual(self.__class__), done))
+
+    def operationError(self, error):
+        """Default callback for LDAP operation error.
+        """
+        log.msg("%s Operation Failed: %s" % (reflect.qual(self.__class__),
+                error))
+        log.error(error)
+
+    def search(self, *args, **kw):
+        d = defer.Deferred()
+        apply(self.pool.search, (d.callback, d.errback) + args, kw)
+        return d
+
+    def add(self, *args, **kw):
+        d = defer.Deferred()
+        apply(self.pool.add, (d.callback, d.errback) + args, kw)
+        return d
+
+    def modify(self, *args, **kw):
+        d = defer.Deferred()
+        apply(self.pool.modify, (d.callback, d.errback) + args, kw)
+        return d
+
+    def delete(self, *args):
+        d = defer.Deferred()
+        apply(self.pool.delete, (d.callback, d.errback) + args, kw)
+        return d
+
+    def rename(self, *args, **kw):
+        d = defer.Deferred()
+        apply(self.pool.rename, (d.callback, d.errback) + args, kw)
+        return d

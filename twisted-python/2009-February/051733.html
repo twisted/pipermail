@@ -1,0 +1,171 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] What to do when a service fails to start, also, 	deferred and startService
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20What%20to%20do%20when%20a%20service%20fails%20to%20start%2C%20also%2C%20%0A%09deferred%20and%20startService&In-Reply-To=%3C18848.51544.210828.667334%40jon.es%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051730.html">
+   <LINK REL="Next"  HREF="051735.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] What to do when a service fails to start, also, 	deferred and startService</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20What%20to%20do%20when%20a%20service%20fails%20to%20start%2C%20also%2C%20%0A%09deferred%20and%20startService&In-Reply-To=%3C18848.51544.210828.667334%40jon.es%3E"
+       TITLE="[Twisted-Python] What to do when a service fails to start, also, 	deferred and startService">terry at jon.es
+       </A><BR>
+    <I>Sat Feb 21 20:41:12 MST 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051730.html">[Twisted-Python] 123912652  C-A-N-A-D-l-A-N   P-H-A-R-M-A-C-Y
+</A></li>
+        <LI>Next message (by thread): <A HREF="051735.html">[Twisted-Python] What to do when a service fails to start, also,	deferred and startService
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51733">[ date ]</a>
+              <a href="thread.html#51733">[ thread ]</a>
+              <a href="subject.html#51733">[ subject ]</a>
+              <a href="author.html#51733">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi again Glyph
+
+&gt;&gt;&gt;&gt;&gt;<i> &quot;glyph&quot; == glyph  &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at divmod.com</A>&gt; writes:
+</I>glyph&gt; On 28 Nov, 03:38 pm, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">terry at jon.es</A> wrote:
+&gt;&gt;<i> Thanks for the detailed reply.
+</I>
+glyph&gt; No problem, sorry it took so long to get back to this; I definitely
+glyph&gt; left the conversation halfway through.
+
+And this followup is even slower, sorry.  Here's a summary of the
+conversation I'd like to continue:
+
+&gt;&gt;<i> So in my case I want to indicate to twistd that the service that my
+</I>&gt;&gt;<i> class creates a makeService method to create, but which I do not set in
+</I>&gt;&gt;<i> motion, has failed to start and that twistd should exit, or do something
+</I>&gt;&gt;<i> other than cheerfully tell me that there's been an Unhandled Error.
+</I>
+&gt;&gt;<i> Does that make more sense? Sorry, I should have said I was using 
+</I>&gt;&gt;<i> twistd.
+</I>
+glyph&gt; Yes.  And I think that this is a good use-case for making IService a
+glyph&gt; bit deeper than it is.
+
+glyph&gt; My previous messages were basically saying &quot;you can't do what you
+glyph&gt; want with IService&quot;.  i.e. you can't write your own code to do
+glyph&gt; something clever and somehow have dependencies and notifications to
+glyph&gt; users of &quot;twistd&quot; fall out of that.  But that shouldn't be taken as
+glyph&gt; an indication that twistd itself shouldn't be improved.
+
+glyph&gt; It's not that you've failed to understand something - you have
+glyph&gt; correctly identified that there is nothing to understand :).  You
+glyph&gt; need to go find that thing (&quot;whatever it is&quot; ;-)) in twistd that's
+glyph&gt; invoking the very first call to IService.startService (and
+glyph&gt; privilegedStartService as well) and propose a concrete way to make
+glyph&gt; it smarter.
+
+OK, here's a concrete proposal. Let's forget about twistd for the time
+being and just address the central things I'm trying to do:
+
+  1. I want a service to be able to initialize itself using code that
+  receives deferreds. Right now, startService is not expected to return
+  anything. I can go ahead and call a deferred-returning function in
+  startService but I wont know that it's done unless I set a flag somewhere
+  in a callback, and the rest of the methods in my service have to check
+  that flag to see if the initialization is complete. In case it's not
+  clear, I'm imagining the case of a MultiService, one Service of which
+  performs the start and stop for the overall service.
+
+  2. Because the other Services in the MultiService depend on the
+  successful execution of the initialization, I'd rather they didn't get
+  started at all if the initialization fails.
+
+  3. It would be nice to get my hands on a deferred that had errbacked as a
+  result of an unsuccessful start or stop.
+
+
+You say: &quot;making IService a bit deeper than it is&quot; and then &quot;you can't do
+what you want with IService&quot;.
+
+And Esteve Fernandez has already pointed me to this:
+
+&gt;<i> &quot;duuuuuude. don't. inherit. multiservice.&quot;
+</I>
+But it turns out you can do exactly what I want with a very simple subclass
+(or rewriting of) MultiService.  BTW, this code is not tested - I want to
+float the idea before doing more. Here's the simple version:
+
+    class GuardedMultiService(service.MultiService):
+        implements(service.IServiceCollection)
+
+        def __init__(self, initService):
+            service.MultiService.__init__(self)
+            self.initService = initService
+
+        def startService(self):
+            d = defer.maybeDeferred(self.initService.startService)
+            d.addCallback(lambda _: service.MultiService.startService)
+
+        def stopService(self):
+            d = service.MultiService.stopService()
+            d.addCallback(lambda _: self.initService.stopService)
+            return d
+
+This, I believe, solves 1 and 2 above. It has the nice property that all
+the regular services add to this class will not be started until after the
+possibly deferred-returning initService.startService is done. So there's no
+need for any checking later to see that you really are initialized.
+
+And to solve 3, you can add (all defaulting to None) args to __init__ to
+specify two errback functions and their arguments, and use addErrback to
+attach these to the deferreds in startService and stopService.  If we also
+make initService have a default of None, the result will be backward
+compatible with the existing MultiService, and could just replace it. The
+new version simply gives a way to deal with 1, 2 and 3, if you need it.
+
+BTW, in your original reply you wrote
+
+glyph&gt; This might seem a bit inconsistent, since stopService uses the
+glyph&gt; return of a Deferred.  However, this is for a very specific reason,
+glyph&gt; not a generalized error-handling case: you may need to prevent the
+glyph&gt; *rest* of the system (specifically, the reactor) from completely
+glyph&gt; shutting down
+
+My #2 above is like the flip side of this: if the initialization of a
+service fails, you may need to prevent the *rest* of the system from coming
+up, and (if you can't fix things in the errback) you might want to stop the
+reactor. I say this specifically with regard to services launched by twistd.
+
+Terry
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051730.html">[Twisted-Python] 123912652  C-A-N-A-D-l-A-N   P-H-A-R-M-A-C-Y
+</A></li>
+	<LI>Next message (by thread): <A HREF="051735.html">[Twisted-Python] What to do when a service fails to start, also,	deferred and startService
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51733">[ date ]</a>
+              <a href="thread.html#51733">[ thread ]</a>
+              <a href="subject.html#51733">[ subject ]</a>
+              <a href="author.html#51733">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

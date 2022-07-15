@@ -1,0 +1,252 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: [Web-SIG] WSGI woes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BWeb-SIG%5D%20WSGI%20woes&In-Reply-To=335B4CE1-079F-11D9-A6FD-000A95864FC4%40ulaluma.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000648.html">
+   <LINK REL="Next"  HREF="000659.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: [Web-SIG] WSGI woes</H1>
+    <B>Phillip J. Eby</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BWeb-SIG%5D%20WSGI%20woes&In-Reply-To=335B4CE1-079F-11D9-A6FD-000A95864FC4%40ulaluma.com"
+       TITLE="[Twisted-web] Re: [Web-SIG] WSGI woes">pje at telecommunity.com
+       </A><BR>
+    <I>Thu Sep 16 00:37:06 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000648.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+        <LI>Next message: <A HREF="000659.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#649">[ date ]</a>
+              <a href="thread.html#649">[ thread ]</a>
+              <a href="subject.html#649">[ subject ]</a>
+              <a href="author.html#649">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>At 01:13 AM 9/16/04 -0400, Donovan Preston wrote:
+
+&gt;<i>On Sep 15, 2004, at 7:12 PM, Phillip J. Eby wrote:
+</I>&gt;<i>
+</I>&gt;&gt;<i>At 06:48 PM 9/15/04 -0400, Peter Hunt wrote:
+</I>&gt;&gt;&gt;<i>It looks like WSGI is not well received over at twisted.web.
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i><A HREF="http://twistedmatrix.com/pipermail/twisted-web/2004-September/">http://twistedmatrix.com/pipermail/twisted-web/2004-September/</A> 000644.html
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>Excerpting from that post:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>&quot;&quot;&quot;The WSGI spec is unsuitable for use with asynchronous servers and
+</I>&gt;&gt;<i>applications. Basically, once the application callable returns, the
+</I>&gt;&gt;<i>server (or &quot;gateway&quot; as wsgi calls it) must consider the page finished
+</I>&gt;&gt;<i>rendering.&quot;&quot;&quot;
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>This is incorrect.
+</I>&gt;<i>
+</I>&gt;<i>As I said in my original post, I hadn't mentioned anything about this
+</I>&gt;<i>yet because I didn't have a solution or proposal to fix the problem,
+</I>&gt;<i>which I maintain remains.
+</I>
+Reading the rest of your post, I see that you are actually addressing the 
+issue of asynchronous *applications*, and I have only been addressing 
+asynchronous *servers* in the spec to date.  (Technically &quot;half-async&quot; 
+servers, since to be properly portable, a WSGI server *must* support 
+synchronous applications, and therefore an async WSGI server must have a 
+thread pool for running applications, even if it contains only one thread.)
+
+However, I'm not certain that it's actually possible to support *portable* 
+asynchronous  applications under WSGI, since such asynchrony requires 
+additional support such as an event loop service.  As a practical matter, 
+asynchronous applications today require a toolset such as Twisted or 
+peak.events in addition to the web server, and I don't really know of a way 
+to make such applications portable across web servers, since the web server 
+might use a different toolset that insists on having its own event 
+loop.  Or it might be like mod_python or CGI, and not really have any 
+meaningful way to create an event loop: it could be utterly synchronous in 
+nature and impossible to make otherwise.
+
+Thus, as a practical matter, applications that make use of asynchronous I/O 
+*may* be effectively outside WSGI's scope, if they have no real chance of 
+portability.  As I once said on the Web-SIG, the idea of WSGI is more aimed 
+at allowing non-Twisted apps to run under a Twisted web server, than at 
+allowing Twisted applications to run under other web servers!  The latter, 
+obviously, is much more ambitious than the former.
+
+But I'm happy to nonetheless explore whether there is any way to support 
+such applications without unduly complicating middleware.  I don't expect 
+it would complicate servers much, but middleware can be quite difficult, 
+because middleware currently isn't even required to return when the 
+application does!  It's not recommended, but a middleware component can sit 
+there and iterate over the return value and call its parent's write() 
+method all it wants.  In the presence of this kind of behavior, there isn't 
+any real way to guarantee that a thread isn't going to be tied up with 
+processing.  But realistically, that's what an async server's thread pool 
+is *for*.
+
+Anyway, as you'll see below, WSGI can actually run async apps with minimal 
+blocking even without any modifications to the spec, and with 
+server-specific extensions you can eliminate *all* the blocking, as long as 
+middleware doesn't do anything pathological.  In practice, of course, I 
+think the spec *should* be updated so that middleware is prohibited from 
+interfering with the control flow, and I'll give some thought as to how 
+that should be phrased.
+
+
+&gt;<i>According to the spec, &quot;&quot;&quot;The application object must return an
+</I>&gt;<i>iterable yielding strings.&quot;&quot;&quot; Whether the application callable calls
+</I>&gt;<i>write before returning or yields strings to generate content, the
+</I>&gt;<i>effect is the same -- there is no way for the application callable to
+</I>&gt;<i>say &quot;Wait, hang on a second, I'm not ready to generate more content
+</I>&gt;<i>yet. I'll tell you when I am.&quot; This means the only way the application
+</I>&gt;<i>can pause for network activity is by blocking.
+</I>
+That is correct.  The application must block for such activities.  However, 
+as a practical matter, this isn't a problem for e.g. database access, since 
+using Twisted's adbapi would still tie up *some* thread with the exact same 
+blocking I/O, so there's actually no loss in simply doing unadorned DBAPI 
+access from within the application.
+
+
+&gt;<i>  For example, a page
+</I>&gt;<i>which performed an XML-RPC call and transformed the output into HTML
+</I>&gt;<i>would be required to perform the XML-RPC call synchronously. Or a page
+</I>&gt;<i>which initiated a telnet session and streamed the results into a web
+</I>&gt;<i>page would be required to perform reads on the socket synchronously.
+</I>
+Technically, it could perform these tasks asynchronously, as long as the 
+data were queued such that the application's return iterable simply 
+retrieved results from the queue.  However, this would naturally block 
+whenever the client was ready for I/O, but no results were available yet.
+
+However, an asynchronous server isn't going to sit there in a loop calling 
+next()!  Presumably, it's going to wait until the previous string gets sent 
+to the client, before calling next() again.  And, it's presumably going to 
+round-robin the active iterables through the threadpool, so that it doesn't 
+keep blocking on iterables that aren't likely to have any data to produce 
+as yet.
+
+Yes, this arrangement can still block threads sometimes, if there are only 
+a few iterables active and they are waiting for some very slow async 
+I/O.  But the frequency of such blockages can be further reduced with a 
+couple of extensions.  Suppose there was an 'environ[&quot;async.sleep&quot;]' and 
+'environ[&quot;async.wake&quot;]'.  A call to 'sleep' would mean, &quot;don't bother 
+iterating over me again until you get a 'wake' call&quot;.
+
+This *still* wouldn't prevent some item of middleware from hogging a thread 
+in the threadpool, but I suppose you could actually make the 'sleep' 
+function sit in a loop and run active iterables' next() methods until one 
+of the suspended iterables in the current thread &quot;wakes&quot;, at which point it 
+would return control to whatever iterable it was called from.  Or, if you 
+want to use Greenlets, you can always return control directly to the 
+iterable that needs to &quot;wake up&quot;.
+
+Anyway, my point here is that it's possible to get a pretty decent setup 
+for async applications, without any need to actually modify the base WSGI 
+spec.  And, if you add some optional extensions, you can get an even 
+smoother setup for async I/O.
+
+Finally, I'm open to trying to define the 'sleep/wake' facilities as 
+&quot;standard options&quot; in WSGI, as well as clarifying the middleware control 
+flow to support this better.
+
+
+&gt;<i>The server or gateway, by calling next(), is assuming that the call
+</I>&gt;<i>will yield a string value, and only a string value.
+</I>
+The spec doesn't rule out empty strings, however, which would be the 
+natural way to indicate that no data is available.  So, the protocol in an 
+async app's iterator would be something like:
+
+      while queue.empty():
+          if 'async.wake' in environ:
+              someDeferred.addCallback(environ['async.wake'])
+              environ['async.sleep']()
+              yield &quot;&quot;
+              # We should only get to this line once environ['async.wake'] 
+has been called
+          else:
+              yield &quot;&quot;
+              # delay an exponentially increasing period if queue is still 
+empty
+
+If middleware is required to match the control flow of the application it 
+wraps (e.g. write()=&gt;write(), yield=&gt;yield), then this would result in 
+complete non-blockingness when the server supports the 'async' extensions.
+
+Of course, a blocking delay *is* required when running in a server that 
+doesn't support the async extensions, but that's unavoidable in that 
+case.  (Technically, you might be better off just doing synchronous I/O if 
+you're being run in a synchronous server, but that's of course optional.)
+
+
+&gt;<i>&quot;&quot;&quot;The application object must return an iterable yielding strings or
+</I>&gt;<i>objects implementing the following interface:
+</I>&gt;<i>
+</I>&gt;<i>def addCallback(callable):
+</I>&gt;<i>         '''Add 'callable' to the list of callables to be invoked when a 
+</I>&gt;<i> string
+</I>&gt;<i>         is available. Callable should take a single argument, which will 
+</I>&gt;<i> be a
+</I>&gt;<i>string.'''
+</I>&gt;<i>
+</I>&gt;<i>The application object must invoke the callable passed to addCallback,
+</I>&gt;<i>passing a string which will be written to the request.
+</I>&gt;<i>&quot;&quot;&quot;
+</I>&gt;<i>
+</I>&gt;<i>This places additional burdens upon implementors of WSGI servers or
+</I>&gt;<i>gateways.
+</I>
+And a near-intolerable burden on middleware, which would have to have a way 
+to &quot;pass through&quot; this facility.  It would be much better to limit the 
+pass-through requirements to covering write and yield, rather than 
+requiring middleware to implement addCallback facilities as well.
+
+
+&gt;<i>Finally, we come to the task of implementing a server or gateway which
+</I>&gt;<i>can asynchronously support either asynchronous or blocking
+</I>&gt;<i>applications. Since there is no way for the server or gateway to know
+</I>&gt;<i>whether the application object it is about to invoke will block,
+</I>&gt;<i>starving the main loop and preventing network activity from being
+</I>&gt;<i>serviced, it must invoke all applications in a new thread or process.
+</I>
+But *some* thread is going to be working on it, and this is true whether 
+you use a thread pool or the server is purely synchronous.  And, because a 
+WSGI server *must* support synchronous applications, it *must* have some 
+thread available that is amenable to blocking.
+
+Of course &quot;new&quot; threads are not required.  I assume that in the case of 
+Twisted, something like reactor.deferToThread() will be used to wrap a WSGI 
+application's initial invocation, and each individual 'next()' call.
+
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000648.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+	<LI>Next message: <A HREF="000659.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#649">[ date ]</a>
+              <a href="thread.html#649">[ thread ]</a>
+              <a href="subject.html#649">[ subject ]</a>
+              <a href="author.html#649">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

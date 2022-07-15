@@ -1,0 +1,979 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Sped-up banana
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Sped-up%20banana&In-Reply-To=%3CPine.LNX.4.33.0110301310490.22821-300000%40ostrich-deluxe.labs.redhat.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="033040.html">
+   <LINK REL="Next"  HREF="000534.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Sped-up banana</H1>
+    <B>Elliot Lee</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Sped-up%20banana&In-Reply-To=%3CPine.LNX.4.33.0110301310490.22821-300000%40ostrich-deluxe.labs.redhat.com%3E"
+       TITLE="[Twisted-Python] Sped-up banana">sopwith at redhat.com
+       </A><BR>
+    <I>Tue Oct 30 11:12:42 MST 2001</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="033040.html">[Twisted-Python] Re: [Twisted-commits] CVS: Twisted/twisted/protocols basic.py,1.13,1.14
+</A></li>
+        <LI>Next message (by thread): <A HREF="000534.html">[Twisted-Python] Enterprise, do you copy?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#33041">[ date ]</a>
+              <a href="thread.html#33041">[ thread ]</a>
+              <a href="subject.html#33041">[ subject ]</a>
+              <a href="author.html#33041">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>The encoder redone in C, and handles 'long' numbers correctly.
+
+At radix' request,
+-- Elliot
+-------------- next part --------------
+# Generic List ENcoding
+
+global types, copy, cStringIO, math, struct, apiarymisc
+import types, copy, cStringIO, math, struct, apiarymisc
+
+def int2b128(integer, stream):
+    if integer == 0:
+        stream(chr(0))
+        return
+    assert integer &gt; 0, &quot;can only encode positive integers&quot;
+    while integer:
+        stream(chr(integer &amp; 0x7f))
+        integer = integer &gt;&gt; 7
+
+def b1282int(st):
+    i = 0l
+    place = 0
+    for char in st:
+        num = ord(char)
+        i = i + (num * (128 ** place))
+        place = place + 1
+    try:
+        return int(i)
+    except:
+        return i
+
+# delimiter characters.
+LIST     = chr(0x80)
+INT      = chr(0x81)
+STRING   = chr(0x82)
+SYMBOL   = chr(0x83)
+NEG      = chr(0x84)
+VOCAB    = chr(0x85)
+FLOAT    = chr(0x86)
+LONGINT  = chr(0x87)
+
+HIGH_BIT_SET = chr(0x80)
+
+class Banana:
+#(protocol.Protocol, styles.Ephemeral):
+    def connectionMade(self):
+        self.listStack = []
+
+    def gotItem(self, item):
+        l = self.listStack
+        if l:
+            l[-1][1].append(item)
+        else:
+            self.expressionReceived(item)
+
+    buffer = ''
+
+    def dataReceived(self, chunk):
+        buffer = self.buffer + chunk
+        listStack = self.listStack
+        gotItem = self.gotItem
+        while buffer:
+            assert self.buffer != buffer, &quot;This ain't right: %s %s&quot; % (repr(self.buffer), repr(buffer))
+            self.buffer = buffer
+            pos = 0
+            for ch in buffer:
+                if ch &gt;= HIGH_BIT_SET:
+                    break
+                pos = pos + 1
+            else:
+                if pos &gt; 64:
+                    raise Exception(&quot;Security precaution: more than 64 bytes of prefix&quot;)
+                return
+            num = buffer[:pos]
+            typebyte = buffer[pos]
+            rest = buffer[pos+1:]
+            if len(num) &gt; 64:
+                raise Exception(&quot;Security precaution: longer than 64 bytes worth of prefix&quot;)
+            if typebyte == LIST:
+                num = b1282int(num)
+                listStack.append((num, []))
+                buffer = rest
+            elif typebyte == STRING:
+                num = b1282int(num)
+                if num &gt; 640 * 1024: # 640k is all you'll ever need :-)
+                    raise Exception(&quot;Security precaution: Length identifier too long.&quot;)
+                if len(rest) &gt;= num:
+                    buffer = rest[num:]
+                    gotItem(rest[:num])
+                else:
+                    return
+            elif typebyte == LONGINT:
+                assert not &quot;Not implemented&quot;
+            elif typebyte == INT:
+                buffer = rest
+                num = b1282int(num)
+                gotItem(num)
+            elif typebyte == NEG:
+                buffer = rest
+                num = -b1282int(num)
+                gotItem(num)
+            elif typebyte == SYMBOL:
+                buffer = rest
+                num = b1282int(num)
+                gotItem(self.incomingVocabulary[num])
+            elif typebyte == VOCAB:
+                buffer = rest
+                num = b1282int(num)
+                gotItem(self.incomingVocabulary[-num])
+            elif typebyte == FLOAT:
+                buffer = rest
+                num = float(num)
+                gotItem(num)
+            else:
+                raise NotImplementedError(&quot;Invalid Type Byte&quot;)
+            while listStack and (len(listStack[-1][1]) == listStack[-1][0]):
+                item = listStack.pop()[1]
+                gotItem(item)
+        self.buffer = ''
+
+    def expressionReceived(self, lst):
+        &quot;&quot;&quot;Called when an expression (list, string, or int) is received.
+        &quot;&quot;&quot;
+        raise NotImplementedError()
+
+
+    outgoingVocabulary = {
+        # Jelly Data Types
+        'None'           :  -1,
+        'class'          :  -2,
+        'dereference'    :  -3,
+        'reference'      :  -4,
+        'dictionary'     :  -5,
+        'function'       :  -6,
+        'instance'       :  -7,
+        'list'           :  -8,
+        'module'         :  -9,
+        'persistent'     : -10,
+        'tuple'          : -11,
+        'unpersistable'  : -12,
+
+        # PB Data Types
+        'copy'           : -13,
+        'cache'          : -14,
+        'cached'         : -15,
+        'remote'         : -16,
+        'local'          : -17,
+        'lcache'         : -18,
+
+        # PB Protocol Messages
+        'version'        : -19,
+        'login'          : -20,
+        'password'       : -21,
+        'challenge'      : -22,
+        'perspective'    : -23,
+        'inperspective'  : -24,
+        'cachemessage'   : -25,
+        'message'        : -26,
+        'answer'         : -27,
+        'error'          : -28,
+        'decref'         : -29,
+        'decache'        : -30,
+        'uncache'        : -31,
+        }
+
+    incomingVocabulary = {}
+    for k, v in outgoingVocabulary.items():
+        incomingVocabulary[v] = k
+        
+    def __init__(self):
+        self.outgoingSymbols = copy.copy(self.outgoingVocabulary)
+        self.outgoingSymbolCount = 0
+        
+    def intern(self, sym):
+        write = self.transport.write
+        self.outgoingSymbolCount = self.outgoingSymbolCount + 1
+        self.outgoingSymbols[sym] = self.outgoingSymbolCount
+
+    def sendEncoded(self, obj):
+        io = cStringIO.StringIO()
+        self._encode(obj, io.write)
+        value = io.getvalue()
+        self.transport.write(value)
+
+    def _encode_longint(self, obj, write):
+        assert not &quot;Not implemented&quot;
+
+    def _encode(self, obj, write):
+        if isinstance(obj, types.ListType) or isinstance(obj, types.TupleType):
+            int2b128(len(obj), write)
+            write(LIST)
+            for elem in obj:
+                self._encode(elem, write)
+        elif isinstance(obj, types.LongType):
+            self._encode_longint(obj, write)
+        elif isinstance(obj, types.IntType):
+            if obj &gt;= 0:
+                int2b128(obj, write)
+                write(INT)
+            else:
+                int2b128(-obj, write)
+                write(NEG)
+        elif isinstance(obj, types.FloatType):
+            write(str(obj))
+            write(FLOAT)
+        elif isinstance(obj, types.StringType):
+            if self.outgoingSymbols.has_key(obj):
+                symbolID = self.outgoingSymbols[obj]
+                if symbolID &lt; 0:
+                    int2b128(-symbolID, write)
+                    write(VOCAB)
+                else:
+                    int2b128(symbolID, write)
+                    write(SYMBOL)
+            else:
+                int2b128(len(obj), write)
+                write(STRING)
+                write(obj)
+        else:
+            assert 0, &quot;could not send object: %s&quot; % repr(obj)
+
+import cBanana
+
+class Canana(Banana):
+    def connectionMade(self):
+        self.state = cBanana.newState()
+
+    def dataReceived(self, chunk):
+        self.buffer += chunk
+        processed = cBanana.dataReceived(self.state, buffer, self.expressionReceived)
+        self.buffer = self.buffer[processed:]
+
+    _encode = apiarymisc.make_method(Banana, cBanana.encode_stuff)
+
+Pynana = Banana
+
+try:
+    import cBanana
+except ImportError:
+    pass
+else:
+    Banana = Canana
+
+# For use from the interactive interpreter
+_i = Banana()
+
+def encode(lst):
+    io = cStringIO.StringIO()
+    _i._encode(lst, io.write)
+    return io.getvalue()
+-------------- next part --------------
+/* cBanana.c */
+
+#ifdef WIN32
+#include &lt;windows.h&gt;
+#define EXTERN_API __declspec(dllexport)
+#else
+#define EXTERN_API 
+#endif
+
+#include &lt;Python.h&gt;
+#include &lt;assert.h&gt;
+
+/* Python module initialization */
+
+EXTERN_API void initcBanana(void);
+
+/* Python accessible */
+static PyObject *encode_stuff( PyObject *self, PyObject *args );
+static PyObject *dataReceived( PyObject *self, PyObject *args );
+static PyObject *cBananaState_new( PyObject *self, PyObject *args );
+static PyObject *encodeLong( PyObject *self, PyObject *args );
+
+// function table passed into Python by initcBanana()
+static PyMethodDef cBanana__methods__[] =
+  {
+    { &quot;encode_stuff&quot;, encode_stuff, METH_VARARGS },
+    { &quot;dataReceived&quot;, dataReceived, METH_VARARGS },
+    { &quot;newState&quot;, cBananaState_new, METH_VARARGS },
+    { &quot;encodeLong&quot;, encodeLong, METH_VARARGS },
+    { NULL, NULL }        /* Sentinel */
+  };
+
+static PyObject *BananaError;
+
+#define HIGH_BIT_SET 0x80
+
+#define LIST		 0x80
+#define INT			 0x81
+#define STRING		 0x82
+#define SYMBOL		 0x83
+#define NEG			 0x84
+#define VOCAB		 0x85
+#define FLOAT		 0x86
+#define LONGINT          0x87
+
+#define NUM_VOCABS   31
+
+struct listItem
+{
+  struct listItem *lastList;
+  PyObject *thisList;
+  int size;
+};
+
+/*
+ * This struct represents state that's carried between calls.
+ */
+
+typedef struct {
+  PyObject_HEAD
+  struct listItem *currentList;
+} cBananaState;
+
+staticforward PyTypeObject cBananaStateType;
+
+static PyObject*
+cBananaState_new(PyObject *self, PyObject *args) {
+  cBananaState* state;
+  if (!PyArg_ParseTuple(args, &quot;:newState&quot;)){
+    return NULL;
+  }
+  state = PyObject_NEW(cBananaState, &amp;cBananaStateType);
+  state-&gt;currentList = NULL;
+  return (PyObject*) state;
+}
+
+static void
+cBananaState_dealloc(PyObject* self)
+{
+  struct listItem* thatList;
+  struct listItem* thisList;
+  thisList = ((cBananaState*)self) -&gt; currentList;
+  while (thisList) {
+    thatList = thisList-&gt;lastList;
+    Py_DECREF(thisList-&gt;thisList);
+    free(thisList);
+    thisList = thatList;
+  }
+  PyMem_DEL(self);
+}
+
+static PyTypeObject cBananaStateType = {
+  PyObject_HEAD_INIT(NULL)
+  0,
+  &quot;cBananaState&quot;,
+  sizeof(cBananaState),
+  0,
+  cBananaState_dealloc, /* dealloc */
+  0, /* print */
+  0, /* getattr */
+  0, /* setattr */
+  0, /* compare */
+  0, /* repr */
+  0, /* as_number */
+  0, /* as_sequence */
+  0, /* as_mapping */
+  0, /* hash */
+};
+
+const char *vocab[] = {
+  // Filler so we start at 1 not 0
+  &quot;Dummy&quot;,  /* 0 */
+  // Jelly Data Types
+  &quot;None&quot;,   /* 1 */
+  &quot;class&quot;,  /* 2 */
+  &quot;dereference&quot;, /* 3 */
+  &quot;reference&quot;,  /* 4 */
+  &quot;dictionary&quot;, /* 5 */
+  &quot;function&quot;,/* 6 */
+  &quot;instance&quot;,/* 7 */
+  &quot;list&quot;, /* 8 */
+  &quot;module&quot;,/* 9 */
+  &quot;persistent&quot;,/* 10 */
+  &quot;tuple&quot;,/* 11 */
+  &quot;unpersistable&quot;,/* 12 */
+  // PB Data Types
+  &quot;copy&quot;,/* 13 */
+  &quot;cache&quot;,/* 14 */
+  &quot;cached&quot;,/* 15 */
+  &quot;remote&quot;,/* 16 */
+  &quot;local&quot;,/* 17 */
+  &quot;lcache&quot;,/* 18 */
+  // PB Protocol messages
+  &quot;version&quot;,/* 19 */
+  &quot;login&quot;,/* 20 */
+  &quot;password&quot;,/* 21 */
+  &quot;challenge&quot;,/* 22 */
+  &quot;perspective&quot;,/* 23 */
+  &quot;inperspective&quot;,/* 24 */
+  &quot;cachemessage&quot;,/* 25 */
+  &quot;message&quot;,/* 26 */
+  &quot;answer&quot;,/* 27 */
+  &quot;error&quot;,/* 28 */
+  &quot;decref&quot;,/* 29 */
+  &quot;decache&quot;,/* 30 */
+  &quot;uncache&quot;/* 31 */
+};
+
+
+const char *findVocab(int key)
+{
+  int offset = -key;
+  if (offset &lt; 0 || offset &gt;= NUM_VOCABS) {
+    return NULL;
+  }
+  return vocab[offset];
+}
+
+int b1282int(unsigned char *str, int begin, int end)
+{
+  int i = 0;
+  int place = 0;
+  int count;
+
+  for (count=begin; count &lt; end; count++) {
+    unsigned char num = str[count];
+    /*printf(&quot;b1282int: num = %d\n&quot;, num);*/
+    if (place) {
+      i = i +  (num &lt;&lt; (7 * place)); // (num * (128 ^ place));
+    } else {
+      i = i + num;
+    }
+    place++;
+  }
+  return i;
+}
+
+#include &lt;longintrepr.h&gt;
+
+static PyObject *encodeLong( PyObject *self, PyObject *args )
+{
+  unsigned char *str;
+  int end;
+  PyLongObject *longo;
+  PyObject *retval;
+
+  if(!PyArg_ParseTuple(args, &quot;O!:encodeLong&quot;, &amp;PyLong_Type, &amp;longo))
+    return NULL;
+
+  end = abs(longo-&gt;ob_size)*2 + 1;
+  str = PyMem_MALLOC(end);
+  if(_PyLong_AsByteArray(longo, str, end, 1, 1))
+    return NULL;
+
+  retval = PyString_FromStringAndSize(str, end);
+  PyMem_FREE(str);
+
+  return retval;
+}
+
+/**************
+** Real gotItem - invokes the python callback if required
+**************/
+int gotPythonItem(PyObject *object, struct listItem *currentList, PyObject *expressionReceived)
+{
+  PyObject *result;
+  PyObject *args;
+  int ret;
+
+  if (currentList) {
+    PyList_Append(currentList-&gt;thisList, object);
+    return 1;
+  }
+  else {
+    args = PyTuple_New(1);
+    ret = PyTuple_SetItem(args, 0, object);
+    if (ret != 0) {
+      //printf(&quot;Couldn't add item to tuple\n&quot;);
+      return 0;
+    }
+    
+    /*printf(&quot;Calling expressionReceived.\n&quot;);*/
+    result = PyObject_CallObject(expressionReceived, args);
+    if (!result) {
+      /* printf(&quot;Call to expressionReceived failed.\n&quot;); */
+      /* printf( &quot;ARGS: &lt; %s &gt;\n&quot;,  PyString_AsString( PyObject_Repr(args) ) ); */
+      /* PyErr_Print(); */
+      return 0;
+    }
+    return 1;
+  }
+}
+
+/**************
+** Helper function to add a float
+**************/
+int gotItemFloat(double value, struct listItem *currentList, PyObject *expressionReceived)
+{
+  PyObject *object = PyFloat_FromDouble(value);
+  return gotPythonItem(object, currentList, expressionReceived);
+}
+
+/**************
+** Helper function to add an int
+**************/
+int gotItemInt(int value, struct listItem *currentList, PyObject *expressionReceived)
+{
+  PyObject *object = PyInt_FromLong(value) ;
+  return gotPythonItem(object, currentList, expressionReceived);
+}
+
+/**************
+** Helper function to add a string
+**************/
+int gotItemString(const char *value, int len, struct listItem *currentList, PyObject *expressionReceived)
+{
+  char* myValue;
+  PyObject *object;
+  myValue = malloc(len);
+  memcpy(myValue, value, len);
+  object = PyString_FromStringAndSize(myValue, len);
+  return gotPythonItem(object, currentList, expressionReceived);
+}
+
+/**************
+** Helper function to add a list
+**************/
+int gotItemList(PyObject *listObject, struct listItem *currentList, PyObject *expressionReceived)
+{
+  return gotPythonItem(listObject, currentList, expressionReceived);
+}
+
+/****************************************
+** dataReceived
+**
+**
+** Inputs:
+**		newChunk - the new data to decode
+**      expressionReceived - the python callable to invoke for each expression
+**
+** Output:
+**  number of bytes processed
+*****************************************/
+static PyObject *dataReceived( PyObject *self, PyObject *args )
+{
+
+  PyObject *newChunk;		  // pointer to new chunk
+  PyObject *expressionReceived;   // callback
+  PyObject *stateobj;             // state object
+  cBananaState *state;            // state
+  unsigned char *buffer;          // buffer to work from
+  int bufferSize;                 // size of the remaining portion
+  int pos;
+  int nBeginPos;
+  int nEndPos;
+  unsigned char typeByte;
+
+  /* printf(&quot;Entering dataReceived!\n&quot;); */
+
+  if( !PyArg_ParseTuple( args, &quot;OOO&quot;, &amp;stateobj, &amp;newChunk, &amp;expressionReceived) )
+    return NULL;
+
+  if (!PyCallable_Check(expressionReceived) ) {
+    // ERROR - must be a callback we can use
+    //printf(&quot;ERROR - must be a callback we can use.\n&quot;);
+    Py_INCREF(Py_None);
+    return Py_None;
+  }
+
+  if (!PyString_Check(newChunk)) {
+    printf(&quot;First arg was not a string\n&quot;);
+    Py_INCREF(Py_None);
+    return Py_None;
+  }
+  
+  if ((stateobj == NULL) || ((stateobj-&gt;ob_type) != (&amp;cBananaStateType))) {
+    printf(&quot;state object wasn't\n&quot;);
+    Py_INCREF(Py_None);
+    return Py_None;
+  }
+  state = (cBananaState*) stateobj;
+
+  buffer = PyString_AS_STRING(newChunk);
+  bufferSize = PyString_GET_SIZE(newChunk);
+
+  pos = 0;
+  while (pos &lt; bufferSize) {
+    /* printf(&quot;beginning at %d\n&quot;, pos); */
+    nBeginPos = pos; /* beginning of number, also, 'consumed so far' */
+    while (buffer[pos] &lt; HIGH_BIT_SET) {
+      //printf(&quot;Got character %c (%d) at %d\n&quot;, current[pos], current[pos], pos );
+      pos++;
+      if ((pos-nBeginPos) &gt; 64) {
+	//ERROR: &quot;Security precaution: more than 64 bytes of prefix&quot;
+	printf(&quot;Security precaution: more than 64 bytes of prefix (this should raise an exception).\n&quot;);
+	Py_INCREF(Py_None);
+	return Py_None;
+      } else if (pos == bufferSize) {
+	/* boundary condition -- not enough bytes to finish the number */
+	return PyInt_FromLong(nBeginPos);
+      }
+    }
+    // extract the type byte
+    nEndPos = pos;
+    typeByte = buffer[pos];
+    pos++;
+    
+    switch (typeByte) {
+    case LIST: {
+      int num = b1282int(buffer, nBeginPos, nEndPos);
+      if (!state-&gt;currentList)	{
+	state-&gt;currentList = (struct listItem *)malloc(sizeof(struct listItem)); 
+	state-&gt;currentList-&gt;lastList = NULL;
+	state-&gt;currentList-&gt;size = num;
+	state-&gt;currentList-&gt;thisList = PyList_New(0);
+      } else {
+	struct listItem *newList = (struct listItem *) malloc(sizeof(struct listItem));
+	newList-&gt;size = num;
+	newList-&gt;thisList = PyList_New(0);
+	newList-&gt;lastList = state-&gt;currentList;
+	state-&gt;currentList = newList;
+      }
+      break;
+    }
+    case INT: {
+      int num = b1282int(buffer, nBeginPos, nEndPos);
+      if (!gotItemInt(num, state-&gt;currentList, expressionReceived)){
+	return NULL;
+      }
+      break;
+    }
+    case NEG: {
+      int num = -b1282int(buffer, nBeginPos, nEndPos);
+      if (!gotItemInt(num, state-&gt;currentList, expressionReceived)){
+	return NULL;
+      }
+      break;
+    }
+      
+    case LONGINT: {
+      PyObject *tmpo;
+      int len = b1282int(buffer, nBeginPos, nEndPos);
+
+      if (len &gt; 640 * 1024) {
+	PyErr_SetString(BananaError, &quot;Security precaution: Length identifier  &gt; 640K.\n&quot;);
+	return NULL;
+      }
+      if (len &gt; (bufferSize - pos) ) {
+	/* boundary condition; not enough bytes to complete string */
+	return PyInt_FromLong(nBeginPos);
+      }
+      tmpo = _PyLong_FromByteArray(buffer + pos, len, 1, 1);
+      if (!gotPythonItem(tmpo, state-&gt;currentList, expressionReceived))
+	return NULL;
+      pos = pos + len;
+      break;
+    }
+      
+    case STRING: {
+      int len = b1282int(buffer, nBeginPos, nEndPos);
+      /* printf(&quot;String length: %d\n&quot;, len); */
+      if (len &gt; 640 * 1024) {
+	PyErr_SetString(BananaError, &quot;Security precaution: Length identifier  &gt; 640K.\n&quot;);
+	return NULL;
+      }
+      if (len &gt; (bufferSize - pos) ) {
+	/* boundary condition; not enough bytes to complete string */
+	return PyInt_FromLong(nBeginPos);
+      }
+      if (!gotItemString(buffer+pos, len, state-&gt;currentList, expressionReceived)) {
+	return NULL;
+      }
+      pos = pos + len;
+      break;
+    }
+      
+    case SYMBOL:
+    case VOCAB: {
+      // SYBMOL and VOCAB are the same??
+      int num = b1282int(buffer, nBeginPos, nEndPos);
+      const char *vocabString = findVocab(-num);
+      if (vocabString == NULL) {
+	PyErr_SetString(BananaError, &quot;Vocab String not found.&quot;);
+	return NULL;
+      }
+      if (!gotItemString(vocabString, strlen(vocabString), state-&gt;currentList, expressionReceived)) {
+	return NULL;
+      }
+      break;
+    }
+      
+    case FLOAT: {
+      // TODO: optimize floats
+      char* numBuffer;
+      int numLen;
+      double num;
+
+      numLen = (nEndPos - nBeginPos) + 1;
+      numBuffer = malloc(numLen);
+      memcpy(numBuffer, buffer+nBeginPos, (nEndPos - nBeginPos));
+      numBuffer[numLen-1] = 0;
+      /* printf(&quot;float string: %s %d\n&quot;, numBuffer, numLen); */
+      num = atof(numBuffer);
+      free(numBuffer);
+      /* printf(&quot;float number: %f\n&quot;, num); */
+      gotItemFloat(num, state-&gt;currentList, expressionReceived);
+      break;
+    }
+      
+    default: {
+      PyErr_SetString(BananaError, &quot;Invalid Type Byte&quot;);
+      return NULL;
+    }
+    }
+    // If there is a list, check if it is full
+    if (state-&gt;currentList) {
+      /* printf(&quot;bufferSize: %d  listSize: %d\n&quot;, PyList_Size(state-&gt;currentList-&gt;thisList), state-&gt;currentList-&gt;size); */
+      while (state-&gt;currentList &amp;&amp; PyList_Size(state-&gt;currentList-&gt;thisList) == state-&gt;currentList-&gt;size) {
+	PyObject *list;
+	struct listItem *tmp;
+	
+	list = state-&gt;currentList-&gt;thisList;
+	tmp = state-&gt;currentList-&gt;lastList;
+	free(state-&gt;currentList);
+	state-&gt;currentList = tmp;
+	
+	if (!gotItemList(list, state-&gt;currentList, expressionReceived)) {
+	  return NULL;
+	}
+      }
+    }
+  }
+
+
+  ////printf(full);
+  return PyInt_FromLong(pos);
+
+}
+
+static int
+int2b128(int val, unsigned char *outbuf)
+{
+  int len = 0;
+
+  if(val &lt; 0)
+    return -1;
+
+  do {
+    outbuf[len++] = (val &amp; 0x7F);
+    val &gt;&gt;= 7;
+  } while(val);
+
+  return len;
+}
+
+static int
+write_int(int val, PyObject *writeo)
+{
+  char intbuf[32];
+  int itmp;
+  PyObject *otmp;
+
+  itmp = int2b128(val, intbuf);
+  if(itmp &lt; 0)
+    return -1;
+
+  otmp = PyEval_CallFunction(writeo, &quot;(s#)&quot;, intbuf, itmp);
+
+  if(!otmp)
+    return -1;
+
+  Py_DECREF(otmp);
+
+  return 0;
+}
+
+static int
+real_encode_stuff(PyObject *self, PyObject *obj, PyObject *writeo)
+{
+  PyObject *otmp;
+
+  assert(obj);
+  if(PyString_Check(obj))
+    {
+      otmp = PyObject_GetAttrString(self, &quot;outgoingSymbols&quot;);
+      if(!otmp)
+	return -1;
+      otmp = PyDict_GetItem(otmp, obj);
+      if(otmp)
+	{
+	  int sid;
+	  if(!PyInt_Check(otmp))
+	    return -1;
+	  sid = PyInt_AsLong(otmp);
+	  if(sid &lt; 0)
+	    {
+	      write_int(-sid, writeo);
+	      otmp = PyEval_CallFunction(writeo, &quot;(c)&quot;, VOCAB);
+	      if(!otmp)
+		return -1;
+	      Py_DECREF(otmp);
+	    }
+	  else
+	    {
+	      write_int(sid, writeo);
+	      otmp = PyEval_CallFunction(writeo, &quot;(c)&quot;, SYMBOL);
+	      if(!otmp)
+		return -1;
+	      Py_DECREF(otmp);
+	    }
+	}
+      else
+	{
+	  write_int(PyString_GET_SIZE(obj), writeo);
+	  otmp = PyEval_CallFunction(writeo, &quot;(c)&quot;, STRING);
+	  if(!otmp)
+	    return -1;
+	  Py_DECREF(otmp);
+	  otmp = PyEval_CallFunction(writeo, &quot;(O)&quot;, obj);
+	  if(!otmp)
+	    return -1;
+	  Py_DECREF(otmp);
+	}
+    }
+  else if(PySequence_Check(obj))
+    {
+      int psl = PySequence_Length(obj), i;
+
+      write_int(psl, writeo);
+      otmp = PyEval_CallFunction(writeo, &quot;(c)&quot;, LIST);
+      if(!otmp)
+	return -1;
+      Py_DECREF(otmp);
+      for(i = 0; i &lt; psl; i++)
+	{
+	  PyObject *subitem;
+
+	  subitem = PySequence_GetItem(obj, i);
+
+	  if(real_encode_stuff(self, subitem, writeo))
+	    return -1;
+	}
+    }
+  else if(PyLong_Check(obj))
+    {
+      int end;
+      unsigned char *str;
+      PyLongObject *longo = (PyLongObject *)obj;
+
+      end = abs(longo-&gt;ob_size) * 2 + 1;
+      write_int(end, writeo);
+
+      str = alloca(end+1);
+      if(_PyLong_AsByteArray(longo, str, end-1, 1, 1))
+	return -1;
+      str[0] = LONGINT;
+
+      otmp = PyEval_CallFunction(writeo, &quot;(s#)&quot;, str, end+1);
+      if(!otmp)
+	return -1;
+      Py_DECREF(otmp);
+    }
+  else if(PyInt_Check(obj))
+    {
+      int val = PyInt_AsLong(obj);
+
+      if(val &gt;= 0)
+	{
+	  write_int(val, writeo);
+	  otmp = PyEval_CallFunction(writeo, &quot;(c)&quot;, INT);
+	  if(!otmp)
+	    return -1;
+	  Py_DECREF(otmp);
+	}
+      else
+	{
+	  write_int(-val, writeo);
+	  otmp = PyEval_CallFunction(writeo, &quot;(c)&quot;, NEG);
+	  if(!otmp)
+	    return -1;
+	  Py_DECREF(otmp);
+	}
+    }
+  else if(PyFloat_Check(obj))
+    {
+      char fbuf[150];
+      int n;
+      PyFloat_AsReprString(fbuf, (PyFloatObject *)obj);
+      n = strlen(fbuf);
+      fbuf[n-1] = FLOAT;
+      fbuf[n] = '\0';
+      
+      otmp = PyEval_CallFunction(writeo, &quot;(s#)&quot;, fbuf, n+1);
+      if(!otmp)
+	return -1;
+      Py_DECREF(otmp);
+    }
+  else
+    return -1;
+
+  return 0;
+}
+
+static PyObject *
+encode_stuff(PyObject *unself, PyObject *args)
+{
+  PyObject *obj, *writeo, *self;
+
+  if(!PyArg_ParseTuple(args, &quot;OOO:encode_stuff&quot;, &amp;self, &amp;obj, &amp;writeo))
+    return NULL;
+
+  if(real_encode_stuff(self, obj, writeo))
+    return NULL;
+
+  Py_INCREF(Py_None);
+  return Py_None;
+}
+
+// module's initialization function for Python
+EXTERN_API void initcBanana(void)
+{
+  PyObject *m, *d;
+  cBananaStateType.ob_type = &amp;PyType_Type;
+  m = Py_InitModule(&quot;cBanana&quot;, cBanana__methods__);
+  d = PyModule_GetDict(m);
+  BananaError = PyErr_NewException(&quot;cBanana.error&quot;, NULL, NULL);
+  PyDict_SetItemString(d, &quot;error&quot;, BananaError);
+}
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="033040.html">[Twisted-Python] Re: [Twisted-commits] CVS: Twisted/twisted/protocols basic.py,1.13,1.14
+</A></li>
+	<LI>Next message (by thread): <A HREF="000534.html">[Twisted-Python] Enterprise, do you copy?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#33041">[ date ]</a>
+              <a href="thread.html#33041">[ thread ]</a>
+              <a href="subject.html#33041">[ subject ]</a>
+              <a href="author.html#33041">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,70 @@
+from twisted.python import components
+from twisted.web.woven import guard
+from twisted.web import server
+
+from ratcontrol.web import webinterfaces
+
+class RatControlSession(object):
+    __implements__ = webinterfaces.IRatControlSession
+
+    def __init__(self, session):
+        self.original = session
+        self.shelf = {}
+        self.preferences = {}
+        self.localPreferences = {}
+        self.defaults = {
+            'begin': 0,
+            'batchSize': 10
+        }
+        self.save = None
+
+    def get(self, key, default=None):
+        if default is None:
+            return self.preferences.get(key, self.defaults.get(key, None))
+        return self.preferences.setdefault(key, default)
+
+    def getLocal(self, request, key, default=None):
+        local = self.localPreferences.setdefault(tuple(request.prepath), {})
+        if default is None:
+            return local.get(key, self.defaults.get(key, None))
+        return local.setdefault(key, default)
+
+    def set(self, key, value):
+        self.preferences[key] = value
+        if self.save:
+            self.save()
+
+    def setLocal(self, request, key, value):
+        local = self.localPreferences.setdefault(tuple(request.prepath), {})
+        local[key] = value
+        if self.save:
+            self.save()
+
+    def handleRequest(self, request):
+        for k, v in request.args.items():
+            if k.startswith('ratcontrol_'):
+                if k.startswith('ratcontrol_local_'):
+                    self.setLocal(request, k[17:], v[0])
+                else:
+                    self.set(k[11:], v[0])
+
+    def setDefault(self, key, value):
+        self.defaults[key] = value
+
+    def locatePowerup(self, request, powerupClass):
+        pool = request.getComponent(webinterfaces.ICurrentPool)
+        assert pool is not None, "No pool was set on the request; cannot locate powerup."
+        for pup in pool.powerups:
+            if isinstance(pup, powerupClass):
+                return pup
+        raise AttributeError, "No powerup of type %s was found in pool %s." % (powerupClass, pool)
+
+    def putOnShelf(self, object):
+        self.shelf['woven_id_%s' % id(object)] = object
+
+    def getFromShelf(self, objId):
+        return self.shelf[objId]
+
+
+components.registerAdapter(RatControlSession, guard.GuardSession, webinterfaces.IRatControlSession)
+components.registerAdapter(RatControlSession, server.Session, webinterfaces.IRatControlSession)

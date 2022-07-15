@@ -1,0 +1,238 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] debugging a memory leak
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20debugging%20a%20memory%20leak&In-Reply-To=20100226005059.2792.1034517271.divmod.xquotient.93%40localhost.localdomain">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="021826.html">
+   <LINK REL="Next"  HREF="021741.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] debugging a memory leak</H1>
+    <B>Alec Matusis</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20debugging%20a%20memory%20leak&In-Reply-To=20100226005059.2792.1034517271.divmod.xquotient.93%40localhost.localdomain"
+       TITLE="[Twisted-Python] debugging a memory leak">matusis at yahoo.com
+       </A><BR>
+    <I>Wed Mar  3 20:08:03 EST 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="021826.html">[Twisted-Python] Twisted 10.0.0 released
+</A></li>
+        <LI>Next message: <A HREF="021741.html">[Twisted-Python] SSHSessionProcessProtocol.inConnectionLost()	behavior and Git over Conch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21740">[ date ]</a>
+              <a href="thread.html#21740">[ thread ]</a>
+              <a href="subject.html#21740">[ subject ]</a>
+              <a href="author.html#21740">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>It turns out that the situation described in my last email, where the server
+buffers strings due to the socket Send-Q saturation never arises in our
+production system, it was an artifact of high load testing in the lab
+environment.
+
+I &quot;fixed&quot; the memory leak, and I still do not understand what caused it. The
+code looked like this:
+
+File protocols.py:
+
+class MyProtocol(twisted.protocols.basic.LineOnlyReceiver):
+
+    def lineReceived(self, line):
+        def login_cb(session):
+            self.session = session
+
+        #this deferred chain creates an instance of Session in the end
+        d = self.factory.service.login_deferred(Callback(self), line)
+        d.addErrback(twisted.python.log.err)
+        #adds some properties to the session instance
+        d.addCallback(self.factory.service.authenticate)
+        d.addErrback(twisted.python.log.err)
+        d.addCallback(login_cb)
+        d.addErrback(twisted.python.log.err)
+
+class Callback:
+    def __init__(self, protocol):
+        self.protocol = protocol
+
+File service.py (protocol.factory.service):
+
+class Session:
+    def __init__(self, service, callback):
+        self.callback = callback
+        self.service = service
+
+    def do_something_asynchronous(self):
+        #this function creates MEMORY LEAK
+        def cb(result):
+            self.some_property = result
+            return self
+
+        d = some_asynch_operation()
+        d.addCallback(cb)
+        d.addErrback(twisted.python.log.err)
+
+class Service:
+
+    def login_deferred(self, callback, line):
+
+        def cb(result):
+            s = Session(self, callback)
+            return s
+
+        d = asynch_operation(line)
+        d.addCallback(cb)
+        d.addErrback(twisted.python.log.err)
+        return d
+
+    def authenticate(self, session):
+        #the deferred below caused the MEMORY LEAK
+        #when its code was moved into here from
+Session.do_something_asynchronous
+        #the leak disappered
+        d = session.do_something_asynchronous()
+        return d
+
+The problem was in the function Session.do_something_asynchronous , that
+returned the instance of its class.
+Interestingly, even though this was causing an unbounded memory leak visible
+from the OS, the number of objects tracked by garbage collector
+len(gc.get_objects()) remained stable, and also none of the objects that had
+len() were getting too long. Nothing could be seen by Heapy either,
+When I removed this function, and moved its code into Service.authenticate,
+the memory stabilized. I still do not quite understand why, I was just
+acting on the intuition that when a function returns its class instance, it
+could create a reference cycle.
+
+After the removal of this function, the server exhibits the following
+behavior: when it starts and after all clients connect and it reaches its
+average load, the memory stays at 350MB for about 1.5hrs. Then it suddenly
+jumps to 650MB, and stays there. Since at 350MB the server already serves
+the maximum number of connection (and is operating at its normal load), I
+think that the jump to 650MB is caused by some additional memory leak.
+Could there be anything wrong with this code pattern, where I launch
+deferreds from other deferreds (e.g. my function Service.login_deferred ,
+which itself is a part of a deferred chain, launches another deferred
+function cb() within itself)?
+
+Also this code has the following reference cycle: protocol.session -&gt;
+session.callback.protocol. This cycle existed in the code for a long time
+and never caused unbounded memory, even though the server creates 100 of
+Session()s per sec, and they seem to be always garbage-collected (by
+inspecting gc.get_objects()), even with python 2.4 before the improvements
+of the cyclical garbage collector.
+
+&gt;<i> -----Original Message-----
+</I>&gt;<i> From: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A> [mailto:twisted-python-
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">bounces at twistedmatrix.com</A>] On Behalf Of <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A>
+</I>&gt;<i> Sent: Thursday, February 25, 2010 4:51 PM
+</I>&gt;<i> To: Twisted general discussion
+</I>&gt;<i> Subject: Re: [Twisted-Python] debugging a memory leak
+</I>&gt;<i> 
+</I>&gt;<i> On 01:24 am, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">johann.borck at densedata.com</A> wrote:
+</I>&gt;<i> &gt;Alec Matusis wrote:
+</I>&gt;<i> &gt;&gt;In desperation of not finding the real memory leak on the production
+</I>&gt;<i> &gt;&gt;server,
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;I wrote a test server that I can push to arbitrary high RSS memory. I
+</I>&gt;<i> &gt;&gt;am far
+</I>&gt;<i> &gt;&gt;from sure if this the same leak that I observe in production, but I
+</I>&gt;<i> &gt;&gt;would
+</I>&gt;<i> &gt;&gt;like to understand what this one is.
+</I>&gt;<i> &gt;&gt;This is the server code:
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;Server.py:
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;import twisted.protocols.basic
+</I>&gt;<i> &gt;&gt;from twisted.internet.protocol import Factory
+</I>&gt;<i> &gt;&gt;from twisted.internet import reactor
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;class HiRate(twisted.protocols.basic.LineOnlyReceiver):
+</I>&gt;<i> &gt;&gt;         MAX_LENGTH = 20000
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;         def lineReceived(self, line):
+</I>&gt;<i> &gt;&gt;                 if line == 'get':
+</I>&gt;<i> &gt;&gt;                         out = 'a'*4000+'\r\r'
+</I>&gt;<i> &gt;&gt;                         self.transport.write(out)
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;factory = Factory()
+</I>&gt;<i> &gt;&gt;factory.protocol = HiRate
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;reactor.listenTCP(8007, factory, backlog=50, interface='10.18.0.2')
+</I>&gt;<i> &gt;&gt;reactor.run()
+</I>&gt;<i> &gt;&gt;[...]
+</I>&gt;<i> &gt;&gt;To reproduce the memory leak, I either need two machines with fast LAN
+</I>&gt;<i> &gt;&gt;between them (since the client program takes 100% CPU), or possibly
+</I>&gt;<i> &gt;&gt;one
+</I>&gt;<i> &gt;&gt;machine with a dual core CPU (I have not tried that). It is important
+</I>&gt;<i> &gt;&gt;that
+</I>&gt;<i> &gt;&gt;client.py is given a separate CPU to run.
+</I>&gt;<i> &gt;&gt;When the length of the response from the server is sufficient,  (out =
+</I>&gt;<i> &gt;&gt;'a'*4000+'\r\r' ,  4000 is enough in my case), the RSS of the server
+</I>&gt;<i> &gt;&gt;process
+</I>&gt;<i> &gt;&gt;starts to leak without a bound.
+</I>&gt;<i> &gt;&gt;If you introduce a small delay in the client (#time.sleep(.001)), the
+</I>&gt;<i> &gt;&gt;leak
+</I>&gt;<i> &gt;&gt;does not occur.
+</I>&gt;<i> &gt;Hi Alec,
+</I>&gt;<i> &gt;I wouldn't call that a memory leak. In your example  ( SC/s = (n* CS) /
+</I>&gt;<i> &gt;s ;  n &gt; 1, SC: bytes sent to the client, CS: bytes sent to the server
+</I>&gt;<i> &gt;)
+</I>&gt;<i> &gt;there is some CS that satifies the condition SC/s &gt; [available
+</I>&gt;<i> &gt;bandwidth]. For all CS that exceed that limit, the data will be first
+</I>&gt;<i> &gt;queued in the Send-Q of the socket and then inside twisted, because the
+</I>&gt;<i> &gt;Send-Q is full. That's the reason why you see increasing memory usage,
+</I>&gt;<i> &gt;but it's not a leak, it is a server that can not cope with this kind of
+</I>&gt;<i> &gt;DOS attack. Twisted can not handle this situation for you because that
+</I>&gt;<i> &gt;would mean it had to decide which packets, connections, etc. to drop.
+</I>&gt;<i> &gt;Such decisions have to be made by your application.
+</I>&gt;<i> 
+</I>&gt;<i> You can get notifications about when your send buffers are full by
+</I>&gt;<i> registering a producer with the transport.
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/documents/current/core/howto/producers.html">http://twistedmatrix.com/documents/current/core/howto/producers.html</A>
+</I>&gt;<i> describes the APIs involved.  This will help you make these decisions in
+</I>&gt;<i> your application.
+</I>&gt;<i> 
+</I>&gt;<i> Jean-Paul
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+</PRE>
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="021826.html">[Twisted-Python] Twisted 10.0.0 released
+</A></li>
+	<LI>Next message: <A HREF="021741.html">[Twisted-Python] SSHSessionProcessProtocol.inConnectionLost()	behavior and Git over Conch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21740">[ date ]</a>
+              <a href="thread.html#21740">[ thread ]</a>
+              <a href="subject.html#21740">[ subject ]</a>
+              <a href="author.html#21740">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

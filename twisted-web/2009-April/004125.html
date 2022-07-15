@@ -1,0 +1,276 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: some questions about twisted.web
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20some%20questions%20about%20twisted.web&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004124.html">
+   <LINK REL="Next"  HREF="004126.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: some questions about twisted.web</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20some%20questions%20about%20twisted.web&In-Reply-To="
+       TITLE="[Twisted-web] Re: some questions about twisted.web">db3l.net at gmail.com
+       </A><BR>
+    <I>Wed Apr  8 18:07:00 EDT 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004124.html">[Twisted-web] Re: some questions about twisted.web
+</A></li>
+        <LI>Next message: <A HREF="004126.html">[Twisted-web] Re: some questions about twisted.web
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4125">[ date ]</a>
+              <a href="thread.html#4125">[ thread ]</a>
+              <a href="subject.html#4125">[ subject ]</a>
+              <a href="author.html#4125">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Jack Moffitt &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">jack at chesspark.com</A>&gt; writes:
+
+&gt;<i> When the first getChild is called how do I know it's the first
+</I>&gt;<i> getChild call so that I do the special logic?  Perhaps that's what is
+</I>&gt;<i> confusing me.
+</I>
+Well, &quot;first getChild&quot; is ambiguous to me.  If you mean the getChild
+on the instance that is supposed to do non-default mapping, I'd
+suggest you know simply because the Resource class that implements it
+has to get instantiated and reached somehow by the normal lookup
+mechanism, so once it gets control, by definition that's the right
+time.
+
+Or put another way, you only instantiate and install into the tree the
+object supporting the new lookup mechanism just where you need it, so
+as far as that object instance is concerned, if it's being called, it
+needs the special logic.
+
+This of course assumes that you aren't trying to implement a single class
+for both lookup types, but rather have a Resource subclass designed for
+use as the new lookup mechanism.
+
+If you made such a class your Root object, then essentially your whole
+site would be mapped using the new mechanism.  If you stuck it further
+down (such as via a putChild on lower level resources, or by
+dynamically returning it in some othera custom getChild), then the new
+lookups start taking place beyond that point in the URL.
+
+An important point mentioned in some of the other responses is how the
+isLeaf Resource attribute gets used in traversal.  When Twisted is
+working its way down a URL and traversing objects through getChild, if
+it hits one with isLeaf=True, it will stop at that point and let that
+object render the result, even if the URL hasn't been exhausted.
+
+During rendering the Resource will have access to the prepath and
+postpath attributes on the current request indicating the portion of
+the URL used to reach the current Resource, and any remaining portion.
+
+So two approaches you might follow:
+
+* Intercept the getChild lookup mechanism itself within the instance
+  of your specific Resource object - use whatever mapping approach you
+  want, and return an appropriate Resource.  That Resource object,
+  when initially instantiated for use by the site, might have its own
+  configuration file, cache of instantiated Resource objects, or
+  whatever.
+
+  Assuming that the mapping process yields the final Resource for the
+  matched URL you'll want to ensure the resource you return is used
+  for the rendering, even though request.postpath at that point may
+  not be empty.  One way to handle this would be to ensure that
+  isLeaf=True on any returned Resource (your mapping class can even
+  set this if you don't want to require authors of the Resource
+  objects themselves to care) so that traversal stops at that point
+  and they are directly called to render the page.
+
+  One drawback to using isLeaf on the returned resource might be that
+  the request postpath won't be accurate during rendering as it will
+  still reflect the location of your mapping Resource rather than the
+  rendering resource.  If that's an issue (say for computed links
+  during rendering), you could alternatively leave isLeaf=False in the
+  returned Resource but ensure that its getChild() always returns
+  itself, which would let the normal Twisted mechanism eat through the
+  URL but never leave the Resource.
+
+  Or yet another approach - if you manipulate request.prepath/postpath
+  during a getChild call, you'll control the traversal, so simply
+  clearing postpath (presumably after appending it to prepath) should
+  guarantee the traversal stops with the Resource object you're
+  returning, while leaving prepath/postpath accurate during rendering.
+
+* Define the mapping Resource itself with isLeaf=True, and then during
+  its render() operation, do whatever dynamic lookups you need to in
+  order to locate the appropriate Resource, and return the result of
+  its render() operation.
+
+  This approach also allows the mapping operation itself to be
+  deferrable since its occurring during the render operation rather
+  than the initial object traversal.
+  
+  In this case, since you are in control of calling the final Resource
+  object's render(), there's no worry about further object traversal,
+  but you may still want to manipulate prepath/postpath in the active
+  request object to have appropriate values for use by the final
+  rendering Resource.
+
+As an example of the latter, I have a site that accepts URLs of the
+form:
+
+   <A HREF="http://&lt;site">http://&lt;site</A>&gt;/approval/&lt;key&gt;/x/y/z
+
+where &lt;key&gt; is a unique key handed out to clients via email to gate
+their access to their data.  I need to use &lt;key&gt; to validate and
+identify the client, but the rest of the URL is a fairly static
+association of Resource objects per the normal Twisted &quot;putChild&quot;
+setup.  However, once the client is validated, a job UUID for them is
+automatically appended to the URL for use by any eventual Resource.
+
+I'll grant that this scenario is not necessarily the greatest argument
+for the Twisted traversal mechanism versus an RE-based mapper
+(assuming the latter lets you save portions of the matched URL for the
+use of the rendering object), but it does show a dynamic (and
+deferred) processing mechanism within twisted.web.
+
+I have an ApprovalRoot Resource subclass (with isLeaf=True), that was
+tied in under my site's Root object (with putChild), as shown below.
+It uses the approval key to do some database lookups and validations,
+then re-uses the same getChildForRequest function Twisted itself uses
+for traversal on the remainder of the path (popping off the approval
+key first), via an internal Resource tree.  In this case, since the
+second level lookup is processing the Request object, prepath/postpath
+end up correct for the render() call without further intervention.
+
+If you replace the lookup with your own traversal mapping object, it
+could just as easily map resources in other ways.  Of course, if the
+mapping mechanism had no requirement for deferrable lookups, doing the
+processing during the getChild operations is probably a little more
+logical.
+
+-- David
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+During initialization, site setup includes (among other resources):
+
+    # Main site URL entry points
+    self.root = Root(self.options)
+    msg_root = ApprovalRoot(db, self.options)
+    self.root.putChild('approval', msg_root)
+
+which uses the following class:
+
+class ApprovalRoot(Resource):
+    &quot;&quot;&quot;Act as root of the approval tree, which is accessed from URLs in
+    messages, and always include the message key as the first part of
+    request.postpath.  Strips off the key, validates it, and then passes
+    control on to appropriate job or file based objects depending on the
+    remainder of the URL.
+    
+    This is almost identical to normal child lookup by non-leaf objects,
+    but handled at render time since the message key validation is a
+    deferred operation.&quot;&quot;&quot;
+
+    isLeaf = True
+
+    def __init__(self, db, options):
+        Resource.__init__(self)
+        self.db = db
+        self.loader = options['loader']
+
+        # Use a separate resource as the root of the remaining URL processing
+        # since the isLeaf on ourselves would defeat any child search
+
+        self.job_root = Resource()
+
+    def putChild(self, path, child):
+        &quot;&quot;&quot;Permit simulated children, so that the overall structure of the
+        web site can still be established in a higher level function&quot;&quot;&quot;
+        self.job_root.putChild(path, child)
+
+    def _db_retrieveJobUuid(self, key):
+        sql = sa.select([schema.jobs.c.uuid, schema.messages.c.expiration],
+                        sa.and_(schema.jobs.c.uuid ==
+                                schema.messages.c.job_uuid,
+                                schema.messages.c.key == key))
+
+        r = sql.execute().fetchone()
+
+        if not r:
+            raise _Unavailable
+        elif (r.expiration and r.expiration &lt; datetime.utcnow()):
+            raise NoResource('The email approval key has expired')
+        else:
+            return r.uuid
+
+    def _cb_render(self, job_uuid, request):
+        # Transfer control to the appropriate child for rendering.  In the
+        # case of a top level render, modify the postpath to include the job
+        # uuid as an argument.
+        if request.postpath and not request.postpath[0]:
+            request.postpath.append(job_uuid.hex)
+        child = getChildForRequest(self.job_root, request)
+        r = child.render(request)
+        if r != NOT_DONE_YET:
+            request.write(r)
+            request.finish()
+
+    def _cb_render_err(self, failure, request):
+        if failure.check(NoResource):
+            request.write(failure.value.render(request))
+            request.finish()
+            return
+        return failure
+
+    def _finishRequest(self, value, request):
+        request.finish()
+        return value
+
+    def render(self, request):
+        if len(request.postpath) &lt; 1:
+            return ErrorPage(http.NOT_FOUND,
+                             'Missing approval reference', '').render(request)
+
+        # We only render message key failures, so if the URL has no further
+        # segments beyond the key, add a trailing &quot;/&quot; to trigger the child
+        # lookup for the default handler.
+        if len(request.postpath) == 1:
+            request.redirect(request.prePathURL() + '/' +
+                             request.postpath[0] + '/')
+            request.finish()
+        else:
+            msg_key = request.postpath.pop(0)
+            d = self.db.run(self._db_retrieveJobUuid, msg_key)
+            d.addCallback(self._cb_render, request)
+            d.addErrback(self._cb_render_err, request)
+            d.addErrback(self._finishRequest, request)
+            d.addErrback(log.err)
+        return NOT_DONE_YET
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004124.html">[Twisted-web] Re: some questions about twisted.web
+</A></li>
+	<LI>Next message: <A HREF="004126.html">[Twisted-web] Re: some questions about twisted.web
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4125">[ date ]</a>
+              <a href="thread.html#4125">[ thread ]</a>
+              <a href="subject.html#4125">[ subject ]</a>
+              <a href="author.html#4125">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

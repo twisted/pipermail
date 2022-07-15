@@ -1,0 +1,300 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted.protocols.http: RFC
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.protocols.http%3A%20RFC&In-Reply-To=%3C200104181102.OAA15816%40jabotinsky.lerner.co.il%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="032543.html">
+   <LINK REL="Next"  HREF="032545.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted.protocols.http: RFC</H1>
+    <B>Moshe Zadka</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.protocols.http%3A%20RFC&In-Reply-To=%3C200104181102.OAA15816%40jabotinsky.lerner.co.il%3E"
+       TITLE="[Twisted-Python] twisted.protocols.http: RFC">moshez at zadka.site.co.il
+       </A><BR>
+    <I>Wed Apr 18 05:02:32 MDT 2001</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="032543.html">[Twisted-Python] PIRP for Twisted Python
+</A></li>
+        <LI>Next message (by thread): <A HREF="032545.html">[Twisted-Python] I was looking for offhanded ways to improve us.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#32544">[ date ]</a>
+              <a href="thread.html#32544">[ thread ]</a>
+              <a href="subject.html#32544">[ subject ]</a>
+              <a href="author.html#32544">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Glyph and I talked and decided the HTTP handling should be more
+flexible.
+Here is a preliminary patch for the flexibility:
+
+on finishing headers, the handler calls handleHeaders()
+Presumably, that call causes .setCallback(some_callable) to be called
+on the handler. Then, content chunks are passed back via some_callable(chunk)
+when there is no more, some_callable('') is called.
+
+I haven't checked it in yet.
+Please loot at HTTPCallBackHandler and let me know what you think.
+Of course, I can still read everything into memory if I'm using 
+HTTPRequestHandler.
+
+Please note that the handler is smart about content-length...
+
+-- 
+Moshe Zadka &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">moshez at lerner.co.il</A>&gt;
+Web Developer, Python Developer
+
+import string
+from LineReceiver import LineReceiver
+
+class HTTPClient(LineReceiver):
+
+    __length = None
+    __buffer = ''
+
+    def sendCommand(self, command, selector):
+        self.write('%s %s HTTP/1.0\r\n' % (command, selector))
+
+    def sendHeader(self, name, value):
+        self.write('%s: %s\r\n' % (name, value))
+
+    def endHeaders(self):
+        self.write('\r\n')
+
+    def handleLine(self, line):
+        if line:
+            self.handleHeader(line)
+        else:
+            self.handleEndHeaders()
+            self.setRawMode()
+
+    def handleEndHeaders(self):
+        self.__buffer = self.__buffer + '\n'
+
+    def handleRawData(self, data):
+        if not data:
+            self.handleResponse(self.__buffer)
+            self.__buffer = ''
+            return
+        if self.length is not None:
+            data, rest = data[:self.length], data[self.length:]
+            self.length = self.length - len(data)
+        else:
+            rest = ''
+        self.__buffer = self.__buffer + data
+        if self.length == 0:
+            self.handleResponse(self.__buffer)
+            self.__buffer = ''
+
+    def handleHeader(self, line):
+        __buffer = __buffer + line + '\n'
+        if string.find(line, 'content-length: ') == 0:
+            self.length = int(string.strip(string.split(line, ':', 1)[0]))
+
+
+class HTTPHandler(LineReceiver):
+
+    __length = 0
+    __header = ''
+    __first_line = 1
+
+    def _parse_command(self, command):
+        parts = string.split(command)
+        if len(parts)&lt;3:
+            parts.append('HTTP/0.9') # isn't backwards compat great!
+        if len(parts) != 3:
+            self.sendError(405, 'Bad command')
+            raise ValueError(str(parts))
+        return parts
+
+    def sendStatus(self, code, resp=''):
+        self.write('HTTP/1.0 %s %s\r\n' % (code, resp))
+
+    def sendHeader(self, name, value):
+        self.write('%s: %s\r\n' % (name, value))
+
+    def endHeaders(self):
+        self.write('\r\n')
+
+    def sendError(self, code, resp=''):
+        self.sendStatus(code, resp)
+        self.endHeaders()
+
+    def handleLine(self, line):
+        if self.__first_line:
+            self.__first_line = 0
+            command, request, version = self._parse_command(line)
+            self.handleCommand(command, request, version)
+            if version == 'HTTP/0.9':
+                self.handleEndHeaders()
+                self.callHandleEndContent()
+        elif line == '':
+            if self.__header:
+                self.callHandleHeader(self.__header)
+            self.__header = ''
+            self.handleEndHeaders()
+            if self.__length == 0:
+                self.callHandleEndContent()
+            else:
+                self.setRawMode()
+        elif line[0] in ' \t':
+            self.__header = self.__header+'\n'+line
+        else:
+            if self.__header:
+            	self.callHandleHeader(self.__header)
+            self.__header = line
+
+    def callHandleHeader(self, line):
+        assert line
+        if string.find(string.lower(line), 'content-length: ') == 0:
+            self.__length = int(string.strip(string.split(line, ':', 1)[1]))
+        self.handleHeader(line)
+
+    def callHandleEndContent(self):
+        self.__first_line = 1
+        self.handleEndContent()
+
+    def handleRawData(self, data):
+        if not data:
+            self.callHandleEndContent()
+        if len(data) &lt; self.__length:
+            self.handleContentChunk(data)
+            self.__length = self.__length - len(data)
+        else:
+            self.handleContentChunk(data[:self.__length])
+            self.callHandleEndContent()
+            self.setLineMode(data[self.__length:])
+
+from cStringIO import StringIO
+import rfc822
+
+class HTTPHeadersHandler(HTTPHandler):
+
+    def handleCommand(self, command, selector, version):
+        self.__command = command
+        self.__selector = selector
+        self.__version = version
+        self.__headers = StringIO()
+
+    def handleHeader(self, line):
+        self.__headers.write(line+'\n')
+
+    def handleEndHeaders(self):
+        self.__headers.write('\n')
+        self.__headers.seek(0)
+        headers = rfc822.Message(self.__headers)
+        self.handleHeaders(self.__command, self.__selector, 
+                           self.__version, headers)
+        del self.__command, self.__selector, self.__version, self.__headers
+
+
+class HTTPCallbackOnContentHandler(HTTPHeadersHandler):
+
+    def setCallBack(self, call):
+        self.__call = call
+
+    def handleContentChunk(self, data):
+        self.__call(data)
+
+    def handleEndContent(self):
+        self.__call('')
+
+
+class HTTPRequestHandler(HTTPHeadersHandler):
+
+    def handleHeaders(self, command, selector, version, headers):
+        self.__command, self.__selector, self.__version, self.__headers = \
+                                         command, selector, version, headers
+        self.__content = StringIO()
+
+    def handleContentChunk(self, data):
+        self.__content.write(data)
+
+    def handleEndContent(self):
+        data = self.__content.getvalue()
+        del self.__content
+        self.handleRequest(self.__command, self.__selector, 
+                           self.__version, self.__headers, data)
+
+
+def _test():
+
+    class DummyHTTPHandler(HTTPRequestHandler):
+
+        def __init__(self):
+            import StringIO
+            self.output = StringIO.StringIO()
+            self.write = self.output.write
+
+        def handleRequest(self, command, selector, version, headers, data):
+            request = &quot;'''\n&quot;+str(headers)+&quot;\n&quot;+data+&quot;'''\n&quot;
+            self.sendStatus(200, &quot;OK&quot;)
+            self.sendHeader(&quot;Request&quot;, selector)
+            self.sendHeader(&quot;Command&quot;, command)
+            self.sendHeader(&quot;Version&quot;, version)
+            self.sendHeader(&quot;Content-Length&quot;, len(request))
+            self.endHeaders()
+            self.write(request)
+
+    requests = '''\
+GET / HTTP/1.0
+
+GET / HTTP/1.1
+Accept: text/html
+
+POST / HTTP/1.1
+Content-Length: 10
+
+0123456789HEAD /
+'''
+    requests = string.replace(requests, '\n', '\r\n')
+    expected_response = &quot;HTTP/1.0 200 OK\015\012Request: /\015\012Command: GET\015\012Version: HTTP/1.0\015\012Content-Length: 9\015\012\015\012'''\012\012'''\012HTTP/1.0 200 OK\015\012Request: /\015\012Command: GET\015\012Version: HTTP/1.1\015\012Content-Length: 27\015\012\015\012'''\012Accept: text/html\012\012'''\012HTTP/1.0 200 OK\015\012Request: /\015\012Command: POST\015\012Version: HTTP/1.1\015\012Content-Length: 38\015\012\015\012'''\012Content-Length: 10\012\0120123456789'''\012HTTP/1.0 200 OK\015\012Request: /\015\012Command: HEAD\015\012Version: HTTP/0.9\015\012Content-Length: 9\015\012\015\012'''\012\012'''\012&quot;
+    a = DummyHTTPHandler()
+    a.handleData(requests)
+    value = a.output.getvalue()
+    if value != expected_response:
+	for i in range(len(value)):
+            if value[i] != expected_response[i]:
+                print `value[i-5:i+10]`, `expected_response[i-5:i+10]`
+                break
+        raise AssertionError
+
+if __name__ == '__main__':
+    _test()
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="032543.html">[Twisted-Python] PIRP for Twisted Python
+</A></li>
+	<LI>Next message (by thread): <A HREF="032545.html">[Twisted-Python] I was looking for offhanded ways to improve us.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#32544">[ date ]</a>
+              <a href="thread.html#32544">[ thread ]</a>
+              <a href="subject.html#32544">[ subject ]</a>
+              <a href="author.html#32544">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

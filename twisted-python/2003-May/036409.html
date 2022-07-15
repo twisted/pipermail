@@ -1,0 +1,658 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Updated TLS patch
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Updated%20TLS%20patch&In-Reply-To=%3C20030503030226.GQ37090%40shitbomb.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="036406.html">
+   <LINK REL="Next"  HREF="036398.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Updated TLS patch</H1>
+    <B>Skinny Puppy</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Updated%20TLS%20patch&In-Reply-To=%3C20030503030226.GQ37090%40shitbomb.com%3E"
+       TITLE="[Twisted-Python] Updated TLS patch">skin_pup-twisted at damnable.happypoo.com
+       </A><BR>
+    <I>Fri May  2 21:02:26 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="036406.html">[Twisted-Python] Updated TLS patch
+</A></li>
+        <LI>Next message (by thread): <A HREF="036398.html">[Twisted-Python] Twisted 1.0.4 - Typo in code
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36409">[ date ]</a>
+              <a href="thread.html#36409">[ thread ]</a>
+              <a href="subject.html#36409">[ subject ]</a>
+              <a href="author.html#36409">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Glyph Lefkowitz [<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>] wrote:
+&gt;<i> -----BEGIN PGP SIGNED MESSAGE-----
+</I>&gt;<i> Hash: SHA1
+</I>&gt;<i> 
+</I>&gt;<i> Ugly as it is, this looks like the right answer to me...
+</I>&gt;<i> 
+</I>&gt;<i> On Friday, May 2, 2003, at 07:30 AM, Skinny Puppy wrote:
+</I>&gt;<i> 
+</I>&gt;<i> &gt;The branch/function call can be avoided by replacing the 
+</I>&gt;<i> &gt;doRead/doWrite/etc
+</I>&gt;<i> &gt;methods in startTLS.  While this is still not very perty ;)
+</I>&gt;<i> -----BEGIN PGP SIGNATURE-----
+</I>&gt;<i> Version: GnuPG v1.2.1 (Darwin)
+</I>&gt;<i> 
+</I>&gt;<i> iD8DBQE+svG0vVGR4uSOE2wRAqo+AJ40/0hBnDnEh1267vYe7hAJV0TEUwCeNklv
+</I>&gt;<i> Qya3OyfpjxoexyNSb3iLPqc=
+</I>&gt;<i> =24qI
+</I>&gt;<i> -----END PGP SIGNATURE-----
+</I>
+Ok - Done - I still don't like it.  I have not run any real world tests
+yet, but I have used echoserv_tls.py/echoclient_tls.py and watched the
+traffic with tcpdump to verify the encryption.  And of course the Unit
+Tests.  
+
+Jeremy 
+-------------- next part --------------
+? doc/examples/echoclient_tls.py
+? doc/examples/echoserv_tls.py
+Index: twisted/internet/ssl.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/ssl.py,v
+retrieving revision 1.40
+diff -u -r1.40 ssl.py
+--- twisted/internet/ssl.py	2 Apr 2003 04:11:32 -0000	1.40
++++ twisted/internet/ssl.py	3 May 2003 06:28:42 -0000
+@@ -95,116 +95,13 @@
+         return SSL.Context(SSL.SSLv3_METHOD)
+ 
+ 
+-class Connection(tcp.Connection):
+-    &quot;&quot;&quot;I am an SSL connection.
+-    &quot;&quot;&quot;
+-
+-    __implements__ = tcp.Connection.__implements__, interfaces.ISSLTransport
+-    
+-    writeBlockedOnRead = 0
+-    readBlockedOnWrite= 0
+-    sslShutdown = 0
+-    
+-    def getPeerCertificate(self):
+-        &quot;&quot;&quot;Return the certificate for the peer.&quot;&quot;&quot;
+-        return self.socket.get_peer_certificate()
+-
+-    def _postLoseConnection(self):
+-        &quot;&quot;&quot;Gets called after loseConnection(), after buffered data is sent.
+-
+-        We close the SSL transport layer, and if the other side hasn't
+-        closed it yet we start reading, waiting for a ZeroReturnError
+-        which will indicate the SSL shutdown has completed.
+-        &quot;&quot;&quot;
+-        try:
+-            done = self.socket.shutdown()
+-            self.sslShutdown = 1
+-        except SSL.Error:
+-            return main.CONNECTION_LOST
+-        if done:
+-            return main.CONNECTION_DONE
+-        else:
+-            # we wait for other side to close SSL connection -
+-            # this will be signaled by SSL.ZeroReturnError when reading
+-            # from the socket
+-            self.stopWriting()
+-            self.startReading()
+-            return None # don't close socket just yet
+-    
+-    def doRead(self):
+-        &quot;&quot;&quot;See tcp.Connection.doRead for details.
+-        &quot;&quot;&quot;
+-        if self.writeBlockedOnRead:
+-            self.writeBlockedOnRead = 0
+-            return self.doWrite()
+-        try:
+-            return tcp.Connection.doRead(self)
+-        except SSL.ZeroReturnError:
+-            # close SSL layer, since other side has done so, if we haven't
+-            if not self.sslShutdown:
+-                try:
+-                    self.socket.shutdown()
+-                    self.sslShutdown = 1
+-                except SSL.Error:
+-                    pass
+-            return main.CONNECTION_DONE
+-        except SSL.WantReadError:
+-            return
+-        except SSL.WantWriteError:
+-            self.readBlockedOnWrite = 1
+-            self.startWriting()
+-            return
+-        except SSL.Error:
+-            return main.CONNECTION_LOST
+-
+-    def doWrite(self):
+-        if self.readBlockedOnWrite:
+-            self.readBlockedOnWrite = 0
+-            if not self.dataBuffer: self.stopWriting()
+-            return self.doRead()
+-        return tcp.Connection.doWrite(self)
+-    
+-    def writeSomeData(self, data):
+-        &quot;&quot;&quot;See tcp.Connection.writeSomeData for details.
+-        &quot;&quot;&quot;
+-        if not data:
+-            return 0
+-
+-        try:
+-            return tcp.Connection.writeSomeData(self, data)
+-        except SSL.WantWriteError:
+-            return 0
+-        except SSL.WantReadError:
+-            self.writeBlockedOnRead = 1
+-            return 0
+-        except SSL.Error:
+-            return main.CONNECTION_LOST
+-
+-    def _closeSocket(self):
+-        &quot;&quot;&quot;Called to close our socket.&quot;&quot;&quot;
+-        try:
+-            self.socket.sock_shutdown(2)
+-        except socket.error:
+-            try:
+-                self.socket.close()
+-            except socket.error:
+-                log.deferr()
+-
+-
+-
+-class Client(Connection, tcp.Client):
++class Client(tcp.Client):
+     &quot;&quot;&quot;I am an SSL client.&quot;&quot;&quot;
+     def __init__(self, host, port, bindAddress, ctxFactory, connector, reactor=None):
+         # tcp.Client.__init__ depends on self.ctxFactory being set
+         self.ctxFactory = ctxFactory
+         tcp.Client.__init__(self, host, port, bindAddress, connector, reactor)
+ 
+-    def createInternetSocket(self):
+-        &quot;&quot;&quot;(internal) create an SSL socket
+-        &quot;&quot;&quot;
+-        sock = tcp.Client.createInternetSocket(self)
+-        return SSL.Connection(self.ctxFactory.getContext(), sock)
+-
+     def getHost(self):
+         &quot;&quot;&quot;Returns a tuple of ('SSL', hostname, port).
+ 
+@@ -219,16 +116,14 @@
+         &quot;&quot;&quot;
+         return ('SSL',)+self.addr
+ 
++    def _finishInit(self, whenDone, skt, error, reactor):
++        tcp.Client._finishInit(self, whenDone, skt, error, reactor)
++        self.startTLS(self.ctxFactory)
+ 
+ 
+-class Server(Connection, tcp.Server):
++class Server(tcp.Server):
+     &quot;&quot;&quot;I am an SSL server.
+     &quot;&quot;&quot;
+-    
+-    def __init__(*args, **kw):
+-        # We don't want Connection's __init__
+-        tcp.Server.__init__(*args, **kw)
+-    
+     def getHost(self):
+         &quot;&quot;&quot;Returns a tuple of ('SSL', hostname, port).
+ 
+@@ -257,33 +152,12 @@
+         &quot;&quot;&quot;
+         sock = tcp.Port.createInternetSocket(self)
+         return SSL.Connection(self.ctxFactory.getContext(), sock)
+-    
+-    def doRead(self):
+-        &quot;&quot;&quot;Called when my socket is ready for reading.
+ 
+-        This accepts a connection and calls self.protocol() to handle the
+-        wire-level protocol.
+-        &quot;&quot;&quot;
+-        try:
+-            try:
+-                skt, addr = self.socket.accept()
+-            except socket.error, e:
+-                if e.args[0] == tcp.EWOULDBLOCK:
+-                    return
+-                raise
+-            except SSL.Error:
+-                log.deferr()
+-                return
+-            protocol = self.factory.buildProtocol(addr)
+-            if protocol is None:
+-                skt.close()
+-                return
+-            s = self.sessionno
+-            self.sessionno = s+1
+-            transport = self.transport(skt, protocol, addr, self, s)
+-            protocol.makeConnection(transport)
+-        except:
+-            log.deferr()
++    def _preMakeConnection(self, transport):
++        # *Don't* call startTLS here
++        # The transport already has the SSL.Connection object from above
++        transport._startTLS()
++        return tcp.Port._preMakeConnection(self, transport)
+ 
+ 
+ class Connector(base.BaseConnector):
+Index: twisted/internet/tcp.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/tcp.py,v
+retrieving revision 1.118
+diff -u -r1.118 tcp.py
+--- twisted/internet/tcp.py	2 May 2003 04:31:14 -0000	1.118
++++ twisted/internet/tcp.py	3 May 2003 06:28:50 -0000
+@@ -39,6 +39,11 @@
+ except ImportError:
+     fcntl = None
+ 
++try:
++    from OpenSSL import SSL
++except ImportError:
++    SSL = None
++
+ if os.name == 'nt':
+     # we hardcode these since windows actually wants e.g.
+     # WSAEALREADY rather than EALREADY. Possibly we should
+@@ -88,14 +93,36 @@
+ 
+     __implements__ = abstract.FileDescriptor.__implements__, interfaces.ITCPTransport
+ 
++    if SSL:
++        writeBlockedOnRead = 0
++        readBlockedOnWrite= 0
++        sslShutdown = 0
++        TLS = 0
++
+     def __init__(self, skt, protocol, reactor=None):
+         abstract.FileDescriptor.__init__(self, reactor=reactor)
+         self.socket = skt
+         self.socket.setblocking(0)
+         self.fileno = skt.fileno
+         self.protocol = protocol
++        
++    def startTLS(self, ctx):
++        if not SSL:
++            raise RuntimeException, &quot;No SSL support available&quot;
++        assert not self.TLS
+ 
+-    def doRead(self):
++        self._startTLS()
++        self.socket = SSL.Connection(ctx.getContext(), self.socket)
++        self.fileno = self.socket.fileno
++    
++    def _startTLS(self):
++        self.TLS = 1
++        self.doRead = self._TLS_doRead
++        self.writeSomeData = self._TLS_writeSomeData
++        self.doWrite = self._TLS_doWrite
++        self._closeSocket = self._TLS_closeSocket
++
++    def _NOTLS_doRead(self):
+         &quot;&quot;&quot;Calls self.protocol.dataReceived with all available data.
+ 
+         This reads up to self.bufferSize bytes of data from its socket, then
+@@ -114,7 +141,42 @@
+             return main.CONNECTION_LOST
+         return self.protocol.dataReceived(data)
+ 
+-    def writeSomeData(self, data):
++    doRead = _NOTLS_doRead
++    
++    def _TLS_doRead(self):
++        if self.writeBlockedOnRead:
++            self.writeBlockedOnRead = 0
++            return self.doWrite()
++        try:
++            return self._NOTLS_doRead()
++        except SSL.ZeroReturnError:
++            # close SSL layer, since other side has done so, if we haven't
++            if not self.sslShutdown:
++                try:
++                    self.socket.shutdown()
++                    self.sslShutdown = 1
++                except SSL.Error:
++                    pass
++            return main.CONNECTION_DONE
++        except SSL.WantReadError:
++            return
++        except SSL.WantWriteError:
++            self.readBlockedOnWrite = 1
++            self.startWriting()
++            return
++        except SSL.Error:
++            return main.CONNECTION_LOST
++
++    def _TLS_doWrite(self):
++        if self.readBlockedOnWrite:
++            self.readBlockedOnWrite = 0
++            # XXX - This is touching internal guts bad bad bad
++            if not self.dataBuffer:
++                self.stopWriting()
++            return self.doRead()
++        return abstract.FileDescriptor.doWrite(self)
++
++    def _NOTLS_writeSomeData(self, data):
+         &quot;&quot;&quot;Connection.writeSomeData(data) -&gt; #of bytes written | CONNECTION_LOST
+         This writes as much data as possible to the socket and returns either
+         the number of bytes read (which is positive) or a connection error code
+@@ -128,7 +190,21 @@
+             else:
+                 return main.CONNECTION_LOST
+ 
+-    def _closeSocket(self):
++    writeSomeData = _NOTLS_writeSomeData
++
++    def _TLS_writeSomeData(self, data):
++        if not data:
++            return 0
++        try:
++            return self._NOTLS_writeSomeData(data)
++        except SSL.WantWriteError:
++            return 0
++        except SSL.WantReadError:
++            self.writeBlockedOnRead = 1
++        except SSL.Error:
++            return main.CONNECTION_LOST
++
++    def _NOTLS_closeSocket(self):
+         &quot;&quot;&quot;Called to close our socket.&quot;&quot;&quot;
+         # This used to close() the socket, but that doesn't *really* close if
+         # there's another reference to it in the TCP/IP stack, e.g. if it was
+@@ -139,6 +215,17 @@
+         except socket.error:
+             pass
+ 
++    _closeSocket = _NOTLS_closeSocket
++
++    def _TLS_closeSocket(self):
++        try:
++            self.socket.sock_shutdown(2)
++        except:
++            try:
++                self.socket.close()
++            except:
++                pass
++
+     def connectionLost(self, reason):
+         &quot;&quot;&quot;See abstract.FileDescriptor.connectionLost().
+         &quot;&quot;&quot;
+@@ -173,6 +260,33 @@
+ 
+     def setTcpNoDelay(self, enabled):
+         self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, enabled)
++    
++    def _postLoseConnection(self):
++        &quot;&quot;&quot;Gets called after loseConnection(), after buffered data is sent.
++
++        We close the SSL transport layer, and if the other side hasn't
++        closed it yet we start reading, waiting for a ZeroReturnError
++        which will indicate the SSL shutdown has completed.
++        &quot;&quot;&quot;
++        if not self.TLS:
++            return abstract.FileDescriptor._postLoseConnection(self)
++
++        try:
++            done = self.socket.shutdown()
++            self.sslShutdown = 1
++        except SSL.Error:
++            return main.CONNECTION_LOST
++        if done:
++            return main.CONNECTION_DONE
++        else:
++            # we wait for other side to close SSL connection -
++            # this will be signaled by SSL.ZeroReturnError when reading
++            # from the socket
++            self.stopWriting()
++            self.startReading()
++            
++            # don't close socket just yet
++            return None
+ 
+ 
+ class BaseClient(Connection):
+@@ -191,6 +305,11 @@
+         else:
+             reactor.callLater(0, self.failIfNotConnected, error)
+ 
++    def startTLS(self, ctx):
++        holder = Connection.startTLS(self, ctx)
++        self.socket.set_connect_state()
++        return holder
++
+     def stopConnecting(self):
+         &quot;&quot;&quot;Stop attempt to connect.&quot;&quot;&quot;
+         self.failIfNotConnected(error.UserError())
+@@ -360,6 +479,11 @@
+         &quot;&quot;&quot;
+         return self.repstr
+ 
++    def startTLS(self, ctx):
++        holder = Connection.startTLS(self, ctx)
++        self.socket.set_accept_state()
++        return holder
++
+     def getHost(self):
+         &quot;&quot;&quot;Returns a tuple of ('INET', hostname, port).
+ 
+@@ -458,6 +582,7 @@
+                     elif e.args[0] == EPERM:
+                         continue
+                     raise
++                
+                 protocol = self.factory.buildProtocol(addr)
+                 if protocol is None:
+                     skt.close()
+@@ -465,11 +590,22 @@
+                 s = self.sessionno
+                 self.sessionno = s+1
+                 transport = self.transport(skt, protocol, addr, self, s)
++                transport = self._preMakeConnection(transport)
+                 protocol.makeConnection(transport)
+             else:
+                 self.numberAccepts = self.numberAccepts+20
+         except:
++            # Note that in TLS mode, this will possibly catch SSL.Errors
++            # raised by self.socket.accept()
++            #
++            # There is no &quot;except SSL.Error:&quot; above because SSL may be
++            # None if there is no SSL support.  In any case, all the
++            # &quot;except SSL.Error:&quot; suite would probably do is log.deferr()
++            # and return, so handling it here works just as well.
+             log.deferr()
++    
++    def _preMakeConnection(self, transport):
++        return transport
+ 
+     def loseConnection(self, connDone=failure.Failure(main.CONNECTION_DONE)):
+         &quot;&quot;&quot;Stop accepting connections on this port.
+Index: twisted/test/test_ssl.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/test/test_ssl.py,v
+retrieving revision 1.9
+diff -u -r1.9 test_ssl.py
+--- twisted/test/test_ssl.py	3 May 2003 02:03:54 -0000	1.9
++++ twisted/test/test_ssl.py	3 May 2003 06:28:55 -0000
+@@ -17,19 +17,23 @@
+ from __future__ import nested_scopes
+ from twisted.trial import unittest
+ from twisted.internet import protocol, reactor
++from twisted.protocols import basic
++
+ try:
+-    import OpenSSL
++    from OpenSSL import SSL
+     from twisted.internet import ssl
+ except ImportError:
+-    OpenSSL = None
++    SSL = None
++
+ import os
+ import test_tcp
+ 
+ 
++certPath = os.path.join(os.path.split(test_tcp.__file__)[0], &quot;server.pem&quot;)
++
+ class StolenTCPTestCase(test_tcp.ProperlyCloseFilesTestCase, test_tcp.WriteDataTestCase):
+     
+     def setUp(self):
+-        certPath = os.path.join(os.path.split(test_tcp.__file__)[0], &quot;server.pem&quot;)
+         f = protocol.ServerFactory()
+         f.protocol = protocol.Protocol
+         self.listener = reactor.listenSSL(
+@@ -49,5 +53,117 @@
+ 
+         self.totalConnections = 0
+ 
+-if not OpenSSL:
+-    del StolenTCPTestCase
++class ClientTLSContext(ssl.ClientContextFactory):
++    isClient = 1
++    def getContext(self):
++        return SSL.Context(ssl.SSL.TLSv1_METHOD)
++
++class UnintelligentProtocol(basic.LineReceiver):
++    pretext = [
++        &quot;first line&quot;,
++        &quot;last thing before tls starts&quot;,
++        &quot;STARTTLS&quot;,
++    ]
++    
++    posttext = [
++        &quot;first thing after tls started&quot;,
++        &quot;last thing ever&quot;,
++    ]
++    
++    def connectionMade(self):
++        for l in self.pretext:
++            self.sendLine(l)
++
++    def lineReceived(self, line):
++        if line == &quot;READY&quot;:
++            self.transport.startTLS(ClientTLSContext())
++            for l in self.posttext:
++                self.sendLine(l)
++            self.transport.loseConnection()
++        
++class ServerTLSContext(ssl.DefaultOpenSSLContextFactory):
++    isClient = 0
++    def __init__(self, *args, **kw):
++        kw['sslmethod'] = SSL.TLSv1_METHOD
++        ssl.DefaultOpenSSLContextFactory.__init__(self, *args, **kw)
++
++class LineCollector(basic.LineReceiver):
++    def __init__(self, doTLS):
++        self.doTLS = doTLS
++
++    def connectionMade(self):
++        self.factory.rawdata = ''
++        self.factory.lines = []
++
++    def lineReceived(self, line):
++        self.factory.lines.append(line)
++        if line == 'STARTTLS':
++            self.sendLine('READY')
++            if self.doTLS:
++                ctx = ServerTLSContext(
++                    privateKeyFileName=certPath,
++                    certificateFileName=certPath,
++                )
++                self.transport.startTLS(ctx)
++            else:
++                self.setRawMode()
++    
++    def rawDataReceived(self, data):
++        self.factory.rawdata += data
++        self.factory.done = 1
++    
++    def connectionLost(self, reason):
++        self.factory.done = 1
++
++class TLSTestCase(unittest.TestCase):
++    def testTLS(self):
++        cf = protocol.ClientFactory()
++        cf.protocol = UnintelligentProtocol
++        
++        sf = protocol.ServerFactory()
++        sf.protocol = lambda: LineCollector(1)
++        sf.done = 0
++
++        port = reactor.listenTCP(0, sf)
++        portNo = port.getHost()[2]
++        
++        reactor.connectTCP('0.0.0.0', portNo, cf)
++        
++        i = 0
++        while i &lt; 5000 and not sf.done:
++            reactor.iterate(0.01)
++            i += 1
++        
++        self.failUnless(sf.done, &quot;Never finished reading all lines&quot;)
++        self.assertEquals(
++            sf.lines,
++            UnintelligentProtocol.pretext + UnintelligentProtocol.posttext
++        )
++    
++    def testUnTLS(self):
++        cf = protocol.ClientFactory()
++        cf.protocol = UnintelligentProtocol
++        
++        sf = protocol.ServerFactory()
++        sf.protocol = lambda: LineCollector(0)
++        sf.done = 0
++
++        port = reactor.listenTCP(0, sf)
++        portNo = port.getHost()[2]
++        
++        reactor.connectTCP('0.0.0.0', portNo, cf)
++        
++        i = 0
++        while i &lt; 5000 and not sf.done:
++            reactor.iterate(0.01)
++            i += 1
++        
++        self.failUnless(sf.done, &quot;Never finished reading all lines&quot;)
++        self.assertEquals(
++            sf.lines,
++            UnintelligentProtocol.pretext
++        )
++        self.failUnless(sf.rawdata, &quot;No encrypted bytes received&quot;)
++        
++if not SSL:
++    globals().clear()
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="036406.html">[Twisted-Python] Updated TLS patch
+</A></li>
+	<LI>Next message (by thread): <A HREF="036398.html">[Twisted-Python] Twisted 1.0.4 - Typo in code
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36409">[ date ]</a>
+              <a href="thread.html#36409">[ thread ]</a>
+              <a href="subject.html#36409">[ subject ]</a>
+              <a href="author.html#36409">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

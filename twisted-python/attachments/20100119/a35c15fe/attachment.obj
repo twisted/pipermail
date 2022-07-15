@@ -1,0 +1,87 @@
+'''
+Created on 18/01/2010
+
+@author: Claws
+'''
+from twisted.internet import reactor, defer
+from twisted.spread import pb
+import datetime
+
+class PluginClient(pb.Referenceable):
+    """ Plugin client interface exposed to PluginServer's """
+    
+    def __init__(self, shutdownCallback):
+        self.shutdownHandler = shutdownCallback
+
+    def remote_shutdown(self):
+        """ Instruct Plugin to shutdown """
+        print "plugin instructed to shutdown"
+        d = defer.Deferred()
+        self.shutdownHandler(d)
+        return d
+        
+class PluginServer(pb.Root):
+    """ Plugin server interface exposed to PluginClient's """
+
+    def remote_set_client_perspective(self, pluginRef):
+        print "plugin-runner got client reference"
+        reactor.callLater(1.0, self.shutdown_plugin, pluginRef)
+    
+    def shutdown_plugin(self, pluginRef):
+        
+        def pluginShutdownCompleted(result, startTime):
+            endTime = datetime.datetime.now()
+            print "Plugin shutdown took %s to complete." % (endTime - startTime)
+            return result
+        
+        print "plugin-runner asking plugin to shutdown"
+        d = pluginRef.callRemote("shutdown")
+        d.addCallback(pluginShutdownCompleted, datetime.datetime.now())
+        d.addCallback(self.shutdown)
+    
+    def shutdown(self, _):
+        reactor.stop()
+
+
+def startPluginServer(port):
+    """ Start a plugin communications server """
+    print "starting server"
+    reactor.listenTCP(port=port,
+                      factory=pb.PBServerFactory(PluginServer()),
+                      interface='localhost')
+
+
+def startPluginClient(port, shutdownHandler):
+    """ Start a plugin communications client """
+    
+    def gotServerPerspective(serverPerspective, pluginPerspective):
+        """ Give the plugin-runner this client's perspective """
+        serverPerspective.callRemote("set_client_perspective", pluginPerspective)
+        return serverPerspective
+
+    print "starting plugin"
+    client = PluginClient(shutdownHandler)
+    factory = pb.PBClientFactory()
+    reactor.connectTCP(host='localhost', port=port, factory=factory)
+    return factory.getRootObject().addCallback(gotServerPerspective, client)
+
+if __name__ == "__main__":
+    port = 42155
+    
+    def longRunningAction(d, countDown=10):
+        """ Emulate long running shutdown activities """
+        print "shuting down in %i seconds" % countDown
+        if countDown == 0:
+            d.callback(True)
+        else:
+            countDown -= 1
+            reactor.callLater(1, longRunningAction, d, countDown)
+
+    
+    # start plugin-runner
+    reactor.callWhenRunning(startPluginServer, port)
+    # start plugin
+    reactor.callLater(2.0, startPluginClient, port, longRunningAction)
+    reactor.run()
+    
+    

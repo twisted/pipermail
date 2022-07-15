@@ -1,0 +1,477 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] mailman with twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20mailman%20with%20twisted&In-Reply-To=420BC59E.2050002%40twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001157.html">
+   <LINK REL="Next"  HREF="001162.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] mailman with twisted</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20mailman%20with%20twisted&In-Reply-To=420BC59E.2050002%40twistedmatrix.com"
+       TITLE="[Twisted-web] mailman with twisted">andrea at cpushare.com
+       </A><BR>
+    <I>Thu Feb 10 15:14:45 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001157.html">[Twisted-web] mailman with twisted
+</A></li>
+        <LI>Next message: <A HREF="001162.html">[Twisted-web] mailman with twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1160">[ date ]</a>
+              <a href="thread.html#1160">[ thread ]</a>
+              <a href="subject.html#1160">[ subject ]</a>
+              <a href="author.html#1160">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Thu, Feb 10, 2005 at 10:35:42PM +0200, Tommi Virtanen wrote:
+&gt;<i> Pass in a different mode.
+</I>&gt;<i> 
+</I>&gt;<i> def listenUNIX(self, address, factory, backlog=5, mode=0666, wantPID=0):
+</I>&gt;<i> 
+</I>&gt;<i> UNIXServer should accept the same args.
+</I>
+Ok fine, the mode should be enough because I'm lucky and the directory
+has g+s.
+
+&gt;<i> If a file by given name exists, bind(2) returns -1, EADDRINUSE.
+</I>&gt;<i> Twisted is just passing that straight-through to you.
+</I>
+29253 bind(5, {sa_family=AF_FILE,
+path=&quot;/var/lib/mailman/.twistd-web-pb&quot;}, 33) = -1 EADDRINUSE (Address
+already in use)
+
+Ok my bad ;) it was a kernel issue here.
+
+		err = path_lookup(sunaddr-&gt;sun_path, LOOKUP_PARENT, &amp;nd);
+		if (err)
+			goto out_mknod_parent;
+[..]
+out_mknod_parent:
+	if (err==-EEXIST)
+		err=-EADDRINUSE;
+
+I didn't think the check should have been made on the existence of the
+dentry, but only on the fact that some other task was actively listening
+to such socket already.
+
+It would be easy to relax this restrictive API (perhaps with a check
+that the process uid is the same as the socket uid) and then twisted
+would just work fine even if it doesn't delete the file but it would
+probably break the standard API.
+
+I can workaround it outside twisted easily (an fuser + rm as root before
+starting the app, is sure enough ;)
+
+So at least those two problems are clear thanks.
+
+&gt;<i> &gt; At least there should be an option to auto-delete it.
+</I>&gt;<i> 
+</I>&gt;<i> Maybe, but that option would need to default to False.
+</I>
+Agreed.
+
+&gt;<i> I consider to be too risky to automate in a library. If another process
+</I>&gt;<i> is listening on that socket, removing it just hides that fact.
+</I>
+Correct.
+
+&gt;<i> Of course, if you really want it, you could just run
+</I>&gt;<i> 
+</I>&gt;<i> try:
+</I>&gt;<i>     os.unlink(sockName)
+</I>&gt;<i> except OSError, e:
+</I>&gt;<i>     if e.errno == errno.ENOENT:
+</I>&gt;<i>         pass
+</I>&gt;<i>     else:
+</I>&gt;<i>         raise
+</I>&gt;<i> 
+</I>&gt;<i> before binding.
+</I>
+The equivalent of fuser before OSError would be best, fuser in this case
+is the userspace equivalent of checking the unix_socket_table on the
+kernel side. (except it's racy if done in userspace, but good enough to
+be used to avoid the basic mistakes of deleting a socket in-use).
+A connect would do the trick too (again racy but good enough), if it
+returns ECONNREFUSED it means we can delete it.
+
+About the other problem of nevow+distrib, it seems you found the right
+issue on IRC, some bugfix has been forgotten here:
+
+<A HREF="http://divmod.org/users/roundup.twistd/nevow/file24/nevow-distrib-2.diff">http://divmod.org/users/roundup.twistd/nevow/file24/nevow-distrib-2.diff</A>
+<A HREF="http://divmod.org/users/roundup.twistd/nevow/file25/nevow-flatstan.diff">http://divmod.org/users/roundup.twistd/nevow/file25/nevow-flatstan.diff</A>
+
+Anyway I'm following your suggestion to use eoc instead of mailman, that
+seems to be the quickest to setup and it doesn't require web
+subscription, but certainly it would be still nice to know the solution
+of nevow+mailman just as an exercise ;). I guess reverse proxying as you
+suggested on irc would have worked much better than distrib ;)
+
+there are apparently 5 pending things missing in nevow trunk:
+
+1) the above distrib fix
+2) the static.File fix posted here for twisted that affects nevow too
+3) dialtone's tags.cached
+4) dialtone's rend.Page cache improved with cacheTimeout logic.
+5) minor non interesting runtime fix in vhost.py
+
+The latter 4 entries are appened here (I hope I didn't add typos while
+merging the static.File fix by hand, the mailer got it screwed in the
+original submission from Mike Marchionna).
+
+Thanks for the help!
+
+Index: Nevow/nevow/tags.py
+===================================================================
+--- Nevow/nevow/tags.py	(revision 1192)
++++ Nevow/nevow/tags.py	(working copy)
+@@ -25,7 +25,7 @@
+ &quot;&quot;&quot;
+ 
+ 
+-from nevow.stan import Proto, Tag, directive, raw, xml, CommentProto, invisible, slot, cdata
++from nevow.stan import Proto, Tag, directive, raw, xml, CommentProto, invisible, slot, cdata, cached
+ 
+ 
+ comment = CommentProto()
+@@ -62,7 +62,9 @@
+ def inlineJS(s):
+     return script(type=&quot;text/javascript&quot;, language=&quot;JavaScript&quot;)[xml('\n//&lt;![CDATA[\n%s\n//]]&gt;\n' % s)]
+ 
+-__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object', '_map', 'drange', 'Tag', 'directive', 'xml', 'raw', 'slot', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
++__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object',
++                  '_map', 'drange', 'Tag', 'directive', 'xml', 'raw',
++                  'slot', 'cached', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
+ 
+ 
+ ########################
+Index: Nevow/nevow/__init__.py
+===================================================================
+--- Nevow/nevow/__init__.py	(revision 1192)
++++ Nevow/nevow/__init__.py	(working copy)
+@@ -183,6 +183,7 @@
+ nevow.flat.flatstan.RendererSerializer            nevow.inevow.IRenderer
+ nevow.flat.flatstan.DirectiveSerializer           nevow.stan.directive
+ nevow.flat.flatstan.SlotSerializer                nevow.stan.slot
++nevow.flat.flatstan.CachedSerializer              nevow.stan.cached 
+ nevow.flat.flatstan.ContextSerializer             nevow.context.WovenContext
+ nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.Deferred
+ nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.DeferredList
+Index: Nevow/nevow/flat/flatstan.py
+===================================================================
+--- Nevow/nevow/flat/flatstan.py	(revision 1192)
++++ Nevow/nevow/flat/flatstan.py	(working copy)
+@@ -9,10 +9,14 @@
+ from nevow import util
+ from nevow.stan import Proto, Tag, xml, directive, Unset, invisible
+ from nevow.inevow import IRenderer, IRendererFactory, IGettable, IData
+-from nevow.flat import precompile, serialize
++from nevow.flat import precompile, serialize, iterflatten
+ from nevow.accessors import convertToData
+ from nevow.context import WovenContext
+ 
++from time import time as now
++from cStringIO import StringIO
++from twisted.internet import defer
++
+ allowSingleton = ('img', 'br', 'hr', 'base', 'meta', 'link', 'param', 'area',
+                   'input', 'col', 'basefont', 'isindex', 'frame')
+ 
+@@ -226,6 +230,45 @@
+         return serialize(original.default, context)
+     return serialize(data, context)
+ 
++_CACHE = {}
++def CachedSerializer(original, context):
++    cached = _CACHE.get(original.name, None)
++    _now = now()
++    life = _now-original.lifetime
++    if cached and (cached[0] &gt; life or not original.lifetime):
++        yield cached[1]
++        return
++    io = StringIO()
++    for child in iterflatten(original.children, context, io.write,
++                             lambda item: True):
++        if isinstance(child, tuple):
++            childDeferred, childReturner = child
++ 
++            d = defer.Deferred() ## A new deferred for the outer loop, whose result
++            ## we don't care about, because we don't want the outer loop to write
++            ## anything when this deferred fires -- only when the entire for loop
++            ## has completed and we have all the &quot;children&quot; flattened
++ 
++            def innerDeferredResultAvailable(result):
++                childReturner(result) ## Cause the inner iterflatten to continue
++                d.callback('') ## Cause the outer iterflatten to continue
++                return ''
++ 
++            childDeferred.addCallback(innerDeferredResultAvailable)
++ 
++            ## Make the outer loop wait on our new deferred.
++            ## We call the new deferred back with ''
++            ## Which will cause the outer loop to write '' to the request,
++            ## which doesn't matter. It will then call our &quot;returner&quot;,
++            ## which is just the noop lambda below, because we don't care
++            ## about the return result of the new deferred, which is just
++            ## ''
++ 
++            yield d, lambda result: ''    
++    result = io.getvalue()
++    _CACHE[original.name] = (_now, result)
++    yield result
++
+ def ContextSerializer(original, context):
+     originalContext = original.clone(deep=False)
+     originalContext.precompile = context and context.precompile or False
+Index: Nevow/nevow/stan.py
+===================================================================
+--- Nevow/nevow/stan.py	(revision 1192)
++++ Nevow/nevow/stan.py	(working copy)
+@@ -119,8 +119,33 @@
+         &quot;&quot;&quot;
+         raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
+ 
++class cached(object):
++    &quot;&quot;&quot;Marker for cached content
++    &quot;&quot;&quot;
++    __slots__ = ['name', 'children', 'lifetime']
+ 
++    def __init__(self, name, lifetime=0):
++        self.name = name
++        self.children = []
++        self.lifetime = lifetime
+ 
++    def __repr__(self):
++        return &quot;cached('%s','%s')&quot; % self.name, self.lifetime
++
++    def __getitem__(self, children):
++        &quot;&quot;&quot;cached content is what is being cached
++        &quot;&quot;&quot;
++        if not isinstance(children, (list, tuple)):
++            children = [children]
++        self.children.extend(children)
++        return self
++
++    def __iter__(self):
++        &quot;&quot;&quot;Prevent an infinite loop if someone tries to do
++            for x in cached('foo'):
++        &quot;&quot;&quot;
++        raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
++
+ class Tag(object):
+     &quot;&quot;&quot;Tag instances represent XML tags with a tag name, attributes,
+     and children. Tag instances can be constructed using the Prototype
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 1192)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -30,6 +30,7 @@
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -374,6 +375,7 @@
+             self.children = {}
+         self.children[name] = child
+     
++_CACHE = {}
+ 
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+@@ -384,12 +386,48 @@
+ 
+     buffered = False
+ 
++    cacheTimeout = None # 0 means cache forever, &gt;0 sets the seconds of caching
++    __lastCacheRendering = 0 # this should not be touched by the parent class
++
+     beforeRender = None
+     afterRender = None
+     addSlash = None
+ 
+     flattenFactory = flat.flattenFactory
+ 
++    def hasCache(self, ctx):
++        if self.cacheTimeout is None:
++            return None
++
++        _now = now() # run gettimeofday only once
++        timeout = _now &gt; self.__lastCacheRendering + self.cacheTimeout and \
++                  self.cacheTimeout &gt; 0
++        c = self.lookupCache(ctx)
++        if timeout or c is None:
++            self.__lastCacheRendering = _now # stop other renders
++            from twisted.internet.defer import Deferred
++            d = Deferred()
++            self.storeCache(ctx, d)
++            # force only this rendering, others will wait the deferred
++            c = None
++        return c
++    def chainDeferredCache(self, ctx, d):
++        if self.cacheTimeout is None:
++            return d
++
++        from twisted.internet.defer import Deferred
++        c = self.lookupCache(ctx)
++        if isinstance(c, Deferred):
++            # we're the thread that went ahead to refresh the cache
++            d.chainDeferred(c)
++        return d
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def storeCache(self, ctx, c):
++        _CACHE[self.cacheIDX(ctx)] = c
++    def lookupCache(self, ctx):
++        return _CACHE.get(self.cacheIDX(ctx))
++
+     def renderHTTP(self, ctx):
+         ## XXX request is really ctx now, change the name here
+         request = inevow.IRequest(ctx)
+@@ -411,11 +449,18 @@
+             if self.afterRender is not None:
+                 self.afterRender(ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c:
++            finishRequest()
++            return c
++
++        if self.buffered or self.cacheTimeout is not None:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = io.getvalue()
++                self.storeCache(ctx, c)
++                request.write(c)
+                 finishRequest()
+                 return result
+         else:
+@@ -427,7 +472,7 @@
+         doc = self.docFactory.load()
+         ctx =  WovenContext(ctx, tags.invisible[doc])
+ 
+-        return self.flattenFactory(doc, ctx, writer, finisher)
++        return self.chainDeferredCache(ctx, self.flattenFactory(doc, ctx, writer, finisher))
+ 
+     def rememberStuff(self, ctx):
+         Fragment.rememberStuff(self, ctx)
+Index: Nevow/nevow/vhost.py
+===================================================================
+--- Nevow/nevow/vhost.py	(revision 1192)
++++ Nevow/nevow/vhost.py	(working copy)
+@@ -19,7 +19,7 @@
+ &quot;&quot;&quot;
+ 
+     def getStyleSheet(self):
+-        return self.stylesheet
++        return VirtualHostList.stylesheet
+  
+     def data_hostlist(self, context, data):
+         return self.nvh.hosts.keys()
+Index: Nevow/nevow/static.py
+===================================================================
+--- Nevow/nevow/static.py	(revision 1192)
++++ Nevow/nevow/static.py	(working copy)
+@@ -271,7 +271,7 @@
+             return self.redirect(request)
+ 
+         #for content-length
+-        fsize = size = self.getFileSize()
++        fsize = csize = self.getFileSize()
+ 
+         request.setHeader('accept-ranges','bytes')
+ 
+@@ -302,20 +302,20 @@
+                        &quot;Syntactically invalid http range header!&quot;
+                 start, end = string.split(bytesrange[1],'-')
+                 if start:
+-                    f.seek(int(start))
++                    start = int(start)
++                    f.seek(start)
+                 if end:
+-                    end = int(end)
+-                    size = end
++                    csize = int(end) - start + 1
+                 else:
+-                    end = size
++                    csize -= start
+                 request.setResponseCode(http.PARTIAL_CONTENT)
+                 request.setHeader('content-range',&quot;bytes %s-%s/%s &quot; % (
+-                    str(start), str(end), str(size)))
++                    str(start), str(end), str(fsize)))
+                 #content-length should be the actual size of the stuff we're
+                 #sending, not the full size of the on-server entity.
+                 fsize = end - int(start)
+ 
+-            request.setHeader('content-length', str(fsize))
++            request.setHeader('content-length', str(csize))
+         except:
+             traceback.print_exc(file=log.logfile)
+ 
+@@ -323,7 +323,7 @@
+             return ''
+ 
+         # return data
+-        FileTransfer(f, size, request)
++        FileTransfer(f, csize, request)
+         # and make sure the connection doesn't get closed
+         return request.deferred
+ 
+@@ -354,17 +354,16 @@
+         self.file = file
+         self.size = size
+         self.request = request
+-        self.written = self.file.tell()
+         request.registerProducer(self, 0)
+ 
+     def resumeProducing(self):
+         if not self.request:
+             return
+-        data = self.file.read(min(abstract.FileDescriptor.bufferSize, self.size - self.written))
++        data = self.file.read(min(abstract.FileDescriptor.bufferSize, self.size))
+         if data:
+-            self.written += len(data)
+             self.request.write(data)
+-        if self.file.tell() == self.size:
++            self.size -= len(data)
++        if self.size &lt;= 0:
+             self.request.unregisterProducer()
+             self.request.finish()
+             self.request = None
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001157.html">[Twisted-web] mailman with twisted
+</A></li>
+	<LI>Next message: <A HREF="001162.html">[Twisted-web] mailman with twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1160">[ date ]</a>
+              <a href="thread.html#1160">[ thread ]</a>
+              <a href="subject.html#1160">[ subject ]</a>
+              <a href="author.html#1160">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

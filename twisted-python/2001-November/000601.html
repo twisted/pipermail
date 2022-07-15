@@ -1,0 +1,288 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] WebWidgets and Deferreds.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20WebWidgets%20and%20Deferreds.&In-Reply-To=1006552522.13340.1.camel%40Fookidla.org">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000600.html">
+   <LINK REL="Next"  HREF="000602.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] WebWidgets and Deferreds.</H1>
+    <B>Chris Armstrong</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20WebWidgets%20and%20Deferreds.&In-Reply-To=1006552522.13340.1.camel%40Fookidla.org"
+       TITLE="[Twisted-Python] WebWidgets and Deferreds.">carmstro at twistedmatrix.com
+       </A><BR>
+    <I>Fri Nov 23 19:05:19 EST 2001</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000600.html">[Twisted-Python] WebWidgets and Deferreds.
+</A></li>
+        <LI>Next message: <A HREF="000602.html">[Twisted-Python] WebWidgets and Deferreds.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#601">[ date ]</a>
+              <a href="thread.html#601">[ thread ]</a>
+              <a href="subject.html#601">[ subject ]</a>
+              <a href="author.html#601">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, 2001-11-23 at 16:55, Chris Armstrong wrote:
+&gt;<i> Ok, riddle me this, glyph (or anyone else who knows about this). Why do
+</I>&gt;<i> we need Deferreds to be a special-case in WebWidgets? Why can't _all_
+</I>&gt;<i> widgets be displayed only right when they're needed? RenderSession could
+</I>&gt;<i> just take a Widget, and display() it (and the widgets that display()
+</I>&gt;<i> returns) in order.. Is there some sort of performance issue here, maybe?
+</I>&gt;<i> 
+</I>&gt;<i> Maybe I'll try implementing this, and send a patch to be looked at.
+</I>
+Well, I've spent some time trying to implement this, but I'm having some
+problems. Here's a patch. Notice the 'renderSession' (now-module-level)
+function and the flatWrite function. flatWrite is the _only_ place where
+display() is called now, and the data is written as soon as it comes to
+it. There is a problem, however, with a small test I did. I made a
+widget that returned a list of 3 widgets: widgets.Time(), SleepWidget(),
+widgets.Time(). The only thing SleepWidget has is a display() method
+that sleeps for 2 seconds and returns [], to simulate blocking. I try to
+render this widget with the new system, but I don't get any content
+until the entire request is finished. I put in some log messages to say
+exactly when the writes are happening, and the first widgets.Time() is
+definitely being written to the request before the SleepWidget is being
+displayed, but i still don't see anything until the entire request is
+done. 
+
+*sigh*, I'm sure that I'm completely off-track here. Why do I always try
+to rewrite everything I come across that I don't understand? (remember
+explorer, Kevin?) :P
+
+-- 
+&lt;dash&gt; the program isn't debugged until the last user is dead
+--
+                              Chris Armstrong
+                      &lt;&lt;&lt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">radix at twistedmatrix.com</A> &gt;&gt;&gt;
+              <A HREF="http://twistedmatrix.com/users/carmstro.twistd/">http://twistedmatrix.com/users/carmstro.twistd/</A>
+-------------- next part --------------
+--- widgets.py	Fri Nov 23 18:57:22 2001
++++ widgets-new.py	Fri Nov 23 18:56:43 2001
+@@ -90,15 +90,7 @@
+                     traceback.print_exc(file = io)
+                     tm.append(html.PRE(io.getvalue()))
+                 else:
+-                    if isinstance(x, types.ListType):
+-                        tm.extend(x)
+-                    elif isinstance(x, Widget):
+-                        val = x.display(request)
+-                        tm.extend(val)
+-                    else:
+-                        # Only two allowed types here should be deferred and
+-                        # string.
+-                        tm.append(x)
++                    tm.append(x)
+         return tm
+ 
+ 
+@@ -209,14 +201,6 @@
+     def display(self, request):
+         return [self.text]
+ 
+-class TextDeferred(Widget):
+-    def __init__(self, text):
+-        self.text = text
+-
+-    def display(self, request):
+-        d = defer.Deferred()
+-        d.callback([self.text])
+-        return [d]
+ 
+ class Time(Widget):
+     def display(self, request):
+@@ -229,106 +213,26 @@
+     def display(self, request):
+         value = []
+         for widget in self.widgets:
+-            d = widget.display(request)
+-            value.extend(d)
++            value.extend(widget)
+         return value
+ 
+-class _RequestDeferral:
+-    def __init__(self):
+-        self.deferred = defer.Deferred()
+-        self.io = StringIO()
+-        self.write = self.io.write
+-
+-    def finish(self):
+-        self.deferred.callback([self.io.getvalue()])
+-
+-def possiblyDeferWidget(widget, request):
+-    # web in my head get it out get it out
+-    try:
+-        disp = widget.display(request)
+-        # if this widget wants to defer anything -- well, I guess we've got to
+-        # defer it.
+-        for elem in disp:
+-            if isinstance(elem, defer.Deferred):
+-                req = _RequestDeferral()
+-                RenderSession(disp, req)
+-                return req.deferred
+-        return string.join(disp, '')
+-    except:
+-        io = StringIO()
+-        traceback.print_exc(file=io)
+-        return html.PRE(io.getvalue())
+-
+-class RenderSession:
+-    def __init__(self, lst, request):
+-        self.lst = lst
+-        self.request = request
+-        self.position = 0
+-        self.needsHeaders = 0
+-        pos = 0
+-        toArm = []
+-        # You might want to set a header from a deferred, in which case you
+-        # have to set an attribute -- needsHeader.
+-        for item in lst:
+-            if isinstance(item, defer.Deferred):
+-                self._addDeferred(item, pos)
+-                toArm.append(item)
+-            pos = pos + 1
+-        self.keepRendering()
+-        # print &quot;RENDER: DONE WITH INITIAL PASS&quot;
+-        for item in toArm:
+-            item.arm()
+-
+-    def _addDeferred(self, deferred, position):
+-        if hasattr(deferred, 'needsHeader'):
+-            self.needsHeaders = self.needsHeaders + 1
+-            args = (position, 1)
+-        else:
+-            args = (position, 0)
+-        deferred.addCallbacks(self.callback, self.callback,
+-                              callbackArgs=args, errbackArgs=args)
+-
+-    def callback(self, result, position, decNeedsHeaders):
+-        if result != FORGET_IT:
+-            self.needsHeaders = self.needsHeaders - decNeedsHeaders
+-        else:
+-            result = [FORGET_IT]
+-        for i in xrange(len(result)):
+-            if isinstance(result[i], defer.Deferred):
+-                self._addDeferred(result[i], position+i)
+-        # print 'CALLBACK:',self.lst, position, result
+-        if not isinstance(result, types.ListType):
+-            result = [result]
+-        self.lst[position:position+1] = result
+-        assert self.position &lt;= position
+-        self.keepRendering()
+-        for r in result:
+-            if isinstance(r, defer.Deferred):
+-                r.arm()
+-
+-
+-    def keepRendering(self):
+-        if self.needsHeaders:
+-            # short circuit actual rendering process until we're sure no more
+-            # deferreds need to set headers...
+-            return
+-        assert self.lst is not None, &quot;This shouldn't happen.&quot;
+-        while 1:
+-            item = self.lst[self.position]
+-            if self.position == 0 and item == FORGET_IT:
+-                # If I haven't moved yet, and the widget wants to take over the page, let it do so!
+-                return
+-            if isinstance(item, types.StringType):
+-                self.request.write(item)
+-            elif isinstance(item, defer.Deferred):
+-                return
+-            else:
+-                self.request.write(&quot;RENDERING UNKNOWN: %s&quot; % html.PRE(repr(item)))
+-            self.position = self.position + 1
+-            if self.position == len(self.lst):
+-                self.lst = None
+-                self.request.finish()
+-                return
++
++def flatWrite(widget, request):
++    val = widget.display(request)
++    if not type(val) == types.ListType:
++        raise TypeError(&quot;display() needs to return a list.&quot;)
++    for elem in val:
++        if type(elem) == types.StringType:
++            print &quot;writing to the request&quot;
++            request.write(elem)
++        elif isinstance(elem, Widget):
++            flatWrite(elem, request)
++            
++def renderSession(widget, request):
++    flatWrite(widget, request)
++    request.finish()
++
++
+ 
+ 
+ class WidgetResource(resource.Resource):
+@@ -336,7 +240,7 @@
+         self.widget = widget
+ 
+     def render(self, request):
+-        RenderSession(self.widget.display(request), request)
++        renderSession(self.widget, request)
+         return NOT_DONE_YET
+ 
+ 
+@@ -347,8 +251,7 @@
+         Presentation.__init__(self)
+ 
+     def render(self, request):
+-        displayed = self.display(request)
+-        RenderSession(displayed, request)
++        renderSession(self, request)
+         return NOT_DONE_YET
+ 
+ 
+@@ -404,10 +307,6 @@
+         if hasattr(widget, 'stylesheet'):
+             self.stylesheet = widget.stylesheet
+ 
+-    def render(self, request):
+-        displayed = self.display(request)
+-        RenderSession(displayed, request)
+-        return NOT_DONE_YET
+ 
+ class Gadget(resource.Resource):
+     page = WidgetPage
+@@ -437,6 +336,8 @@
+         return self.widgets.get(path)
+ 
+     def getChild(self, path, request):
++        #if this Gadget is also a Widget, then render the Widget part of me if the &quot;index&quot;
++        #is requested.
+         if path == '':
+             # ZOOP!
+             if isinstance(self, Widget):
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000600.html">[Twisted-Python] WebWidgets and Deferreds.
+</A></li>
+	<LI>Next message: <A HREF="000602.html">[Twisted-Python] WebWidgets and Deferreds.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#601">[ date ]</a>
+              <a href="thread.html#601">[ thread ]</a>
+              <a href="subject.html#601">[ subject ]</a>
+              <a href="author.html#601">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

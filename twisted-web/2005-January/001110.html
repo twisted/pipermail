@@ -1,0 +1,167 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] load balancing and performance
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20load%20balancing%20and%20performance&In-Reply-To=20050129145550.GD10440%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001116.html">
+   <LINK REL="Next"  HREF="001111.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] load balancing and performance</H1>
+    <B>Valentino Volonghi aka Dialtone</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20load%20balancing%20and%20performance&In-Reply-To=20050129145550.GD10440%40opteron.random"
+       TITLE="[Twisted-web] load balancing and performance">dialtone at divmod.com
+       </A><BR>
+    <I>Sat Jan 29 17:26:33 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001116.html">[Twisted-web] load balancing and performance
+</A></li>
+        <LI>Next message: <A HREF="001111.html">[Twisted-web] load balancing and performance
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1110">[ date ]</a>
+              <a href="thread.html#1110">[ thread ]</a>
+              <a href="subject.html#1110">[ subject ]</a>
+              <a href="author.html#1110">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sat, 29 Jan 2005 15:55:50 +0100, Andrea Arcangeli &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">andrea at cpushare.com</A>&gt; wrote:
+&gt;<i>I successfully load balanced the static server with pythondirector.
+</I>&gt;<i> 
+</I>&gt;<i> However it has a few problems:
+</I>&gt;<i> 
+</I>&gt;<i> 1) it cannot handle ssl
+</I>&gt;<i> 2) even if it can handle ssl I still need to share the session cookies
+</I>&gt;<i>    and I'm thinking that using sql or atop to do that isn't necessary:
+</I>&gt;<i>    the session doesn't need to survive a reboot, a reboot would be a visible
+</I>&gt;<i>    disruption of the services anyway, so I'm thinking to write a little
+</I>&gt;<i>    session daemon that only stores the cookies using pb to do that.
+</I>&gt;<i>    In theory shared memory would be much more efficient in smp, but at least
+</I>&gt;<i>    this socket model has the advantage of scaling in the cluster too
+</I>&gt;<i> 3) the load balancer misses an API with the real webserver to pass up the
+</I>&gt;<i>    client IP address, that's annoying, especially the logs gets screwed
+</I>&gt;<i> 
+</I>&gt;<i> Other than that the speed of the load balancer is excellent, and I get
+</I>&gt;<i> exactly the double number of pages rendered per second (after fixing a
+</I>&gt;<i> small bug in pythondirector that confused ab2).
+</I>
+It's probably also a good idea to write a balancer that works on unix sockets. And this means also writing a good path to which it should dispatch. 
+
+Tell me more about the session daemon. Anyway we are designing an ISessionManager interface to let you write whatever sessionFactory you need, a database or a SessionDaemon or a file or something else. Probably you can help with it by coming in #twisted.web and commenting it with one of us (Donovan, Matt, Tv, me and others). 
+ 
+&gt;<i> Perhaps I'm going with wrong priorities though, the major offender is
+</I>&gt;<i> compy, compy must be dropped from Nevow ASAP :). Leaving it as a
+</I>
+compy is not going away :). Writing a compy2 speedup in Pyrex will help and will probably also be faster than zope.interface since it will be a lot smaller.
+
+&gt;<i> compatibility API may be ok, but internally compy can't invoke
+</I>&gt;<i> getComponents anymore if we do care about writing remotely optimal code.
+</I>&gt;<i> We should try with the new zope.interfaces API first and see if it
+</I>&gt;<i> underperforms so horribly as getInterfaces does.
+</I>
+zope.interface is twice as fast without the compatibility stuff in twisted and I think it is the same for Nevow.
+
+&gt;<i> Secondly I'm looking into caching the html and to render some fragment only
+</I>&gt;<i> once every 10 seconds in the background (so the downloads will never
+</I>&gt;<i> have to wait for a rendering of some mostly static fragment anymore).
+</I>
+I wrote this VERY simple stuff for caching a page:
+
+Index: rend.py
+===================================================================
+--- rend.py     (revision 1105)
++++ rend.py     (working copy)
+@@ -30,6 +30,7 @@
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -376,6 +377,7 @@
+             self.children = {}
+         self.children[name] = child
+     
++_CACHE = {}
+ 
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+@@ -417,7 +419,8 @@
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = _CACHE[url.fromContext(ctx)] = io.getvalue()
++                request.write(c)
+                 finishRequest()
+                 return result
+         else:
+@@ -425,12 +428,17 @@
+             def finisher(result):
+                 finishRequest()
+                 return result
++        c = _CACHE.get(url.fromContext(ctx), None)
++        if c is None:
++            doc = self.docFactory.load()
++            ctx =  WovenContext(ctx, tags.invisible[doc])
++            
++            return self.flattenFactory(doc, ctx, writer, finisher)
++        else:
++            request.write(c)
++            finishRequest()
++            return c
+ 
+-        doc = self.docFactory.load()
+-        ctx =  WovenContext(ctx, tags.invisible[doc])
+-
+-        return self.flattenFactory(doc, ctx, writer, finisher)
+-
+     def rememberStuff(self, ctx):
+         Fragment.rememberStuff(self, ctx)
+         ctx.remember(self, inevow.IResource)
+
+This works and I've tested it.
+
+Rendering speed went from 6-7 requests/sec to 26 req/sec on my poor ibook with the database on the same computer and ab too.
+
+This patch is simple, probably too simple (in fact it would be better to cache the flattening result, this would be a lot more fine grained) since it only works in buffered mode (patching this patch to work in non buffered mode is not hard at all though)
+
+&gt;<i> So overall there's an huge room for improvements. What do other people
+</I>&gt;<i> think?
+</I>
+I also think that the optimizations branch is worth of some experimentation. I got twice the rendering speed in dynamic pages thanks to its adapters caching. I'd give it a try.
+
+Overall I think nevow can, and will, speedup at least by a factor of 5.
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001116.html">[Twisted-web] load balancing and performance
+</A></li>
+	<LI>Next message: <A HREF="001111.html">[Twisted-web] load balancing and performance
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1110">[ date ]</a>
+              <a href="thread.html#1110">[ thread ]</a>
+              <a href="subject.html#1110">[ subject ]</a>
+              <a href="author.html#1110">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

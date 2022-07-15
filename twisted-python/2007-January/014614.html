@@ -1,0 +1,220 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Advice on Writing a Custom Twisted Stackless	Reactor
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Advice%20on%20Writing%20a%20Custom%20Twisted%20Stackless%0A%09Reactor&In-Reply-To=E1H5P4C-0007WX-02%40pyramid.twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="014613.html">
+   <LINK REL="Next"  HREF="014616.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Advice on Writing a Custom Twisted Stackless	Reactor</H1>
+    <B>Andrew Francis</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Advice%20on%20Writing%20a%20Custom%20Twisted%20Stackless%0A%09Reactor&In-Reply-To=E1H5P4C-0007WX-02%40pyramid.twistedmatrix.com"
+       TITLE="[Twisted-Python] Re: Advice on Writing a Custom Twisted Stackless	Reactor">andrewfr_ice at yahoo.com
+       </A><BR>
+    <I>Fri Jan 12 16:21:45 EST 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="014613.html">[Twisted-Python] Ticket Hall of Shame - Current Loser: Brian	Warner
+</A></li>
+        <LI>Next message: <A HREF="014616.html">[Twisted-Python] Twisted lineReceived (sender)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14614">[ date ]</a>
+              <a href="thread.html#14614">[ thread ]</a>
+              <a href="subject.html#14614">[ subject ]</a>
+              <a href="author.html#14614">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello Jean-Paul:
+
+Once again, thanks for your response. 
+
+&gt;<i>Twisted will block while there are no events to
+</I>&gt;<i>process. As soon as there is an event, though, it
+</I>will &gt;wake up.  So, if your tasklets are I/O bound, as
+soon &gt;as there is a network event, Twisted will tell
+you &gt;about it and you can schedule the next one to
+run.  
+
+I know this. Since Twisted and Stackless are using the
+same OS thread, this will block Stackless. Stackless
+will block under the following condition - 
+
+some notation:
+
+S - tasklet waiting for a server call (waiting for a
+Twisted request Handler )
+C - tasklet waiting for a client call (deferred
+request)
+|<i> - running in parallel 
+</I>
+if you have a sequence of the form (S | C[0] | C[1] |
+c[n]) and S executes first, there will be no progress
+on the client tasklets. I tried adding a timer but had
+limited success.
+
+(By the way, when I first mentioned this in the
+Stackless mailing list, Bob Ipolito pointed this out
+to me)
+
+AF&gt;I thought I got around this problem by
+AF&gt;using task.LoopingCall/() that would issue a
+AF&gt;stackless.schedule() at regular intervals. However
+AF&gt;this approach turns out to be problematic. 
+
+&gt;<i>What problems did you face?  It certainly doesn't
+</I>&gt;<i>sound ideal, but it does sound like it should give
+</I>you &gt;something which does more or less work.
+
+In some tests I would get a Twisted error :
+
+why = getAttr(selectable, method)()
+
+others times my processor would simply hang because
+the deferred function was not called.
+
+from my logging, the common demoninator was that the
+task.LoopingCall stopped.
+
+&gt;<i>Better would be to associate network and
+</I>&gt;<i>timing events with specific tasklets and wake them up
+</I>&gt;<i>when the reactor fires those events.
+</I>
+I do this. 
+
+&gt;<i>Most Twisted APIs aren't threadsafe, so most likely
+</I>&gt;<i>what is happening here is that you are using a
+</I>Twisted &gt;API from the wrong thread and it just isn't
+working &gt;right, which often manifests as an event
+which never &gt;fires.
+
+What is the wrong thread? How do I correct this?
+
+&gt;<i>However, I still suspect bringing in a native thread
+</I>&gt;<i>is not necessary to accomplish your goals.
+</I>
+Maybe you are right. So far my experiences are
+pointing in the opposite direction. Also I have read
+posts involving integrating Chandler and IronPython
+with Twisted and they are running Twisted in a
+separate thread. 
+
+That said, these are my deferred calls :
+
+postRequest = client.getPage(self.address, method =
+'POST', headers = self.headers, postdata = self.body) 
+     
+postRequest.addCallback(self.__handleResponse__).addErrback(self.__handleError__)
+    
+
+How should these be done from a thread?
+
+&gt;<i>Roughly, yes.  blockingdemo.py in the examples
+</I>&gt;<i>directory gives a fairly short, self-contained
+</I>example &gt;of integrating another loop using TSR.  If
+you haven't &gt;seen it yet, it'll probably help or help
+verify your &gt;understanding.  If you have, it might be
+a good basis &gt;to guide further questions.
+
+I looked at blockingdemo.py. Blockingdemo is
+structured different from the reactor examples in the
+Twisted.internet module. Most of the example reactors
+i have seen inherit from threadselectreactor and
+override the run() method. What does
+TwistedManager.poll() do? The method is defined but
+called nowhere. I commented out poll() and the
+programme did the same thing. 
+
+That said, I have been looking at the wxreactor.py. 
+
+My questions are:
+
+1. With the customer reactor, it would be Stackless
+that drives Twisted, not the other way around?
+
+2. How exactly does interleave work? Some reactors
+don't use it. My Stackless thread and Twisted talk
+through stackless channels and a variation of a
+stackless channel, the uthread Queue.
+
+My strategy is as follows:
+
+1. Inherit from threadselectreactor and override run()
+
+2. in run(), my interleave calls __hook__()
+
+3. In my Stackless Application, write a method 
+__hook__. __hook__ looks like wxCallAfter in wxPython
+:<i>
+</I>
+def __hook__(self, function, *args, **kw):
+    return function(*args, **kw)
+
+3. Since stackless.schedule() is often called to yield
+control, wrap the stackless.schedule() 
+
+&quot;&quot;&quot;
+call the underlying Stackless scheduler
+&quot;&quot;&quot;
+def __schedule__(self):
+    # this is where I am a little fuzzy but
+wxCallAfter
+    # has to be called somehow
+    self.__hook__(?) 
+    stackless.schedule()
+    
+4. In the StacklessReactor.run(), the main loop that
+is called will look like:
+    
+def MainLoop(self):
+
+    while(stackless.getruncount() &gt; 1):
+         self.__schedule__()        
+
+
+Again, I really appreciate insights. I really want to
+get Stackless Python to properly work with Twisted.
+
+Cheers,
+Andrew
+
+
+
+
+
+
+ 
+____________________________________________________________________________________
+8:00? 8:25? 8:40? Find a flick in no time 
+with the Yahoo! Search movie showtime shortcut.
+<A HREF="http://tools.search.yahoo.com/shortcuts/#news">http://tools.search.yahoo.com/shortcuts/#news</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="014613.html">[Twisted-Python] Ticket Hall of Shame - Current Loser: Brian	Warner
+</A></li>
+	<LI>Next message: <A HREF="014616.html">[Twisted-Python] Twisted lineReceived (sender)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14614">[ date ]</a>
+              <a href="thread.html#14614">[ thread ]</a>
+              <a href="subject.html#14614">[ subject ]</a>
+              <a href="author.html#14614">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

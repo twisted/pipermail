@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.1 (GNU/Linux)
+
+iD8DBQA+PiD6E/sir2pTZkcRAvLFAKDLK/ldaLP2LQ6z44bNp1DzmwEK5wCgiKQd
+NuwuuRfD87mxcEzAMoBPUeo=
+=CgaQ
+-----END PGP SIGNATURE-----

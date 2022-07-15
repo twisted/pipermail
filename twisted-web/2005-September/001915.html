@@ -1,0 +1,332 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Replacement for handler in LivePage?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Replacement%20for%20handler%20in%20LivePage%3F&In-Reply-To=4329DE19.2050003%40rogers.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001913.html">
+   <LINK REL="Next"  HREF="001916.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Replacement for handler in LivePage?</H1>
+    <B>Mike C. Fletcher</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Replacement%20for%20handler%20in%20LivePage%3F&In-Reply-To=4329DE19.2050003%40rogers.com"
+       TITLE="[Twisted-web] Replacement for handler in LivePage?">mcfletch at rogers.com
+       </A><BR>
+    <I>Thu Sep 15 17:48:16 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001913.html">[Twisted-web] Replacement for handler in LivePage?
+</A></li>
+        <LI>Next message: <A HREF="001916.html">[Twisted-web] Replacement for handler in LivePage?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1915">[ date ]</a>
+              <a href="thread.html#1915">[ thread ]</a>
+              <a href="subject.html#1915">[ subject ]</a>
+              <a href="author.html#1915">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Mike C. Fletcher wrote:
+...
+
+&gt;<i> Now, obviously I could override the page's locateHandler and do all of 
+</I>&gt;<i> the registration and lookup manually, but it seems that this kind of 
+</I>&gt;<i> thing would be the *common* use case for any Ajax application.  So, 
+</I>&gt;<i> I'm thinking we should really have an easy method for constructing 
+</I>&gt;<i> such callbacks.
+</I>&gt;<i>
+</I>&gt;<i> This is something along the lines of what I'm thinking (untested 
+</I>&gt;<i> pseudo-code):
+</I>
+And attached is a module that implements the functionality.  It's 
+currently set up as a set of subclasses and functions that shadow those 
+in nevow.livepage.
+
+Have fun,
+Mike
+
+-- 
+________________________________________________
+  Mike C. Fletcher
+  Designer, VR Plumber, Coder
+  <A HREF="http://www.vrplumber.com">http://www.vrplumber.com</A>
+  <A HREF="http://blog.vrplumber.com">http://blog.vrplumber.com</A>
+
+-------------- next part --------------
+&quot;&quot;&quot;Provide classic dynamic-code-friendly handler mechanism for Nevow&quot;&quot;&quot;
+from nevow import rend, loaders, tags, flat, livepage, inevow
+from twisted.internet import defer
+import weakref
+
+log = APPLICATION.getLog( 'livepage' )
+
+class Handler( object ):
+	&quot;&quot;&quot;New-style handler for Nevow, uses the same basic mechanism as transient
+	
+	We want to be able to produce dynamically-generated trees of 
+	controls, which means that we need to be able to register multi-shot
+	event handlers live.
+	&quot;&quot;&quot;
+	bubble = True
+	def __init__( self, identifier, callable, *args, **named ):
+		&quot;&quot;&quot;Initialise the handler instance
+		
+		identifier -- unique identifier assigned by the client handle 
+		callable -- the target callable object
+		args -- arguments to the function (javascript arguments)
+		named -- carries non-javascript arguments, currently:
+			bubble -- if defined and False, prevent bubbling of the 
+				generating event (i.e. &quot;stop&quot; after the handler)
+		&quot;&quot;&quot;
+		self.identifier = identifier
+		self.callable = callable
+		self.args = args 
+		if named.has_key( 'bubble' ):
+			self.bubble = named['bubble']
+	def jsIdentifier( self ):
+		&quot;&quot;&quot;Retrieve the javascript callback identifier for this callback&quot;&quot;&quot;
+		return '**handler.%s'%(self.identifier)
+	def jsCall( self, ctx ):
+		&quot;&quot;&quot;Produce the javascript to call this Handler on the server&quot;&quot;&quot;
+		client = livepage.IClientHandle(ctx)
+		if self.identifier is None:
+			self.identifier = client.nextId()
+			client.registerHandler( self )
+		base = livepage.server.handle( self.jsIdentifier(), *self.args )
+		if not self.bubble:
+			result = base
+		else:
+			result = [ 
+				base,
+				livepage.stop
+			]
+		return livepage.flat.serialize( result, ctx )
+	def __call__( self, javascriptContext, *args ):
+		&quot;&quot;&quot;Do the final calling of the handler with the client-provided values&quot;&quot;&quot;
+		try:
+			log.debug( &quot;&quot;&quot;Callback: %s, %r&quot;&quot;&quot;, self.callable, args )
+			client = livepage.IClientHandle( javascriptContext )
+			return self.callable( client, *args )
+		except Exception, err:
+			log.error(
+				&quot;&quot;&quot;Failure during Javascript callback on %s %s: %s&quot;&quot;&quot;,
+				getattr(self.callable,'__name__',self.callable),
+				args,
+				log.getException( err ),
+			)
+			return None
+	def deregisterOnDelete( self, targetObject, client ):
+		&quot;&quot;&quot;Deregister this handler from the client on deletion of targetObject&quot;&quot;&quot;
+		return weakref.ref( targetObject, _Deregister( client ))
+class _Deregister( object ):
+	&quot;&quot;&quot;Class to deregister a registered handler when target dies&quot;&quot;&quot;
+	def __init__( self, client ):
+		self.client = weakref.ref( client )
+	def __call__( self, targetWeak ):
+		&quot;&quot;&quot;De-register the javascript handler now that target is gone&quot;&quot;&quot;
+		client = self.client()
+		if client:
+			try:
+				del client.handlers[ self.jsIdentifier()]
+			except (AttributeError,KeyError), err:
+				pass 
+def flattenHandler( handler, ctx ):
+	&quot;&quot;&quot;Redirect to flatten a handler instance&quot;&quot;&quot;
+	return handler.jsCall( ctx )
+livepage.flat.registerFlattener(flattenHandler, Handler)
+
+def handler( callable, *args, **named ):
+	&quot;&quot;&quot;Handler call for use without reference to the client object
+	
+	See Handler for discussion of arguments
+	&quot;&quot;&quot;
+	return Handler( None, callable, *args, **named )
+
+class InputHandlerResource( livepage.InputHandlerResource ):
+	&quot;&quot;&quot;Teach to support the **handler.ID names...&quot;&quot;&quot;
+	def renderHTTP(self, ctx):
+		&quot;&quot;&quot;Handle incoming HTTP-based XML-RPC call
+		
+		This is far more verbose than it should be because the base function
+		doesn't provide resolveHandler( ctx ), so we have to duplicate the 
+		rest of the function just to overload that piece of functionality.
+		&quot;&quot;&quot;
+		self.clientHandle.timeoutCount = 0
+	
+		request = inevow.IRequest(ctx)
+		livepage.neverEverCache(request)
+		livepage.activeChannel(request)
+		ctx.remember(self.clientHandle, livepage.IClientHandle)
+		ctx.remember(livepage.jsExceptionHandler, inevow.ICanHandleException)
+	
+		handlerName = request.args['handler-name'][0]
+		arguments = request.args.get('arguments', ())
+		livepage.jslog(&quot;&gt;&gt;&gt;&gt;&gt;&gt;\n%s %s\n&quot; % (handlerName, arguments))
+		handler = self.resolveHandler( ctx )
+	
+		jsContext = livepage.JavascriptContext(ctx, tags.invisible[handler])
+		towrite = []
+	
+		def writer(r):
+			livepage.jslog(&quot;WRITE &quot;, r)
+			towrite.append(r)
+	
+		def finisher(r):
+			livepage.jslog(&quot;FINISHED&quot;, r)
+			writestr = ''.join(towrite)
+			livepage.jslog(&quot;&lt;&gt;&lt;&gt;&lt;&gt;\n%s\n&quot; % (writestr, ))
+			request.write(writestr)
+			request.finish()
+			return r
+		result = handler(jsContext, *arguments)
+		livepage.jslog(&quot;RESULT &quot;, result)
+	
+		if result is None:
+			return defer.succeed('')
+		return self.clientHandle.livePage.flattenFactory(result, jsContext,
+											writer, finisher)
+	def resolveHandler( self, ctx ):
+		&quot;&quot;&quot;Resolve the handler for the given context (request)&quot;&quot;&quot;
+		request = inevow.IRequest(ctx)
+		handlerName = request.args['handler-name'][0]
+		handler = self.clientHandle.getHandler( handlerName )
+		if handler is None:
+			if handlerName.startswith('--transient.'):
+				handler = self.clientHandle.popTransient(
+					handlerName.split('.')[-1]
+				)
+			else:
+				handler = self.clientHandle.livePage.locateHandler(
+					ctx, request.args['handler-path'],
+					handlerName
+				)
+		return handler
+
+
+
+class ClientHandle( livepage.ClientHandle ):
+	&quot;&quot;&quot;ClientHandle providing for run-time registration of multi-use callbacks&quot;&quot;&quot;
+	def handler( self, callable, *args, **named ):
+		&quot;&quot;&quot;Create a new Handler object, assigning an ID automatically
+		
+		With the LivePage below, this allows for doing
+			IClientHandle( ctx ).handler( callable, arg, arg1, arg2 )
+		whereever you see a context instance.  Of course, we also support 
+		the original handler top-level function as well.
+		&quot;&quot;&quot;
+		id = self.nextId()
+		handle = Handler( id, callable, *args, **named )
+		return self.registerHandler( handler )
+	def registerHandler( self, handler ):
+		&quot;&quot;&quot;Register a handler (must already have identifier)
+		
+		handler -- callable handler taking a client instance and having a 
+			jsIdentifier() method.
+		
+		Side-effect: creates the &quot;handlers&quot; attribute and registers for 
+			deletion of that attribute on loss of connection.
+		
+		returns handler
+		&quot;&quot;&quot;
+		if not hasattr( self, 'handlers' ):
+			self.handlers = {}
+			self.notifyOnClose().addBoth( self.cleanHandlers )
+		self.handlers[ handler.jsIdentifier() ] = handler
+		return handler
+		
+	def cleanHandlers( self, result=None ):
+		&quot;&quot;&quot;Clean up the handler registry for this client handle
+		
+		Called by a notifyOnClose deferred
+		&quot;&quot;&quot;
+		log.debug( &quot;&quot;&quot;Cleaning up handlers for client handler %s&quot;&quot;&quot;, self )
+		try:
+			del self.handlers
+		except AttributeError, err:
+			pass
+		return result
+	def getHandler( self, key ):
+		&quot;&quot;&quot;Retrieve named registered handler or None
+		
+		key -- identifier for the handler, exactly as returned from 
+			jsIdentifier() on the handler (no pre-processing is done).
+		&quot;&quot;&quot;
+		try:
+			return self.handlers[ key ]
+		except KeyError, err:
+			return None
+
+
+class DefaultClientHandleFactory( livepage.DefaultClientHandleFactory ):
+	&quot;&quot;&quot;Override declaration of clientHandleClass&quot;&quot;&quot;
+	clientHandleClass = ClientHandle
+theDefaultClientHandleFactory = DefaultClientHandleFactory()
+class DefaultClientHandlesResource(livepage.DefaultClientHandlesResource):
+	&quot;&quot;&quot;Override declarations of Input and Output handlers and clientFactory&quot;&quot;&quot;
+	clientResources = {
+		'input': InputHandlerResource,
+		'output': livepage.OutputHandlerResource,
+	}
+	clientFactory = theDefaultClientHandleFactory
+theDefaultClientHandlesResource = DefaultClientHandlesResource()
+
+class LivePage( livepage.LivePage):
+	&quot;&quot;&quot;Base class for Cinemon LivePage instances
+	
+	Initialise as LivePage( content=SomeFragment(), target=target )
+	
+	LivePages are resources, so can be directly returned from 
+	traversal (i.e. don't need extra wrapping.
+	&quot;&quot;&quot;
+	clientFactory = theDefaultClientHandleFactory
+	def renderHTTP(self, ctx):
+		&quot;&quot;&quot;Override to store the client-handle in the main page context&quot;&quot;&quot;
+		handle = self.clientFactory.newClientHandle(
+			self, self.refreshInterval,self.targetTimeoutCount
+		)
+		ctx.remember( handle, livepage.IClientHandle )
+		return super( LivePage, self ).renderHTTP( ctx )
+	def render_liveglue(self, ctx, data):
+		&quot;&quot;&quot;Override to use already-created client handle (from renderHTTP)&quot;&quot;&quot;
+		if not self.cacheable:
+			handle = livepage.IClientHandle( ctx )
+			handleId = &quot;'&quot;, handle.handleId, &quot;'&quot;
+		else:
+			handleId = 'null'
+		return [
+			tags.script(type=&quot;text/javascript&quot;)[
+				&quot;var nevow_clientHandleId = &quot;, handleId ,&quot;;&quot;],
+			tags.script(type=&quot;text/javascript&quot;,
+						src=livepage.url.here.child('nevow_glue.js'))
+		]
+	def child_livepage_client(self, ctx):
+		&quot;&quot;&quot;Override the default client-handles-resources lookup to use local&quot;&quot;&quot;
+		return theDefaultClientHandlesResource
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001913.html">[Twisted-web] Replacement for handler in LivePage?
+</A></li>
+	<LI>Next message: <A HREF="001916.html">[Twisted-web] Replacement for handler in LivePage?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1915">[ date ]</a>
+              <a href="thread.html#1915">[ thread ]</a>
+              <a href="subject.html#1915">[ subject ]</a>
+              <a href="author.html#1915">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

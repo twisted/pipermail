@@ -1,0 +1,82 @@
+from __future__ import generators
+from twisted.python.compat import True, False
+from twisted.internet.protocol import Protocol
+        
+class StringPipe:
+    _s = ''
+    def __len__(self):
+        return len(self._s)
+
+    def clear(self):
+        self._s = ''
+
+    def write(self, s):
+        self._s += s
+
+    def read(self, bytes=None):
+        s = self._s
+        if bytes is None:
+            self._s = ''
+            return s
+        self._s = s[bytes:]
+        return s[:bytes]
+
+def iter_fn(fn, *args, **kwargs):
+    return fn, args, kwargs
+
+class IterableProtocol(Protocol):
+    iterateOnLoss = True
+    iterateOnStart = True
+    def connectionMade(self):
+        self.iterator = iter(self)
+        self.stopcommand = None
+        if self.iterateOnStart:
+            self.dispatch()
+
+    def dispatch(self):
+        if self.stopcommand is not None:
+            cmd, args, kwargs = self.stopcommand
+            if not getattr(self, 'dispatch_' + cmd)(*args, **kwargs):
+                return
+            self.stopcommand = None
+        for cmd, args, kwargs in self.iterator:
+            if not getattr(self, 'dispatch_' + cmd)(*args, **kwargs):
+                self.stopcommand = cmd, args, kwargs
+                break
+
+    def connectionLost(self, reason):
+        try:
+            if self.iterateOnLoss:
+                self.dispatch()
+        finally:
+            self.iterator = None
+            self.stopcommand = None
+
+class IterableBytestreamProtocol(IterableProtocol):
+    PipeClass = StringPipe
+    def connectionMade(self):
+        self.pipe = self.PipeClass()
+        IterableProtocol.connectionMade(self)
+
+    def reset(self):
+        self.connectionMade()
+
+    def dataReceived(self, data):
+        self.pipe.write(data)
+        self.dispatch()
+
+    def dispatch_read(self, callback, bytes=None):
+        p = self.pipe
+        if p is None:
+            callback(None)
+            return True
+        elif bytes <= len(p) > 0:
+            callback(p.read(bytes))
+            return True
+    
+    def connectionLost(self, reason):
+        self.pipe = None
+        IterableProtocol.connectionLost(self, reason)
+
+    def run(self):
+        self.connectionLost(None)

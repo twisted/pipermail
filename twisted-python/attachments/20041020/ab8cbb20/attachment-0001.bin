@@ -1,0 +1,107 @@
+Index: test/test_names.py
+===================================================================
+--- test/test_names.py	(revision 12111)
++++ test/test_names.py	(working copy)
+@@ -66,6 +66,15 @@
+     retry = 100,
+     )
+ 
++wildcard_soa = dns.Record_SOA(
++    mname = 'wildcard-domain.com',
++    rname = 'postmaster.wildcard-domain.com',
++    serial = 140,
++    refresh = 12345,
++    minimum = 42,
++    expire = 424242,
++    retry = 42,
++)
+ 
+ test_domain_com = NoFileAuthority(
+     soa = ('test-domain.com', soa_record),
+@@ -134,12 +143,26 @@
+         }
+     )
+ 
++wildcard_domain_com = NoFileAuthority(
++    soa = ('wildcard-domain.com', wildcard_soa),
++    records = {
++        '*.wildcard-domain.com': [
++            wildcard_soa,
++            dns.Record_A('1.2.3.4', ttl='1S'),
++            ],
++        '*.cname.wildcard-domain.com': [
++            wildcard_soa,
++            dns.Record_CNAME('foo.wildcard-domain.com', ttl='1S')
++            ]
++        }
++    )
++
+ class ServerDNSTestCase(unittest.TestCase):
+     """Test cases for DNS server and client."""
+ 
+     def setUp(self):
+         self.factory = server.DNSServerFactory([
+-            test_domain_com, reverse_domain, my_domain_com
++            test_domain_com, reverse_domain, my_domain_com, wildcard_domain_com
+         ], verbose=2)
+ 
+         p = dns.DNSDatagramProtocol(self.factory)
+@@ -204,7 +227,21 @@
+             [dns.Record_A('255.255.255.254', ttl=19283784), dns.Record_A('0.0.0.0', ttl=19283784)]
+         )
+ 
++    def testWildcardAddressRecord(self):
++        """Test DNS 'A' record with wildcards"""
+ 
++        self.namesTest(
++            self.resolver.lookupAddress('foo.wildcard-domain.com'),
++            [dns.Record_A('1.2.3.4', ttl=1)]
++        )
++
++    def testWildcardCNAME(self):
++        """Test DNS 'CNAME' record with wildcards"""
++        self.namesTest(
++            self.resolver.lookupAddress('bar.cname.wildcard-domain.com'),
++            [dns.Record_CNAME('foo.wildcard-domain.com', ttl=1)]
++        )
++
+     def testAuthority(self):
+         """Test DNS 'SOA' record queries"""
+         self.namesTest(
+Index: authority.py
+===================================================================
+--- authority.py	(revision 12111)
++++ authority.py	(working copy)
+@@ -102,7 +102,7 @@
+                     )
+             if not results:
+                 results = cnames
+-            
++
+             for record in results + authority:
+                 if record.type == dns.NS or record.type == dns.CNAME:
+                     n = str(record.payload.name)
+@@ -111,8 +111,23 @@
+                             additional.append(
+                                 dns.RRHeader(n, dns.A, dns.IN, rec.ttl or default_ttl, rec, auth=True)
+                             )
++            
+             return defer.succeed((results, authority, additional))
+         except KeyError:
++            # Attempt to locate a suitable wildcard record
++            newName = name
++            while not self.records.get('*.' + newName.lower(), ()) and len(newName.split('.')) > 1:
++                newName = '.'.join(newName.split('.')[1:])
++
++            if self.records.has_key('*.'+newName):
++                for rec in self.records['*.'+newName]:
++                    if rec.TYPE == dns.A or rec.TYPE == dns.CNAME:
++                        results.append(
++                            dns.RRHeader(name, rec.TYPE, dns.IN, rec.ttl or default_ttl, rec, auth=True)
++                        )
++                
++                return defer.succeed((results, (), ()))
++
+             if name.lower().endswith(self.soa[0].lower()):
+                 # We are the authority and we didn't find it.  Goodbye.
+                 return defer.fail(failure.Failure(dns.AuthoritativeDomainError(name)))

@@ -1,0 +1,161 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Best way to trigger a future connection with data
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Best%20way%20to%20trigger%20a%20future%20connection%20with%0A%20data&In-Reply-To=%3C51E900D8.2070205%40ed.ac.uk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="059676.html">
+   <LINK REL="Next"  HREF="059678.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Best way to trigger a future connection with data</H1>
+    <B>Nick Johnson</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Best%20way%20to%20trigger%20a%20future%20connection%20with%0A%20data&In-Reply-To=%3C51E900D8.2070205%40ed.ac.uk%3E"
+       TITLE="[Twisted-Python] Best way to trigger a future connection with data">Nick.Johnson at ed.ac.uk
+       </A><BR>
+    <I>Fri Jul 19 03:03:20 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="059676.html">[Twisted-Python] Best way to trigger a future connection with	data
+</A></li>
+        <LI>Next message (by thread): <A HREF="059678.html">[Twisted-Python] Best way to trigger a future connection with	data
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59677">[ date ]</a>
+              <a href="thread.html#59677">[ thread ]</a>
+              <a href="subject.html#59677">[ subject ]</a>
+              <a href="author.html#59677">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Here's a cut-down version of the code which might be more illustrative:
+
+
+class MyProtocol(Protocol):
+    def __init__(self, s, d):
+	&lt;some init&gt;
+
+    def dataReceived(self, data):
+	&lt;do stuff with data&gt;
+
+    def connectionLost(self, reason):
+        reactor.callLater(10, ...)
+
+    def connectionMade(self):
+        self.transport.write(...)
+        self.transport.loseWriteConnection()
+
+class MyFactory(ClientFactory):
+    def __init__(self, src, dst, interval, type_req):
+        self.s = src
+        self.d = dst
+
+    def buildProtocol(self, addr):
+        p = MyProtocol(self.s, self.d)
+        p.factory = self
+        return p
+
+if __name__ == '__main__':
+    f = MyFactory(&quot;10&quot;, &quot;20&quot;, 1, 1)
+    l = task.LoopingCall(reactor.connectTCP ... f)
+    l.start(.1)
+    task.callLater(20, reactor.stop())
+    reactor.run()
+
+So, each call from task.LoopingCall sets up a new connection which then
+starts a job. When that connection has finished, the protocol instance
+disappears. I can store the data it received in a structure in the
+Factory, no problems there.
+
+I have to call transport.loseWriteConnection() in order to get data from
+the server (I've no control over this).
+
+The problem comes when the delayed connection is started. This will (in
+my mind) create a new instance of MyProtocol by calling the
+buildProtocol method of the Factory. Without any additional input, it
+wont know what to do, start a new job or retrieve one from the server.
+I've tried thinking about callbacks and deferreds but still get stuck
+with the same problem of how to instruct a particular instance of
+MyProtocol to either launch or retrieve a job.
+
+
+Cheers,
+-Nick.
+
+
+On 19/07/13 09:25, Laurens Van Houtven wrote:
+&gt;<i> On Fri, Jul 19, 2013 at 10:19 AM, Nick Johnson
+</I>&gt;<i> &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Nick.Johnson at ed.ac.uk</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Nick.Johnson at ed.ac.uk</A>&gt;&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Thanks lvh,
+</I>&gt;<i> 
+</I>&gt;<i> I did have to override the buildProtocol method in the Factory but I 
+</I>&gt;<i> then set Protocol.factory to be equal to the Factory (ie, 
+</I>&gt;<i> myprotocol.factory=self).
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> You could (perhaps should) do this by calling 
+</I>&gt;<i> ClientFactory.buildProtocol(self, addr).
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> I'm still stuck however with what to do when I get more complex than 
+</I>&gt;<i> this simple case. For example, I use a callingLoop to call multiple 
+</I>&gt;<i> connections with a 0.1 second interval to launch jobs and each of
+</I>&gt;<i> those connections does as mentioned by setting up a future connection
+</I>&gt;<i> to retrieve the output, say 10 seconds later. There is going to be
+</I>&gt;<i> some overlap, ie I might have launched 100 new jobs before the first
+</I>&gt;<i> one fires it's task.callLater.
+</I>&gt;<i> 
+</I>&gt;<i> Storing state in the factory class doesn't work in this case because 
+</I>&gt;<i> each new connection wont know whether to initiate a job or retrieve 
+</I>&gt;<i> output as I cannot pass it this extra information.
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> I don't understand why not. Could you elaborate?
+</I>&gt;<i> 
+</I>&gt;<i> Either way, it seems to me that the API should be:
+</I>&gt;<i> 
+</I>&gt;<i> d = scheduleJob() d.addCallback(getJob)
+</I>&gt;<i> 
+</I>&gt;<i> That is: only get the job once it has been scheduled. getJob would 
+</I>&gt;<i> probably have to be split up into something that delays (consider 
+</I>&gt;<i> delayLater), and something that actually gets the job.
+</I>&gt;<i> 
+</I>&gt;<i> cheers lvh
+</I>
+-- 
+The University of Edinburgh is a charitable body, registered in
+Scotland, with registration number SC005336.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="059676.html">[Twisted-Python] Best way to trigger a future connection with	data
+</A></li>
+	<LI>Next message (by thread): <A HREF="059678.html">[Twisted-Python] Best way to trigger a future connection with	data
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59677">[ date ]</a>
+              <a href="thread.html#59677">[ thread ]</a>
+              <a href="subject.html#59677">[ subject ]</a>
+              <a href="author.html#59677">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

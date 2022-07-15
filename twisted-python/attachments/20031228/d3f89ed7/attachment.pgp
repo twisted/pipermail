@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.3 (Darwin)
+
+iD8DBQE/77ARvVGR4uSOE2wRAnQFAJ9UZ/+z7rSQPxeYQG93wr2ow43D1QCfZJC1
+h6rSDuoKd2dHXF+sL1FpQds=
+=gpsy
+-----END PGP SIGNATURE-----

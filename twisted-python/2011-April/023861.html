@@ -1,0 +1,149 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Twisted Plugins - Implementation Discussion
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Twisted%20Plugins%20-%20Implementation%20Discussion&In-Reply-To=20110407003518.GD764%40thorne.id.au">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="023858.html">
+   <LINK REL="Next"  HREF="023869.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Twisted Plugins - Implementation Discussion</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Twisted%20Plugins%20-%20Implementation%20Discussion&In-Reply-To=20110407003518.GD764%40thorne.id.au"
+       TITLE="[Twisted-Python] Twisted Plugins - Implementation Discussion">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Thu Apr  7 02:08:00 EDT 2011</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="023858.html">[Twisted-Python] Twisted Plugins - Implementation Discussion
+</A></li>
+        <LI>Next message: <A HREF="023869.html">[Twisted-Python] Twisted Plugins - Implementation Discussion
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#23861">[ date ]</a>
+              <a href="thread.html#23861">[ thread ]</a>
+              <a href="subject.html#23861">[ subject ]</a>
+              <a href="author.html#23861">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Apr 6, 2011, at 8:35 PM, Stephen Thorne wrote:
+
+&gt;<i> Part of the discussion was about how to rewrite this in such a way that
+</I>&gt;<i> no python code needs to be run in order to discover all the
+</I>&gt;<i> tapname+description combinations that are available to twistd, this is
+</I>&gt;<i> because of a perceived performance and sanity deficit in using 'twistd'.
+</I>
+My interest in this discussion is not so much in &quot;no python code should be executed&quot; but rather &quot;the current constraints of the system should be preserved (your whole package doesn't get imported) but you shouldn't have to write hacks like ServiceMaker (&lt;<A HREF="http://twistedmatrix.com/documents/11.0.0/api/twisted.application.service.ServiceMaker.html">http://twistedmatrix.com/documents/11.0.0/api/twisted.application.service.ServiceMaker.html</A>&gt;)to preserve them&quot;.  Or, for that matter, do inner imports, like this one from your example:
+
+&gt;<i>    def makeService(self, options):
+</I>&gt;<i>        from examplepackage.examplemodule import make_service
+</I>&gt;<i>        return make_service(debug=options['debug'])
+</I>
+
+Someone unfamiliar with the Twisted plugin system would probably not realize that the positioning of that import is critically important.  It seems kind of random, and maybe sloppy, and a refactoring for stylistic fixes might move it to the top of the module.
+
+Of course, such a refactoring would make 'twistd --help' on any system with your code installed start executing gobs and gobs of additional code.  Also, as a result of such a change, every 'twistd' server on such a system would have your entire examplepackage.examplemodule imported, silently of course, increasing their memory footprint and so on.
+
+As I have mentioned in other parts of this mailing list thread, there's already some caching going on, but it's never used.  Observe:
+
+<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at ...</A> twisted/plugins$ python
+Python 2.6.1 (...)
+&gt;&gt;&gt;<i> from cPickle import load
+</I>&gt;&gt;&gt;<i> plugins = load(file('dropin.cache'))
+</I>&gt;&gt;&gt;<i> plugins['twisted_names'].plugins
+</I>[&lt;CachedPlugin 'TwistedNames'/'twisted.plugins.twisted_names' (provides 'IPlugin, IServiceMaker')&gt;]
+&gt;&gt;&gt;<i> plugins['twisted_names'].plugins[0].name
+</I>'TwistedNames'
+&gt;&gt;&gt;<i> plugins['twisted_names'].plugins[0].description
+</I>'\n    Utility class to simplify the definition of L{IServiceMaker} plugins.\n    '
+&gt;&gt;&gt;<i> plugins['twisted_names'].plugins[0].provided
+</I>[&lt;InterfaceClass twisted.plugin.IPlugin&gt;, &lt;InterfaceClass twisted.application.service.IServiceMaker&gt;]
+&gt;&gt;&gt;<i> import sys
+</I>&gt;&gt;&gt;<i> 'twisted.plugins' in sys.modules
+</I>False
+
+The problem with this is that once you've loaded the plugins, you can't see it any more:
+
+&gt;&gt;&gt;<i> from twisted.plugin import getPlugins
+</I>&gt;&gt;&gt;<i> from twisted.application.service import IServiceMaker
+</I>&gt;&gt;&gt;<i> allPlugins = list(getPlugins(IServiceMaker))
+</I>&gt;&gt;&gt;<i> plugin = [p for p in allPlugins if p.tapname == 'dns'][0]
+</I>&gt;&gt;&gt;<i> plugin.description
+</I>'A domain name server.'
+&gt;&gt;&gt;<i> plugin.name
+</I>'Twisted DNS Server'
+
+Those are the 'name' and 'description' attributes from the IServiceMaker provider, already implicitly loaded by getPlugins.  You can't see the CachedPlugin any more.
+
+So, here's an idea, very similar to the one on the ticket.  Keeping in mind the state described above, hopefully it will communicate my idea better.
+
+Right now, IPlugin is purely a marker.  It provides no methods.  I propose a new subinterface (designed to eventually replace it), IPlugin2, with one method, 'metadata()', that returns a dictionary mapping strings to strings.  This _could_ be any object, limited only by what we think is a good idea to allow serializing.  The second method would be 'willProvide(I)' which returns a boolean, whether the result of load() will provide the interface 'I'.
+
+Then there's a helper which you inherit which looks like:
+
+class Plugin2(object):
+    implements(IPlugin2)
+    def metadata(self):
+        raise NotImplementedError(&quot;your metadata here&quot;)
+    def willProvide(self, I):
+        return I.providedBy(self)
+    def load(self):
+        return self
+
+The one rule here is that 'metadata()' must always return the same value for a particular version of the code.  We will then serialize the metadata from calling metadata() into dropin.cache, and expose it to application code.
+
+My idea for exposing it is that if you then do 'getPlugins(IPlugin2)', you will get back an iterable of IPlugin2 providers, but not necessarily instances of your classes: they could be cached plugins, with cached results for metadata() and willProvide() - the latter based on the list currently saved as the 'provided' attribute.  So a loop like this to load a twistd plugin by name:
+
+def twistdPluginByTapname(name):
+    for p2 in getPlugins(IPlugin2):
+        if p2.willProvide(IServiceMaker) and p2.metadata()['tapname'] == name:
+            return p2.load()
+
+... would not actually load any plugins, but work entirely from the cached metadata.  Since you wouldn't be loading the plugin except to actually invoke its dynamic behavior, we would no longer need ServiceMaker, just an instance of the actual IServiceMaker plugin, with no local imports or anything.
+
+This would at least partially address one of your complaints, Stephen, in that it would mean that a plugin could be defined with 2 lines: import your class, and create an instance of it.  Of course you'd still need boilerplate somewhere, but it would be possible to put a big pile of them in one place, or define some common stuff in a utility module, and not need to dance around avoiding importing it.
+
+As a separate consideration, once this API is in place, it isn't all that important that we generate that initial metadata by importing the Python code the way that we do now.  The metadata could be manually specified.  I think that would be a good first step, but we could, for example, put the metadata in some human-readable format rather than pickle.  JSON, I guess, is what's hip with the kids these days.  Or, if you philistines really won't quit, an .ini file.  But don't tell me I didn't warn you ;-).
+
+The actual list of plugins could be generated from these data files as well.  But, if we were to put this kind of extra metadata into a data file right now, the current API wouldn't give you any way to access it.
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20110407/d4e5976d/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20110407/d4e5976d/attachment.htm</A> 
+</PRE>
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="023858.html">[Twisted-Python] Twisted Plugins - Implementation Discussion
+</A></li>
+	<LI>Next message: <A HREF="023869.html">[Twisted-Python] Twisted Plugins - Implementation Discussion
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#23861">[ date ]</a>
+              <a href="thread.html#23861">[ thread ]</a>
+              <a href="subject.html#23861">[ subject ]</a>
+              <a href="author.html#23861">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

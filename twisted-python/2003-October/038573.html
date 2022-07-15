@@ -1,0 +1,205 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Deffered question
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Deffered%20question&In-Reply-To=%3C20031021125401.GF28665%40frobozz%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="038611.html">
+   <LINK REL="Next"  HREF="038574.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Deffered question</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Deffered%20question&In-Reply-To=%3C20031021125401.GF28665%40frobozz%3E"
+       TITLE="[Twisted-Python] Deffered question">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Tue Oct 21 06:54:01 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="038611.html">[Twisted-Python] Deffered question
+</A></li>
+        <LI>Next message (by thread): <A HREF="038574.html">[Twisted-Python] Deffered question
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#38573">[ date ]</a>
+              <a href="thread.html#38573">[ thread ]</a>
+              <a href="subject.html#38573">[ subject ]</a>
+              <a href="author.html#38573">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Tue, Oct 21, 2003 at 02:32:32PM +0300, soso wrote:
+&gt;<i> Hi all, 
+</I>&gt;<i> 
+</I>&gt;<i> I need to implement a command based protocol, that is a client sends a command
+</I>&gt;<i> to the server and waits for the response. Since the response computation might
+</I>&gt;<i> be time consuming I have to choose between 2 solutions:
+</I>&gt;<i> - use Twisted deffereds
+</I>&gt;<i> - or write my own implementation, a TCP based threaded server. I'm not worried
+</I>&gt;<i> about scaling since it will not be used by more than 10 clients at a time.
+</I>&gt;<i> 
+</I>&gt;<i> And the question is, how are deffereds actually implemented? My guess is that
+</I>&gt;<i> there are some worker threads, besides the main thread. Or?
+</I>
+Deferreds aren't magical at all; the implementation doesn't involve threads,
+or anything behind the scenes at all.  By themselves, they don't magically
+turn synchronous (i.e. blocking) code into asynchronous (i.e. non-blocking)
+code.
+
+They're simply a very convenient abstraction around the concept of a
+&quot;deferred result&quot; that eases management of callbacks that operate on that
+result.
+
+See also:
+    <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2003-June/004333.html">http://twistedmatrix.com/pipermail/twisted-python/2003-June/004333.html</A>
+
+&gt;<i> I actually started implementing my own server, Twisted seems too huge. But I may
+</I>&gt;<i> change my mind, I'm new to both Python and Twisted.
+</I>
+Twisted is huge, but then so is the Python standard library.  Twisted is
+great for writing servers in.  The upcoming 1.1 release contains a tutorial
+that should hopefully make understanding what you need to do to write a
+server easier; you can preview the CVS version of it at:
+    <A HREF="http://twistedmatrix.com/users/warner/doc-latest/howto/tutorial.html">http://twistedmatrix.com/users/warner/doc-latest/howto/tutorial.html</A>
+(That's currently an 800kB page!)
+
+Can you elaborate more on what the &quot;response computation&quot; involves?  If you
+can, we can probably sketch out some code that does what you need.
+
+Here's an example off the top of my head, though, that will hopefully help
+you a little (warning, barely tested code):
+
+----
+from twisted.protocols import basic
+from twisted.python import log
+from twisted.internet import reactor, threads
+from twisted.internet.protocol import ServerFactory
+
+def square(n):
+    return n*n
+
+class SquaringProtocol(basic.LineReceiver):
+    &quot;&quot;&quot;A protocol that receives a number, squares it and sends back the
+    result.
+    
+    This drops the connections after one request-response cycle,
+    HTTP/1.0-style. 
+    &quot;&quot;&quot;
+    
+    def lineReceived(self, line):
+        try:
+            number = int(line)
+        except ValueError:
+            self.sendLine(&quot;%r is not a number&quot; % line)
+            return
+        
+        deferred = threads.deferToThread(square, number)
+        # Convert the result to a string
+        deferred.addCallback(str)
+        # Send it
+        deferred.addCallback(self.sendLine)
+        # Write any errors to the log file
+        deferred.addErrback(log.err)
+        # Drop the connection
+        deferred.addBoth(lambda x: self.transport.loseConnection())
+
+
+class RepeatingSquaringProtocol(basic.LineReceiver):
+    &quot;&quot;&quot;A protocol that receives numbers, squares them, and sends back the
+    results.
+    
+    This allows multiple requests to be made on a single connection, without
+    waiting for responses.  The requests will queue up on the server, and be
+    returned (in the order they were requested) as they are processed.  It
+    is up to the client to disconnect.
+    &quot;&quot;&quot;
+    
+    def connectionMade(self):
+        self.busy = 0
+        self.queue = []
+        
+    def lineReceived(self, line):
+        try:
+            number = int(line)
+        except ValueError:
+            self.sendLine(&quot;%r is not a number&quot; % line)
+            return
+        
+        self.queueRequest(number)
+    
+    def queueRequest(self, number):
+        if self.busy:
+            self.queue.append(number)
+        else:
+            self.processRequest(number)
+
+    def processRequest(self, number):
+        deferred = threads.deferToThread(square, number)
+        deferred.addCallback(str)
+        deferred.addCallback(self.requestDone)
+        deferred.addErrback(log.err)
+
+    def requestDone(self, result):
+        self.sendLine(result)
+        if self.queue:
+            number = self.queue.pop(0)
+            self.processRequest(number)
+        else:
+            self.busy = 0
+        
+
+if __name__ == '__main__':
+    from twisted.python import log
+    import sys
+    log.startLogging(sys.stdout)
+    factory = ServerFactory()
+    factory.protocol = SquaringProtocol
+    reactor.listenTCP(9001, factory)
+    factory = ServerFactory()
+    factory.protocol = RepeatingSquaringProtocol
+    reactor.listenTCP(9002, factory)
+    reactor.run()
+
+----
+
+This example has two slightly different versions of a simple protocol that
+squares numbers.  I'm pretending that squaring a number is a slow
+calculation that is best run in a worker thread -- imagine your computation
+where I'm using 'square'.
+
+Hopefully it gives you an idea of how easy this sort of thing is in Twisted.
+
+-Andrew.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="038611.html">[Twisted-Python] Deffered question
+</A></li>
+	<LI>Next message (by thread): <A HREF="038574.html">[Twisted-Python] Deffered question
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#38573">[ date ]</a>
+              <a href="thread.html#38573">[ thread ]</a>
+              <a href="subject.html#38573">[ subject ]</a>
+              <a href="author.html#38573">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

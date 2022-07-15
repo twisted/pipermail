@@ -1,0 +1,212 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] load balancing and performance
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20load%20balancing%20and%20performance&In-Reply-To=20050130002633.7026.2143943333.divmod.quotient.13097%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001125.html">
+   <LINK REL="Next"  HREF="001120.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] load balancing and performance</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20load%20balancing%20and%20performance&In-Reply-To=20050130002633.7026.2143943333.divmod.quotient.13097%40ohm"
+       TITLE="[Twisted-web] load balancing and performance">andrea at cpushare.com
+       </A><BR>
+    <I>Sun Jan 30 05:56:50 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001125.html">[Twisted-web] load balancing and performance
+</A></li>
+        <LI>Next message: <A HREF="001120.html">[Twisted-web] html cache with timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1119">[ date ]</a>
+              <a href="thread.html#1119">[ thread ]</a>
+              <a href="subject.html#1119">[ subject ]</a>
+              <a href="author.html#1119">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sun, Jan 30, 2005 at 12:26:33AM +0000, Valentino Volonghi wrote:
+&gt;<i> This works and I've tested it.
+</I>
+Even if you tested it, I doubt you really benchmarked it ;). Likely it was
+disabled for you (perhaps you forgot setup.py install?)
+
+but I fixed you great hack and here we go:
+
+Index: nevow/rend.py
+===================================================================
+--- nevow/rend.py	(revision 1134)
++++ nevow/rend.py	(working copy)
+@@ -30,6 +30,7 @@
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -374,6 +375,7 @@
+             self.children = {}
+         self.children[name] = child
+     
++_CACHE = {}
+ 
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+@@ -415,7 +417,8 @@
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = _CACHE[str(url.URL.fromContext(ctx))] = io.getvalue()
++                request.write(c)
+                 finishRequest()
+                 return result
+         else:
+@@ -423,12 +426,17 @@
+             def finisher(result):
+                 finishRequest()
+                 return result
++        c = _CACHE.get(str(url.URL.fromContext(ctx)))
++        if c is None:
++            doc = self.docFactory.load()
++            ctx =  WovenContext(ctx, tags.invisible[doc])
++            
++            return self.flattenFactory(doc, ctx, writer, finisher)
++        else:
++            request.write(c)
++            finishRequest()
++            return c
+ 
+-        doc = self.docFactory.load()
+-        ctx =  WovenContext(ctx, tags.invisible[doc])
+-
+-        return self.flattenFactory(doc, ctx, writer, finisher)
+-
+     def rememberStuff(self, ctx):
+         Fragment.rememberStuff(self, ctx)
+         ctx.remember(self, inevow.IResource)
+Index: nevow/vhost.py
+===================================================================
+--- nevow/vhost.py	(revision 1134)
++++ nevow/vhost.py	(working copy)
+@@ -19,7 +19,7 @@
+ &quot;&quot;&quot;
+ 
+     def getStyleSheet(self):
+-        return self.stylesheet
++        return VirtualHostList.stylesheet
+  
+     def data_hostlist(self, context, data):
+         return self.nvh.hosts.keys()
+
+I get 224!! pages per second from the homepage with this. This is
+exactly what I need. I had to set buffered = True in the pages where I
+enabled this of course.
+
+This is ApacheBench, Version 2.0.40-dev &lt;$Revision: 1.121.2.10 $&gt;
+apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd,
+<A HREF="http://www.zeustech.net/">http://www.zeustech.net/</A>
+Copyright (c) 1998-2002 The Apache Software Foundation,
+<A HREF="http://www.apache.org/">http://www.apache.org/</A>
+
+Benchmarking opteron (be patient).....done
+
+
+Server Software:        TwistedWeb/aa
+Server Hostname:        opteron
+Server Port:            8080
+
+Document Path:          /
+Document Length:        10606 bytes
+
+Concurrency Level:      2
+Time taken for tests:   0.439832 seconds
+Complete requests:      100
+Failed requests:        0
+Write errors:           0
+Total transferred:      1072500 bytes
+HTML transferred:       1060600 bytes
+Requests per second:    227.36 [#/sec] (mean)
+Time per request:       8.797 [ms] (mean)
+Time per request:       4.398 [ms] (mean, across all concurrent
+requests)
+Transfer rate:          2380.45 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.0      0       0
+Processing:     8    8   0.3      8       9
+Waiting:        8    8   0.1      8       9
+Total:          8    8   0.3      8       9
+
+Percentage of the requests served within a certain time (ms)
+  50%      8
+  66%      8
+  75%      8
+  80%      8
+  90%      8
+  95%      9
+  98%      9
+  99%      9
+ 100%      9 (longest request)
+
+Transfer rate was 2.3Mbyte/sec. This is very great!
+
+Something is buggy still, since I get the same page duplicated twice,
+but the performance are already excellent, actually much faster than
+what I need. And a lot more than 5 times faster, it goes from 7 req per
+second to 227 req per second, so it's 32 times faster.
+
+The next bit to stack on top of the above is a timeout parameter, after
+the timeout the page has to be re-rendered in the _background_, it's
+enough to attach a deferred to it, that will overwrite the cache after
+the rendering is complete.
+
+I'm also afraid I should use the flattener on the url before
+transforming it to a string? Or not?
+
+You're right that removing compy isn't that an high priority compared to
+enabling the caching right. Still I'd like to see compy removed in
+favour of zope.interfaces, on the same lines of twisted. Not everything
+will be cached, the very dynamic stuff cannot be cached, and compy will
+help there. But all http I can cache it, only the ssl is completely
+dynamic.
+
+This is as fast as using 32 UP systems with the http load balancer, so
+you're very right that this was the first angle of attack to use ;).
+
+Many thanks!
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001125.html">[Twisted-web] load balancing and performance
+</A></li>
+	<LI>Next message: <A HREF="001120.html">[Twisted-web] html cache with timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1119">[ date ]</a>
+              <a href="thread.html#1119">[ thread ]</a>
+              <a href="subject.html#1119">[ subject ]</a>
+              <a href="author.html#1119">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

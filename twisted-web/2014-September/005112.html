@@ -1,0 +1,328 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Response hanging after headers sent
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20Response%20hanging%20after%20headers%20sent&In-Reply-To=%3CCANPVNBYSf3CtCC1YjxJ-CMG-hxo%3DaOO8xJowESN5taxi7bBxsw%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   <LINK REL="Next"  HREF="005113.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Response hanging after headers sent</H1>
+    <B>Bruno Harbulot</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20Response%20hanging%20after%20headers%20sent&In-Reply-To=%3CCANPVNBYSf3CtCC1YjxJ-CMG-hxo%3DaOO8xJowESN5taxi7bBxsw%40mail.gmail.com%3E"
+       TITLE="[Twisted-web] Response hanging after headers sent">bruno at distributedmatter.net
+       </A><BR>
+    <I>Thu Sep 11 08:27:04 MDT 2014</I>
+    <P><UL>
+        
+        <LI>Next message: <A HREF="005113.html">[Twisted-web] Response hanging after headers sent
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5112">[ date ]</a>
+              <a href="thread.html#5112">[ thread ]</a>
+              <a href="subject.html#5112">[ subject ]</a>
+              <a href="author.html#5112">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+
+I've been trying to implement a simple notification system via long polling
+using Twisted 14.0.0. On the client side, a web page makes Ajax calls to an
+&quot;update&quot; resource, which will deliver the latest status message known to
+the application. On the server side, a thread feeds a queue with status
+events and another one polls this queue and sends the latest value to any
+pending request, trying to keep the request open for 30 seconds, or until a
+new status event arrives, whichever happens sooner (this is the long
+polling).
+
+Occasionally, one of responses will just hang. &quot;request.finish()&quot; is called
+properly (I've even checked this with &quot;notifyFinish()&quot;), the response
+headers are sent, but the response body isn't (according to Wireshark),
+thereby leaving the browser hanging (since it thinks a valid response has
+started to come through).
+
+I have noticed this behaviour with Twisted 13 and 14, but not with earlier
+versions. This is also an intermittent problem. I have been able to
+reproduce it a number of times, but not always, and it doesn't necessarily
+happen after the same number of requests. It seems to fail more easily on
+machines with one CPU core, or when the execution is limited to one core,
+with only one request at a time (for some reason, having concurrent
+requests from multiple browsers or tabs, or being able to use multiple CPUs
+on the server seems to make the problem harder to reproduce).
+
+I'm pasting at the end of this message a simple example where the status
+events are coming from a counter running in a separate thread. When
+limiting the server process to one CPU, the counter visible on the webpage
+rarely seems to go much above 2000. I've only tried under Linux. I've tried
+this on an actual PC (limiting to one core using &quot;taskset -c 0 python
+test_server.py&quot;), a VM running in VirtualBox (set to 1 CPU) and even a
+Raspberry Pi. The Raspberry Pi is where the problem seems to be the easiest
+to reproduce, but this also happens with the actual PC and virtual machine.
+This was also only tried on a LAN (considering that, for the purpose of
+this test case, the notifications are rather frequent). I've tried with the
+default chunked encoding, or by setting the content-length explicitly, but
+it didn't make a difference.
+
+Is there a way to force to the response to be flushed, after a call to
+&quot;request.finish()&quot;? Any other suggestions to fix this would also be
+appreciated.
+
+Thank you,
+
+Bruno.
+
+
+
+
+Only 2 files are required for this test case: counter.html, test_server.py.
+I've run this in a virtual environment, with Python 2.7 (in which I've
+installed Twisted with `pip install twisted==14.0.0`).
+On a multicore machine, to limit the execution to one core, call the server
+with taskset: &quot;taskset -c 0 python test_server.py&quot;.
+Once the server is running, point a browser (tried with Chrome and Firefox)
+to &quot;<A HREF="http://the.ip.address.example:8880/">http://the.ip.address.example:8880/</A>&quot;, you should see a counter
+increasing (and eventually stopping, which illustrates the problem). The
+issue seems to happen more often when only 1 client (or tab) is connected
+to the server.
+
+
+- counter.html:
+
+&lt;html&gt;
+&lt;head&gt;
+&lt;script type=&quot;application/javascript&quot; src=&quot;//
+code.jquery.com/jquery-1.11.0.min.js&quot;&gt;&lt;/script&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;counter&quot; style=&quot;font-size: 100pt; font-weight: bold;&quot;&gt;&lt;/div&gt;
+&lt;script type=&quot;application/javascript&quot;&gt;
+// &lt;![CDATA[
+$(document).ready(function() {
+    var eTag = null;
+    var normalRefreshDelay = 50;
+    var refreshDelay = normalRefreshDelay;
+    var maxRefreshDelay = 5000;
+    function refresh() {
+        var headers = {};
+        if (eTag) {
+            headers['If-None-Match'] = eTag;
+        }
+        $.ajax({
+            url: &quot;/update&quot;,
+            headers: headers,
+            dataType: &quot;json&quot;,
+            cache: false,
+            success: function(data, status, xhr) {
+                try {
+                    if (data[1] != null) { $(&quot;#counter&quot;).text(&quot;Counter:
+&quot;+data[1]); }
+                    eTag = xhr.getResponseHeader(&quot;ETag&quot;) || null;
+                    refreshDelay = normalRefreshDelay;
+                } catch (e) {
+                    refreshDelay = Math.min(refreshDelay * 2,
+maxRefreshDelay);
+                }
+            },
+            error: function(xhr, text, error) {
+                refreshDelay = Math.min(refreshDelay * 2, maxRefreshDelay);
+            },
+            complete: function(xhr, textStatus) {
+                setTimeout(refresh, refreshDelay);
+            }
+        });
+    }
+    refresh();
+});
+// ]]&gt;
+&lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+
+
+
+- test_server.py
+
+
+# -*- coding: utf-8 -*-
+
+import threading
+import time
+import Queue
+import uuid
+import socket
+import json
+
+from twisted.web.server import Site
+from twisted.web.resource import Resource
+from twisted.web.server import NOT_DONE_YET
+from twisted.internet import reactor
+from twisted.web.static import File
+
+q = Queue.Queue()
+
+def fake_counter():
+    i = 1
+    while True:
+        q.put({ 1: str(i) })
+        time.sleep(0.15)
+        i += 1
+
+producer_thread = threading.Thread(target=fake_counter)
+producer_thread.daemon = True
+producer_thread.start()
+
+
+class CounterUpdateResource(Resource):
+    def __init__(self, msg_queue):
+        Resource.__init__(self)
+        self.msg_queue = msg_queue
+        self.msg = {}
+        self.etag = None
+        self.pending_requests = []
+
+        t = threading.Thread(target=self._poll_messages)
+        t.daemon = True
+        t.start()
+
+    def _poll_messages(self):
+        while True:
+            try:
+                self.msg = self.msg_queue.get(True, 30)
+                self.etag = '&quot;%s&quot;' % (uuid.uuid4(),)
+                print &quot;-&gt; Got new message: %s&quot; % (self.msg,)
+            except Queue.Empty:
+                pass
+            json_str = json.dumps(self.msg)
+            json_len = len(json_str)
+            while True:
+                try:
+                    request = self.pending_requests.pop()
+                    self._actual_render(request, json_str, json_len)
+                except IndexError:
+                    break
+
+    def _actual_render(self, request, json_msg, json_len):
+        try:
+            request.setETag(self.etag)
+            request.setHeader(&quot;Content-Type&quot;, &quot;application/json&quot;)
+            request.setHeader(&quot;Content-Length&quot;, json_len)
+            request.write(json_msg)
+            request.finish()
+        except:
+            pass
+
+    def render_GET(self, request):
+        ifNoneMatchHeader = request.getHeader(&quot;If-None-Match&quot;)
+        if ifNoneMatchHeader is None or ifNoneMatchHeader != self.etag:
+            if self.etag:
+                request.setETag(self.etag)
+            request.setHeader(&quot;Content-Type&quot;, &quot;application/json&quot;)
+            data = json.dumps(self.msg)
+            request.setHeader(&quot;Content-Length&quot;, len(data))
+            return data
+        else:
+            self.pending_requests.append(request)
+            return NOT_DONE_YET
+
+root = Resource()
+root.putChild(&quot;&quot;, File(&quot;counter.html&quot;))
+root.putChild(&quot;update&quot;, CounterUpdateResource(q))
+
+factory = Site(root)
+reactor.listenTCP(8880, factory)
+reactor.run()
+
+
+
+
+
+
+- Sample Wireshark output:
+
+
+Here is a sample output using Wireshark:
+
+GET /update?_=1410440411047 HTTP/1.1
+Host: 192.168.0.8:8880
+Connection: keep-alive
+Cache-Control: max-age=0
+Accept: application/json, text/javascript, */*; q=0.01
+X-Requested-With: XMLHttpRequest
+User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML,
+like Gecko) Chrome/37.0.2062.103 Safari/537.36
+If-None-Match: &quot;84c25895-de1e-4b50-954b-438be9d8d9b7&quot;
+Referer: <A HREF="http://192.168.0.8:8880/">http://192.168.0.8:8880/</A>
+Accept-Encoding: gzip,deflate,sdch
+Accept-Language: en-GB,en;q=0.8,en-US;q=0.6
+
+HTTP/1.1 200 OK
+Date: Thu, 11 Sep 2014 13:06:23 GMT
+Content-Length: 12
+ETag: &quot;7736231b-ee3a-4a9f-a93e-ced0994df098&quot;
+Content-Type: application/json
+Server: TwistedWeb/14.0.0
+
+{&quot;1&quot;: &quot;371&quot;}
+
+GET /update?_=1410440411048 HTTP/1.1
+Host: 192.168.0.8:8880
+Connection: keep-alive
+Cache-Control: max-age=0
+Accept: application/json, text/javascript, */*; q=0.01
+X-Requested-With: XMLHttpRequest
+User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML,
+like Gecko) Chrome/37.0.2062.103 Safari/537.36
+If-None-Match: &quot;7736231b-ee3a-4a9f-a93e-ced0994df098&quot;
+Referer: <A HREF="http://192.168.0.8:8880/">http://192.168.0.8:8880/</A>
+Accept-Encoding: gzip,deflate,sdch
+Accept-Language: en-GB,en;q=0.8,en-US;q=0.6
+
+HTTP/1.1 200 OK
+Date: Thu, 11 Sep 2014 13:06:23 GMT
+Content-Length: 12
+ETag: &quot;ddd10400-3530-4cb4-a9cd-0b123032d8af&quot;
+Content-Type: application/json
+Server: TwistedWeb/14.0.0
+
+
+
+(I've inserted a coupe of line returns after &quot;{&quot;1&quot;: &quot;371&quot;}&quot; for
+readability.)
+Here, nothing is sent on the wire after the headers of the last response
+(the &quot;\r\n\r\n&quot; are present).
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-web/attachments/20140911/e7a41a64/attachment.html">http://twistedmatrix.com/pipermail/twisted-web/attachments/20140911/e7a41a64/attachment.html</A>&gt;
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	<LI>Next message: <A HREF="005113.html">[Twisted-web] Response hanging after headers sent
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5112">[ date ]</a>
+              <a href="thread.html#5112">[ thread ]</a>
+              <a href="subject.html#5112">[ subject ]</a>
+              <a href="author.html#5112">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

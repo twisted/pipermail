@@ -1,0 +1,184 @@
+Index: twisted/enterprise/adbapi.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/enterprise/adbapi.py,v
+retrieving revision 1.58
+diff -r1.58 adbapi.py
+28d27
+< 
+94a94
+>         self.transLock = {} # transaction semaphores, keyed on transaction 
+102d101
+< 
+112d110
+< 
+186a185,287
+>     def startTransaction(self):
+>         """Open a new database Transaction.
+> 
+>         @return: a Deferred which will fire the Transaction or a Failure.
+> 
+>         Since this connection will be in use until the Transaction is
+>         completed, the thread that we call the function in gets blocked
+>         until then.  The Semaphore it is waiting on is stored in
+>         the self.transLock dictionary. 
+>         """        
+> 
+>         d = defer.Deferred()
+> 
+>         def _startTransaction():
+>             from twisted.internet import reactor
+>             from threading import Semaphore, Lock
+>             
+>             # blocks until a transaction is opened 
+>             t = Transaction(self, self.connect())
+> 
+>             # make a semaphore that will be signaled when the
+>             # transaction is complete (making this thread available
+>             # again)            
+>             mtx = Lock()
+>             lck = Semaphore(0)
+>             self.transLock[t] = [ mtx, lck, [] ]
+> 
+>             # cblck causes the thread to pause until the reactor thread
+>             # completes all the callbacks on work to be done. 
+>             cblck = Semaphore(0)
+> 
+>             # call back the Deferred with the Transaction
+>             reactor.callFromThread(d.callback, t)
+> 
+>             def callbacksdone(results, query):
+>                 cblck.release()
+>                 return args
+>             
+>             # loop over queued work until None is found (indicating that
+>             # the transaction has been finished)
+>             while(1):
+>                 lck.acquire()
+>                 mtx.acquire()
+>                 mtx, lck, q = self.transLock[t]
+> 
+>                 if q != []:
+>                     # work to be done
+>                     work = q[0]
+>                     q[:] = q[1:]
+>                 self.transLock[t] = [mtx, lck, q]
+>                 mtx.release()
+>                 
+>                 if work is None:
+>                     print "adbapi: transaction is on its way out."
+>                     mtx.acquire()
+>                     del self.transLock[t]
+>                     mtx.release()
+>                     break
+>                 else:
+>                     promise, f, trans, args, kwargs = work
+>                     result = f(trans, *args, **kwargs)
+>                     # callbacksdone will release the cblck lock,
+>                     # allowing the thread to continue.
+>                     promise.addCallbacks(callbacksdone, callbackArgs=[ args ])
+>                     reactor.callFromThread(promise.callback, result)
+>                     cblck.acquire()
+>             print "adbapi: transaction done"
+>             
+>         self.threadpool.callInThread(_startTransaction)
+>         return d
+> 
+>     def runQueryInTransaction(self, trans, *args, **kw):
+>         """Execute an SQL query in the specified Transaction and return the result.
+> 
+>         This function is similar to runQuery but uses a previously created
+>         Transaction and does not commit or rollback the connection upon
+>         completion.
+>         """
+>         return self._deferToTrans(self._runQueryInTransaction, trans, *args, **kw)
+> 
+>     def runOperationInTransaction(self, trans, *args, **kw):
+>         """Execute an SQL query in the specified Transaction and return None.
+> 
+>         This function is similar to runOperation but uses a previously created
+>         Transaction and does not commit or rollback the connection upon
+>         completion.
+>         """
+>         return self._deferToTrans(self._runOperationInTransaction, trans, *args, **kw)
+> 
+>     def commitTransaction(self, trans):
+>         """Commit the transaction to the database."""
+> 
+>         d = self._deferToTrans(self._commitTransaction, trans)
+>         self._deferToTrans(None, trans)
+>         return d
+>     
+>     def rollbackTransaction(self, trans):
+>         """Exit the transaction without committing."""
+> 
+>         d = self._deferToTrans(self._rollbackTransaction, trans)
+>         self._deferToTrans(None, trans)
+>         return d
+>     
+212d312
+< 
+213a314
+> 
+229a331,366
+> 
+>     def _runQueryInTransaction(self, trans, *args, **kwargs):
+>         trans.reopen()
+>         try:
+>             apply(trans.execute, args, kwargs)
+>             if(trans.rowcount != 0):
+>                 result = trans.fetchall()
+>             else:
+>                 result = []
+>             return result
+>         except:
+>             log.msg('Exception in SQL query.')
+>             print args
+>             log.deferr()
+>             raise
+>         
+>     def _runOperationInTransaction(self, trans, *args, **kwargs):
+>         trans.reopen()
+>         try:
+>             apply(trans.execute, args, kwargs)
+>         except:
+>             log.msg('Exception in SQL operation.')
+>             print trans, args
+>             
+>             log.deferr()
+>             raise
+> 
+>     def _commitTransaction(self, trans):
+>         print "adbapi: actually committing the transaction right now"
+>         conn = trans._connection
+>         conn.commit()
+>         
+>     def _rollbackTransaction(self, trans):
+>         conn = trans._connection
+>         conn.rollback()
+>                 
+245c382
+<         curs = conn.cursor()
+---
+>         curs = conn.cursor()        
+291a429,449
+>         return d
+> 
+>     def _deferToTrans(self, f, trans, *args, **kwargs):
+>         """Internal function.
+> 
+>         Push f onto the transaction's work queue.
+>         """
+>         d = defer.Deferred()
+>         mtx, lck, q = self.transLock[trans]
+>         mtx.acquire()
+>         if len(q) > 0 and q[-1] is None:
+>             print "adbapi: ******* QUEUEING ON DEAD TRANSACTION ******", trans, args
+>             d.callback(None)
+>         elif f is not None:
+>             q.append([d, f, trans, args, kwargs])
+>         else:
+>             q.append(None)
+>         self.transLock[trans] = [mtx, lck, q]            
+>         mtx.release()
+>         lck.release()
+> 

@@ -1,0 +1,151 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Thinking backwards, design ideas
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Thinking%20backwards%2C%20design%20ideas&In-Reply-To=20030420024659.GA8813%40matilda.southern.edu">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003644.html">
+   <LINK REL="Next"  HREF="003646.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Thinking backwards, design ideas</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Thinking%20backwards%2C%20design%20ideas&In-Reply-To=20030420024659.GA8813%40matilda.southern.edu"
+       TITLE="[Twisted-Python] Thinking backwards, design ideas">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Sat Apr 19 23:16:09 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003644.html">[Twisted-Python] Thinking backwards, design ideas
+</A></li>
+        <LI>Next message: <A HREF="003646.html">[Twisted-Python] [flow.py] : iterator problems
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3645">[ date ]</a>
+              <a href="thread.html#3645">[ thread ]</a>
+              <a href="subject.html#3645">[ subject ]</a>
+              <a href="author.html#3645">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sat, Apr 19, 2003 at 10:46:59PM -0400, dansan wrote:
+&gt;<i> Fellow twisters,
+</I>&gt;<i> 
+</I>&gt;<i> I have finally read all that seemed necesary to get a good feel of
+</I>&gt;<i> twisted! and I have finally been able to implement a few 'play'
+</I>&gt;<i> programs.
+</I>&gt;<i> 
+</I>&gt;<i> I have a project I'd like to write, and I have always tought about it in
+</I>&gt;<i> the normal &quot;use a library&quot; fashion (in oppisition to the &quot;use a
+</I>&gt;<i> framework&quot;).  My idea is to create a program that is a tournament
+</I>&gt;<i> manager, it works kind of like this:
+</I>&gt;<i> 
+</I>&gt;<i> 	* Accepts connections (there are 2 types, admin, regular).
+</I>
+I'd say there's two types of *users*.  There's no need to listen on
+different ports, it's just a matter of who they authenticate as.
+
+&gt;<i> 		* Listen to the admin connection
+</I>&gt;<i> 			- Start tournament at admin's command 
+</I>&gt;<i> 			  This would create tournament brackets and actually give the
+</I>&gt;<i> 			  connected players the &quot;play&quot; command.
+</I>&gt;<i> 			- View current games
+</I>&gt;<i> 			- A bunch of other things :)
+</I>&gt;<i> 
+</I>&gt;<i> Then when the admin starts the games, the program would spun a new &quot;game
+</I>&gt;<i> thread&quot; that would have the game logic, and that would keep track of the
+</I>&gt;<i> game (check legality of moves), tell player A to go, tell B what A play,
+</I>&gt;<i> tell B to go, decide on the winner, etc.
+</I>&gt;<i> 
+</I>&gt;<i> But now I find my self trying to think twisted. I am no longer in
+</I>&gt;<i> control of the main program loop it seems.  I see how I can keep some of
+</I>&gt;<i> my static info (having my Protocols register them in the Application).
+</I>&gt;<i> What I'm having a hard time with is envisioning how to get my games
+</I>&gt;<i> started, and how to keep track of them.  
+</I>&gt;<i> * Where does my game-logic go?
+</I>
+I think you want a TournamentService, see
+<A HREF="http://twistedmatrix.com/documents/howto/pb-cred">http://twistedmatrix.com/documents/howto/pb-cred</A> for details of using
+Services in the context of PB, but hopefully you can get something out of it
+even if you don't use PB.  See doc/examples/pbecho.py for an example of a
+simple service.  Basically, it's:
+
+    from twisted.internet.app import Application
+    from twisted.cred.service import Service
+    from twisted.cred.authorizer import DefaultAuthorizer
+
+    class TournamentService(Service):
+        &quot;&quot;&quot;Game logic goes here&quot;&quot;&quot;
+
+    myApp = Application('Tournament')
+    auth = DefaultAuthorizer(myApp)
+    svc = TournamentService('Tournament', myApp, auth)
+    myApp.listenTCP(1234, YourProtocolFactory(svc))
+    myApp.run()
+
+&gt;<i> * Do my protocols check for valid moves... if so, who keeps track of the
+</I>&gt;<i>   board? The board is a share resource between 2 players of a short
+</I>&gt;<i>   amount of time, and there are potentially many games going on at the
+</I>&gt;<i>   same time.
+</I>
+I'd have a TournamentService keeping tracking of all the games running at
+any time in a dict mapping players to a board.  So when a player sends a
+move, the service looks up the player's board, and tells the board what that
+player X wants to play move Y, and the board then accepts that or raises an
+exception.  It's the board that knows what moves can be played at any given
+time; the protocol's job is merely to pass messages to and from the player
+on the network.
+
+&gt;<i> * How can I implement timeouts?  So that players have to play within 
+</I>&gt;<i>   given time-limits?  (like, X seconds per-move kinds of deals?)  I
+</I>&gt;<i>   thougt about starting a timer in my Protocol when a &quot;MAKE A MOVE&quot;
+</I>&gt;<i>   command is sent to the player, and then checking that time when the
+</I>&gt;<i>   move is received... but this seems to involve threads?
+</I>
+There's plenty of stuff built into Twisted for doing timeouts already, that
+doesn't involve threads or anything icky.
+
+You can use reactor.callLater, as described here:
+   <A HREF="http://twistedmatrix.com/documents/howto/time">http://twistedmatrix.com/documents/howto/time</A>
+
+Depending on what you're doing, you may also find the setTimeout method of
+Deferreds to be useful.
+
+&gt;<i> Anyway, I'd really would appreciate your thoughts on this.  This
+</I>&gt;<i> 'higher-design' stuff is keeping me from getting dirty :)
+</I>
+I hope I've made it clearer for you.  Let us know if you're still unsure
+about something.
+
+[I think someone wrote a tic-tac-toe example, which might help a little
+here... does anyone know where that is?]
+
+-Andrew.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003644.html">[Twisted-Python] Thinking backwards, design ideas
+</A></li>
+	<LI>Next message: <A HREF="003646.html">[Twisted-Python] [flow.py] : iterator problems
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3645">[ date ]</a>
+              <a href="thread.html#3645">[ thread ]</a>
+              <a href="subject.html#3645">[ subject ]</a>
+              <a href="author.html#3645">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

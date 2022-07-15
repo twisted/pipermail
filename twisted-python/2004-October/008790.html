@@ -1,0 +1,212 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] UDP and multiple access
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20UDP%20and%20multiple%20access&In-Reply-To=85sm8mfdcb.fsf%40obelix.seki.fr">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="008789.html">
+   <LINK REL="Next"  HREF="008794.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] UDP and multiple access</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20UDP%20and%20multiple%20access&In-Reply-To=85sm8mfdcb.fsf%40obelix.seki.fr"
+       TITLE="[Twisted-Python] UDP and multiple access">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Sun Oct 10 20:48:13 EDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="008789.html">[Twisted-Python] UDP and multiple access
+</A></li>
+        <LI>Next message: <A HREF="008794.html">[Twisted-Python] Re: UDP and multiple access
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8790">[ date ]</a>
+              <a href="thread.html#8790">[ thread ]</a>
+              <a href="subject.html#8790">[ subject ]</a>
+              <a href="author.html#8790">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Sebastien Kirche wrote:
+
+&gt;<i> Hi,
+</I>&gt;<i> 
+</I>&gt;<i> I am  working on a  little project  to list the  servers of the  online game
+</I>&gt;<i> &#171;Enemy Territory&#187; and also to list/find a known player. I try to use twisted
+</I>&gt;<i> to simplify the network access.
+</I>&gt;<i> I am new both to twisted and python, but as i am also a programmer, learning
+</I>&gt;<i> is quite easy.
+</I>&gt;<i> 
+</I>&gt;<i> The task consists in 2 times:
+</I>&gt;<i> 1) one UDP request to the  master server at idsoftware that returns the list
+</I>&gt;<i>    of the active (slaves) servers (currently around 2020 hosts)
+</I>&gt;<i> 2) one UDP  request to *each* slave server  to obtain characteristics (name,
+</I>&gt;<i>    map that is played, ...) and the list of the players
+</I>&gt;<i> 
+</I>&gt;<i> For the time i  managed to perform the task 1) and i  can obtain the list of
+</I>&gt;<i> the hosts:ports to ask for.
+</I>&gt;<i> 
+</I>&gt;<i> If someone would like to peek an eye on my code, i uploaded it [1].
+</I>&gt;<i> 
+</I>&gt;<i> My problem is now to send around 2000+ non blocking requests and to take the
+</I>&gt;<i> answers as they come back.
+</I>&gt;<i> 
+</I>&gt;<i> Data  treatment should  not be  a problem,  but i  don't really  see  how to
+</I>&gt;<i> perform the mass request.
+</I>&gt;<i> 
+</I>&gt;<i> I  don't understand  clearly  the twisted  terminology (protocols,  factory,
+</I>&gt;<i> ...). I  have seen  in another  script [2] a  case where  there is  just one
+</I>&gt;<i> datagramReceived that checks on the host:port of the datagram to distinguish
+</I>&gt;<i> the answers, but that is kind of a library, and it only shows 2 requests for
+</I>&gt;<i> a test. I have no idea for the mass request.
+</I>&gt;<i> 
+</I>&gt;<i> Would someone be  kind to guide me a  little about it ? For  example by just
+</I>&gt;<i> giving me a snippet for a multiple UDP request with the hosts are in a list,
+</I>&gt;<i> and if the datagramReceived will suit the response treatment.
+</I>&gt;<i> 
+</I>&gt;<i> I hope to be clear enough. TIA.
+</I>&gt;<i> 
+</I>
+Ah ha. This is extremely similar to what I've been doing recently (SNMP, 
+with many many agents, lots of concurrent UDP clients). Here's the setup 
+I used (warning: comes with no guarantee, may end your marriage, etc. - 
+specifically, read the warning at the bottom).
+
+This is very, very pseudo-code - my actual code has a lot of very 
+confusing non-relevant stuff in it. It uses a queue to buffer the 
+receive events and ensure the UDP socket queue is emptied asap (the 
+queue function exits quickly, but reschdules itself a short time in the 
+future; this short time is enough to let select() run and the data be 
+received - see the recent thread on the mailing list about &quot;scalability 
+with hundreds of clients&quot; and callLater(0, ...) not doing what you might 
+think). That same queue is used to start off the clients' first xmit, 
+meaning they'll be relatively well interspersed and you won't overload 
+the socket *output* buffer either.
+
+class Protocol(protocol.DatagramProtocol):
+     def __init__(self):
+         self._queue = []
+         self.timeouts = []
+         from twisted.internet import reactor
+         self.reactor = reactor
+         reactor.callLater(1, self.dotimeouts)
+     def dotimeouts(self):
+         now = time.time()
+         while self.timeouts:
+             due, deferred = self.timeouts[0]
+             if due &gt; now:
+                 break
+             due, deferred = self.timeouts.pop(0)
+             # Might have been called, don't timeout if so
+             if not deferred.called:
+                 deferred.errback(Timeout())
+     def queue(self, callable, pargs=tuple(), kwargs=dict()):
+         if not self.calls:
+             # Then we won't have schedules an dequeue either
+             # WARNING: this number is important...
+             self.reactor.callLater(0.001, self.dequeue)
+         self._queue.append((callable, pargs, kwargs))
+     def dequeue(self):
+         if not self.calls:
+             # Shouldn't happen
+             return
+         callable, pargs, kwargs = self._queue.pop(0)
+         callable(*pargs, **kwargs)
+         if self.calls:
+             # If we've more to dequeue, do so
+             # WARNING: this number is also important...
+             self.reactor.callLater(0.001, self.dequeue)
+     def datagramReceived(self, data, addr):
+         # Do stuff, then...
+         pdu = self.parse(data)
+         deferred = self.get_outstanding(pdu, addr)
+         self.queue(deferred.callback, pdu)
+     def query(self, host, op, args):
+         # Do stuff, then
+         pdu = self.encode(op, args)
+         self.transport.write(pdu.bytes(), host)
+         return self.set_outstanding(pdu, host)
+
+class Client:
+     def __init__(self, host, protocol):
+         self.protocol = protocol
+         self.host = host
+         self.protocol.queue(self.step1)
+     def step1(self):
+         deferred = self.protocol.query(self.host, 'op', 'args')
+         deferred.addCallbacks(self.step2, self.fail)
+     def step2(self, pdu):
+         for thing, value in pdu.items():
+             # blah, blah
+             pass
+         deferred = self.protocol.query(self.host, 'op2', None)
+         deferred.addCallbacks(self.step3, self.fail)
+
+
+if __name__=='__main__':
+     import sys
+     from twisted.internet import reactor
+
+     proto = Protocol()
+     reactor.listenUDP(0, proto)
+     for hostname in sys.argv[1:]
+         if ':' in hostname:
+             hostname, port = hostname.split(':')
+         else:
+             port = defaultport
+         client = Client((hostname, port), proto)
+     reactor.run()
+
+Now, I make no claims this is the perfect Twisted app - it ain't. What 
+it *does* show is the only way I've found (which may be entirely my lack 
+of ability) to scalably send multiple hundreds of UDP PDUs without:
+
+a) Starving the Twisted mainloop of CPU, meaning select() doesn't get 
+run often enough, and the UDP socket buffer overflows, dropping replies 
+and necessitating retransmits
+b) Using a lot of sockets, which runs into problems with select() and 
+poll() as well as the system fd limit (solveable with ulimit I'll grant)
+c) Starving the clients that are slow responders of &quot;cpu&quot; (queue) time
+
+The warning however: UDP, lacking flow control, is very easy to get 
+wrong and accidentally DDoS the clients you're trying to talk to. 
+Specifically the value in the reactor.callLater(0.001, ...) determines 
+how often a &quot;task&quot; will be dequeued from the protocol, and therefore how 
+many PDUs you'll send and receive events you'll process per second. Best 
+to start with a) a small number of servers and b) a larger value (lower 
+rate) for that.
+
+You should also probably implement some form of variable per-host 
+timeout to get some kind of rate control/
+
+However, I've had a great deal of difficultly making these points 
+understood to other coders, for which I've got two explanations; I'm 
+totally wrong, or it's a very subtle issue. Guess which I think it is :o)
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="008789.html">[Twisted-Python] UDP and multiple access
+</A></li>
+	<LI>Next message: <A HREF="008794.html">[Twisted-Python] Re: UDP and multiple access
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8790">[ date ]</a>
+              <a href="thread.html#8790">[ thread ]</a>
+              <a href="subject.html#8790">[ subject ]</a>
+              <a href="author.html#8790">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

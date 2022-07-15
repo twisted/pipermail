@@ -1,0 +1,147 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] [Athena] Is ReliableMessageDelivery	really	necessary?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5BAthena%5D%20Is%20ReliableMessageDelivery%0A%09really%09necessary%3F&In-Reply-To=D12F5E7B-F6D5-4689-86E5-FD3ED3D3D637%40googlemail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004229.html">
+   <LINK REL="Next"  HREF="004215.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] [Athena] Is ReliableMessageDelivery	really	necessary?</H1>
+    <B>glyph at divmod.com</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5BAthena%5D%20Is%20ReliableMessageDelivery%0A%09really%09necessary%3F&In-Reply-To=D12F5E7B-F6D5-4689-86E5-FD3ED3D3D637%40googlemail.com"
+       TITLE="[Twisted-web] [Athena] Is ReliableMessageDelivery	really	necessary?">glyph at divmod.com
+       </A><BR>
+    <I>Wed Jul  1 18:04:19 EDT 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004229.html">[Twisted-web] My $0.25 (was: RE: [Athena] Is	ReliableMessageDelivery really	necessary?)
+</A></li>
+        <LI>Next message: <A HREF="004215.html">[Twisted-web] HTTPAuthSessionWrapper render
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4219">[ date ]</a>
+              <a href="thread.html#4219">[ thread ]</a>
+              <a href="subject.html#4219">[ subject ]</a>
+              <a href="author.html#4219">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 10:15 am, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">spongelavapaul at googlemail.com</A> wrote:
+&gt;<i>I've hit a problem as my app has got bigger (about 30-40 widgets now, 
+</I>&gt;<i>all chattering roughly once every 2 seconds) where the reliable 
+</I>&gt;<i>message delivery mechanism is spiralling out of control. It seems that 
+</I>&gt;<i>the constant back and forth means that large 'baskets' of messages are 
+</I>&gt;<i>resent. The more this happens, the busier everything gets until the 
+</I>&gt;<i>browser becomes unresponsive.
+</I>
+This is unfortunate, but I'm sure it's fixable.  At least, partially. 
+Client-server communication, especially in JavaScript, isn't free.
+&gt;<i>There's a fix for it: [Divmod-dev] athena duplicate messages issue but 
+</I>&gt;<i>I'm slightly concerned about the potential for lost messages - and 
+</I>&gt;<i>also confused about how this could happen. Given that HTTP is a 
+</I>&gt;<i>reliable connection-oriented transport, where is the gap that messages 
+</I>&gt;<i>can fall through?
+</I>
+HTTP is neither reliable nor connection-oriented :).  TCP is reliable 
+and connection-oriented, but HTTP builds on top of it to produce 
+something which is neither.
+
+&quot;reliable&quot; in this case doesn't mean that the transport is perfect and 
+will deliver everything, but that if you send messages &quot;1, 2, 3&quot;, you 
+will get messages &quot;1, 2, 3&quot; in that order or you will get nothing at 
+all.  (Of course you may also get just &quot;1&quot;, or &quot;1, 2&quot;, but you will 
+never get &quot;3, 1, 2&quot;.)
+
+Even if HTTP had a way to initiate the delivery of a message over a 
+channel that was already busy receiving the response to another message 
+(it doesn't) we'd have to contend with the browser APIs for issuing HTTP 
+requests, which leave out significant portions of the actual protocol. 
+For example, browser javascript may never issue more than two concurrent 
+requests to the same host, since the spec says that's all that you can 
+do.
+
+So, what is happening here is that have Nevow attempts to implement a 
+protocol in terms of HTTP messages as individual, unreliable messages, 
+which may be eaten by beasts like transparent proxies and browser 
+runtime bugs, and present to your application a stream of messages which 
+are always in order and never dropped.  This is, as it happens, 
+*exactly* what Orbited does, and Nevow could potentially be implemented 
+on top of Orbited.  However, Nevow's implementation has a bug, and over- 
+zealously re-delivers messages, when frequently re-delivery is not 
+required.  This is rarely a problem except for the noise that it 
+generates in your log files and the performance problems that it 
+creates, which you've noticed, if your message queue starts to back up.
+
+So, my suggestion to you would be to read through the relevant 
+JavaScript code for delivering &quot;baskets&quot; to the server, and try to 
+figure out what exactly is happening, and write a patch to correct this 
+behavior.  It's not trivial, but it's not rocket science either.  If I 
+recall correctly, the problem is that the client will overzealously 
+interrupt its own connection to the server where it is sending a basket 
+of collected messages, in order to free up the HTTP connection to send a 
+*new* message which it has generated.  It would be better if the client 
+would allow for a brief (and actually &quot;brief&quot; probably needs to be 
+pretty long, in the wild) grace period to allow the HTTP request to be 
+fully received and responded to before piling on more work.
+
+Part of the problem here, of course, is that the crappy JavaScript 
+browser HTTP API won't let us tell how much of our request has been 
+uploaded or process the response as it arrives.  So we have to guess 
+what a reasonable timeout would be, rather than have the algorithm 
+operate on actual data.
+
+In other words, you're right: the messages are not actually disappearing 
+into a black hole :).
+
+As far as what you should do: I think you should try to write a patch. 
+It's not trivial, but it's not rocket science either: it's just computer 
+science.  Hopefully my description of the problem is accurate enough to 
+get you started; I'm sure that if you ask for help on this list or on 
+IRC as you're working on it, you will find no shortage of it.  Lots of 
+people have reported this problem over the years but nobody has (as far 
+as I can tell from searching right now) thought to even report the bug 
+as a ticket on divmod.org, let alone contribute a fix for it.
+&gt;<i>I think I can cope with lost messages in most cases, so would it be 
+</I>&gt;<i>useful to add a kind of 'sendRemote' that was like 'callRemote' but 
+</I>&gt;<i>didn't care about a response? Or maybe this already exists and I've 
+</I>&gt;<i>missed it?
+</I>
+Could you cope with these messages arriving arbitrarily out of order?  I 
+am willing to bet not; it would just make your application extremely 
+difficult to test, and it would start spewing exceptions when it started 
+to get more heavily loaded, rather than making the browser unresponsive.
+&gt;<i>P.S. this app is likely to get more noisy - is it likely that I'll 
+</I>&gt;<i>have to abandon Athena for Orbited or similar? I mean, are there 
+</I>&gt;<i>architectural differences that will prevent Athena scaling?
+</I>
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004229.html">[Twisted-web] My $0.25 (was: RE: [Athena] Is	ReliableMessageDelivery really	necessary?)
+</A></li>
+	<LI>Next message: <A HREF="004215.html">[Twisted-web] HTTPAuthSessionWrapper render
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4219">[ date ]</a>
+              <a href="thread.html#4219">[ thread ]</a>
+              <a href="subject.html#4219">[ subject ]</a>
+              <a href="author.html#4219">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

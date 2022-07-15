@@ -1,0 +1,223 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Win32 events main loop
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Win32%20events%20main%20loop&In-Reply-To=%3C20020304061122.GA461%40frobozz.local%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="033371.html">
+   <LINK REL="Next"  HREF="033377.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Win32 events main loop</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Win32%20events%20main%20loop&In-Reply-To=%3C20020304061122.GA461%40frobozz.local%3E"
+       TITLE="[Twisted-Python] Win32 events main loop">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Sun Mar  3 23:11:22 MST 2002</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="033371.html">[Twisted-Python] Aloha, New Member
+</A></li>
+        <LI>Next message (by thread): <A HREF="033377.html">[Twisted-Python] Win32 events main loop
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#33374">[ date ]</a>
+              <a href="thread.html#33374">[ thread ]</a>
+              <a href="subject.html#33374">[ subject ]</a>
+              <a href="author.html#33374">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi all,
+
+Here is the first *rough* cut of the Twisted main loop using Win32 events,
+based upon internet.poll.
+
+It seems to be okay for simpleserv.py, but I haven't tested it for anything
+else.  I'll leave that to a day when I'm not feeling so ill...  I pretty
+much guarantee it is mostly broken -- think of it as a proof of concept.
+
+I think if I experiment with MsgWaitForMultipleObjects instead of
+WaitForMultipleObjects, I can make it respond to Win32 window messages
+properly; e.g. Ctrl-C and stopping when running as a service might work
+nicely -- COM stuff would probably benefit too.
+
+Enjoy!
+
+-Andrew.
+
+--- win32.py ---
+
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of version 2.1 of the GNU Lesser General Public
+# License as published by the Free Software Foundation.
+# 
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+# 
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+&quot;&quot;&quot;A win32event based implementation of the twisted main loop.
+
+To install the event loop (and you should do this before any connections,
+listeners or connectors are added):
+
+    from twisted.internet import win32
+    win32.install()
+
+&quot;&quot;&quot;
+
+# Win32 imports
+from win32file import WSAEventSelect, FD_READ, FD_WRITE, FD_CLOSE, \
+                      FD_ACCEPT, FD_CONNECT
+from win32event import CreateEvent, WaitForMultipleObjects, \
+                       WAIT_OBJECT_0, WAIT_TIMEOUT, INFINITE
+
+# Twisted imports
+from twisted.python import log, threadable
+import main
+
+# globals
+reads = {}
+writes = {}
+events = {}
+
+def _addEvent(fd, why, events=events):
+    print '_addEvent:', fd, why
+    event = CreateEvent(None, 0, 0, None)
+    WSAEventSelect(fd, event, why)
+    events[event] = (fd, why)
+    return event
+
+def addReader(reader, reads=reads):
+    &quot;&quot;&quot;Add a FileDescriptor for notification of data available to read.
+    &quot;&quot;&quot;
+    print 'addReader:', reader
+    if not reads.has_key(reader):
+        reads[reader] = _addEvent(reader, FD_READ|FD_ACCEPT|FD_CONNECT)
+        
+def addWriter(writer, writes=writes):
+    &quot;&quot;&quot;Add a FileDescriptor for notification of data available to write.
+    &quot;&quot;&quot;
+    print 'addWriter:', writer
+    if not writes.has_key(writer):
+        writes[writer] =_addEvent(writer, FD_WRITE)
+
+def removeReader(reader):
+    &quot;&quot;&quot;Remove a Selectable for notification of data available to read.
+    &quot;&quot;&quot;
+    if reads.has_key(reader):
+        del events[reads[reader]]
+        del reads[reader]
+
+def removeWriter(writer, writes=writes):
+    &quot;&quot;&quot;Remove a Selectable for notification of data available to write.
+    &quot;&quot;&quot;
+    if writes.has_key(writer):
+        del events[writes[writer]]
+        del writes[writer]
+
+def removeAll():
+    &quot;&quot;&quot;Remove all selectables, and return a list of them.&quot;&quot;&quot;
+    result = reads.keys() + writes.keys()
+    reads.clear()
+    writes.clear()
+    events.clear()
+    return result
+
+def doWaitForMultipleEvents(timeout,
+                            reads=reads,
+                            writes=writes):
+    if timeout is None:
+        #timeout = INFINITE
+        timeout = 5000
+    else:
+        timeout = timeout * 1000
+    print 'timeout is:', timeout
+    
+    handles = events.keys()
+    val = WaitForMultipleObjects(handles, 0, timeout)
+    print 'WaitForMultipleObjects returned:', val
+    if val == WAIT_TIMEOUT:
+        return
+    elif val &gt;= WAIT_OBJECT_0 and val &lt; WAIT_OBJECT_0 + len(handles):
+        print 'Here'
+        fd, why = events[handles[val - WAIT_OBJECT_0]]
+        print fd, why
+        log.logOwner.own(fd)
+        try:
+            if why &amp; FD_READ|FD_ACCEPT|FD_CONNECT:
+                fd.doRead()
+            elif why == FD_WRITE:
+                fd.doWrite()
+        except:
+            log.deferr()
+            why = FD_CLOSE
+
+        if why == FD_CLOSE:
+            removeReader(fd)
+            removeWriter(fd)
+            try:
+                fd.connectionLost()
+            except:
+                log.deferr()
+
+        log.logOwner.disown(fd)
+
+def install():
+    &quot;&quot;&quot;Install the poll()-based event loop.&quot;&quot;&quot;
+    main.addReader = addReader
+    main.addWriter = addWriter
+    main.removeReader = removeReader
+    main.removeWriter = removeWriter
+    #main.doSelect = doPoll
+    main.doSelect = doWaitForMultipleEvents
+    main.removeAll = removeAll
+
+
+def initThreads():
+    &quot;&quot;&quot;Do initialization for threads.&quot;&quot;&quot;
+    if main.wakerInstalled:
+        # make sure waker is registered with us
+        removeReader(main.waker)
+        addReader(main.waker)
+
+threadable.whenThreaded(initThreads)
+
+__all__ = [&quot;install&quot;]
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="033371.html">[Twisted-Python] Aloha, New Member
+</A></li>
+	<LI>Next message (by thread): <A HREF="033377.html">[Twisted-Python] Win32 events main loop
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#33374">[ date ]</a>
+              <a href="thread.html#33374">[ thread ]</a>
+              <a href="subject.html#33374">[ subject ]</a>
+              <a href="author.html#33374">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

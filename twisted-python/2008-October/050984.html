@@ -1,0 +1,170 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] troubles with FTP server and async file writing
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20troubles%20with%20FTP%20server%20and%20async%20file%20writing&In-Reply-To=%3C20081003182618.3750a70a%40fluxx.allmydata.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="050981.html">
+   <LINK REL="Next"  HREF="050990.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] troubles with FTP server and async file writing</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20troubles%20with%20FTP%20server%20and%20async%20file%20writing&In-Reply-To=%3C20081003182618.3750a70a%40fluxx.allmydata.com%3E"
+       TITLE="[Twisted-Python] troubles with FTP server and async file writing">warner at lothar.com
+       </A><BR>
+    <I>Fri Oct  3 19:26:18 MDT 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="050981.html">[Twisted-Python] Implementing an efficient IMAP client using	connection pooling
+</A></li>
+        <LI>Next message (by thread): <A HREF="050990.html">[Twisted-Python] troubles with FTP server and async file writing
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#50984">[ date ]</a>
+              <a href="thread.html#50984">[ thread ]</a>
+              <a href="subject.html#50984">[ subject ]</a>
+              <a href="author.html#50984">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Howdy all.. who's interested in the VFS or FTP code these days?
+
+I'm in the process of writing an FTP frontend for Tahoe[1], and the STOR
+command is causing me problems. Tahoe is a virtual filesystem that spreads
+files and directories over a grid of backend servers to achieve high
+reliability and availability. Once the STOR command finishes transferring the
+file (over the separate DTP connection), the Tahoe node springs into action:
+encrypting, hashing, erasure-coding, uploading, and finally modifying a
+parent directory (which is also distributed) to reference the new child. This
+whole process takes time, maybe a second or two for a small file, potentially
+minutes if you're uploading a large file over a slow network. Naturally, the
+Tahoe upload() method returns a Deferred, that fires when the whole process
+is complete.
+
+The trouble is, it looks like Twisted's FTP server is not designed to handle
+asynchronous uploads. The specific problem is in the way that
+twisted.protocols.ftp.FTP.ftp_STOR() interacts with the IConsumer that it
+gets.. the sequence goes like this:
+
+ 1: ftp_STOR fetches an IWriteFile instance  (via Deferred)
+ 2: cbOpened() calls IWriteFile.receive to get an IConsumer (via Deferred)
+ 3: cbConsumer() hands it to dtpInstance.registerConsumer (via Deferred)
+ 4: FTP.registerConsumer() sends it a registerProducer() (synchronous)
+    it returns the self._onConnLost Deferred
+ 5: data is sent over the DTP connection, written to the consumer
+ 6: the DTP connection is closed, _onConnLost is fired
+ 7:  DTP._unregConsumer sends unregisterProducer(), and ignores the result
+ 8:  FTP.cbConsumer()'s chain regains control, runs cbSent (via Deferred)
+ 9:  cbSent returns 226 Transfer Complete
+ 10: the Deferred chain finally unwinds, firing the Deferred that was
+     returned from ftp_STOR, which sends the 226 back to the client
+
+Most of these steps use Deferreds, so the opening of the file can take as
+long as we need, but since DTP._unregConsumer ignores the result of
+consumer.unregisterProducer in step #7, there's no way for the backend to
+stall the delivery of the 226 until the file has actually been uploaded.
+
+We need something to address this, because FTP clients are correctly assuming
+that once they get the 226 Transfer Complete, the file will be in place.
+
+
+I'm not sure how to best fix this. It seems like something needs to interact
+with either the IConsumer or the IWriteFile to ask &quot;are you done uploading
+yet&quot;. If it wouldn't be so horribly wrong I'd suggest redefining IConsumer's
+unregisterProducer() to return a Deferred, and then modify the FTP client (in
+DTP._unregConsumer) to pass that Deferred back to the chain, something like:
+
+--- twisted/protocols/ftp.py    (revision 24956)
++++ twisted/protocols/ftp.py    (working copy)
+@@ -451,10 +451,10 @@
+             self._buffer.append(bytes)
+ 
+     def _unregConsumer(self, ignored):
+-        self._cons.unregisterProducer()
++        d = defer.maybeDeferred(self._cons.unregisterProducer)
+         self._cons = None
+         del self._onConnLost
+-        return ignored
++        return d
+
+
+But, as far as I can tell, IConsumers aren't meant to work this way:
+detaching a producer doesn't really mean that there won't be more data at
+some point in the future, just that this particular producer is no longer
+useful.
+
+IFinishableConsumer, though, has a 'finish' method, which is actually used in
+a couple of other places in twisted/protocols/ftp.py . So Plan B would be:
+
+ * declare that IWriteFile.receive() must return an IFinishableConsumer
+   instead of merely an IConsumer
+ * document that IFinishableConsumer.finish() will be called after
+   unregisterProducer, and document what happens in the case of exceptions
+ * redefine IFinishableConsumer.finish() to be allowed to return a Deferred
+ * modify FTP.ftp_STOR.cbConsumer to wait for this Deferred before sending
+   the 226 response, something like:
+
+--- twisted/protocols/ftp.py    (revision 24956)
++++ twisted/protocols/ftp.py    (working copy)
+@@ -1049,6 +1049,7 @@
+                 cons = ASCIIConsumerWrapper(cons)
+ 
+             d = self.dtpInstance.registerConsumer(cons)
++            d.addCallback(lambda res: cons.finish())
+             d.addCallbacks(cbSent, ebSent)
+ 
+             # Tell them what to doooo
+
+But it doesn't look like IFinishableConsumer.finish() is meant to be used
+this way either: the docstring has no mention of return value, or if/when it
+gets called, and the FTP client is the only code in all of Twisted that uses
+it (and all that does is a synchronous transport.loseConnection).
+
+I guess Plan C would be to involve the IWriteFile instance, adding a finish()
+method of some sort, making this an FTP-specific solution.
+
+
+So, any thoughts? Something like this just at the VFS level would allow
+backends to use asynchronous-writes, which feels like a significant gap in
+the current functionality. It might be better to address it at the IConsumer
+level, but that would touch more (and better-established) code.
+
+
+cheers,
+ -Brian
+
+
+[1]: <A HREF="http://allmydata.org/">http://allmydata.org/</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="050981.html">[Twisted-Python] Implementing an efficient IMAP client using	connection pooling
+</A></li>
+	<LI>Next message (by thread): <A HREF="050990.html">[Twisted-Python] troubles with FTP server and async file writing
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#50984">[ date ]</a>
+              <a href="thread.html#50984">[ thread ]</a>
+              <a href="subject.html#50984">[ subject ]</a>
+              <a href="author.html#50984">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

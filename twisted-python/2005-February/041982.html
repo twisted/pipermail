@@ -1,0 +1,171 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] segfaults with deferToThread
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20segfaults%20with%20deferToThread&In-Reply-To=%3C1f060c4c05020719534682256e%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="041978.html">
+   <LINK REL="Next"  HREF="041983.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] segfaults with deferToThread</H1>
+    <B>snacktime</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20segfaults%20with%20deferToThread&In-Reply-To=%3C1f060c4c05020719534682256e%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] segfaults with deferToThread">snacktime at gmail.com
+       </A><BR>
+    <I>Mon Feb  7 20:53:46 MST 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="041978.html">[Twisted-Python] Twisted Sprint: Hobart Australia, 1-3 April 2005
+</A></li>
+        <LI>Next message (by thread): <A HREF="041983.html">[Twisted-Python] segfaults with deferToThread
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41982">[ date ]</a>
+              <a href="thread.html#41982">[ thread ]</a>
+              <a href="subject.html#41982">[ subject ]</a>
+              <a href="author.html#41982">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>This is on Freebsd 5.3-release-p2 with python 2.4.
+
+The script below calls a blocking method using deferToThread.  When I
+have 5 or so clients all hitting it at the same time I get a segfault
+or bus error within minutes.
+I recompiled python with --with-pydebug and set OPT to -g, but it
+didn't give me any more information in the backtrace which is also
+below.   Then I ran gdb on the server process and something funny
+happened.  I didn't get a segfault, but the server started catching
+exceptions and printing them to the screen.  As soon as I detached gdb
+the exceptions stop but it dumps core a minute later (or less). The
+exception is pasted below also.
+
+Python was compiled with pthreads, which is the freebsd kse threads as
+far as I know.
+
+Anyone have an idea what is going on?
+
+
+Server code:
+-----------------------------------------------------------
+from twisted.internet.protocol import Protocol, Factory
+from twisted.internet import defer, reactor
+from twisted.python import threadable
+from twisted.internet import threads
+threadable.init(1)
+from otransact.otdirect import process
+from twisted.python import log
+
+class GetData:
+
+  # this calls my blocking method.  THe method blocks when doing
+database calls with psycopg and when using urllib2 to do an https
+POST.  Other than that everything is non blocking.  psycopg is
+supposed to be thread safe, and I would assume urllib2 is also.
+
+  def Do(self,data):
+       response = process(data)
+       return response
+       
+
+
+### Protocol Implementation
+
+# This is just about the simplest possible protocol
+class Echo(Protocol):
+    def dataReceived(self, data):
+      &quot;&quot;&quot;As soon as any data is received, write it back.&quot;&quot;&quot;
+      reactor.callLater(0, self.Start,data)
+
+    def PrintData(self,data):
+      self.transport.write(&quot;%s\r\n&quot; % data)
+      self.transport.loseConnection()
+      #reactor.stop()
+
+    def Start(self,data):
+      c = GetData()
+      d = threads.deferToThread(c.Do,data)
+      d.addCallback(self.PrintData)
+      d.addErrback(log.err)
+
+def main():
+    f = Factory()
+    f.protocol = Echo
+    reactor.listenTCP(8000, f)
+    reactor.run()
+
+if __name__ == '__main__':
+    main()
+
+
+
+
+Exception raised by server when gdb was running. 
+-----------------------------------------------------------------------
+
+File &quot;otssl.py&quot;, line 42, in ?
+            reactor.run()
+          File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/default.py&quot;,
+line 126, in run
+            self.mainLoop()
+          File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/default.py&quot;,
+line 134, in mainLoop
+            self.runUntilCurrent()
+        --- &lt;exception caught here&gt; ---
+          File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/base.py&quot;,
+line 423, in runUntilCurrent
+            call.func(*call.args, **call.kw)
+          File &quot;/usr/home/otransact/ssl/ots.py&quot;, line 72, in Start
+            d = threads.deferToThread(c.Do,data)
+          File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/threads.py&quot;,
+line 48, in deferToThread
+            reactor.callInThread(_putResultInDeferred, d, f, args, kwargs)
+          File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/base.py&quot;,
+line 453, in callInThread
+            self.threadpool.callInThread(_callable, *args, **kwargs)
+          File &quot;/usr/local/lib/python2.4/site-packages/twisted/python/threadpool.py&quot;,
+line 130, in callInThread
+            self.q.put(o)
+          File &quot;/usr/local/lib/python2.4/Queue.py&quot;, line 91, in put
+            self.not_full.release()
+        thread.error: release unlocked lock
+
+
+Backtrace:
+------------------------------------------------
+#0  0x28286dbb in pthread_testcancel () from /usr/lib/libpthread.so.1
+#1  0x2827eb06 in pthread_mutexattr_init () from /usr/lib/libpthread.so.1
+#2  0x00000000 in ?? ()
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="041978.html">[Twisted-Python] Twisted Sprint: Hobart Australia, 1-3 April 2005
+</A></li>
+	<LI>Next message (by thread): <A HREF="041983.html">[Twisted-Python] segfaults with deferToThread
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41982">[ date ]</a>
+              <a href="thread.html#41982">[ thread ]</a>
+              <a href="subject.html#41982">[ subject ]</a>
+              <a href="author.html#41982">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

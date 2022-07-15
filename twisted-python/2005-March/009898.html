@@ -1,0 +1,138 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] help with ssl timeout and not reconnecting client	factory
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20help%20with%20ssl%20timeout%20and%20not%20reconnecting%20client%0A%09factory&In-Reply-To=20050317124056.GJ21597%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009897.html">
+   <LINK REL="Next"  HREF="009910.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] help with ssl timeout and not reconnecting client	factory</H1>
+    <B>Jp Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20help%20with%20ssl%20timeout%20and%20not%20reconnecting%20client%0A%09factory&In-Reply-To=20050317124056.GJ21597%40opteron.random"
+       TITLE="[Twisted-Python] help with ssl timeout and not reconnecting client	factory">exarkun at divmod.com
+       </A><BR>
+    <I>Thu Mar 17 09:28:06 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009897.html">[Twisted-Python] help with ssl timeout and not reconnecting client	factory
+</A></li>
+        <LI>Next message: <A HREF="009910.html">[Twisted-Python] help with ssl timeout and not reconnecting	client factory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9898">[ date ]</a>
+              <a href="thread.html#9898">[ thread ]</a>
+              <a href="subject.html#9898">[ subject ]</a>
+              <a href="author.html#9898">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Thu, 17 Mar 2005 13:40:56 +0100, Andrea Arcangeli &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">andrea at cpushare.com</A>&gt; wrote:
+&gt;&gt;<i>From a client I'm getting this error:
+</I>&gt;<i> 
+</I>&gt;<i> [snip -  traceback and log]
+</I>&gt;<i>         
+</I>&gt;<i> This is a reconnecting client factory, the python version is 2.3.4 and twisted
+</I>&gt;<i> version is 1.3.0a. The socket should sit in a idle state. No communication over
+</I>&gt;<i> that socket will happen (the app is under development), but it should not go in
+</I>&gt;<i> timeout unless the connection with the server ends and the keepalive events
+</I>&gt;<i> triggers a disconnect (I enabled keepalive on the tcp level).
+</I>&gt;<i> 
+</I>&gt;<i> Even if it goes in timeout it must try to reconnect immediatly while it seems
+</I>&gt;<i> like it's hanging after the &quot;Stopping factory&quot;.
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> Earlier when I got the connection timed out event (for no apparent good reason)
+</I>&gt;<i> at least it was immediatly trying to reconnect:
+</I>&gt;<i> 
+</I>&gt;<i> [snip - traceback and log]
+</I>&gt;<i>         
+</I>&gt;<i> 2005/03/14 17:59 CET [cpushare_protocol,client] &lt;twisted.internet.ssl.Connector instance at 0x2aaaac28d950&gt; will retry in 2 s
+</I>&gt;<i> econds
+</I>&gt;<i> 2005/03/14 17:59 CET [cpushare_protocol,client] Stopping factory &lt;cpushare.proto.cpushare_factory instance at 0x2aaaad414290&gt;
+</I>&gt;<i> 2005/03/14 17:59 CET [-] Starting factory &lt;cpushare.proto.cpushare_factory instance at 0x2aaaad414290&gt;
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> So my first priority is to understand why it stopped trying to reconnect (which
+</I>&gt;<i> is the major bug) and the second priority is to understand why it was going in
+</I>&gt;<i> timeout in the first place. (I can't exclude there have been a temporary network
+</I>&gt;<i> disruption that caused the keepalive to trigger the disconnect.)
+</I>
+  For some reason unfathomable to me, ReconnectingClientFactory _stops_ trying to reconnect if a UserError is the cause of failed connection.  Further, for some reason, error.TimeoutError subclasses UserError.  This has bitten at least one other project (buildbot).
+
+&gt;<i> 
+</I>&gt;<i> Could this be a bug in 1.3.0a? I expect the client will be mostly run with
+</I>&gt;<i> 1.3.0a, only on the server side I use SVN + pending fixes.
+</I>
+  I'm inclined to say that it is indeed a bug.  I think ReconnectingClientFactory should always retry the connection, regardless of the exception with which the previous attempt fails.  If a program wants to allow a user to interrupt the retry logic, there is a &quot;stopTrying&quot; method.
+
+&gt;<i> 
+</I>&gt;<i> This is the reconnecting code:
+</I>&gt;<i> 
+</I>&gt;<i> class cpushare_factory(ReconnectingClientFactory):
+</I>&gt;<i> 	maxDelay = 600 # limit the maximum delay to 10 min
+</I>&gt;<i> 
+</I>&gt;<i> 	protocol = cpushare_protocol
+</I>&gt;<i> 
+</I>&gt;<i> 	def buildProtocol(self, addr):
+</I>&gt;<i> 		self.resetDelay()
+</I>&gt;<i> 		protocol = self.protocol()
+</I>&gt;<i> 		assert not hasattr(protocol, 'factory')
+</I>&gt;<i> 		protocol.factory = self
+</I>&gt;<i> 		return protocol
+</I>&gt;<i> 
+</I>&gt;<i> 	def clientConnectionFailed(self, connector, reason):
+</I>&gt;<i> 		print 'Connection failed. Reason:', reason
+</I>&gt;<i> 		ReconnectingClientFactory.clientConnectionFailed(self, connector, reason)
+</I>
+  If you look at twisted/internet/protocol.py for the definition of ReconnectingClientFactory.clientConnectionFailed, it should be pretty obvious how you want to redefine clientConnectionFailed to avoid the behavior you're seeing.
+
+&gt;<i> 
+</I>&gt;<i> 	def connectionMade(self):
+</I>&gt;<i> 		self.transport.setTcpKeepAlive(1)
+</I>&gt;<i> 
+</I>&gt;<i> Is the above correct? It works fine when the connection failed reason is
+</I>&gt;<i> &quot;ConnectionRefusedError&quot; instead of TimeoutError.
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> What else should I do to prevent this error to leave the factory stopped?
+</I>&gt;<i> 
+</I>&gt;<i> 2005/03/17 06:31 CET [-] Connection failed. Reason: [Failure instance: Traceback: twisted.internet.error.TimeoutError, User t
+</I>&gt;<i> imeout caused connection failure.
+</I>&gt;<i> 
+</I>&gt;<i> Where does the &quot;twisted.internet.error.TimeoutError&quot; come from?
+</I>&gt;<i> 
+</I>
+  It's generated internally by Twisted when the alloted connection time has elapsed without a connection being created.
+
+  Most likely it _is_ network related problems that caused the connection to fail, but Twisted is certainly responsible for the decision to cease further reconnection attempts.
+
+  Jp
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009897.html">[Twisted-Python] help with ssl timeout and not reconnecting client	factory
+</A></li>
+	<LI>Next message: <A HREF="009910.html">[Twisted-Python] help with ssl timeout and not reconnecting	client factory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9898">[ date ]</a>
+              <a href="thread.html#9898">[ thread ]</a>
+              <a href="subject.html#9898">[ subject ]</a>
+              <a href="author.html#9898">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

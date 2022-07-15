@@ -1,0 +1,448 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] [p2p-hackers] source code (in python,	using twisted) to my reliable udp rpc protocol	(fwd from angryhicKclown at netscape.net)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20%5Bp2p-hackers%5D%20source%20code%20%28in%20python%2C%0A%09using%20twisted%29%20to%20my%20reliable%20udp%20rpc%20protocol%0A%09%28fwd%20from%20angryhicKclown%40netscape.net%29&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="008315.html">
+   <LINK REL="Next"  HREF="008317.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] [p2p-hackers] source code (in python,	using twisted) to my reliable udp rpc protocol	(fwd from angryhicKclown at netscape.net)</H1>
+    <B>Eugen Leitl</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20%5Bp2p-hackers%5D%20source%20code%20%28in%20python%2C%0A%09using%20twisted%29%20to%20my%20reliable%20udp%20rpc%20protocol%0A%09%28fwd%20from%20angryhicKclown%40netscape.net%29&In-Reply-To="
+       TITLE="[Twisted-Python] [p2p-hackers] source code (in python,	using twisted) to my reliable udp rpc protocol	(fwd from angryhicKclown at netscape.net)">eugen at leitl.org
+       </A><BR>
+    <I>Sat Aug  7 15:19:52 EDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="008315.html">[Twisted-Python] intermittent traceback using adbapi with pyPgSQL
+</A></li>
+        <LI>Next message: <A HREF="008317.html">[Twisted-Python] How to write to log in the context of a	tap-builder?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8316">[ date ]</a>
+              <a href="thread.html#8316">[ thread ]</a>
+              <a href="subject.html#8316">[ subject ]</a>
+              <a href="author.html#8316">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>----- Forwarded message from <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">angryhicKclown at netscape.net</A> -----
+
+From: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">angryhicKclown at netscape.net</A>
+Date: Sat, 07 Aug 2004 14:23:26 -0400
+To: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">p2p-hackers at zgp.org</A>
+Subject: [p2p-hackers] source code (in python,
+	using twisted) to my reliable udp rpc protocol
+X-Mailer: Atlas Mailer 2.0
+Reply-To: &quot;Peer-to-peer development.&quot; &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">p2p-hackers at zgp.org</A>&gt;
+
+I was paging thru the archives and realized I never posted it.
+
+Works for me, but I've never done a large-scale test of it. Perhaps someone would like to and share the results?
+
+It consists of several layers, a stack, if you will:
+Reliable datagram - handles acks, etc
+Datagram stream - allows one to send messages larger than the MTU
+CBOB - binary format for storing structured data, similar to xml, except it doesn't suck
+TinyRPC - RPC protocol build upon all of those layers
+
+Enjoy. Requires www.twistedmatrix.com.
+
+---- cut here ----
+# TinyRPC protocol
+
+# bsd license
+
+from twisted.internet import reactor, protocol, interfaces, defer
+from twisted.protocols import policies
+
+import socket
+import struct
+import binascii
+import cStringIO as StringIO
+import time
+
+CBOB_BOOL   = 0
+CBOB_INT    = 1
+CBOB_FLOAT  = 2
+CBOB_STR    = 3
+CBOB_USTR   = 4
+CBOB_TUPLE  = 5
+CBOB_LIST   = 6
+CBOB_DICT   = 7
+CBOB_OBJ    = 8
+CBOB_NONE   = 9
+
+def cbob_encode(obj, buf=StringIO.StringIO()):
+    if isinstance(obj, bool):
+        if obj:
+            buf.write(struct.pack(&quot;! BB&quot;, CBOB_BOOL, 1))
+        else:
+            buf.write(struct.pack(&quot;! BB&quot;, CBOB_BOOL, 0))
+    elif isinstance(obj, int):
+        buf.write(struct.pack(&quot;! Bi&quot;, CBOB_INT, obj))
+    elif isinstance(obj, float):
+        buf.write(struct.pack(&quot;! Bf&quot;, CBOB_FLOAT, obj))
+    elif isinstance(obj, str):
+        buf.write(struct.pack(&quot;! BH&quot;, CBOB_STR, len(obj)) + obj)
+    elif isinstance(obj, unicode):
+        buf.write(struct.pack(&quot;! BH&quot;, CBOB_USTR, len(obj)) + obj)
+    elif isinstance(obj, tuple):
+        buf.write(struct.pack(&quot;! BB&quot;, CBOB_TUPLE, len(obj)))
+        for o in obj:
+            cbob_encode(o, buf)
+    elif isinstance(obj, list):
+        buf.write(struct.pack(&quot;! BH&quot;, CBOB_LIST, len(obj)))
+        for o in obj:
+            cbob_encode(o, buf)
+    elif isinstance(obj, dict):
+        buf.write(struct.pack(&quot;! BH&quot;, CBOB_DICT, len(obj)))
+        for o in obj:
+            cbob_encode(o, buf)
+            cbob_encode(obj[o], buf)
+    elif isinstance(obj, object):
+        members = obj.__dict__.items() #inspect.getmembers(obj)
+        buf.write(struct.pack(&quot;! BHB&quot;, CBOB_OBJ, len(members), len(obj.__class__.__name__)))
+        buf.write(obj.__class__.__name__)
+        for member in members:
+            cbob_encode(member[0], buf)
+            cbob_encode(member[1], buf)
+    elif isinstance(obj, NoneType):
+        buf.write(struct.pack(&quot;! B&quot;, CBOB_NONE))
+    else:
+        raise &quot;couldn't serialize &quot;  + str(obj)
+        
+def cbob_decode(buf):
+    d = buf.read(1)
+    typ = struct.unpack(&quot;! B&quot;, d)[0]
+    if typ == CBOB_BOOL:
+        v = struct.unpack(&quot;! B&quot;, buf.read(1))[0]
+        return v == 1
+    elif typ == CBOB_INT:
+        return struct.unpack(&quot;! i&quot;, buf.read(4))[0]
+    elif typ == CBOB_FLOAT:
+        return struct.unpack(&quot;! f&quot;, buf.read(4))[0]
+    elif typ == CBOB_STR:
+        l = struct.unpack(&quot;! H&quot;, buf.read(2))[0]
+        return buf.read(l)
+    elif typ == CBOB_USTR:
+        l = struct.unpack(&quot;! H&quot;, buf.read(2))[0]
+        return unicode(buf.read(l))
+    elif typ == CBOB_TUPLE:
+        l = struct.unpack(&quot;! B&quot;, buf.read(1))[0]
+        v = ()
+        for i in range(0, l):
+            v = v + (cbob_decode(buf),)
+        return v
+    elif typ == CBOB_LIST:
+        l = struct.unpack(&quot;! H&quot;, buf.read(2))[0]
+        v = []
+        for i in range(0, l):
+            v.append(cbob_decode(buf))
+        return v
+    elif typ == CBOB_DICT:
+        l = struct.unpack(&quot;! H&quot;, buf.read(2))[0]
+        v = {}
+        for i in range(0, l):
+            key,value = cbob_decode(buf),cbob_decode(buf)
+            v[key] = value
+        return v
+    elif typ == CBOB_OBJ:
+        membercount,clsnamesize = struct.unpack(&quot;! HB&quot;, buf.read(3))
+        clsname = buf.read(clsnamesize)
+        v = globals()[clsname]()
+        for i in range(0, membercount):
+            name,value = cbob_decode(buf),cbob_decode(buf)
+            setattr(v, name, value)
+        return v
+    elif typ == CBOB_NONE:
+        return None
+    else:
+        raise &quot;invalid typecode &quot; + typ
+
+class DispatcherTransport:
+    __implements__ = interfaces.IUDPConnectedTransport
+    def __init__(self, dispatcher, addr, proto):
+        self.dispatcher = dispatcher
+        self.addr = addr
+        self.protocol = proto
+    def getHost(self):
+        return self.dispatcher.getHost()
+    def getPeer(self):
+        return (&quot;INET&quot;,) + self.addr
+    def write(self, packet):
+        return self.dispatcher.transport.write(packet, self.addr)
+    def loseConnection(self):
+        self.protocol.stopProtocol()
+        del self.protocol
+            
+class Dispatcher(protocol.DatagramProtocol):
+    # TODO: call startFactory()?
+    def __init__(self, factory):
+        self.handlers = {}
+        factory.dispatcher = self
+        self.factory = factory
+    def __getitem__(self, addr):
+        if addr not in self.handlers:
+            return self.open_new(addr)
+        return self.handlers[addr]
+    def datagramReceived(self, data, addr):
+        self[addr].datagramReceived(data)
+    def getHost(self):
+        return self.transport.getHost()
+    def open_new(self, addr):
+        assert addr not in self.handlers, &quot;Already connected&quot;
+        p = self.factory.buildProtocol(addr)
+        p.transport = DispatcherTransport(self, addr, p)
+        p.startProtocol()
+        self.handlers[addr] = p
+        return p
+    def startProtocol(self):
+        return self.factory.startFactory()
+    def stopProtocol(self):
+        return self.factory.stopFactory()
+
+class ReliableDatagramProtocol(protocol.ConnectedDatagramProtocol):
+    &quot;acks and stuff&quot;
+    NUM_RETRANSMITS = 2 #10
+    RETRANSMIT_INTERVAL = .200
+    MAX_LAST_RECEIVED = 50
+    OP_SEND = 0
+    OP_ACK = 128 # msb set
+    
+    def startProtocol(self):
+        self.retransmits = {} # crc-&gt;(data,num retransmits, bits, delayedcall for retransmit, Deferred when packet is acked)
+        self.last_received = []
+    def stopProtocol(self, reason):
+        print &quot;protocol stopped&quot;,reason
+    def send(self, data, bits=0):
+        crc = binascii.crc32(data)
+        d = defer.Deferred()
+        self.retransmits[crc] = (data, self.NUM_RETRANSMITS, bits, reactor.callLater(self.RETRANSMIT_INTERVAL, self.retransmit, crc), d)
+        self.send_packet(self.OP_SEND, bits, data)
+        return d
+    def retransmit(self, crc):
+        t = self.retransmits[crc]
+        self.send_packet(self.OP_SEND, t[2], t[0])
+        if t[1] &gt; 0:
+            self.retransmits[crc] = (t[0], t[1] - 1, t[2], reactor.callLater(self.RETRANSMIT_INTERVAL, self.retransmit, crc), t[4])
+        else:
+            self.packetLost(retransmits[crc][0])
+            del self.retransmits[crc]
+    def send_packet(self, op, bits, data):
+        self.transport.write(struct.pack(&quot;! B&quot;, op | bits) + data)
+    def send_ack(self, crc):
+        if len(self.last_received) &gt;= self.MAX_LAST_RECEIVED:
+            del self.last_received[0]
+        self.last_received.append(crc)
+        self.transport.write(struct.pack(&quot;! Bi&quot;, self.OP_ACK, crc))
+    def got_ack(self, crc):
+        self.retransmits[crc][3].cancel()
+        d = self.retransmits[crc][4]
+        del self.retransmits[crc]
+        d.callback(crc)
+    def datagramReceived(self, data):
+        opbyte, = struct.unpack(&quot;! B&quot;, data[0])
+        op = opbyte &amp; 128
+        data = data[1:]
+        if op == self.OP_SEND:
+            crc = binascii.crc32(data)
+            if crc not in self.last_received:
+                self.dataReceived(data, opbyte)
+            self.send_ack(crc)
+        else:
+            self.got_ack(struct.unpack(&quot;! i&quot;, data)[0])
+    def dataReceived(self, data, bits):
+        print &quot;received&quot;,data,&quot;from&quot;,self.transport.getPeer()
+    def packetLost(self):
+        self.transport.loseConnection()
+
+class ReliableDatagramStreamMessageProtocol(ReliableDatagramProtocol):
+    &quot;Sends large messages (&gt; mtu size) and sends them in a buffered block...&quot;
+    MTU = 512
+    OP_BEGINMSG = 64 # 2nd msb set
+    OP_DATA = 0
+
+    def startProtocol(self):
+        ReliableDatagramProtocol.startProtocol(self)
+        self.outmessagequeue = [] # data len, stream, bits
+        self.inmessage = None
+        self.packetcount = 0
+        self.numpackets = 0
+    def sendMessage(self, data, bits=0):
+        self.outmessagequeue.append((len(data), StringIO.StringIO(data), bits))
+        if len(self.outmessagequeue) == 1:
+            self.send_first_block()
+    def send_first_block(self, dummy=&quot;&quot;):
+        length,stream,bits = self.outmessagequeue[0]
+        length = length - self.MTU + 4
+        if length &lt; 0:
+            length = 0
+        length = length + 1
+        self.send(struct.pack(&quot;! I&quot;, length / self.MTU + length % self.MTU) + stream.read(self.MTU - 4), self.OP_BEGINMSG | bits).addCallback(self.send_next_block)
+    def send_next_block(self, dummy=&quot;&quot;):
+        length,stream,bits = self.outmessagequeue[0]
+        d = stream.read(self.MTU)
+        if len(d) &gt; 0:
+            self.send(d, self.OP_DATA | bits).addCallback(self.send_next_block)
+        else:
+            stream.close()
+            del self.outmessagequeue[0]
+            if len(self.outmessagequeue) &gt; 0:
+                self.send_next_block()
+    def dataReceived(self, data, bits):
+        if bits &amp; 64 == self.OP_DATA:
+            self.packetcount = self.packetcount + 1
+            self.inmessage.write(data)
+        else:
+            self.inmessage = StringIO.StringIO()
+            self.packetcount = 1
+            mtu = len(data) # the entire packet size is the size of the mtu
+            self.numpackets = struct.unpack(&quot;! I&quot;, data[:4])[0]
+            self.inmessage.write(data[4:])
+        if self.packetcount &gt;= self.numpackets:
+            self.messageReceived(self.inmessage.getvalue(), bits)
+            self.inmessage = StringIO.StringIO()
+    def messageReceived(self, message, bits):
+        print &quot;got message&quot;, message
+
+class DatagramRPCProtocol(ReliableDatagramStreamMessageProtocol):
+    OP_CALL = 32
+    OP_RETURN = 0
+    MAX_CALLID = 512
+    
+    def startProtocol(self):
+        ReliableDatagramStreamMessageProtocol.startProtocol(self)
+        if hasattr(self.factory, &quot;buildRemote&quot;):
+            self.remotes = self.factory.buildRemote()
+        self.calls = {}
+        self.callid = 0
+    def messageReceived(self, message, bits):
+        message = StringIO.StringIO(message)
+        if bits &amp; 32 == self.OP_CALL:
+            t, objname, methodname, args, kwargs = cbob_decode(message)
+            r = getattr(self.remotes[objname], methodname)(*args,**kwargs)
+            #print &quot;calling &quot; + objname + &quot;.&quot; + methodname
+            if isinstance(r, defer.Deferred):
+                r.addCallback(lambda result: self.send_result(t, result))
+            else:
+                self.send_result(t, r)
+        else:
+            t,r = cbob_decode(message)
+            self.calls[t].callback(r)
+    def send_result(self, t, r):
+        sio = StringIO.StringIO()
+        cbob_encode((t, r), sio)
+        self.sendMessage(sio.getvalue(), self.OP_RETURN)
+    def callRemote(self, objname, methodname, *args, **kwargs):
+        t = self.callid
+        if self.callid == self.MAX_CALLID:
+            self.callid = 0
+        else:
+            self.callid = self.callid + 1
+        self.calls[t] = defer.Deferred()
+        sio = StringIO.StringIO()
+        cbob_encode((t, objname, methodname, args, kwargs), sio)
+        self.sendMessage(sio.getvalue(), self.OP_CALL)
+        return self.calls[t]
+
+#class LazyRMIProtocol(DatagramRPCProtocol):
+#    raise &quot;Todo: implement&quot;
+
+class TestObject:
+    def hello(self, name):
+        return &quot;Hello, &quot; + name.first + &quot; &quot; + name.last
+
+class Name:
+    first = &quot;&quot;
+    last = &quot;&quot;
+    
+def test():
+    reactor.callLater(0, test2)
+    reactor.run()
+    
+def test2():
+    f = protocol.ServerFactory()
+    #f.protocol = ReliableDatagramProtocol
+    #f.protocol = ReliableDatagramStreamMessageProtocol
+    f.protocol = DatagramRPCProtocol
+    f.buildRemote = lambda: {&quot;myObj&quot; : TestObject()}
+    d = Dispatcher(f)
+    d2 = Dispatcher(f)
+    p = d[socket.gethostbyname(&quot;localhost&quot;), 8889]
+    p2 = d[socket.gethostbyname(&quot;localhost&quot;), 8888]
+    reactor.listenUDP(8888, d)
+    reactor.listenUDP(8889, d2)
+    reactor.callLater(0, test3, p, p2)
+
+def test3(p, p2):
+    name = Name()
+    name.first = &quot;great&quot;
+    name.last = &quot;world&quot;
+    p.callRemote(&quot;myObj&quot;, &quot;hello&quot;, name).addCallback(test4)
+
+def test4(r):
+    print &quot;result of call&quot;, r
+    
+if __name__ == &quot;__main__&quot;:
+    test()
+    
+
+__________________________________________________________________
+Switch to Netscape Internet Service.
+As low as $9.95 a month -- Sign up today at <A HREF="http://isp.netscape.com/register">http://isp.netscape.com/register</A>
+
+Netscape. Just the Net You Need.
+
+New! Netscape Toolbar for Internet Explorer
+Search from anywhere on the Web and block those annoying pop-ups.
+Download now at <A HREF="http://channels.netscape.com/ns/search/install.jsp">http://channels.netscape.com/ns/search/install.jsp</A>
+_______________________________________________
+p2p-hackers mailing list
+<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">p2p-hackers at zgp.org</A>
+<A HREF="http://zgp.org/mailman/listinfo/p2p-hackers">http://zgp.org/mailman/listinfo/p2p-hackers</A>
+_______________________________________________
+Here is a web page listing P2P Conferences:
+<A HREF="http://www.neurogrid.net/twiki/bin/view/Main/PeerToPeerConferences">http://www.neurogrid.net/twiki/bin/view/Main/PeerToPeerConferences</A>
+
+----- End forwarded message -----
+-- 
+Eugen* Leitl &lt;a href=&quot;<A HREF="http://leitl.org&quot;">http://leitl.org&quot;</A>&gt;leitl&lt;/a&gt;
+______________________________________________________________
+ICBM: 48.07078, 11.61144            <A HREF="http://www.leitl.org">http://www.leitl.org</A>
+8B29F6BE: 099D 78BA 2FD3 B014 B08A  7779 75B0 2443 8B29 F6BE
+<A HREF="http://moleculardevices.org">http://moleculardevices.org</A>         <A HREF="http://nanomachines.net">http://nanomachines.net</A>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 198 bytes
+Desc: not available
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20040807/bc6025da/attachment.pgp">http://twistedmatrix.com/pipermail/twisted-python/attachments/20040807/bc6025da/attachment.pgp</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="008315.html">[Twisted-Python] intermittent traceback using adbapi with pyPgSQL
+</A></li>
+	<LI>Next message: <A HREF="008317.html">[Twisted-Python] How to write to log in the context of a	tap-builder?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8316">[ date ]</a>
+              <a href="thread.html#8316">[ thread ]</a>
+              <a href="subject.html#8316">[ subject ]</a>
+              <a href="author.html#8316">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

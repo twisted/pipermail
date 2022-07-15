@@ -1,0 +1,122 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] INCOMPATIBLE CHANGE: twisted.python.threadpool
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20INCOMPATIBLE%20CHANGE%3A%20twisted.python.threadpool&In-Reply-To=%3C35944278-5967-49EE-B317-3D77C9169A37%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="028798.html">
+   <LINK REL="Next"  HREF="028803.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] INCOMPATIBLE CHANGE: twisted.python.threadpool</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20INCOMPATIBLE%20CHANGE%3A%20twisted.python.threadpool&In-Reply-To=%3C35944278-5967-49EE-B317-3D77C9169A37%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] INCOMPATIBLE CHANGE: twisted.python.threadpool">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Fri Sep 26 01:43:22 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="028798.html">[Twisted-Python] INCOMPATIBLE CHANGE: twisted.python.threadpool
+</A></li>
+        <LI>Next message: <A HREF="028803.html">[Twisted-Python] INCOMPATIBLE CHANGE: twisted.python.threadpool
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28800">[ date ]</a>
+              <a href="thread.html#28800">[ thread ]</a>
+              <a href="subject.html#28800">[ subject ]</a>
+              <a href="author.html#28800">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Sep 25, 2014, at 6:36 PM, weykent &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">weykent at weasyl.com</A>&gt; wrote:
+
+&gt;<i> On Sep 25, 2014, at 3:31 PM, Glyph Lefkowitz &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;&gt;<i> So, does anyone out there have any code which makes use of the aforementioned bad attributes of ThreadPool, whose applications would break if I removed them?
+</I>&gt;<i> 
+</I>&gt;<i> Yes. Specifically, I am maintaining this AMP responder method:
+</I>
+Wow, cool.
+
+So, okay, while I am a little unhappy that you're using this API in a slightly unfortunate way, that feeling is eclipsed by the joy that The Process Works :-).  Thank you very much for responding so promptly, so specifically, and including the exact code that we need to discuss.
+
+&gt;<i>    @FetchThreadPoolStats.responder
+</I>&gt;<i>    def fetchThreadPoolStats(self):
+</I>&gt;<i>        pool = self.factory.threadPool
+</I>&gt;<i>        return dict(
+</I>&gt;<i>            threadsWaiting=len(pool.waiters),
+</I>&gt;<i>            threadsWorking=len(pool.working),
+</I>&gt;<i>            workerQueueSize=pool.q.qsize(),
+</I>&gt;<i>        )
+</I>&gt;<i> 
+</I>&gt;<i> These statistics are chunked into graphite and displayed as a nice little graph. They&#8217;ve been quite useful on some occasions: sometimes all of the threads in a thread pool for a WSGI application got blocked, and the symptoms were that all of the requests coming in were timing out at the proxy in front of twisted. We were able to quickly tell that the problem was the WSGI thread pool because the threadsWorking count was at its limit and the workerQueueSize was skyrocketing.
+</I>
+Analytics, monitoring, logging, and statistics have historically been a blind spot for Twisted and I am really glad you're bringing this up.  I was thinking about bringing it up in my original message, but as my colleagues and friends will tell you, I tend to put too many words into emails, so unless I'm sure I need those words, I will delete them.
+
+The new interface should very definitely have metrics-gathering functionality, and possibly even a logging component.
+
+&gt;&gt;<i> If so, how can I make you feel as bad about yourselves for using it as I feel bad about myself for writing it? ;-)
+</I>&gt;<i> 
+</I>&gt;<i> I don&#8217;t really see this as an abuse of the public interface. If possible, I&#8217;d like to see this diagnostic information preserved in the new interface, as I consider it invaluable information as long as we&#8217;re using twisted as a WSGI runner.
+</I>
+It's not exactly an &quot;abuse&quot;, because the public interface is there, and you have a use-case, and you're satisfying it with what's available.
+
+For the purposes that you are using these attributes, I actually don't have a problem reproducing them at all.  It should be pretty straightforward.  My concern with exposing them overall is that what you've got with &quot;ThreadPool.q&quot; is not a queue that has a qsize() method that you can inspect, it's that it's a Queue that you can put things into, get things out of, and generally muck about with.
+
+Similarly pool.waiters is not simply an object with a __len__ that tells you how active the threads are, it's a list of Thread objects which you could potentially change the names of, turn into daemon threads, join(), and so on.  More importantly it's a list that you could remove Thread objects from and that would affect their interactions with the pool.
+
+How about this: would you mind if ThreadPool were modified to still populate these attributes for monitoring and debugging purposes, but completely stopped honoring any destructive operations on them?  In the case of &quot;pool.q&quot;, there is no single Queue responsible for the whole pool, so I would like to make &quot;put&quot;, &quot;get&quot;, and &quot;join&quot; actually raise exceptions; in the case of &quot;waiters&quot; and &quot;working&quot; I guess I could fish out some actual Thread objects, that just involves a little bit of sad abstraction violation internal to the twisted.threads.Team implementation.
+
+My inclination would be to expand the thread pool to accommodate these usages, but still deprecate these attributes in the next version; but add a better &quot;statistics&quot; method that returned an object with &quot;active&quot;, &quot;pending&quot;, and &quot;idle&quot; attributes (all integers).
+
+The most important thing that I want to make sure nobody wants is to keep overriding (or calling) startAWorker, stopAWorker, __getstate__, __setstate__.  Supporting callers of threadFactory and currentThread would be easy, but the attributes aren't really there for calling, they're there to be stubbed, and stubbing them won't keep working without tons of extra work.
+
+So would that work for you?
+
+&gt;<i> I will say that it is certainly possible for me to emulate these attributes, but that would require touching implementation details of WSGIResource. I&#8217;m not sure which is worse.
+</I>
+
+Touching private (underscore-prefixed) implementation details is explicitly not supported - if you did it that way, you're on your own :-).  And, as the end-user in this discussion, you win the argument by default.  (You can see how I feel about supporting users here: &lt;<A HREF="https://twitter.com/mjg59/status/514670470260465664">https://twitter.com/mjg59/status/514670470260465664</A>&gt;)  Plus, if we're going to work on the thread-pool and have newer, better interfaces, WSGIResource's implementation is likely to change.
+
+Thanks a bunch for helping us improve Twisted,
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20140926/a22f5a00/attachment.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20140926/a22f5a00/attachment.html</A>&gt;
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="028798.html">[Twisted-Python] INCOMPATIBLE CHANGE: twisted.python.threadpool
+</A></li>
+	<LI>Next message: <A HREF="028803.html">[Twisted-Python] INCOMPATIBLE CHANGE: twisted.python.threadpool
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28800">[ date ]</a>
+              <a href="thread.html#28800">[ thread ]</a>
+              <a href="subject.html#28800">[ subject ]</a>
+              <a href="author.html#28800">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

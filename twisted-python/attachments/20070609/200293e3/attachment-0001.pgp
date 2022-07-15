@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.4.5 (GNU/Linux)
+
+iD8DBQBGawspvd8ks9mF64IRAj70AJ9gl0IjyqMDjpcCEyl19cAG5sMBDQCfYWis
+ZvrCg8pl/tOCcMA4e4nPCJ8=
+=8ANi
+-----END PGP SIGNATURE-----

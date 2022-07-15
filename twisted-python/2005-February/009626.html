@@ -1,0 +1,180 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] how to stop dataReceived while waiting a	deferred to fire?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20how%20to%20stop%20dataReceived%20while%20waiting%20a%0A%09deferred%20to%20fire%3F&In-Reply-To=20050221153332.GR7247%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009623.html">
+   <LINK REL="Next"  HREF="009627.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] how to stop dataReceived while waiting a	deferred to fire?</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20how%20to%20stop%20dataReceived%20while%20waiting%20a%0A%09deferred%20to%20fire%3F&In-Reply-To=20050221153332.GR7247%40opteron.random"
+       TITLE="[Twisted-Python] how to stop dataReceived while waiting a	deferred to fire?">andrea at cpushare.com
+       </A><BR>
+    <I>Mon Feb 21 12:46:18 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009623.html">[Twisted-Python] how to stop dataReceived while waiting a	deferred to fire?
+</A></li>
+        <LI>Next message: <A HREF="009627.html">[Twisted-Python] how to stop dataReceived while waiting a	deferred to fire?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9626">[ date ]</a>
+              <a href="thread.html#9626">[ thread ]</a>
+              <a href="subject.html#9626">[ subject ]</a>
+              <a href="author.html#9626">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, Feb 21, 2005 at 04:33:32PM +0100, Andrea Arcangeli wrote:
+&gt;<i> code of int32stringreceiver), so I'll try to implement it following the
+</I>&gt;<i> linereceiver example.
+</I>
+Ok here we go, I even found a severe bug in the linereceiver code and I
+fixed it as well. The bug in linereceiver happens like this:
+
+	resumeProducing()
+		calls self.transport.resumeProducing
+		calls self.dataReceived
+			calls self.stringReceived
+				calls self.stopProducing
+					calls self.transport.stopProducing
+					runs some sql query again
+		calls self.transport.resumeProducing &lt;- BUG, invalidated the above stopProducing
+
+The above bug would for sure screwup two sql queries in a raw (i.e.
+the deferred callback executing another sql query). Fix is the below one
+liner, it's enough to call dataReceived as the last thing in
+resumeProducing (I assume for the lower layer the effect of
+self.transport.resumeProducing; self.transport.stopProducing will be a
+noop as long as we never schedule in between, i.e. never return in
+between)
+
+Please checkin the below into trunk. My testcase now passes perfectly
+(I'll leave the debug code live so that if something goes wrong I get an
+exception and the client is disconnected). I was too lazy to implement
+for netstringreceiver (to me netstring receiver looks mostly a waste of
+bandwidth and an unnecessary complexity ;). I guess netstring recevier
+is more ngrep friendy, but I can't debug with ngrep anyway since it's
+all under ssl with certificate validation here. But at least now the
+reentrancy bug is fixed and it should be easy to extend to
+nestringreceiver if needed.
+
+Thanks for the help!
+
+Index: Twisted/twisted/protocols/basic.py
+===================================================================
+--- Twisted/twisted/protocols/basic.py	(revision 13001)
++++ Twisted/twisted/protocols/basic.py	(working copy)
+@@ -166,9 +166,23 @@
+         &quot;&quot;&quot;
+         return error.ConnectionLost('Line length exceeded')
+     
++class PauseProducer(object):
++    paused = False
+ 
++    def pauseProducing(self):
++        self.paused = True
++        self.transport.pauseProducing()
+ 
+-class LineReceiver(protocol.Protocol):
++    def resumeProducing(self):
++        self.paused = False
++        self.transport.resumeProducing()
++        self.dataReceived('')
++
++    def stopProducing(self):
++        self.paused = True
++        self.transport.stopProducing()
++
++class LineReceiver(protocol.Protocol, PauseProducer):
+     &quot;&quot;&quot;A protocol that receives lines and/or raw data, depending on mode.
+     
+     In line mode, each line that's received becomes a callback to
+@@ -188,7 +202,6 @@
+     __buffer = ''
+     delimiter = '\r\n'
+     MAX_LENGTH = 16384
+-    paused = False
+     
+     def clearLineBuffer(self):
+         &quot;&quot;&quot;Clear buffered data.&quot;&quot;&quot;
+@@ -279,21 +292,8 @@
+         &quot;&quot;&quot;
+         return self.transport.loseConnection()
+ 
+-    def pauseProducing(self):
+-        self.paused = True
+-        self.transport.pauseProducing()
+ 
+-    def resumeProducing(self):
+-        self.paused = False
+-        self.dataReceived('')
+-        self.transport.resumeProducing()
+-
+-    def stopProducing(self):
+-        self.paused = True
+-        self.transport.stopProducing()
+-
+-
+-class Int32StringReceiver(protocol.Protocol):
++class Int32StringReceiver(protocol.Protocol, PauseProducer):
+     &quot;&quot;&quot;A receiver for int32-prefixed strings.
+ 
+     An int32 string is a string prefixed by 4 bytes, the 32-bit length of
+@@ -314,7 +314,7 @@
+         &quot;&quot;&quot;Convert int32 prefixed strings into calls to stringReceived.
+         &quot;&quot;&quot;
+         self.recvd = self.recvd + recd
+-        while len(self.recvd) &gt; 3:
++        while len(self.recvd) &gt; 3 and not self.paused:
+             length ,= struct.unpack(&quot;!i&quot;,self.recvd[:4])
+             if length &gt; self.MAX_LENGTH:
+                 self.transport.loseConnection()
+@@ -331,7 +331,7 @@
+         self.transport.write(struct.pack(&quot;!i&quot;,len(data))+data)
+ 
+ 
+-class Int16StringReceiver(protocol.Protocol):
++class Int16StringReceiver(protocol.Protocol, PauseProducer):
+     &quot;&quot;&quot;A receiver for int16-prefixed strings.
+ 
+     An int16 string is a string prefixed by 2 bytes, the 16-bit length of
+@@ -351,7 +351,7 @@
+         &quot;&quot;&quot;Convert int16 prefixed strings into calls to stringReceived.
+         &quot;&quot;&quot;
+         self.recvd = self.recvd + recd
+-        while len(self.recvd) &gt; 1:
++        while len(self.recvd) &gt; 1 and not self.paused:
+             length = (ord(self.recvd[0]) * 256) + ord(self.recvd[1])
+             if len(self.recvd) &lt; length+2:
+                 break
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009623.html">[Twisted-Python] how to stop dataReceived while waiting a	deferred to fire?
+</A></li>
+	<LI>Next message: <A HREF="009627.html">[Twisted-Python] how to stop dataReceived while waiting a	deferred to fire?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9626">[ date ]</a>
+              <a href="thread.html#9626">[ thread ]</a>
+              <a href="subject.html#9626">[ subject ]</a>
+              <a href="author.html#9626">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

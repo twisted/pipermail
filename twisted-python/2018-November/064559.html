@@ -1,0 +1,284 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted.web with dynamic + static content
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.web%20with%20dynamic%20%2B%20static%20content&In-Reply-To=%3C82BD1D37-7644-4268-8B1B-D8E9ABAFBD95%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted.web with dynamic + static content</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.web%20with%20dynamic%20%2B%20static%20content&In-Reply-To=%3C82BD1D37-7644-4268-8B1B-D8E9ABAFBD95%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] twisted.web with dynamic + static content">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Thu Nov  1 01:43:57 MDT 2018</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64559">[ date ]</a>
+              <a href="thread.html#64559">[ thread ]</a>
+              <a href="subject.html#64559">[ subject ]</a>
+              <a href="author.html#64559">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi Jeff,
+
+Thanks for using Twisted.
+
+Here's a version with some small changes that works, and is self-contained.
+
+import sys
+
+from twisted.internet import reactor, endpoints
+from twisted.web import server
+from twisted.web.resource import Resource
+from twisted.web.static import Data
+
+sys.path.append('lib')
+
+content = &quot;&quot;&quot;
+&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+    &lt;meta charset=&quot;UTF-8&quot;&gt;
+    &lt;link rel=&quot;stylesheet&quot; href=&quot;/static/test.css&quot; type=&quot;text/css&quot; /&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    &lt;span class='twistedTest'&gt;This&lt;/span&gt; is a test
+&lt;/body&gt;
+&lt;/html&gt;
+&quot;&quot;&quot;
+
+class tServer(Resource):
+    def render_GET(self, request):
+        return bytes(content, &quot;utf-8&quot;)
+
+if __name__ == &quot;__main__&quot;:
+    root = Resource()
+    static_collection = Resource()
+    static_collection.putChild(b&quot;test.css&quot;, Data(b&quot;.twistedTest {color: red;}&quot;, &quot;text/css&quot;))
+    root.putChild(b&quot;static&quot;, static_collection)
+    root.putChild(b&quot;&quot;, tServer())
+
+    site = server.Site(root)
+    endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+    endpoint.listen(site)
+
+    reactor.run()
+    print(&quot;Shutting down!&quot;)
+
+The problem with your first version was 'isLeaf', as Donal suggested.  However, the problem was not simply that the flag was set, but rather what the flag means, and why it works that way.
+
+The root resource in any web server is a collection.  Which is to say, under normal circumstances, the root resource never has render_* invoked on it; you can't render it, because it's impossible, in the HTTP protocol, to spell a URL that doesn't start with &quot;/&quot;.
+
+isLeaf changes this, and says &quot;this resource is responsible for rendering all of its children; traversal stops here&quot;.  That means that it starts invoking render_GET to render &quot;/&quot;, but also to render every other path on the server, including (unfortunately for you) /static/test.css.
+
+The modified example above instead uses a Resource() as the collection, and inserts a '' child for the index, and a separate 'static' child for the static index.  You can use a static.File for a directory here instead of a static resource, and anywhere you see putChild, you could also use a dynamic resource which overrides getChild to return the object rather than inserting it in advance.
+
+Of course, you might wonder what the point of 'isLeaf' is if it short circuits this stuff and makes it impossible to tell the difference between resources.
+
+Given that you have a directory, you want to use a static.File child resource and almost certainly don't want to set isLeaf; however, you might be wondering how one would even use isLeaf if it just cuts off the ability to tell the difference between resources.  The documentation on this is not great - it doesn't even appear as an attribute in the API reference, just an oblique reference in the docstring for <A HREF="https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild">https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild</A> &lt;<A HREF="https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild">https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild</A>&gt;.  But, the 'prepath' and 'postpath' attributes, lists of bytes, will tell you about where in the request traversal cycle you are, and allow you to distinguish which content to render directly within the body of render_*, rather than having to route to the right object using Twisted APIs.  So here's a working version with isLeaf=True:
+
+import sys
+
+from twisted.internet import reactor, endpoints
+from twisted.web import server
+from twisted.web.resource import Resource
+
+content = &quot;&quot;&quot;
+&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+    &lt;meta charset=&quot;UTF-8&quot;&gt;
+    &lt;link rel=&quot;stylesheet&quot; href=&quot;/static/test.css&quot; type=&quot;text/css&quot; /&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    &lt;span class='twistedTest'&gt;This&lt;/span&gt; is a test
+&lt;/body&gt;
+&lt;/html&gt;
+&quot;&quot;&quot;
+
+css = &quot;&quot;&quot;
+.twistedTest {
+    color: red;
+}
+&quot;&quot;&quot;
+
+class tServer(Resource):
+    isLeaf = True
+    def render_GET(self, request):
+        if request.postpath == [b'']:
+            request.setHeader(&quot;content-type&quot;, &quot;text/html&quot;)
+            return bytes(content, &quot;utf-8&quot;)
+        elif request.postpath == [b'static', b'test.css']:
+            request.setHeader(&quot;content-type&quot;, &quot;text/css&quot;)
+            return bytes(css, 'utf-8')
+        else:
+            request.setResponseCode(404)
+            return b'not found'
+
+if __name__ == &quot;__main__&quot;:
+    site = server.Site(tServer())
+    endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+    endpoint.listen(site)
+
+    reactor.run()
+    print(&quot;Shutting down!&quot;)
+
+I hope this clears up the request traversal model a little bit.
+
+-glyph
+
+
+&gt;<i> On Oct 31, 2018, at 2:15 PM, Jeff Grimmett &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">grimmtooth at gmail.com</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Tried that, I get a big 
+</I>&gt;<i> 
+</I>&gt;<i> No Such Resource
+</I>&gt;<i> 
+</I>&gt;<i> No such child resource.
+</I>&gt;<i> 
+</I>&gt;<i> back.  Watching it in FF's development panel, I see a 404 come back for /.  /static doesn't get served at all, of course.
+</I>&gt;<i> 
+</I>&gt;<i> This, however, DID work.
+</I>&gt;<i> 
+</I>&gt;<i> class tServer(Resource):
+</I>&gt;<i>     isLeaf = False
+</I>&gt;<i> 
+</I>&gt;<i>     def getChild(self, path, request):
+</I>&gt;<i>         print('You know what you doing.')
+</I>&gt;<i> 
+</I>&gt;<i>         if path == b'':
+</I>&gt;<i>             print(&quot;Rendering /&quot;)
+</I>&gt;<i>             return self
+</I>&gt;<i> 
+</I>&gt;<i>         return Resource.getChild(self, path, request)
+</I>&gt;<i> 
+</I>&gt;<i>     def render_GET(self, request):
+</I>&gt;<i>         return bytes(content, &quot;utf-8&quot;)
+</I>&gt;<i> 
+</I>&gt;<i> (ignore my printf debugging plz)
+</I>&gt;<i> 
+</I>&gt;<i> So, Thanks! :)
+</I>&gt;<i> 
+</I>&gt;<i> Regards,
+</I>&gt;<i> 
+</I>&gt;<i> Jeff 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> On Tue, Oct 30, 2018 at 6:42 PM Donal McMullan &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">donal.mcmullan at gmail.com</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">donal.mcmullan at gmail.com</A>&gt;&gt; wrote:
+</I>&gt;<i> Try replacing:
+</I>&gt;<i> isLeaf = True
+</I>&gt;<i> with
+</I>&gt;<i> isLeaf = False
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">grimmtooth at gmail.com</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">grimmtooth at gmail.com</A>&gt;&gt; wrote:
+</I>&gt;<i> I'm sure I'm overlooking something obvious here but I just can't get my head around it.
+</I>&gt;<i> 
+</I>&gt;<i> Here's the setup: twisted.web server that generates dynamic content. Child that serves up static content, e.g. css and favoicon.  However, the static content isn't making it. Instead, any hit to localhost/static actually yields up a copy of / again.  
+</I>&gt;<i> 
+</I>&gt;<i> Here's the server code
+</I>&gt;<i> 
+</I>&gt;<i> import sys
+</I>&gt;<i> 
+</I>&gt;<i> from twisted.internet import reactor, endpoints
+</I>&gt;<i> from twisted.web import server
+</I>&gt;<i> from twisted.web.resource import Resource
+</I>&gt;<i> from twisted.web.static import File
+</I>&gt;<i> 
+</I>&gt;<i> sys.path.append('lib')
+</I>&gt;<i> 
+</I>&gt;<i> content = &quot;&quot;&quot;
+</I>&gt;<i> &lt;!DOCTYPE html&gt;
+</I>&gt;<i> &lt;html lang=&quot;en&quot;&gt;
+</I>&gt;<i> &lt;head&gt;
+</I>&gt;<i>     &lt;meta charset=&quot;UTF-8&quot;&gt;
+</I>&gt;<i>     &lt;link rel=&quot;stylesheet&quot; href=&quot;/static/test.css&quot; type=&quot;text/css&quot; /&gt;
+</I>&gt;<i> &lt;/head&gt;
+</I>&gt;<i> &lt;body&gt;
+</I>&gt;<i>     &lt;span class='twistedTest'&gt;This&lt;/span&gt; is a test
+</I>&gt;<i> &lt;/body&gt;
+</I>&gt;<i> &lt;/html&gt;
+</I>&gt;<i> &quot;&quot;&quot;
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> class tServer(Resource):
+</I>&gt;<i>     isLeaf = True
+</I>&gt;<i> 
+</I>&gt;<i>     def render_GET(self, request):
+</I>&gt;<i>         return bytes(content, &quot;utf-8&quot;)
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> if __name__ == &quot;__main__&quot;:
+</I>&gt;<i>     root = tServer()
+</I>&gt;<i>     root.putChild(b&quot;static&quot;, File(&quot;static&quot;))
+</I>&gt;<i> 
+</I>&gt;<i>     site = server.Site(root)
+</I>&gt;<i>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+</I>&gt;<i>     endpoint.listen(site)
+</I>&gt;<i> 
+</I>&gt;<i>     reactor.run()
+</I>&gt;<i>     print(&quot;Shutting down!&quot;)
+</I>&gt;<i> 
+</I>&gt;<i> It's run with the command 'python tserver.py'.  The expectation is that what is inside the custom &lt;span&gt; will be red.
+</I>&gt;<i> 
+</I>&gt;<i> In the same dir as the script is a subdir 'static' with the css file inside it.
+</I>&gt;<i> 
+</I>&gt;<i> If I replace 'root' with     root = Resource() then / doesn't serve up anything, but /static is a directory listing of the static directory.
+</I>&gt;<i> 
+</I>&gt;<i> The dynamic server is basically a copy of several tutorials cooked down to something that I could use to demonstrate the problem.
+</I>&gt;<i> 
+</I>&gt;<i> What am I missing here? /headscratch
+</I>&gt;<i> 
+</I>&gt;<i> Regards,
+</I>&gt;<i> 
+</I>&gt;<i> Jeff 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>&gt;
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A> &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>&gt;
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>&gt;
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A> &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>&gt;
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20181101/04f3b6f6/attachment-0002.html&gt;
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64559">[ date ]</a>
+              <a href="thread.html#64559">[ thread ]</a>
+              <a href="subject.html#64559">[ subject ]</a>
+              <a href="author.html#64559">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

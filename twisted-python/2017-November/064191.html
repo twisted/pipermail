@@ -1,0 +1,124 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] body producer bug in agent?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20body%20producer%20bug%20in%20agent%3F&In-Reply-To=%3C77CA4D84-6246-4E90-985C-1488A2BDA924%40gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="064188.html">
+   <LINK REL="Next"  HREF="031728.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] body producer bug in agent?</H1>
+    <B>ex vito</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20body%20producer%20bug%20in%20agent%3F&In-Reply-To=%3C77CA4D84-6246-4E90-985C-1488A2BDA924%40gmail.com%3E"
+       TITLE="[Twisted-Python] body producer bug in agent?">ex.vitorino at gmail.com
+       </A><BR>
+    <I>Sun Nov 19 07:15:13 MST 2017</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="064188.html">[Twisted-Python] body producer bug in agent?
+</A></li>
+        <LI>Next message (by thread): <A HREF="031728.html">[Twisted-Python] revert
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64191">[ date ]</a>
+              <a href="thread.html#64191">[ thread ]</a>
+              <a href="subject.html#64191">[ subject ]</a>
+              <a href="author.html#64191">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 2017-11-12, at 7:32, Glyph &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; wrote:
+
+&gt;<i> I attempted to draw some attention to this with github mentions:
+</I>&gt;<i> 
+</I>&gt;<i> <A HREF="https://github.com/twisted/treq/issues/185#issuecomment-331856235">https://github.com/twisted/treq/issues/185#issuecomment-331856235</A>
+</I>&gt;<i> 
+</I>&gt;<i> but it looks like that didn't work.
+</I>&gt;<i> 
+</I>&gt;<i> Hopefully by posting it here I can motivate someone to look at it?  I think it sounds like a pretty bad bug, but I don't have a ton of time to look at it myself :-(.  I believe it's in Twisted itself, not Treq, but I could be wrong.
+</I>
+
+I explored this issue further and observed the following:
+
+- This looks like a Twisted issue, indeed.
+- stopProducing is called twice on FileBodyProducer when TLS certificate validation fails.
+- FileBodyProducer uses a CooperativeTask which is stopped on FileBodyProducer stopProducing.
+- CooperativeTask raises an exception when its stop is called a second time.
+
+
+Sample Twisted-only code reproducing the issue, based on a gist by jlitzingerdev, available here  <A HREF="https://gist.github.com/exvito/b8298f25196d41daf67414f702518f6b.">https://gist.github.com/exvito/b8298f25196d41daf67414f702518f6b.</A> It generates a self-signed cert for an HTTPS server and then performs an HTTPS POST with an Agent that won't validate that generated cert, triggering the failure.
+
+
+Per my comment on the treq's issue, it looks like fixing this comes down to design decisions:
+
+1. Should the TLS wrapping layer trigger two stopProducing calls?
+   Ideally no, but I have no idea about the wrapping itself, so it may not be an easy task.
+
+2. Should calling stopProducing twice on FileBodyProducer fail?
+   Maybe not, is there any solid benefit in it failing? Maybe there are use cases for that, though.
+
+3. Should calling stop twice on CooperativeTask fail?
+   Not sure. Again its reasonable to argue either way.
+
+Given that all of these are public APIs and there may exist code out there using it and expecting the current behavior, deciding on what to change and how does not seem obvious to me.
+
+
+I consulted the producer/consumer docs and found nothing stating that stopProducing (or any other methods like pauseProducing/resumeProducing) should/should-not be idempotent; this is what I read:
+- <A HREF="https://twistedmatrix.com/documents/current/core/howto/producers.html">https://twistedmatrix.com/documents/current/core/howto/producers.html</A>
+- <A HREF="https://twistedmatrix.com/documents/17.9.0/api/twisted.internet.interfaces.IProducer.html">https://twistedmatrix.com/documents/17.9.0/api/twisted.internet.interfaces.IProducer.html</A>
+- <A HREF="https://twistedmatrix.com/documents/17.9.0/api/twisted.internet.interfaces.IPushProducer.html">https://twistedmatrix.com/documents/17.9.0/api/twisted.internet.interfaces.IPushProducer.html</A>
+- <A HREF="https://twistedmatrix.com/documents/17.9.0/api/twisted.internet.interfaces.IConsumer.html">https://twistedmatrix.com/documents/17.9.0/api/twisted.internet.interfaces.IConsumer.html</A>
+
+
+For completeness, here are related open issues (with the help of jlitzingerdev @github):
+- <A HREF="https://twistedmatrix.com/trac/ticket/8473">https://twistedmatrix.com/trac/ticket/8473</A>
+- <A HREF="https://twistedmatrix.com/trac/ticket/7457">https://twistedmatrix.com/trac/ticket/7457</A>
+- <A HREF="https://twistedmatrix.com/trac/ticket/6528">https://twistedmatrix.com/trac/ticket/6528</A>
+
+All of these include comments/suggestions on addressing this failure by some variation of ignoring the twisted.internet.task.TaskStopped exception in FileBodyProducer.stopProducing.
+
+Given that I'm not 100% familiar with the code, I'm not sure such an approach would be correct and in line with the current design (in particular around producers/consumers and TLS wrapping).
+
+
+I'm reaching out to the mailing list looking for other perspectives on this.
+
+I feel that the complete approach to this would be fixing 1. and 2. above: wrapping should not lead to duplicate/n-plicate calls to producer methods and, also, design-wise, it seems reasonable to have producer methods be idempotent (and recommend that in the docs?).
+
+But maybe I'm digressing: a quick fix would be to just ignore the TaskDone exception in FileBodyProducer.stopProducing like I mentioned above. Whether that is &quot;correct&quot; or not is what I'm trying to understand.
+
+Thanks for your input,
+--
+exvito
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="064188.html">[Twisted-Python] body producer bug in agent?
+</A></li>
+	<LI>Next message (by thread): <A HREF="031728.html">[Twisted-Python] revert
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64191">[ date ]</a>
+              <a href="thread.html#64191">[ thread ]</a>
+              <a href="subject.html#64191">[ subject ]</a>
+              <a href="author.html#64191">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

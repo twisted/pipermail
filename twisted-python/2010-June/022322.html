@@ -1,0 +1,100 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Integrating Twisted with ZeroMQ
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Integrating%20Twisted%20with%20ZeroMQ&In-Reply-To=AANLkTil3NsZFp4fKBbspDTN7yPpPTF_jyVwZbo1-W2__%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="022310.html">
+   <LINK REL="Next"  HREF="022311.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Integrating Twisted with ZeroMQ</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Integrating%20Twisted%20with%20ZeroMQ&In-Reply-To=AANLkTil3NsZFp4fKBbspDTN7yPpPTF_jyVwZbo1-W2__%40mail.gmail.com"
+       TITLE="[Twisted-Python] Integrating Twisted with ZeroMQ">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue Jun  8 03:19:53 EDT 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="022310.html">[Twisted-Python] Integrating Twisted with ZeroMQ
+</A></li>
+        <LI>Next message: <A HREF="022311.html">[Twisted-Python] Job Opening - TweetDeck Backend Engineer - London,	UK
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#22322">[ date ]</a>
+              <a href="thread.html#22322">[ thread ]</a>
+              <a href="subject.html#22322">[ subject ]</a>
+              <a href="author.html#22322">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>So, I agree pretty much completely with everything exarkun said, but I do feel like I should add a bit more here about the high-level questions raised here:
+
+On Jun 6, 2010, at 3:59 PM, Laurens Van Houtven wrote:
+
+&gt;<i> A potential option for Twisted, which some people don't quite like, would be to have a listenZMQ and connectZMQ, analogous to listenTCP/listenUDP/listenSSL and the respective connect*s.
+</I>
+So, listenTCP/listenUDP are very different from listenSSL.  JP already made an oblique reference to this when talking about ZMQ possibly being implemented in the kernel.
+
+listenTCP and listenUDP are different kernel-level things.  Not only are they implemented differently, they have different semantics and interact with different interfaces.  UDP is datagram-oriented, TCP is stream-oriented.
+
+listenSSL, on the other hand, is a stream transport, implemented in userspace, by a C library.  It can be (and actually is, in twisted.protocols.tls) implemented as a regular TCP IProtocol along with providing its own stream-oriented ITransport.  There are a couple of reasons that listenSSL and startTLS are implemented as reactor and transport methods, and none of them have to do with the intrinsic specialness of TLS itself:
+
+At the time we wrote them, the APIs to implement twisted.protocols.tls simply weren't available.  So, we used the mechanisms available to us to interface with the available library at the time, and that meant having a reactor method.
+
+The reason that the code remains now that we have a protocol implementation is that the C code in OpenSSL is faster at getting bytes out of a socket than Twisted; it can do less memory copying while parsing the protocol, and efficiency is really important in TLS; you can visibly notice it when a little extra memory copying starts happening at that layer.  Nevertheless, when we encounter a situation which that library doesn't support, such as in the IOCP reactor, we need an implementation that can work with Twisted's native I/O APIs; this becomes a tradeoff between a scalable multiplexor and a slightly faster recv() code-path.  As far as I'm aware, nobody's done any particular benchmarks on that one, but I would guess that you win a little and you lose a little and it tends to balance out.  Still, when it's possible to gain a little efficiency by doing so, it does make some sense for it to be its own transport API.  This may also apply to ZMQ, since they appear to be obsessed with performance.  (Although that does beg the question why they seem to recommend a 'select'-style API, when as JP notes, that form of API is not great for performance.)
+
+&gt;<i> I think this makes more sense to the ZeroMQ people (who think of ZeroMQ as a layer &quot;next to&quot; TCP which happens to be implemented on top of TCP, on top of which you build your stuff)
+</I>
+I still hold that the ZMQ people are somewhat confused, and I believe that this very basic breakdown in their spatial reasoning is a good indication of how ;-).  If you inhabit the same physical reality that I do, you may have noticed that one object cannot, in fact, be both &quot;next to&quot; and &quot;on top of&quot; something else.  These are distinct coordinates.
+
+&gt;<i> than the Twisted people (who think of ZeroMQ's protocol as yet another TCP-using protocol just like HTTP for example). Having worked with both pieces of software, the more I play with ZeroMQ the more I think listenZMQ/connectZMQ make sense. ZeroMQ really tries to be one of those things and it shows. What ZeroMQ wants to do is semantically much closer to the existing connects and listens. I'm not just making this up: the ZeroMQ people have reviewed this and this is really what ZeroMQ wants to be.
+</I>
+More seriously, I don't think you should care what ZeroMQ &quot;wants to be&quot;.  The question isn't one of existential confusion, it's a practical question of what exactly the library *does*, and what a sensible way to integrate that with Twisted is.
+
+To avoid confusion about endpoints vs. reactor methods, I think it's safe to say that you have three implementation options: let's call them &quot;ZMQProtocol&quot;, &quot;ZMQTransport&quot;, and &quot;ZMQReactor&quot;.
+
+The thing that you appear to be talking down over and over again, implementing ZeroMQ as a 'regular TCP' IProtocol provider, does not sound like a viable option.  The advantage of this option is that it would allow you to transport ZMQ messages over completely arbitrary Twisted ITransport providers and IReactorTCP providers.  However, you've never talked about wanting to do that.  The disadvantages are that it doesn't sound like it makes sense to you, none of the APIs are exposed, and it generally goes against the grain of the library.  So let's forget about that.  (Again, it doesn't matter if ZMQ &quot;really is&quot; a layer &quot;next to&quot; or &quot;on top of&quot; TCP or whatever: if the library makes this difficult or impossible, then it doesn't matter where its true soul lies.)
+
+JP's option, ZMQTransport, suggests that you should implement it as an IReadDescriptor/IWriteDescriptor. That works if the ZeroMQ library will expose the file descriptors it's using to you.  The advantage of this option is that it will work with an arbitrary IReactorFDSet implementation, which basically all of the reactors which can run on a UNIX-like OS are.  Also, as JP has described, it's probably not too much code.  You can use it with GUI integration, even GUI integration on Windows, and it should work fine.  The disadvantages of this option are that apparently ZMQ is going to need to change, because it doesn't want to expose its file descriptors to Python, and it may be complicated to juggle them, depending on when it opens and closes sockets in response to the inner workings of the library.  For example, can one &quot;send a ZMQ event&quot; open 3 UDP sockets and a TCP socket, do a bunch of stuff with them, and shut some of them down?  Do multiple logical transports, ahem, I mean, &quot;Sockets&quot; (good job naming that, ZMQ guys) ever share their underlying TCP sockets, and thereby require independent management?  I don't know, but I can imagine that it might, and that could be a pain to expose sensibly.
+
+The third option, which you've discussed, is implementing a reactor in terms of pyzmq's existing multiplexing mechanisms.  One advantage of this approach is that it will support ZMQ the most naturally; you can just call the relevant APIs. One advantage which it *may* have - I'm not quite sure - is performance.  It may be possible for the ZMQ library to do a bunch of work inside zmq.select() without talking to Twisted's abstractions at all.  And while Twisted can be pretty fast, especially for Python, I have never even *heard* of anyone trying to run it over InfiniBand, and if they did, I would not expect 8 million messages per second on any hardware I can think of; the mainloop has too much overhead.  Based on some back-of-the-envelope (and probably highly inaccurate) math, Python *bytecode execution* is too much overhead to get that level of performance; I'm kind of skeptical that they even get it in C without benchmark hax of some kind; but nevertheless, they advertise this performance on their home page and they obviously care about it quite a lot.  It's not going to speed up your Twisted code at all, of course, and I have no idea if ZMQ messaging dominates your workload, so it may be a negligible gain.  The disadvantages of this approach, as several people have already pointed out, are that it won't work with GUI integration, or any custom third-party reactors, or... well, pretty much any features except the ones you explicitly build in yourself.  Also, if you want to properly stick to public APIs and build this as an extension to Twisted, you may find yourself rewriting some of the code in twisted.internet, or inheriting some public-but-ugh-we-wish-it-weren't classes.  This option may be somewhat labor intensive on the Twisted side of things, although as you note, it will probably be pretty easy with ZMQ.  It shouldn't be *too* hard though, and if you're willing to resort to heinous unsupported hacks, you could do something like subclass PollReactor and just replace '_poller' with a poller from zmq.poll, which is at least advertised to be compatible (although I suspect that the reality may fall short slightly, as it often does).
+
+Based on this analysis, which is far more thorough than I really wanted to do :(, it sounds to me like ZMQTransport and ZMQReactor are both somewhat feasible, and have overlapping advantages and disadvantages which may make each of them an attractive option in different circumstances.  There are probably situations where even ZMQProtocol would make sense.
+
+However!
+
+In BOTH of these options, you're going to need to define, implicitly or explicitly, IZMQTransport and IZMQProtocol interfaces, stipulating the interaction between the transport layer of your ZMQ API and the protocol layer which applications implement.  Maybe pyzmq already outlines this for you, maybe not; but the point is, you should really be focusing on defining *that* interface in a way that makes sense.  The rest of this stuff is all implementation details.
+
+If you define those interfaces well, then whatever integration option you start with, you should be able to change the internal implementation, or perhaps even use multiple implementations.  For example, you may discover that the performance thing is actually significant, and want to use ZMQReactor on your back-end servers, but eventually write some client-side GUI tools which also want to use ZMQ but aren't quite as performance-sensitive.
+
+I personally have little interest in ZMQ itself, but I think this general pattern stands for any large, existing C protocol library that someone might want to integrate with Twisted.  In most cases the 'reactor' option probably isn't there, but 'is it a protocol or is it a transport' would be a FAQ, if there were more in the way of large, useful C libraries that did async networking stuff :).
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20100608/08aeb82e/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20100608/08aeb82e/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="022310.html">[Twisted-Python] Integrating Twisted with ZeroMQ
+</A></li>
+	<LI>Next message: <A HREF="022311.html">[Twisted-Python] Job Opening - TweetDeck Backend Engineer - London,	UK
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#22322">[ date ]</a>
+              <a href="thread.html#22322">[ thread ]</a>
+              <a href="subject.html#22322">[ subject ]</a>
+              <a href="author.html#22322">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

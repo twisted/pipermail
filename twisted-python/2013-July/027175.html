@@ -1,0 +1,146 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Twisted web, giant-file POST forwarding and early bail-out.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%20web%2C%0A%20giant-file%20POST%20forwarding%20and%20early%20bail-out.&In-Reply-To=%3C51DBCCA7.10303%40imperial.ac.uk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="027174.html">
+   <LINK REL="Next"  HREF="027176.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Twisted web, giant-file POST forwarding and early bail-out.</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%20web%2C%0A%20giant-file%20POST%20forwarding%20and%20early%20bail-out.&In-Reply-To=%3C51DBCCA7.10303%40imperial.ac.uk%3E"
+       TITLE="[Twisted-Python] Twisted web, giant-file POST forwarding and early bail-out.">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Tue Jul  9 02:41:11 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="027174.html">[Twisted-Python] Twisted web,	giant-file POST forwarding and early bail-out.
+</A></li>
+        <LI>Next message: <A HREF="027176.html">[Twisted-Python] Twisted web, giant-file POST forwarding and early bail-out.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27175">[ date ]</a>
+              <a href="thread.html#27175">[ thread ]</a>
+              <a href="subject.html#27175">[ subject ]</a>
+              <a href="author.html#27175">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 07/09/2013 09:04 AM, Rob Meijer wrote:
+&gt;<i> Hi everyone,
+</I>&gt;<i>
+</I>&gt;<i> I'm working on what is just my second project using Twisted-Web, so I'm
+</I>&gt;<i> still a relative newbee on the subject.
+</I>&gt;<i>
+</I>&gt;<i> I'm working on a project that uses Twisted Web as a simple authorization
+</I>&gt;<i> proxy. All requests to my proxy contain an authorization-token and are
+</I>&gt;<i> either handled by the proxy, or are relayed to an other server. For all
+</I>&gt;<i> GET stuff and small POST stuff this is not a problem. When I want to
+</I>&gt;<i> process large POST requests however, I run into my limits of understanding
+</I>&gt;<i> how Twisted Web actually works.
+</I>&gt;<i>
+</I>&gt;<i> 1) I figured out that next to the 'process' in my request handler, I need
+</I>&gt;<i> to also overload handleContentChunk, parse the form body-parts in the
+</I>&gt;<i> first chunk myself and open a proxy connection (self.agent.request) if the
+</I>&gt;<i> authorization token checks out.
+</I>&gt;<i>
+</I>&gt;<i> 2) When it comes to appending the data received in handleContentChunk, and
+</I>&gt;<i> if needed throttling the client if the server couldn't keep up,  I can't
+</I>&gt;<i> figure out how to connect handleContentChunk and my self.agent.request
+</I>&gt;<i> instance.
+</I>
+You probably want to read up on the producer/consumer stuff in Twisted. 
+In particular if you're using t.w.client.Agent, bodies in requests are 
+supplied by an IBodyProducer.
+
+<A HREF="http://twistedmatrix.com/documents/current/web/howto/client.html">http://twistedmatrix.com/documents/current/web/howto/client.html</A>
+
+Essentially, you need an IBodyProducer that maps to the incoming 
+transport via request, which I guess would look something like this:
+
+class RequestProducer(object):
+     implements(IBodyProducer)
+
+     def __init__(self, request):
+         self.req = request
+
+     def startProducing(self, consumer):
+         self.d = defer.Deferred()
+         self.consumer = consumer
+         return d
+
+     def pauseProducing(self):
+         self.req.transport.pauseProducing()
+
+     def stopProducing(self):
+         # FIXME: what to do here...
+         self.req.transport.loseConnection()
+
+     def finish():
+         self.d.callback(None)
+
+...and you'll have code like this on the request object:
+
+     def gotLength(self, length):
+         self.bodyprod = RequestProducer(self)
+         if length:
+             self.bodyprod.length = length
+         else:
+             self.bodyprod.length = twisted.web.iweb.UNKNOWN_LENGTH
+         self.out_req = self.agent.request(
+             'GET', url, headers, bodyprod
+         )
+
+     def handleContentChunk(self, data):
+         ...
+         if data_to_be_forwarded:
+             self.bodyprod.consumer.write(data)
+         if some_done_condition:
+             self.bodyprod.finish()
+&gt;<i>
+</I>&gt;<i> 3) When the token does not check out, or the connection to the server
+</I>&gt;<i> fails, it remains a mystery to me how I should throw an error in such a
+</I>&gt;<i> way that it allows me to send a proper error message to the client, while
+</I>
+This is sort of a problem with HTTP. The client will probably keep 
+sending the data.
+
+The best you can do is write an HTTP error to the transport then throw 
+the connection away, or blackhole all future content chunks.
+
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="027174.html">[Twisted-Python] Twisted web,	giant-file POST forwarding and early bail-out.
+</A></li>
+	<LI>Next message: <A HREF="027176.html">[Twisted-Python] Twisted web, giant-file POST forwarding and early bail-out.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27175">[ date ]</a>
+              <a href="thread.html#27175">[ thread ]</a>
+              <a href="subject.html#27175">[ subject ]</a>
+              <a href="author.html#27175">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

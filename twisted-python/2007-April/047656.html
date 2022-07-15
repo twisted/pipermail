@@ -1,0 +1,187 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Synchronization techniques
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Synchronization%20techniques&In-Reply-To=%3CD76E8423-DCD3-4711-86F6-C9DD07782C66%40keystonewood.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="047644.html">
+   <LINK REL="Next"  HREF="047658.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Synchronization techniques</H1>
+    <B>Daniel Miller</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Synchronization%20techniques&In-Reply-To=%3CD76E8423-DCD3-4711-86F6-C9DD07782C66%40keystonewood.com%3E"
+       TITLE="[Twisted-Python] Synchronization techniques">daniel at keystonewood.com
+       </A><BR>
+    <I>Wed Apr  4 10:35:10 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="047644.html">[Twisted-Python] Synchronization techniques
+</A></li>
+        <LI>Next message (by thread): <A HREF="047658.html">[Twisted-Python] Synchronization techniques
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#47656">[ date ]</a>
+              <a href="thread.html#47656">[ thread ]</a>
+              <a href="subject.html#47656">[ subject ]</a>
+              <a href="author.html#47656">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Apr 3, 2007, at 8:42 PM, Itamar Shtull-Trauring wrote:
+
+&gt;<i> On Tue, 2007-04-03 at 17:07 -0400, Daniel Miller wrote:
+</I>&gt;<i>
+</I>&gt;&gt;&gt;<i> twisted.internet.defer.DeferredLock and some of the related classes
+</I>&gt;&gt;&gt;<i> are
+</I>&gt;&gt;&gt;<i> what you ought to be using.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Unfortunately that only gets me half way there. DeferredLock.acquire
+</I>&gt;&gt;<i> () returns a deferred. How do I return the result of a deferred from
+</I>&gt;&gt;<i> a PB remote_xxx() function?
+</I>&gt;<i>
+</I>&gt;<i> Just return the Deferred from the remote_xxx() function.
+</I>&gt;<i>
+</I>
+Thanks, I didn't know I could return a deferred from a PB remote_xxx 
+() method. That detail doesn't seem to be documented in the  
+Perspective Broker documentation, which I have read quite a few  
+times. Maybe this could be highlighted in the &quot;Complete Example&quot; [0]  
+section of the PB usage documentation? The examples use the  
+TwistedQuotes application, and the IQuoter.getQuote() method always  
+returns a string (at least I couldn't find any implementations that  
+return a deferred). However, that would require rewriting most if not  
+all implementations of IQuoter to return deferred's and/or the code  
+that calls IQuoter.getQuote(), which demonstrates the viral nature of  
+twisted when used in conjunction with other libraries.
+
+So anyway, I rewrote my server-side library to do it the twisted way  
+and return deferred's instead trying rig up some way of waiting for  
+them. I still think it would be super useful to be able to pseudo- 
+block on a deferred (i.e. allow the reactor to process other events  
+while waiting for the deferred). It is very annoying to have to  
+rewrite many layers of code when twisted is introduced into a  
+program. I did find gthreadless.py, and maybe that would do it.  
+Unfortunately discussion on that seems to have been dropped some time  
+ago...
+
+For the record, I've included updated versions of the previously  
+posted code below. I'd be happy if someone pointed out if I'm doing  
+anything wrong (with respect to twisted) in this code.
+
+Thanks,
+Daniel
+
+[0] &lt;<A HREF="http://twistedmatrix.com/projects/core/documentation/howto/pb-">http://twistedmatrix.com/projects/core/documentation/howto/pb-</A> 
+usage.html#auto1&gt;
+
+~~~~~~~~~
+
+from twisted.internet.defer import Deferred, DeferredLock
+from twisted.internet.error import ProcessTerminated
+from twisted.internet.protocol import ProcessProtocol
+from twisted.python.failure import Failure
+
+class LockProxy(object):
+     &quot;&quot;&quot;A proxy that synchronizes method calls on a given subject&quot;&quot;&quot;
+
+     def __init__(self, subject):
+         self.lock = DeferredLock()
+         self.subject = subject
+
+     def __getattr__(self, name):
+         value = getattr(self.subject, name)
+         if hasattr(value, &quot;im_self&quot;) and value.im_self is self.subject:
+             def func(*args, **kw):
+                 def callback(lock, *args, **kw):
+                     try:
+                         result = value(*args, **kw)
+                     except:
+                         lock.release()
+                         raise
+                     if isinstance(result, Deferred):
+                         def release(arg, lock):
+                             lock.release()
+                             return arg
+                         result.addBoth(release, lock)
+                     else:
+                         lock.release()
+                     return result
+                 dfr = self.lock.acquire()
+                 dfr.addCallback(callback, *args, **kw)
+                 return dfr
+             return func
+         return value
+
+class ProcessError(Exception): pass
+
+class ProcessErrorHandler(ProcessProtocol):
+
+     def __init__(self, deferred):
+         self.deferred = deferred
+         self.errbuf = []
+         self.errors = []
+
+     def errReceived(self, text):
+         self.errbuf.append(text)
+
+     def processEnded(self, status):
+         if self.errbuf:
+             self.errors.append(&quot;&quot;.join(self.errbuf))
+         if isinstance(status.value, ProcessTerminated):
+             self.errors.append(status.getErrorMessage())
+         if self.errors:
+             err = Failure(ProcessError(&quot;\n&quot;.join(self.errors)))
+             self.deferred.errback(err)
+         else:
+             self.deferred.callback(self)
+         self.deferred = None
+
+class TwistedProcess(object):
+
+     def __init__(self, reactor=None, protocol=ProcessErrorHandler):
+         if reactor is None:
+             from twisted.internet import reactor
+         self.reactor = reactor
+         self.protocol = protocol
+
+     def check_call(self, cmd):
+         dfr = Deferred()
+         protocol = self.protocol(dfr)
+         self.reactor.spawnProcess(protocol, cmd[0], cmd,  
+env=os.environ)
+         return dfr
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="047644.html">[Twisted-Python] Synchronization techniques
+</A></li>
+	<LI>Next message (by thread): <A HREF="047658.html">[Twisted-Python] Synchronization techniques
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#47656">[ date ]</a>
+              <a href="thread.html#47656">[ thread ]</a>
+              <a href="subject.html#47656">[ subject ]</a>
+              <a href="author.html#47656">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

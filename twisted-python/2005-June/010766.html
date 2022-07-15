@@ -1,0 +1,215 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] timeout and retries
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20timeout%20and%20retries&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="010765.html">
+   <LINK REL="Next"  HREF="010783.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] timeout and retries</H1>
+    <B>Stefano Canepa</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20timeout%20and%20retries&In-Reply-To="
+       TITLE="[Twisted-Python] timeout and retries">sc at linux.it
+       </A><BR>
+    <I>Fri Jun 17 10:41:17 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="010765.html">[Twisted-Python] Simple question
+</A></li>
+        <LI>Next message: <A HREF="010783.html">[Twisted-Python] timeout and retries
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10766">[ date ]</a>
+              <a href="thread.html#10766">[ thread ]</a>
+              <a href="subject.html#10766">[ subject ]</a>
+              <a href="author.html#10766">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>The following code is a try to write a protocol with timeout and
+retries. The connectioMade is used only as a test. I have some problems:
+1) even if I placed &quot;\x01&quot; as delimiter the line is sent not terminated
+2) even if timeout expired 3 times the success callback is called
+
+Were is my mistake?
+
+Secondly I will prefer to leave the protocol as simple as passible and
+put all implementation details into the factory. I was unable to do
+this, any suggestion would be of big help.
+
+Thanks very much
+Stefano
+
+#!/usr/bin/env python
+#
+# Twisted modules 
+#
+from twisted.internet.protocol import ClientFactory
+from twisted.protocols.basic import LineReceiver
+from twisted.internet import reactor, defer
+#
+# Python modules
+#
+import re
+#
+# if it exists load configuration file
+#
+try:
+    import HL7LLPClientConfig
+except:
+    #
+    # else use defaults
+    #
+    TIMEOUT = 10
+    PORT = 3000
+    SERVER = 'localhost'
+    RETRIES = 3
+    pass
+
+class HL7LLPClientProtocol(LineReceiver):
+    &quot;&quot;&quot;
+    HL7 Lower Level Protocol initiating module implementation.
+    It sends a packet, waits ACK/NACK or timeout in case of failure
+    retries RETRIES times
+    &quot;&quot;&quot;
+    # delimiter is set to &lt;EB&gt; (\x02 i.e. STX) so that the whole HL7
+message
+    # can be considered as a string
+    delimiter = &quot;\x02&quot;
+    msg = &quot;&quot;
+
+    def __init__(self):
+        self.ackMSG = re.compile(&quot;\x01\x06&quot;)
+        self.nackMSG = re.compile(&quot;\x01\x15&quot;)
+
+    def connectionMade(self):
+        self.sendMsg(&quot;MSH|||||||||||&quot;)
+        
+    def sendMsg(self, msg, numRetries=RETRIES):
+        &quot;&quot;&quot;
+        Store the message to be used by derived classes, send the
+message and
+        return a deferred
+        &quot;&quot;&quot;
+        self.msg = msg
+        self.sendLine(msg)
+        return self.timeoutAndRetry(numRetries)
+        
+    def sendLine(self, msg):
+        &quot;&quot;&quot;
+        Add &lt;SB&gt; (\x01 i.e. SOH) at the start of message as required by
+        HL7 standard and send the message
+        &quot;&quot;&quot;
+        msgToSend = &quot;\x01&quot;+msg
+        print msgToSend
+        self.transport.write(msgToSend)
+        print &quot;written&quot;
+
+    def lineReceived(self, response):
+        &quot;&quot;&quot;
+        It receives the answer store it for use in the derived class and
+        verify if it is ACK or NACK to cancel the timeout, every other
+        string received is not valid answer so timeout continues to tick
+        &quot;&quot;&quot;
+        m = self.ackMSG.match(response)
+        n = self.nackMSG.match(response)
+        if m or n:
+            self.delayedCall.cancel()
+            self.delayedCall = None  
+        self.somethingResult.callback()
+        self.somethingResult = None
+
+    def timeoutAndRetry(self, n):
+        &quot;&quot;&quot;
+        Create a deferred, fire the delayedCall, and return the deferred
+        &quot;&quot;&quot;
+        d = defer.Deferred() 
+        d.addErrback(self.tooManyRetries)
+        d.addCallback(self.success)
+        c = reactor.callLater(10, self._timeout, n)
+        self.somethingResult, self.delayedCall = d, c
+        return d
+ 
+    def _timeout(self, n):
+        &quot;&quot;&quot;
+        Retry to send if possible or raise and exception
+        &quot;&quot;&quot;
+        print n
+        if n &gt; 0:
+            d = self.somethingResult
+            #self.sendMsg(self.msg, n - 1).chainDeferred(d)
+            self.sendMsg(self.msg, n - 1)
+        else:
+            self.somethingResult.errback(Exception(&quot;TooManyRetries&quot;))
+            self.somethingResult = None
+
+    def timeOutFailure(self, reason):
+        &quot;&quot;&quot;
+        Don't know what to do in case of timeout
+        &quot;&quot;&quot;
+        print &quot;timeout failure %s &quot; % reason
+
+    def tooManyRetries(self, reason):
+        &quot;&quot;&quot;
+        Don't know what to do in case of non timeout failure
+        &quot;&quot;&quot;
+        print &quot;non timeout failure %s&quot; % reason
+
+    def success(self, reason):
+        &quot;&quot;&quot;
+        Don't know what to do in case of success
+        &quot;&quot;&quot;
+        print &quot;success %s&quot; % reason
+        
+class HL7LLPClientFactory(ClientFactory):
+   
+    protocol = HL7LLPClientProtocol
+
+def main():
+    factory = HL7LLPClientFactory()
+    reactor.connectTCP(SERVER, PORT, factory)
+    reactor.run()
+
+if __name__ == &quot;__main__&quot;:
+    main()
+
+
+-- 
+Stefano Canepa aka sc: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">sc at linux.it</A>  <A HREF="http://www.stefanocanepa.it">http://www.stefanocanepa.it</A>
+Three great virtues of a programmer: laziness, impatience and hubris.
+Le tre grandi virt&#249; di un programmatore: pigrizia, impazienza e arroganza.
+                                                              (Larry Wall)
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: This is a digitally signed message part
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20050617/33b9b72f/attachment.pgp">http://twistedmatrix.com/pipermail/twisted-python/attachments/20050617/33b9b72f/attachment.pgp</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="010765.html">[Twisted-Python] Simple question
+</A></li>
+	<LI>Next message: <A HREF="010783.html">[Twisted-Python] timeout and retries
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10766">[ date ]</a>
+              <a href="thread.html#10766">[ thread ]</a>
+              <a href="subject.html#10766">[ subject ]</a>
+              <a href="author.html#10766">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

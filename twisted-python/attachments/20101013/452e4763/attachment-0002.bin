@@ -1,0 +1,157 @@
+#!/usr/bin/python
+
+import objc
+objc.setVerbose(True)
+
+import os, sys
+"""
+
+    This should test the interaction between a OSX Quartz call
+    and twisted.web.
+    
+    To run, call the twistd binary with this script. 
+
+	In order to establish that the image generation works, independently of twisted,
+	this script will generate an image first, and print some results.
+	Then twisted will start and do its thing.
+
+    This starts the process as a daemon, and will cause a crash on 10.6 flagged with
+	USING_FORK_WITHOUT_EXEC_IS_NOT_SUPPORTED_BY_FILE_MANAGER
+
+	/usr/bin/twistd -y twisted.quartz.test.py --pidfile quartztestpid.txt --logfile quartztest.log
+    
+	When the script is called with the no daemon option:
+	/usr/bin/twistd -n -y twisted.quartz.test.py --pidfile quartztestpid.txt --logfile quartztest.log
+	...the server works. Images are generated.
+
+Then talk to the server in a webbrowser:
+	http:127.0.0.1:8081
+    
+    
+
+	erik@letterror.com
+"""
+
+import sys
+from random import random
+
+from twisted.web import resource, server
+from twisted.internet import reactor
+from twisted.application import service, internet
+
+import time
+
+def getTestImagePath():
+    p = os.path.join(os.getcwd(), "LayoutTest1.png")
+    print os.path.exists(p)
+    return p
+
+def _makeContext(size):
+    width, height = size
+    data = None
+    bitsPerComponent = 8
+    numComponents = 4
+    bestByteAlignment = 16
+    bytesPerRow = width * (bitsPerComponent / 8) * numComponents
+    bytesPerRow = ((bytesPerRow + (bestByteAlignment - 1)) & ~(bestByteAlignment - 1))
+    bitmapInfo = Quartz.kCGImageAlphaPremultipliedLast
+    
+    data = None
+    context = Quartz.CGBitmapContextCreate(data, width, height, 8, bytesPerRow, rasterColorSpace, bitmapInfo)
+    return context
+    
+def _drawTestData(context):
+    steps = 10
+    size = 10
+    for x in range(steps):
+        for y in range(steps):
+            
+            r, g, b, a = random(), random(), 0, 0.5
+            color = Quartz.CGColorCreate(rasterColorSpace, (r, g, b, a))
+            Quartz.CGContextSetFillColorWithColor(context, color)
+            Quartz.CGContextFillRect(context, Quartz.CGRectMake(x*size, y*size, size, size))
+
+def _drawImage(context):
+    #path = u"/Users/erik/Develop/lettersetter/trunk/lettersetter/TestData/LayoutTest1.png"
+    #path = u"http://www.python.org/images/python-logo.gif"
+    path = getTestImagePath()
+    print "_drawImage step 1", os.getpid()
+    
+    url = Quartz.CFURLCreateWithFileSystemPath(None, path, Quartz.kCFURLPOSIXPathStyle, False)
+    print "_drawImage step 2", url, type(url)
+    imageSource = Quartz.CGImageSourceCreateWithURL(url, {Quartz.kCGImageSourceTypeIdentifierHint: "png"})
+    print "_drawImage step 3", imageSource
+    image = Quartz.CGImageSourceCreateImageAtIndex(imageSource, 0, {})
+    w = Quartz.CGImageGetWidth(image)
+    h = Quartz.CGImageGetHeight(image)
+    x, y = (10,10)
+    rect = Quartz.CGRectMake(x, y, w, h)
+    print "_drawImage step 4", x, y, w, h
+    Quartz.CGContextDrawImage(context, ((x, y), (w, h)), image)
+
+
+def _makeTestData(context):
+    data = Quartz.CFDataCreateMutable(None, 0)
+    dataConsumer = Quartz.CGDataConsumerCreateWithCFData(data)
+    fileType = "public.png"
+    imageDestination = Quartz.CGImageDestinationCreateWithDataConsumer(dataConsumer, fileType, 1, None)
+    image = Quartz.CGBitmapContextCreateImage(context)
+    properties = {
+            Quartz.kCGImagePropertyDPIWidth  : 72,
+            Quartz.kCGImagePropertyDPIHeight : 72,
+    }
+    Quartz.CGImageDestinationAddImage(imageDestination, image, properties)
+    Quartz.CGImageDestinationFinalize(imageDestination)
+    
+    # still a CFMutableData Reference, it needs to be a string
+    return str(data)
+
+def buildTestImage():
+    context = _makeContext((100,100))
+    _drawTestData(context)
+    _drawImage(context)
+    return _makeTestData(context)
+
+
+class RootResource(resource.Resource):
+
+    def render(self, request):
+        resource.Resource.__init__(self)
+        data = buildTestImage()
+        _format = "png"
+        request.setHeader("Content-Type", "image/%s"%_format)
+        return str(data)
+
+    def getChild(self, name, request):
+        return self
+
+# first make the image to see if it works outside of twisted
+def startup():
+    global Quartz, rasterColorSpace
+    import Quartz
+    rasterColorSpace = Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceGenericRGB)
+
+#data = buildTestImage()
+#path = os.path.join(os.getcwd(), "twisted_quartz_test_result.png")
+#f = open(path, 'wb')
+#f.write(data)
+#f.close()
+#print "saved test image at", path
+
+# print some version info
+import sys
+print "python version:", sys.version
+
+print "pyobjc version:", objc.__version__
+import twisted.web
+print "twisted.web version:", twisted.web.__version__
+
+# if properly booted, this will start a twisted process
+port = 8081
+site = server.Site(RootResource())
+application = service.Application('QuartzTestApp')
+sc = service.IServiceCollection(application)
+i = internet.TCPServer(port, site)
+i.setServiceParent(sc)
+
+reactor.callWhenRunning(startup)

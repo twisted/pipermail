@@ -1,0 +1,247 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] How can I make twisted and dbus work together?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20can%20I%20make%20twisted%20and%20dbus%20work%20together%3F&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="016577.html">
+   <LINK REL="Next"  HREF="016580.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] How can I make twisted and dbus work together?</H1>
+    <B>hwan2265 at mail.usyd.edu.au</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20can%20I%20make%20twisted%20and%20dbus%20work%20together%3F&In-Reply-To="
+       TITLE="[Twisted-Python] How can I make twisted and dbus work together?">hwan2265 at mail.usyd.edu.au
+       </A><BR>
+    <I>Wed Jan 16 01:28:38 EST 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="016577.html">[Twisted-Python] Where to download twisted for win32 / python 2.5?
+</A></li>
+        <LI>Next message: <A HREF="016580.html">[Twisted-Python] How can I make twisted and dbus work together?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16579">[ date ]</a>
+              <a href="thread.html#16579">[ thread ]</a>
+              <a href="subject.html#16579">[ subject ]</a>
+              <a href="author.html#16579">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello everyone,
+
+I am trying to write a imap mail fetcher base on twisted and dbus. I have
+written a simple fetcher without dbus functionality and it's working fine.
+However I got a problem while adding dbus.
+
+<A HREF="http://twistedmatrix.com/trac/ticket/1352">http://twistedmatrix.com/trac/ticket/1352</A> is the only article about how can
+twisted and dbus work together that I could get from google and I just
+followed its suggestion and added
+
+    from twisted.internet import glib2reactor
+    glib2reactor.install()
+
+to my code.
+
+As what I read from twisted API
+<A HREF="http://twistedmatrix.com/documents/current/api/twisted.internet.glib2reactor.html">http://twistedmatrix.com/documents/current/api/twisted.internet.glib2reactor.html</A>
+&quot;In order to use this support, simply do the following:
+
+   |  from twisted.internet import glib2reactor
+   |  glib2reactor.install()
+
+Then use twisted.internet APIs as usual. &quot;
+I thought everything will be fine.
+
+But when I was running my code, I got a error:
+
+Traceback (most recent call last):
+  File &quot;dbustwisted.py&quot;, line 5, in &lt;module&gt;
+    glib2reactor.install()
+  File &quot;/usr/lib/python2.5/site-packages/twisted/internet/glib2reactor.py&quot;,
+line 33, in install
+    return gtk2reactor.install(False)
+  File &quot;/usr/lib/python2.5/site-packages/twisted/internet/gtk2reactor.py&quot;,
+line 270, in install
+    installReactor(reactor)
+  File &quot;/usr/lib/python2.5/site-packages/twisted/internet/main.py&quot;, line
+24, in installReactor
+    &quot;reactor already installed&quot;
+AssertionError: reactor already installed
+
+I don't know what's wrong with it.
+This is my code, I have not add the dbus part yet and just test the
+glib2reactor.
+
+from twisted.mail import imap4
+from twisted.internet import protocol, defer
+import email, os, time
+
+MAILPATH = &quot;Mails&quot;
+IMAPSERVER = &quot;xxxxxxxxxxx&quot;
+USERNAME = &quot;xxxxx&quot;
+PASSWORD = &quot;xxxxx&quot;
+
+class IMAPDownloadProtocol(imap4.IMAP4Client):
+
+    def serverGreeting(self, capabilities):
+        login = self.login(self.factory.username, self.factory.password)
+        login.addCallback(self.__loggedIn)
+        login.chainDeferred(self.factory.deferred) # any event that fires
+login will also fire factory.deferred
+
+    def __loggedIn(self, result):
+        return
+self.select(self.factory.mailbox).addCallback(self.__selectedMailbox)
+
+    def __selectedMailbox(self, result):
+        allMessages = imap4.MessageSet(1, None) # a set of messages from
+message number 1 to the end of the mailbox
+        return self.fetchUID(allMessages, True).addCallback(self.__gotUIDs)
+# fetch a list of UID
+
+    def __gotUIDs(self, uidResults):
+        self.messageUIDs = [result['UID'] for result in uidResults.values(
+)]
+        self.messageCount = len(self.messageUIDs)
+        print &quot;INFO: %i messages in %s.&quot; % (self.messageCount,
+self.factory.mailbox)
+        return self.fetchNextMessage( ) # start to download the message one
+by one
+
+    def fetchNextMessage(self):
+        if self.messageUIDs:
+            nextUID = self.messageUIDs.pop(0)
+            messageListToAnalysis = imap4.MessageSet(nextUID) # creates a
+MessageSet matching only that message's UID
+            return self.fetchAll(messageListToAnalysis,
+True).addCallback(self.__gotIndex)
+            # fetchAll - fetching the UID, flags, size, date, envelope
+            # UID keyword set to true to tell the server that the
+MessageSet is referring to messages by UID, not sequence number
+        else:
+            return self.logout( ).addCallback(lambda _:
+self.transport.loseConnection( ))
+
+    def __gotIndex(self, indexResults):
+        index = indexResults.values()
+        index_details = index[0]
+
+        UID = index_details['UID']
+        flags = index_details['FLAGS']
+        size = index_details['RFC822.SIZE']
+        date = index_details['INTERNALDATE']
+        envelope = index_details['ENVELOPE']
+
+        title = envelope[1]
+        sender = envelope[3]
+        temp = []
+        # replace None in the envelope as &quot;Empty&quot;, because None is a key
+word in python
+        for element in sender[0]:
+            if element != None:
+                temp += [element]
+            if element == None:
+                temp += [&quot;Empty&quot;]
+        sender = temp
+
+        if flags == []:
+            flags = ['\\Unseen']
+
+
+        print &quot;INFO: Downloading message %i of %i&quot; %
+(self.messageCount-len(self.messageUIDs), self.messageCount)
+        messageListToFetch = imap4.MessageSet(UID)
+        return self.fetchMessage(messageListToFetch,
+True).addCallback(self.__gotMessage, UID)
+
+    def __gotMessage(self, fetchResults, UID):
+        messageData = fetchResults.values( )[0]['RFC822']
+        self.factory.handleMessage(messageData, UID)
+        return self.fetchNextMessage( ) # fetch next message
+
+    def connectionLost(self, reason):
+        if not self.factory.deferred.called:
+            # connection was lost unexpectedly!
+            self.factory.deferred.errback(reason)
+
+class IMAPDownloadFactory(protocol.ClientFactory):
+    protocol = IMAPDownloadProtocol
+
+    def __init__(self, username, password, mailbox, path):
+        self.username = username
+        self.password = password
+        self.mailbox = mailbox
+        self.path = path
+        self.deferred = defer.Deferred( )
+
+    def handleMessage(self, messageData, UID):
+        mailFile = os.path.join(path, UID)
+        output = file(mailFile, 'w+b')
+        parsedMessage = email.message_from_string(messageData)
+        output.write(parsedMessage.as_string(unixfrom=True))
+
+    def startedConnecting(self, connector):
+        print &quot;INFO: Connection start&quot;
+
+    def clientConnectionFailed(self, connection, reason):
+        self.deferred.errback(reason)
+
+    def clientConnectionLost(self, connection, reason):
+        print &quot;INFO: Connection stop&quot;
+        #connection.connect()
+
+if __name__ == &quot;__main__&quot;:
+    from twisted.internet import glib2reactor
+    glib2reactor.install()
+    ################################################
+    # I added the 2 lines here and made the program crash
+    ################################################
+
+    from twisted.internet import reactor
+    import sys, getpass
+
+    server = IMAPSERVER
+    user = USERNAME
+    mailbox = &quot;Inbox&quot;
+    path = MAILPATH
+    password = PASSWORD
+
+    factory = IMAPDownloadFactory(user, password, mailbox, path)
+    reactor.connectTCP(server, 143, factory)
+    reactor.run( )
+
+I am new to twisted, dbus even python, any helps will be appreciated.
+
+Regards
+Huisan
+
+----------------------------------------------------------------
+This message was sent using IMP, the Internet Messaging Program.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="016577.html">[Twisted-Python] Where to download twisted for win32 / python 2.5?
+</A></li>
+	<LI>Next message: <A HREF="016580.html">[Twisted-Python] How can I make twisted and dbus work together?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16579">[ date ]</a>
+              <a href="thread.html#16579">[ thread ]</a>
+              <a href="subject.html#16579">[ subject ]</a>
+              <a href="author.html#16579">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,70 @@
+"""process.py
+
+Run processes from within Twisted.
+"""
+# twisted imports
+from twisted.internet import win32eventreactor
+win32eventreactor.install()
+from twisted.internet import reactor, protocol, error, defer
+from twisted.python import log, components, failure
+# python imports
+import os
+
+class BasicProcessProtocol(protocol.ProcessProtocol):
+	def __init__(self):
+		self.deferred = defer.Deferred()
+		self.stdout = ""
+		self.stderr = ""
+		self.status = 0
+
+	def connectionMade(self):
+		self.transport.closeStdin()
+
+	def outReceived(self, data):
+		self.stdout += data
+		log.msg(data)
+
+	def errReceived(self, data):
+		self.stderr += data
+		log.msg(data)
+
+	def processEnded(self, reason):
+		if reason.check(error.ProcessDone):
+			self.status = 0
+			# pass the items we want down the callback chain
+			self.deferred.callback((self.status, self.stdout, self.stderr))
+		else:
+			self.status = 1
+			self.deferred.errback(reason)
+
+def openProcess(cmd_and_args):
+		cmd = cmd_and_args[0]
+		args = cmd_and_args[1:]
+
+		# Spawn the process using the reactor so we don't block
+		proto = BasicProcessProtocol()
+		reactor.spawnProcess(proto, cmd, cmd_and_args, env=os.environ)
+		return proto.deferred
+
+
+if __name__ == '__main__':
+	d = openProcess(["cleartool", "lsvob", "-s"])
+
+	def printStatus(x):
+		print "status:", x[0]
+		return x
+
+	def printOut(x):
+		print "out:", x[1]
+		return x
+
+	def printErr(x):
+		print "err:", x[2]
+		return x
+
+	d.addCallback(printStatus)
+	d.addCallback(printOut)
+	d.addCallback(printErr)
+
+	reactor.callLater(1, reactor.stop)
+	reactor.run()

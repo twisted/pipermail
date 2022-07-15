@@ -1,0 +1,213 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Replacement for handler in LivePage?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Replacement%20for%20handler%20in%20LivePage%3F&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001912.html">
+   <LINK REL="Next"  HREF="001915.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Replacement for handler in LivePage?</H1>
+    <B>Mike C. Fletcher</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Replacement%20for%20handler%20in%20LivePage%3F&In-Reply-To="
+       TITLE="[Twisted-web] Replacement for handler in LivePage?">mcfletch at rogers.com
+       </A><BR>
+    <I>Thu Sep 15 14:48:25 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001912.html">[Twisted-web] Nevow: returning defer.succeed() from the 
+	data_*or render_* method
+</A></li>
+        <LI>Next message: <A HREF="001915.html">[Twisted-web] Replacement for handler in LivePage?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1913">[ date ]</a>
+              <a href="thread.html#1913">[ thread ]</a>
+              <a href="subject.html#1913">[ subject ]</a>
+              <a href="author.html#1913">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi all,
+
+Have just done an &quot;svn up&quot; to the latest Nevow source and found that the 
+&quot;handler&quot; mechanism in LivePage is now deprecated, but there doesn't 
+seem to be a functionally equivalent construct provided.  My use of 
+handlers was to create dynamically generated (and modifying) pages where 
+a complex nested structure (tree) was presented using a set of GUI 
+controllers which would each register themselves for servicing events to 
+the controls within their view (including the sub-views for the nested 
+items).  Each controller is responsible for standard GUI-type 
+interactions, i.e. *multiple events*.
+
+Now, obviously I could override the page's locateHandler and do all of 
+the registration and lookup manually, but it seems that this kind of 
+thing would be the *common* use case for any Ajax application.  So, I'm 
+thinking we should really have an easy method for constructing such 
+callbacks.
+
+This is something along the lines of what I'm thinking (untested 
+pseudo-code):
+
+class Handler( object ):
+    &quot;&quot;&quot;New-style handler for Nevow, uses the same basic mechanism as 
+transient
+   
+    We want to be able to produce dynamically-generated trees of
+    controls, which means that we need to be able to register multi-shot
+    event handlers live.
+    &quot;&quot;&quot;
+    bubble = True
+    def __init__( self, identifier, callable, *args, **named ):
+        &quot;&quot;&quot;Initialise the handler instance
+       
+        identifier -- unique identifier assigned by the client handle
+        callable -- the target callable object
+        args -- arguments to the function (javascript arguments)
+        named -- carries non-javascript arguments, currently:
+            bubble -- if defined and False, prevent bubbling of the
+                generating event (i.e. &quot;stop&quot; after the handler)
+        &quot;&quot;&quot;
+        self.identifier = identifier
+        self.callable = callable
+        self.args = args
+        if named.has_key( 'bubble' ):
+            self.bubble = named['bubble']
+    def jsIdentifier( self ):
+        &quot;&quot;&quot;Retrieve the javascript callback identifier for this callback&quot;&quot;&quot;
+        return '**handler.%s'%(self.identifier)
+    def jsCall( self, ctx ):
+        &quot;&quot;&quot;Produce the javascript to call this Handler on the server&quot;&quot;&quot;
+        base = livepage.server.handle( self.jsIdentifier(), *self.args )
+        if not self.bubble:
+            result = base
+        else:
+            result = [
+                base,
+                stop
+            ]
+        return livepage.flat.serialize( result, ctx )
+    def __call__( self, javascriptContext, *args ):
+        &quot;&quot;&quot;Do the final calling of the handler with the client-provided 
+values&quot;&quot;&quot;
+        try:
+            return self.callable( javascriptContext, *args )
+        except Exception, err:
+            log.error(
+                &quot;&quot;&quot;Failure during Javascript callback on %s(%s): %s&quot;&quot;&quot;,
+                getattr(self.callable,'__name__',self.callable),
+                &quot;, &quot;.join( [repr(a) for a in args] ),
+                log.getException( err ),
+            )
+            return None
+def flattenHandler( handler, ctx ):
+    &quot;&quot;&quot;Redirect to flatten a handler instance&quot;&quot;&quot;
+    return handler.jsCall( ctx )
+livepage.flat.registerFlattener(flattenHandler, Handler)
+
+
+class ClientHandle( livepage.ClientHandle ):
+    &quot;&quot;&quot;ClientHandle providing for run-time registration of multi-use 
+callbacks&quot;&quot;&quot;
+    handlerCount = 0
+    def handler( self, callable, *args, **named ):
+        &quot;&quot;&quot;Create a new Handler object, assigning an ID automatically&quot;&quot;&quot;
+        self.handlerCount += 1
+        handle = Handler( self.handlerCount, callable, *args, **named )
+        if not hasattr( self, 'handlers' ):
+            self.handlers = {}
+            self.notifyOnClose().addBoth( self.cleanHandlers )
+        self.handlers[ handle.jsIdentifier() ] = handle
+        return handle
+    def cleanHandlers( self, result=None ):
+        &quot;&quot;&quot;Clean up the handler registry for this client handle&quot;&quot;&quot;
+        try:
+            del self.handlers
+        except AttributeError, err:
+            pass
+        return result
+    def getHandler( self, key ):
+        &quot;&quot;&quot;Retrieve named registered handler or None
+       
+        key -- identifier for the handler
+        &quot;&quot;&quot;
+        try:
+            return self.handlers[ key ]
+        except KeyError, err:
+            return None
+
+obviously the InputHandlerResource.renderHTTP method would need to be 
+taught to do the lookup for the handler registry as well.  Still, the 
+point here is to make a callback-registration system that works as 
+transparently for dynamically generated content as the original handler 
+mechanism, i.e. it's just an automated system where you can generate 
+client.handler( callable, livepage.get('blah').value ) calls to register 
+callbacks for any piece of content you are producing.
+
+Any memory-cleanup issues with the following scheme are present with the 
+current &quot;transient&quot; scheme, incidentally.  If there's a really strong 
+need, one could even create a &quot;register delete handler&quot; on the Handler 
+objects so that you can tell the handler to de-register itself when a 
+given controller goes away, i.e.:
+
+
+    def deregisterOnDelete( self, targetObject, client ):
+        &quot;&quot;&quot;Deregister this handler from the client on deletion of 
+targetObject&quot;&quot;&quot;
+        return weakref.ref( targetObject, _Deregister( client ))
+class _Deregister( object ):
+    def __init__( self, client ):
+        self.client = weakref.ref( client )
+       
+    def __call__( self, targetWeak ):
+        client = self.client()
+        if client:
+            try:
+                del client.handlers[ self.jsIdentifier()]
+            except (AttributeError,KeyError), err:
+                pass
+
+
+Of course, I could have missed something that takes care of this 
+use-case, I've only been playing with the new version for a few hours.
+
+Have fun,
+Mike
+
+-- 
+________________________________________________
+  Mike C. Fletcher
+  Designer, VR Plumber, Coder
+  <A HREF="http://www.vrplumber.com">http://www.vrplumber.com</A>
+  <A HREF="http://blog.vrplumber.com">http://blog.vrplumber.com</A>
+
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001912.html">[Twisted-web] Nevow: returning defer.succeed() from the 
+	data_*or render_* method
+</A></li>
+	<LI>Next message: <A HREF="001915.html">[Twisted-web] Replacement for handler in LivePage?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1913">[ date ]</a>
+              <a href="thread.html#1913">[ thread ]</a>
+              <a href="subject.html#1913">[ subject ]</a>
+              <a href="author.html#1913">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

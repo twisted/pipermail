@@ -1,0 +1,151 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] one-shot reactor?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20one-shot%20reactor%3F&In-Reply-To=%3C26702188-2E6D-48BC-B6A6-6332925A5547%40metaweb.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051324.html">
+   <LINK REL="Next"  HREF="051326.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] one-shot reactor?</H1>
+    <B>Alec Flett</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20one-shot%20reactor%3F&In-Reply-To=%3C26702188-2E6D-48BC-B6A6-6332925A5547%40metaweb.com%3E"
+       TITLE="[Twisted-Python] one-shot reactor?">alecf at metaweb.com
+       </A><BR>
+    <I>Fri Dec  5 13:47:36 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051324.html">[Twisted-Python] OSCAR buddy list
+</A></li>
+        <LI>Next message (by thread): <A HREF="051326.html">[Twisted-Python] Re: A Python metaclass for Twisted allowing	__init__ to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51325">[ date ]</a>
+              <a href="thread.html#51325">[ thread ]</a>
+              <a href="subject.html#51325">[ subject ]</a>
+              <a href="author.html#51325">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hey folks -
+So I'm trying what seems to be a fairly unusual use of Twisted, but  
+I'm hoping that someone out there has tried the same thing as me and  
+can offer some pointers. Bear with me as I explain how we're set up.  
+The issues I'm having are at the end..
+
+We're running Pylons as our appserver, but almost all of our internal  
+requests from the appserver are actually retrieved over HTTP - i.e.  
+database requests, LOBs, etc... we also have one or two other  
+proprietary connections that would benefit from asynchronous TCP  
+access.. For years I've heard people raving about twisted, and I hate  
+threads, so I thought I'd give it a shot.
+
+So here's how this is working, at least in my early prototypes: Pylons  
+is a WSGI environment, which means it needs a real callstack for each  
+request.
+
+Each request is more or less its own single-threaded environment, and  
+the thread is only making new requests to internal services, not  
+listening on any ports. So really Twisted is a client here, not a  
+server. For each HTTP request, I'm running a &quot;private&quot; twisted reactor  
+that simply runs until it runs out of reads/writes/delayedCalls.  My  
+theory is this: in a single-threaded environment that is not listening  
+for new connections.
+
+So what I've done is make twisted.internet.reactor into a threadlocal  
+object with Paste's StackedObjectProxy.
+
+So far I have this mostly working, but I've hit a few stumbling blocks  
+along the way:
+
+1) it would be nice if the standard twisted reactors had an API for  
+running in a one-off client mode - something like a  
+reactor.runUntilExhausted(). I did write a kind of scheduler that does  
+this for me (more on that below)
+
+2) it's vaguely annoying that reactors aren't restartable - it means I  
+have to destroy any reactor that's left around from the last request.  
+Not a huge deal, but I'd much rather just create a single reactor that  
+lives the life of the thread, and be able to call .run() / .stop()  
+over and over.
+
+3) I've attached my scheduler below. I hook it up with  
+reactor.callLater(0, stop_when_complete).
+
+The problem I'm running into with this approach is that many APIs like  
+getPage() set a 30 second timeout, and then cancel the timeout later  
+when it successfully retrieves the page.
+
+My scheduler picks up the fact that there is a 30-second timeout, but  
+because HTTPClientProtocol cancels the timeout, my scheduler isn't  
+aware of that, and has already scheduled itself for 30 seconds into  
+the future, so it can't call reactor.stop(). So instead, I wake up at  
+most every 0.1 seconds - but that kind of defeats the point of the  
+reactor blocking on select()/poll() if I have to keep waking up!
+
+Maybe there's a better approach? What I kind of want is a hook into  
+the reactor's runUntilCurrent() so I just get notified right before  
+the select()/poll(). I'm considering just subclassing the reactor to  
+hook into this.. ?
+
+
+def stop_when_complete(reactor, running=False):
+     all_pending = (reactor.getReaders() +
+                    reactor.getWriters() +
+                    reactor.getDelayedCalls())
+
+     # depending on the platform, the waker is probably in there, and
+     # shouldn't count as a pending event
+     if reactor.waker in all_pending:
+         all_pending.remove(reactor.waker)
+
+     # ok, are we done? if so, tell the reactor to stop after its next
+     # iteration.
+     if not all_pending:
+         reactor.stop()
+         return
+
+     # if we got here, we need to basically wait again to see if
+     # there's anything left. We get the timeout for the next event, so
+     # that we don't wake any more than we would have (this is how
+     # ReactorBase.mainLoop works)
+     timeout = reactor.timeout()
+     if timeout is None:
+         timeout = 0.0
+     print &quot;Sleeping for no more than %s seconds&quot; % min(timeout, 0.1)
+     reactor.callLater(min(timeout, 0.1),
+                       stop_when_complete, reactor, running=True)
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051324.html">[Twisted-Python] OSCAR buddy list
+</A></li>
+	<LI>Next message (by thread): <A HREF="051326.html">[Twisted-Python] Re: A Python metaclass for Twisted allowing	__init__ to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51325">[ date ]</a>
+              <a href="thread.html#51325">[ thread ]</a>
+              <a href="subject.html#51325">[ subject ]</a>
+              <a href="author.html#51325">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,1554 @@
+From matthieu.huin at wallix.com  Wed Dec  2 12:01:55 2009
+From: matthieu.huin at wallix.com (Matthieu HUIN)
+Date: Wed, 02 Dec 2009 18:01:55 +0100
+Subject: [Twisted-web] [nevow & deferreds] page rendering occurs before data
+ is available after callback
+Message-ID: <1259773315.31569.60.camel@mhu.ifr.lan>
+
+Greetings,
+
+I need to render a page with Nevow containing data extracted from a
+database. The query might take time so it is taken care of with
+twisted.adbapi, and thus with a Deferred.
+
+My render function returns this Deferred - to which some callbacks have
+been added to format the data. All is well as long as the request is
+fast enough for the Deferred to be dealt with quasi-synchronously. If
+the query takes too much time, the render function simply returns the
+Deferred, which is set at None, instead of its result value. 
+
+Here is an extract of the code :
+
+-------------------------------------------------------------------------
+
+class Page(rend.Page):
+
+    addSlash = True
+    buffered = True
+    docFactory = loaders.xmlfile(util.sibpath(__file__, 'rest.xhtml'))
+
+    def renderHTTP(self, ctx):
+        """Override render HTTP to handle authentication.
+
+        We override renderHTTP to ensure that nothing has been sent to
+        be able to change error code.
+        """
+        self.authorized = True
+        request = inevow.IRequest(ctx)
+
+        # Which kind of request ?
+        if request.method == "POST":
+            # It may be an overloaded POST, check for _method
+            if ctx.arg("_method") in ["PUT", "DELETE"]:
+                request.method = ctx.arg("_method")
+                del request.args["_method"]
+
+        # Is the user authorized?
+        username, password = request.getUser(), request.getPassword()
+        d = defer.maybeDeferred(Authenticate().authenticate, username,
+password)
+        # If not authenticated, turn it into a failure
+        d.addCallback(lambda x: x or
+failure.Failure(Unauthenticated("Incorrect username or password")))
+        d.addCallback(lambda x: Authorize().authorize(username,
+(request.method,
+
+inevow.ICurrentSegments(ctx))))
+        # If not authorized, turn it into a failure
+        d.addCallback(lambda x: x or failure.Failure(Unauthenticated("No
+rights to access this resource")))
+        # Add privilege info - /!\ possible race condition here ?
+        d.addCallback(lambda x : privileger(x,ctx) )
+        # Trap any authentication error
+        d.addErrback(lambda x: x.trap(Unauthenticated) and
+self.render_ask_authentication(ctx))
+        # Back to normal rendering
+        d.addCallback(lambda x: rend.Page.renderHTTP(self, ctx))
+        return d
+
+    def render_PUT(self, ctx, data):
+        """Handle a query"""
+
+        def unsuccessful_results(failure, ctx):
+            """Render an error message because of unsucessful results"""
+            inevow.IRequest(ctx).setResponseCode(http.BAD_REQUEST)
+            return T.invisible["While processing the query, we get this
+error:",
+                               failure]
+
+        def successful_results(self, results, query):
+            """Render successful results.
+
+            This function will store the results and link back to the
+            resource containing chunk of them
+            """
+
+            # We store results
+            SearchEngineResource.serial += 1
+            if self.original not in SearchEngineResource.results:
+                SearchEngineResource.results[self.original] = {}
+
+SearchEngineResource.results[self.original][SearchEngineResource.serial]
+= [time.time(),
+
+query,
+
+results]
+            # Display query results
+                return T.p["The query was successful. ",
+                    "There are ", T.span(_class="cardinal")[
+                        len(results)
+                        ], " result(s). You need to ", T.a(href="%d/" %
+SearchEngineResource.serial)[
+                        "fetch them"
+                        ], "."
+                       ]
+        user = inevow.IRequest(ctx).getUser()            
+        try:
+            # We get a deferred object
+            result = self.original.query(ctx.arg("value"), user)
+        except ValueError, e:
+            # ValueError is thrown synchronously
+            inevow.IRequest(ctx).setResponseCode(http.BAD_REQUEST)
+            return "While processing the query %r, we get this error: %
+s" % (ctx.arg("value"),
+
+e)
+        result.addCallbacks(lambda x: successful_results(self, x,
+ctx.arg("value")),
+                            errback=unsuccessful_results,
+errbackArgs=(ctx,))
+        return result
+
+----------------------------------------------------------------------------
+
+The callbacks on the Deferred are executed flawlessly otherwise. The
+rendering simply seems not to care whether the Deferred has been called
+or not.
+
+What can I do to correct this behavior ? Could it be because renderHTTP
+returns a Deferred already ?
+
+
+Matthieu
+
+
+
+
+
+From exarkun at twistedmatrix.com  Wed Dec  2 12:45:36 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Wed, 02 Dec 2009 17:45:36 -0000
+Subject: [Twisted-web] [nevow & deferreds] page rendering occurs
+	before	data is available after callback
+In-Reply-To: <1259773315.31569.60.camel@mhu.ifr.lan>
+References: <1259773315.31569.60.camel@mhu.ifr.lan>
+Message-ID: <20091202174536.2549.266014467.divmod.xquotient.66@localhost.localdomain>
+
+On 05:01 pm, matthieu.huin at wallix.com wrote:
+>Greetings,
+>
+>I need to render a page with Nevow containing data extracted from a
+>database. The query might take time so it is taken care of with
+>twisted.adbapi, and thus with a Deferred.
+>
+>My render function returns this Deferred - to which some callbacks have
+>been added to format the data. All is well as long as the request is
+>fast enough for the Deferred to be dealt with quasi-synchronously. If
+>the query takes too much time, the render function simply returns the
+>Deferred, which is set at None, instead of its result value.
+
+It's hard to tell from the code that you've posted, but it sounds like 
+your "too much time" case is probably triggering a different path 
+through your code - one that results in one of the necessary Deferreds 
+not being chained to the Deferred returned from your renderHTTP 
+implementation.  This results in the renderHTTP Deferred firing while 
+some other asynchronous task is still going on.
+
+Are you aware of nevow.guard, which implements authentication in a 
+general way and can be applied to arbitrary other pages?  That might let 
+you delete a lot of your code, possibly getting rid of the bug in the 
+process, but at least reducing the amount of code you need to look 
+through to find the problem.
+
+Jean-Paul
+
+
+From radix at twistedmatrix.com  Wed Dec  2 15:21:25 2009
+From: radix at twistedmatrix.com (Christopher Armstrong)
+Date: Wed, 2 Dec 2009 15:21:25 -0500
+Subject: [Twisted-web] ANN: Twisted 9.0.0
+Message-ID: <60ed19d40912021221u3096f047g3e6e86f43b4a0d2b@mail.gmail.com>
+
+= Twisted 9.0.0 =
+
+I'm happy to announce Twisted 9, the first (and last) release of
+Twisted in 2009. The previous release was Twisted 8.2 in December of
+2008. Given that, a lot has changed!
+
+This release supports Python 2.3 through Python 2.6, though it is the
+last one that will support Python 2.3. The next release will support
+only Python 2.4 and above. Twisted: the framework of the future!
+
+You can download the new release at our web site,
+
+    http://twistedmatrix.com/
+
+There were around 285 tickets resolved in this release. The full list
+of changes is available here:
+
+    http://twistedmatrix.com/trac/browser/tags/releases/twisted-9.0.0/NEWS?format=raw
+
+It's quite a huge list of changes spanning almost all of the Twisted
+projects, so here are some of the more exciting changes:
+
+In the core:
+- The Windows IOCP reactor now supports SSL.
+- The memcache protocol implementation got some nice new features.
+
+In Twisted Web:
+- There's a new HTTP client API and protocol implementation, starting
+at twisted.web.client.Agent. It's still pretty low-level, but much
+more flexible than the old API.
+- There were many improvements to the WSGI support.
+
+In Twisted Conch:
+- PyASN1 is now used to parse SSH keys (which means you now need to
+install it to use Conch).
+- SFTP servers (especially on Windows) now behave a lot better.
+
+In Twisted Mail:
+- The IMAP server and client protocol implementations had many fixes.
+For example, SASL PLAIN credentials now work.
+
+In Twisted Words:
+- XMPP clients now support the ANONYMOUS SASL authentication type.
+- The IRC protocol implementations had many fixes.
+
+And a lot more.
+
+
+= What is Twisted? =
+
+
+From exarkun at twistedmatrix.com  Wed Dec  2 21:30:15 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Thu, 03 Dec 2009 02:30:15 -0000
+Subject: [Twisted-web] ANN: Twisted 9.0.0
+In-Reply-To: <hf7056$1fh$2@ger.gmane.org>
+References: <60ed19d40912021221u3096f047g3e6e86f43b4a0d2b@mail.gmail.com>
+	<hf7056$1fh$2@ger.gmane.org>
+Message-ID: <20091203023015.2549.1864307365.divmod.xquotient.85@localhost.localdomain>
+
+On 12:18 am, tjreedy at udel.edu wrote:
+>Christopher Armstrong wrote:
+>>= Twisted 9.0.0 =
+>>
+>>I'm happy to announce Twisted 9, the first (and last) release of
+>>Twisted in 2009. The previous release was Twisted 8.2 in December of
+>>2008. Given that, a lot has changed!
+>>
+>>This release supports Python 2.3 through Python 2.6, though it is the
+>>last one that will support Python 2.3. The next release will support
+>>only Python 2.4 and above. Twisted: the framework of the future!
+>
+>Not unless it supports 3.1+. Is that in the cards (tickets)?
+
+Somewhat.
+
+A description of the plan on stackoverflow: http://bit.ly/6hWqYU
+
+A message with some ticket links from a thread on the twisted-python 
+mailing list: http://bit.ly/8csFSa
+
+Jean-Paul
+
+
+From spongelavapaul at googlemail.com  Mon Dec  7 17:16:44 2009
+From: spongelavapaul at googlemail.com (Paul Thomas)
+Date: Mon, 7 Dec 2009 22:16:44 +0000
+Subject: [Twisted-web] [Athena] Is ReliableMessageDelivery really
+	necessary?
+In-Reply-To: <20090701214550.22176.727267859.divmod.quotient.11784@henry.divmod.com>
+References: <20090701214550.22176.727267859.divmod.quotient.11784@henry.divmod.com>
+Message-ID: <4EE8104A-5E66-4480-B96E-48376B529D0B@googlemail.com>
+
+
+On 1 Jul 2009, at 22:45, Jean-Paul Calderone wrote:
+
+> On Wed, 1 Jul 2009 11:15:35 +0100, Paul Thomas <spongelavapaul at googlemail.com 
+> > wrote:
+>> Hi,
+>>
+>> I've hit a problem as my app has got bigger (about 30-40 widgets  
+>> now,  all
+>> chattering roughly once every 2 seconds) where the reliable  message
+>> delivery mechanism is spiralling out of control. It seems that  the  
+>> constant
+>> back and forth means that large 'baskets' of messages are  resent.  
+>> The more
+>> this happens, the busier everything gets until the  browser becomes
+>> unresponsive.
+>
+> If you can produce a minimal example which demonstrates this  
+> behavior, it
+> would probably be very helpful in improving the situation.
+
+It's been quite some time, but I may have time to look into this soon  
+(meaning in the next few months).
+
+I have a minimal example code, but it's a bit big - does this need to  
+be in a ticket somewhere?
+
+Paul.
+
+8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----
+// resources/css/test1.css
+
+#workspace > div {
+     display: inline-block;
+     margin: 10px;
+     padding: 5px;
+     border: 1px solid black;
+}
+
+#workspace > div p {
+     margin: 0;
+     padding: 0;
+     font-size: 10pt;
+}
+
+h3 {
+     font-size: 12pt;
+     margin: 0;
+     padding: 0;
+}
+8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----
+// resources/js/widgets/Status.js
+
+// import Divmod
+// import Nevow.Athena
+
+Nevow.Athena.Widget.subclass(Status, 'SimpleStatus').methods(
+     function __init__(self, node) {
+         Status.SimpleStatus.upcall(self, '__init__', node);
+         self.contentP = node.getElementsByTagName("p")[0];
+         self.count = 0
+     },
+
+     function update(self, count) {
+         self.contentP.innerHTML = "T: " + count;
+         if( count != self.count + 1 ){
+             self.node.style.background = "red";
+         }
+         self.count = count
+
+     }
+);
+8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----8<-----
+// test1.py
+from os import path
+from logging import getLogger, basicConfig, INFO, DEBUG, WARN
+from random import random
+
+from twisted.internet import reactor
+from twisted.python.log import ILogObserver, PythonLoggingObserver
+
+from nevow.athena import LivePage, LiveElement, AutoJSPackage, expose,  
+renderer
+from nevow import loaders, tags as T, static
+
+#from guppy import hpy
+#h = hpy()
+
+basicConfig(level=DEBUG)
+#heap_log = getLogger('heap')
+#getLogger('twisted').setLevel(WARN)
+
+def heap_poll():
+     heap_log.debug("==== HEAP =====")
+     heap_log.debug(h.heap())
+     reactor.callLater(5, heap_poll)
+
+#reactor.callWhenRunning(heap_poll)
+
+_RESOURCE_DIR = path.join(path.dirname(path.abspath(__file__)),  
+'resources')
+
+log = getLogger('comet-test1')
+
+class SimpleStatus(LiveElement):
+     jsClass = u'Status.SimpleStatus'
+     docFactory = loaders.stan(T.div(render=T.directive('liveElement'),
+                                     class_='widget')[
+         T.div(class_='widget-header', render=T.directive('title')),
+         T.div(class_='widget-editbox'),
+         T.div(class_='widget-content')[
+             T.p['None']]])
+
+     def __init__(self, id):
+         super(SimpleStatus, self).__init__()
+         self.num = id
+         self.count = 0
+         reactor.callLater(int(random() * 2 + 1), self._poll)
+
+     def _poll(self):
+         self.count += 1
+         self.callRemote('update', self.count)
+         reactor.callLater(random() * 2 + 1, self._poll)
+
+     @renderer
+     def title(self, req, tag):
+         return tag[T.h3['Widget %d' % self.num]]
+
+     @expose
+     def getSomething(self, name):
+         log.debug('getSomething(%r)' % name)
+         return 'Not sure'
+
+class Root(LivePage):
+     docFactory = loaders.stan(
+         T.html[
+             T.head(render=T.directive('liveglue'))[
+                 T.title['Comet Test 1'],
+                 T.link(rel='stylesheet', type='text/css',
+                        href='css/test1.css')],
+             T.body[
+                 T.div(id='workspace', class_='widget-place')[
+                     [T.div(render=T.directive('simpleStatus'))] * 50
+                 ]]])
+     addSlash = True
+
+     children = {
+         'css': static.File(path.join(_RESOURCE_DIR,'css')),
+         'js': static.File(path.join(_RESOURCE_DIR,'js'))}
+
+     def __init__(self):
+         super(Root, self).__init__()
+         self.jsModules.mapping.update(AutoJSPackage(path.join(
+             _RESOURCE_DIR,'js','widgets')).mapping)
+         log.info(str(self.jsModules.mapping))
+         self.next_id = 1
+
+     def child_(self, ctx):
+         return Root()
+
+     def render_simpleStatus(self,ctx,data):
+         f = SimpleStatus(self.next_id)
+         self.next_id += 1
+         f.setFragmentParent(self)
+         return ctx.tag[f]
+
+from nevow import appserver
+from twisted.application import service, internet
+
+site = appserver.NevowSite(Root())
+
+application = service.Application("Test 1")
+webService = internet.TCPServer(8080, site)
+webService.setServiceParent(application)
+
+application.setComponent(ILogObserver, PythonLoggingObserver().emit)
+
+
+
+From exarkun at twistedmatrix.com  Mon Dec  7 21:12:47 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Tue, 08 Dec 2009 02:12:47 -0000
+Subject: [Twisted-web] [Athena] Is ReliableMessageDelivery
+	really	necessary?
+In-Reply-To: <4EE8104A-5E66-4480-B96E-48376B529D0B@googlemail.com>
+References: <20090701214550.22176.727267859.divmod.quotient.11784@henry.divmod.com>
+	<4EE8104A-5E66-4480-B96E-48376B529D0B@googlemail.com>
+Message-ID: <20091208021247.2549.1677447243.divmod.xquotient.430@localhost.localdomain>
+
+On 7 Dec, 10:16 pm, spongelavapaul at googlemail.com wrote:
+>
+>On 1 Jul 2009, at 22:45, Jean-Paul Calderone wrote:
+>>On Wed, 1 Jul 2009 11:15:35 +0100, Paul Thomas 
+>><spongelavapaul at googlemail.com
+>> > wrote:
+>>>Hi,
+>>>
+>>>I've hit a problem as my app has got bigger (about 30-40 widgets
+>>>now,  all
+>>>chattering roughly once every 2 seconds) where the reliable  message
+>>>delivery mechanism is spiralling out of control. It seems that  the
+>>>constant
+>>>back and forth means that large 'baskets' of messages are  resent.
+>>>The more
+>>>this happens, the busier everything gets until the  browser becomes
+>>>unresponsive.
+>>
+>>If you can produce a minimal example which demonstrates this
+>>behavior, it
+>>would probably be very helpful in improving the situation.
+>
+>It's been quite some time, but I may have time to look into this soon
+>(meaning in the next few months).
+>
+>I have a minimal example code, but it's a bit big - does this need to
+>be in a ticket somewhere?
+
+A ticket would be excellent.  Also, don't be afraid of a tar or zip. :)
+
+Jean-Paul
+
+
+From stephen.c.waterbury at nasa.gov  Tue Dec  8 11:44:37 2009
+From: stephen.c.waterbury at nasa.gov (Stephen Waterbury)
+Date: Tue, 8 Dec 2009 11:44:37 -0500
+Subject: [Twisted-web] Was a minion invited to participate in Pycon 2010
+ Form Generation Panel?
+Message-ID: <4B1E8275.7060106@nasa.gov>
+
+I see that such a panel discussion is being formed --
+just hoping that someone in Twisted was invited ... were they?
+
+(Actually, I'd like to see both Formless *and* Nevow Forms
+represented, if possible.  :)
+
+Steve
+
+
+From billoldroyd at gmail.com  Wed Dec  9 06:37:01 2009
+From: billoldroyd at gmail.com (Bill Oldroyd)
+Date: Wed, 9 Dec 2009 12:37:01 +0100
+Subject: [Twisted-web] Connection lost in a non-clean fashion
+Message-ID: <47592eb90912090337l49ef5896qb3a033f77c0f695b@mail.gmail.com>
+
+I have developed a web server based on twisted-web that acts as a gateway
+between the SRU search protocol and the Z39.50 search protocol. ( Details at
+http://www.loc.gov/z3950/agency/ )
+
+Each SRU search request opens a thread which performs a Z39.50 search on a
+remote target and then returns the results which are converted into the SRU
+response.
+
+Sometimes the connection with the client issuing the SRU request is lost. In
+a few cases this produces the message "Connection to the other side was lost
+in a non-clean fashion: Connection lost. ". When several of these non-clean
+connection losses occur the web server will become unresponsive and will not
+respond to any new requests.
+
+Can anyone help with how I should respond to these non-clean lost
+connections ?. I can't find any documentation which helps me understand the
+impact of this type of error. As the connection is lost there is no point in
+returning any error response, but are there systems resources left allocated
+which might be causing the server to become unresponsive.
+
+Bill
+
+-- 
+Bill Oldroyd
+Technical consultant for The European Library
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20091209/e14f6c45/attachment.htm 
+
+From exarkun at twistedmatrix.com  Wed Dec  9 10:30:09 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Wed, 09 Dec 2009 15:30:09 -0000
+Subject: [Twisted-web] Connection lost in a non-clean fashion
+In-Reply-To: <47592eb90912090337l49ef5896qb3a033f77c0f695b@mail.gmail.com>
+References: <47592eb90912090337l49ef5896qb3a033f77c0f695b@mail.gmail.com>
+Message-ID: <20091209153009.2549.1393148426.divmod.xquotient.546@localhost.localdomain>
+
+On 11:37 am, billoldroyd at gmail.com wrote:
+>I have developed a web server based on twisted-web that acts as a 
+>gateway
+>between the SRU search protocol and the Z39.50 search protocol. ( 
+>Details at
+>http://www.loc.gov/z3950/agency/ )
+
+Cool.  I dabbled with Z39.50 very briefly a while ago.  Any chance 
+you'll develop a Twisted-based implementation of this protocol? :)
+>Each SRU search request opens a thread which performs a Z39.50 search 
+>on a
+>remote target and then returns the results which are converted into the 
+>SRU
+>response.
+>
+>Sometimes the connection with the client issuing the SRU request is 
+>lost. In
+>a few cases this produces the message "Connection to the other side was 
+>lost
+>in a non-clean fashion: Connection lost. ". When several of these non- 
+>clean
+>connection losses occur the web server will become unresponsive and 
+>will not
+>respond to any new requests.
+
+I think it's unusual that the server would become unresponsive after 
+several lost client connections.  Are you using deferToThread to do the 
+Z39.50 searches?  If so, then the task should complete (or not) 
+regardless of what happens to the web connection.  deferToThread uses a 
+thread pool, though.  Once all the threads in the pool are in use, 
+further jobs won't even be started until one of the threads becomes 
+available.
+
+Perhaps some searches take a long, long time?  This would tie up thread 
+pool resources, preventing new jobs from being processed, and perhaps 
+correlate somewhat with lost client connections (which give up after 
+waiting for such a long time for their results).
+>Can anyone help with how I should respond to these non-clean lost
+>connections ?. I can't find any documentation which helps me understand 
+>the
+>impact of this type of error. As the connection is lost there is no 
+>point in
+>returning any error response, but are there systems resources left 
+>allocated
+>which might be causing the server to become unresponsive.
+
+I wrote about how to do this:
+
+  http://jcalderone.livejournal.com/50890.html
+
+So, regardless of the thread pool stuff I talked about above, that 
+should help you to at least handle the connection lost errors and clean 
+up other resources.
+
+Jean-Paul
+
+
+From exarkun at twistedmatrix.com  Wed Dec  9 20:36:37 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Thu, 10 Dec 2009 01:36:37 -0000
+Subject: [Twisted-web] Was a minion invited to participate in Pycon
+	2010	Form Generation Panel?
+In-Reply-To: <4B1E8275.7060106@nasa.gov>
+References: <4B1E8275.7060106@nasa.gov>
+Message-ID: <20091210013637.2549.1485685211.divmod.xquotient.598@localhost.localdomain>
+
+On 8 Dec, 04:44 pm, stephen.c.waterbury at nasa.gov wrote:
+>I see that such a panel discussion is being formed --
+>just hoping that someone in Twisted was invited ... were they?
+
+Not as far as I know.
+>(Actually, I'd like to see both Formless *and* Nevow Forms
+>represented, if possible.  :)
+
+I don't know about anyone else, but I know I wouldn't be terribly 
+excited to represent either of these. ;)
+
+Jean-Paul
+
+
+From realgrandrew at gmail.com  Fri Dec 11 17:51:02 2009
+From: realgrandrew at gmail.com (Andrew Gryaznov)
+Date: Sat, 12 Dec 2009 01:51:02 +0300
+Subject: [Twisted-web] twisted web write to a connection closed from
+	client-side
+Message-ID: <e894aa270912111451n72fc3b58se85ae63e58a7aa62@mail.gmail.com>
+
+Hi,
+
+I have a problem: twisted does not indicate/throw exception when user
+has stopped reading the stream via "STOP" browser button (I guess it
+won't do in any other case of connection drop). Is this intended
+behavior and is there any way to detect that the data written to
+request goes nowhere?
+
+I am using twisted web to write HTTP stream that is read form
+asynchronous source continuously. I'm using Resource and
+NOT_READY_YET, then I just do request.write() infinitely until, and
+if, the source stops the stream, then do request.finish().
+If the source does not stop and I stop the stream by hitting browser
+"stop" button - the twisted server continues reading source
+infinitely.
+
+Could not find any information about how connection resets are handled
+by twisted web
+
+
+From exarkun at twistedmatrix.com  Fri Dec 11 18:20:22 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Fri, 11 Dec 2009 23:20:22 -0000
+Subject: [Twisted-web] twisted web write to a connection closed
+	from	client-side
+In-Reply-To: <e894aa270912111451n72fc3b58se85ae63e58a7aa62@mail.gmail.com>
+References: <e894aa270912111451n72fc3b58se85ae63e58a7aa62@mail.gmail.com>
+Message-ID: <20091211232022.2549.2059822382.divmod.xquotient.712@localhost.localdomain>
+
+On 10:51 pm, realgrandrew at gmail.com wrote:
+>Hi,
+>
+>I have a problem: twisted does not indicate/throw exception when user
+>has stopped reading the stream via "STOP" browser button (I guess it
+>won't do in any other case of connection drop). Is this intended
+>behavior and is there any way to detect that the data written to
+>request goes nowhere?
+>
+>I am using twisted web to write HTTP stream that is read form
+>asynchronous source continuously. I'm using Resource and
+>NOT_READY_YET, then I just do request.write() infinitely until, and
+>if, the source stops the stream, then do request.finish().
+>If the source does not stop and I stop the stream by hitting browser
+>"stop" button - the twisted server continues reading source
+>infinitely.
+>
+>Could not find any information about how connection resets are handled
+>by twisted web
+
+I wrote about this recently,
+
+  http://jcalderone.livejournal.com/50890.html
+
+Jean-Paul
+
+
+From jared.gisin at isilon.com  Mon Dec 14 11:12:03 2009
+From: jared.gisin at isilon.com (Jared Gisin)
+Date: Mon, 14 Dec 2009 08:12:03 -0800
+Subject: [Twisted-web] twisted web write to a connection
+	closedfrom	client-side
+In-Reply-To: <20091211232022.2549.2059822382.divmod.xquotient.712@localhost.localdomain>
+References: <e894aa270912111451n72fc3b58se85ae63e58a7aa62@mail.gmail.com>
+	<20091211232022.2549.2059822382.divmod.xquotient.712@localhost.localdomain>
+Message-ID: <0C40B34038FD824FACDB387E77887287033904AA@seaxch08.desktop.isilon.com>
+
+Shouldn't the HTTP protocol implementation (twisted.web.http) itself
+respond to connectionLost? 'haps you need to augment that.
+
+-Jared
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com
+[mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of
+exarkun at twistedmatrix.com
+Sent: Friday, December 11, 2009 3:20 PM
+To: Twisted Web World
+Subject: Re: [Twisted-web] twisted web write to a connection closedfrom
+client-side
+
+On 10:51 pm, realgrandrew at gmail.com wrote:
+>Hi,
+>
+>I have a problem: twisted does not indicate/throw exception when user
+>has stopped reading the stream via "STOP" browser button (I guess it
+>won't do in any other case of connection drop). Is this intended
+>behavior and is there any way to detect that the data written to
+>request goes nowhere?
+>
+>I am using twisted web to write HTTP stream that is read form
+>asynchronous source continuously. I'm using Resource and
+>NOT_READY_YET, then I just do request.write() infinitely until, and
+>if, the source stops the stream, then do request.finish().
+>If the source does not stop and I stop the stream by hitting browser
+>"stop" button - the twisted server continues reading source
+>infinitely.
+>
+>Could not find any information about how connection resets are handled
+>by twisted web
+
+I wrote about this recently,
+
+  http://jcalderone.livejournal.com/50890.html
+
+Jean-Paul
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From exarkun at twistedmatrix.com  Mon Dec 14 11:53:22 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Mon, 14 Dec 2009 16:53:22 -0000
+Subject: [Twisted-web] twisted web write to a connection
+	closedfrom	client-side
+In-Reply-To: <0C40B34038FD824FACDB387E77887287033904AA@seaxch08.desktop.isilon.com>
+References: <e894aa270912111451n72fc3b58se85ae63e58a7aa62@mail.gmail.com>
+	<20091211232022.2549.2059822382.divmod.xquotient.712@localhost.localdomain>
+	<0C40B34038FD824FACDB387E77887287033904AA@seaxch08.desktop.isilon.com>
+Message-ID: <20091214165322.2667.164160305.divmod.xquotient.109@localhost.localdomain>
+
+On 04:12 pm, jared.gisin at isilon.com wrote:
+>Shouldn't the HTTP protocol implementation (twisted.web.http) itself
+>respond to connectionLost? 'haps you need to augment that.
+
+It does.  What else do you think it should do?
+
+Jean-Paul
+
+
+From agasson at red-elvis.net  Mon Dec 14 14:39:38 2009
+From: agasson at red-elvis.net (Gas)
+Date: Mon, 14 Dec 2009 20:39:38 +0100
+Subject: [Twisted-web] Mantissa dead? => Nevow? => web? for person who
+	doesnt want to use django
+In-Reply-To: <79885BB0-68A1-4D82-8A73-9E4918D96BAE@red-elvis.net>
+References: <79885BB0-68A1-4D82-8A73-9E4918D96BAE@red-elvis.net>
+Message-ID: <0F006D06-27E6-420E-8129-9F2FE1343EB4@red-elvis.net>
+
+
+On 14/12/2009, at 8:36 PM, Gas wrote:
+
+> Hi
+> 
+> I muck around in twisted and am trying to setup a site for a club and would like to use twisted as much as possible because I like it. So saw stuff on Axiom and liked that then found mantissa only problem is nothing on web on how to get mantissa to work that actually works .. So I've lost a few hours trying to get it going with latest svn on python 2.5 (2.6 you get normal 2.5 code in 2.6 warnings (ie md5 etc) plus axiom/_pysqlite2.py needs to point to sqlite3 otherwise same errors) but keep getting the
+> 
+> File "/Users/gas/src/py/twisted/axiom-tests/Wiki/xmantissa/plugins/wikioff.py", line 3, in <module>
+> 	    from xmantissa import website, offering, provisioning
+> 	exceptions.ImportError: cannot import name provisioning
+> 
+> error which came up in this forum in Feb 2008 t but that is about it that I can find on web.
+> 
+> I presume this error is related to the mantissa install issue - which Im not sure how to debug/fix: 
+> <snip>
+> ersion=Version('xmantissa', 0, 7, 0)  # (SVN r17880)),
+> <class 'axiom.plugins.mantissacmd.Mantissa'>,
+> <class 'axiom.plugins.mantissacmd.RemoteStats'>,
+> Version('xmantissa', 0, 7, 0)  # (SVN r17880),
+> <class 'xmantissa.port.PortConfiguration'>,
+> <class 'axiom.plugins.mantissacmd.Generate'>,
+> <class 'axiom.plugins.axiom_plugins.Browse'>,
+> <class 'axiom.listversions.ListVersions'>,
+> <class 'axiom.plugins.axiom_plugins.Upgrade'>,
+> Version('axiom', 0, 6, 0),
+> <class 'axiom.plugins.axiom_plugins.Insert'>,
+> <class 'axiom.plugins.axiom_plugins.Extract'>,
+> <class 'axiom.plugins.axiom_plugins.UserBaseCommand'>,
+> <class 'axiom.plugins.offeringcmd.OfferingCommand'>]
+> Traceback (most recent call last):
+>  File "/Users/gas/Library/Python/2.6/site-packages/epsilon/setuphelper.py", line 12, in pluginModules
+>    yield namedAny(moduleName)
+>  File "/Users/gas/Library/Python/2.6/site-packages/Twisted-9.0.0-py2.6-macosx-10.6-i386.egg/twisted/python/reflect.py", line 469, in namedAny
+>    raise ObjectNotFound('%r does not name an object' % (name,))
+> ObjectNotFound: 'build.lib.axiom.plugins' does not name an object
+> Traceback (most recent call last):
+>  File "/Users/gas/Library/Python/2.6/site-packages/epsilon/setuphelper.py", line 12, in pluginModules
+>    yield namedAny(moduleName)
+>  File "/Users/gas/Library/Python/2.6/site-packages/Twisted-9.0.0-py2.6-macosx-10.6-i386.egg/twisted/python/reflect.py", line 469, in namedAny
+>    raise ObjectNotFound('%r does not name an object' % (name,))
+> ObjectNotFound: 'build.lib.nevow.plugins' does not name an object
+> Traceback (most recent call last):
+>  File "/Users/gas/Library/Python/2.6/site-packages/epsilon/setuphelper.py", line 12, in pluginModules
+>    yield namedAny(moduleName)
+>  File "/Users/gas/Library/Python/2.6/site-packages/Twisted-9.0.0-py2.6-macosx-10.6-i386.egg/twisted/python/reflect.py", line 469, in namedAny
+>    raise ObjectNotFound('%r does not name an object' % (name,))
+> ObjectNotFound: 'doc.listings.interstore.xmantissa.plugins' does not name an object
+> Full plugin list for 'nevow.plugins': 
+> [<nevow.athena.AutoJSPackage object at 0x10363fe50>,
+> <nevow.athena.AutoCSSPackage object at 0x10363f750>,
+> <nevow.athena.AutoJSPackage object at 0x10363fd10>]
+> 
+> 
+> (ps this debug was form my mac machine but have done it on ubuntu 2.5 install with same results)
+> 
+> So my questions are - being a twisted and web NOB seeing Divmod died/disbanded (I think  6 months ago?) and Mantissa doesnt look like its been touched for 2 years, and Nevow??? --- I'm not sure what is strategy if you want to develop a web app with twisted?
+> 
+> Do I continue and try and work out the code for Mantissa (which I doubt Im capable of being a programming NOB), try to do it via Nevow or go back to JPs web in 60 second tutorial and work out a web application from there?
+> 
+> Any pointers most appreciated
+> 
+> Gas
+> 
+> PS mucked around and got Combinator going which i liked however if you are developing a Mantissa app then combinator didnt work as you really needed too install mantissa and all its dependencies so you could get access to the axiomatic script or did I miss something? Is that the issue with Combinator that if python source installs scripts you still need to install the source in your site-packages? So is Combinator still valid or shall I look at things like bzr and use same Twisted development method ie of branches?
+> 
+> 
+> +34618525900
+> agasson at red-elvis.net
+> 
+> 
+> 
+> 
+
+Gas
++34618525900
+agasson at red-elvis.net
+
+
+
+
+
+
+From exarkun at twistedmatrix.com  Mon Dec 14 14:58:10 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Mon, 14 Dec 2009 19:58:10 -0000
+Subject: [Twisted-web] Mantissa dead? => Nevow? => web? for person
+	who	doesnt want to use django
+In-Reply-To: <0F006D06-27E6-420E-8129-9F2FE1343EB4@red-elvis.net>
+References: <79885BB0-68A1-4D82-8A73-9E4918D96BAE@red-elvis.net>
+	<0F006D06-27E6-420E-8129-9F2FE1343EB4@red-elvis.net>
+Message-ID: <20091214195810.2667.309966944.divmod.xquotient.302@localhost.localdomain>
+
+On 07:39 pm, agasson at red-elvis.net wrote:
+>
+>On 14/12/2009, at 8:36 PM, Gas wrote:
+>>Hi
+>>
+>>I muck around in twisted and am trying to setup a site for a club and 
+>>would like to use twisted as much as possible because I like it. So 
+>>saw stuff on Axiom and liked that then found mantissa only problem is 
+>>nothing on web on how to get mantissa to work that actually works .. 
+>>So I've lost a few hours trying to get it going with latest svn on 
+>>python 2.5 (2.6 you get normal 2.5 code in 2.6 warnings (ie md5 etc) 
+>>plus axiom/_pysqlite2.py needs to point to sqlite3 otherwise same 
+>>errors) but keep getting the
+
+I've just done some work to let Axiom use the stdlib sqlite3 module. 
+This was put off for a long time because of some data-corrupting bugs in 
+the version of sqlite3 in Python 2.5.
+
+If someone wants to put together some patches to fix the md5 issue, I'm 
+around to review them.
+>>
+>>File "/Users/gas/src/py/twisted/axiom- 
+>>tests/Wiki/xmantissa/plugins/wikioff.py", line 3, in <module>
+>>             from xmantissa import website, offering, provisioning
+>>         exceptions.ImportError: cannot import name provisioning
+
+I'm guess you tried to follow 
+<http://divmod.org/trac/wiki/MantissaWikiTutorial>.  Quite some time 
+ago, I added a warning to the top of that page indicating that the 
+tutorial is broken.  So, don't look at it.
+
+This leaves us with the question of what documentation you ''should'' 
+look at.  This highlights a major problem with Mantissa - its near lack 
+of documentation.  I don't think anything really exists to help a 
+beginning get up to speed with things.
+
+Sorry about that.
+>>
+>>So my questions are - being a twisted and web NOB seeing Divmod 
+>>died/disbanded (I think  6 months ago?) and Mantissa doesnt look like 
+>>its been touched for 2 years, and Nevow??? --- I'm not sure what is 
+>>strategy if you want to develop a web app with twisted?
+
+You will probably be able to find some assistance in #divmod on 
+irc.freenode.net, as several people (myself included) with Mantissa 
+experience still frequent that channel.  Additionally, Mantissa 
+development is still underway, although at a very languid pace, so it's 
+possible documentation will appear at some point.  The best way for this 
+to happen is for more people to pitch in, though. ;)  Divmod may be 
+gone, but Mantissa and the related libraries are and always have been 
+open source projects - anyone is welcome to help, and such help is 
+needed for the projects to survive.
+>>Do I continue and try and work out the code for Mantissa (which I 
+>>doubt Im capable of being a programming NOB), try to do it via Nevow 
+>>or go back to JPs web in 60 second tutorial and work out a web 
+>>application from there?
+
+Whether the effort of learning Mantissa will ultimately be worthwhile or 
+not depends on what kind of application you intend to develop.  It may 
+be that Mantissa isn't even particularly applicable to your problem 
+space, in which case looking at Twisted Web or Nevow directly would make 
+more sense.  Or it could be exactly the other way around.  However, at 
+the very least, Mantissa is quite heavily based on Nevow, so learning 
+Nevow is going to be a benefit to you no matter way.  And once you have 
+some Nevow familiarity, the learning curve for Mantissa might not look 
+so steep.
+>>Any pointers most appreciated
+>>
+>>Gas
+>>
+>>PS mucked around and got Combinator going which i liked however if you 
+>>are developing a Mantissa app then combinator didnt work as you really 
+>>needed too install mantissa and all its dependencies so you could get 
+>>access to the axiomatic script or did I miss something? Is that the 
+>>issue with Combinator that if python source installs scripts you still 
+>>need to install the source in your site-packages? So is Combinator 
+>>still valid or shall I look at things like bzr and use same Twisted 
+>>development method ie of branches?
+
+Combinator lets you skip the installation step.  I'm not sure if you 
+figured that out or not.  Surprisingly, I'd say that the combinator 
+tutorial (<http://divmod.org/trac/wiki/CombinatorTutorial>) is worth 
+reading, if you haven't seen it already.  Otherwise, perhaps I've 
+totally misunderstood your question. :)
+
+Jean-Paul
+
+
+From agasson at red-elvis.net  Mon Dec 14 15:19:06 2009
+From: agasson at red-elvis.net (Gas)
+Date: Mon, 14 Dec 2009 21:19:06 +0100
+Subject: [Twisted-web] Mantissa dead? => Nevow? => web? for person who	
+	doesnt want to use django
+In-Reply-To: <20091214195810.2667.309966944.divmod.xquotient.302@localhost.localdomain>
+References: <79885BB0-68A1-4D82-8A73-9E4918D96BAE@red-elvis.net>
+	<0F006D06-27E6-420E-8129-9F2FE1343EB4@red-elvis.net>
+	<20091214195810.2667.309966944.divmod.xquotient.302@localhost.localdomain>
+Message-ID: <5DAC6D44-4ED5-4321-A5D9-5B80E29CDCEA@red-elvis.net>
+
+
+On 14/12/2009, at 8:58 PM, exarkun at twistedmatrix.com wrote:
+
+> On 07:39 pm, agasson at red-elvis.net wrote:
+>> 
+>> On 14/12/2009, at 8:36 PM, Gas wrote:
+>>> Hi
+>>> 
+>>> I muck around in twisted and am trying to setup a site for a club and 
+>>> would like to use twisted as much as possible because I like it. So 
+>>> saw stuff on Axiom and liked that then found mantissa only problem is 
+>>> nothing on web on how to get mantissa to work that actually works .. 
+>>> So I've lost a few hours trying to get it going with latest svn on 
+>>> python 2.5 (2.6 you get normal 2.5 code in 2.6 warnings (ie md5 etc) 
+>>> plus axiom/_pysqlite2.py needs to point to sqlite3 otherwise same 
+>>> errors) but keep getting the
+> 
+> I've just done some work to let Axiom use the stdlib sqlite3 module. 
+> This was put off for a long time because of some data-corrupting bugs in 
+> the version of sqlite3 in Python 2.5.
+> 
+> If someone wants to put together some patches to fix the md5 issue, I'm 
+> around to review them.
+
+Ok I could do that I think (presume use same method used for twisted 9.0 which I willl have to look into to see what they did)
+
+>>> 
+>>> File "/Users/gas/src/py/twisted/axiom- 
+>>> tests/Wiki/xmantissa/plugins/wikioff.py", line 3, in <module>
+>>>            from xmantissa import website, offering, provisioning
+>>>        exceptions.ImportError: cannot import name provisioning
+> 
+> I'm guess you tried to follow 
+> <http://divmod.org/trac/wiki/MantissaWikiTutorial>.  Quite some time 
+> ago, I added a warning to the top of that page indicating that the 
+> tutorial is broken.  So, don't look at it.
+
+yeah I know its broken however my issues is the installation of mantissa is broken so even though I am trying to decipher a broken tutorial my installation is mantissa install is broken from setup hence I cant progress. If I could get a hint on what i needed to look at to fix mantissa install (issue in setup that has been deleted form this post)  then maybe I could make progress ?
+> 
+> This leaves us with the question of what documentation you ''should'' 
+> look at.  This highlights a major problem with Mantissa - its near lack 
+> of documentation.  I don't think anything really exists to help a 
+> beginning get up to speed with things.
+> 
+> Sorry about that.
+No worries - if I can get past setup issue then I would know errors are my lack of understanding..
+
+
+>>> 
+>>> So my questions are - being a twisted and web NOB seeing Divmod 
+>>> died/disbanded (I think  6 months ago?) and Mantissa doesnt look like 
+>>> its been touched for 2 years, and Nevow??? --- I'm not sure what is 
+>>> strategy if you want to develop a web app with twisted?
+> 
+> You will probably be able to find some assistance in #divmod on 
+> irc.freenode.net, as several people (myself included) with Mantissa 
+> experience still frequent that channel.  Additionally, Mantissa 
+> development is still underway, although at a very languid pace, so it's 
+> possible documentation will appear at some point.  The best way for this 
+> to happen is for more people to pitch in, though. ;)
+I hear your hint however my help would probably be a hindrance but will try. Need to get off company network to access IRC which is pain..
+
+
+>  Divmod may be 
+> gone, but Mantissa and the related libraries are and always have been 
+> open source projects - anyone is welcome to help, and such help is 
+> needed for the projects to survive.
+
+Ok will I will help if you throw me a morcel on where I should look to fix mantissa setup issue ;)
+
+>>> Do I continue and try and work out the code for Mantissa (which I 
+>>> doubt Im capable of being a programming NOB), try to do it via Nevow 
+>>> or go back to JPs web in 60 second tutorial and work out a web 
+>>> application from there?
+> 
+> Whether the effort of learning Mantissa will ultimately be worthwhile or 
+> not depends on what kind of application you intend to develop.  It may 
+> be that Mantissa isn't even particularly applicable to your problem 
+> space, in which case looking at Twisted Web or Nevow directly would make 
+> more sense.  
+All it is are some pet projects where I store some data in a database about exercise I have done/planned or club members and that I have authenticated access to some pages that have confidential information (for club) I could probably do it it django but would like to keep on twisted learning curve ie testing before writing
+> Or it could be exactly the other way around.  However, at 
+> the very least, Mantissa is quite heavily based on Nevow, so learning 
+> Nevow is going to be a benefit to you no matter way.  And once you have 
+> some Nevow familiarity, the learning curve for Mantissa might not look 
+> so steep.
+
+Ok so nevow still adds on web ie it has stan and athena, do these sit on top of web or does nevow have its own web implementation?
+
+>>> Any pointers most appreciated
+>>> 
+>>> Gas
+>>> 
+>>> PS mucked around and got Combinator going which i liked however if you 
+>>> are developing a Mantissa app then combinator didnt work as you really 
+>>> needed too install mantissa and all its dependencies so you could get 
+>>> access to the axiomatic script or did I miss something? Is that the 
+>>> issue with Combinator that if python source installs scripts you still 
+>>> need to install the source in your site-packages? So is Combinator 
+>>> still valid or shall I look at things like bzr and use same Twisted 
+>>> development method ie of branches?
+> 
+> Combinator lets you skip the installation step.  I'm not sure if you 
+> figured that out or not.
+Yeha I did however issue is it doesnt for mantissa (I think) as you need to install to get the axiomatic script (well i think you do cause I couldn't find it in mantissa source?) so I could play arounf with broken tutorials or is aximoatic hidden somewhere diffferent than in Mantissa ?
+
+>  Surprisingly, I'd say that the combinator 
+> tutorial (<http://divmod.org/trac/wiki/CombinatorTutorial>) is worth 
+> reading, if you haven't seen it already.  Otherwise, perhaps I've 
+> totally misunderstood your question. :)
+No I got that to work but just had issue above with mantissa
+
+thanks for the prompt reply
+
+Gas
+> 
+> Jean-Paul
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+Gas
++34618525900
+agasson at red-elvis.net
+
+
+
+
+
+
+From exarkun at twistedmatrix.com  Mon Dec 14 16:02:31 2009
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Mon, 14 Dec 2009 21:02:31 -0000
+Subject: [Twisted-web] Mantissa dead? => Nevow? => web? for person
+	who	doesnt want to use django
+In-Reply-To: <5DAC6D44-4ED5-4321-A5D9-5B80E29CDCEA@red-elvis.net>
+References: <79885BB0-68A1-4D82-8A73-9E4918D96BAE@red-elvis.net>
+	<0F006D06-27E6-420E-8129-9F2FE1343EB4@red-elvis.net>
+	<20091214195810.2667.309966944.divmod.xquotient.302@localhost.localdomain>
+	<5DAC6D44-4ED5-4321-A5D9-5B80E29CDCEA@red-elvis.net>
+Message-ID: <20091214210231.2667.267047768.divmod.xquotient.332@localhost.localdomain>
+
+
+
+
+On 08:19 pm, agasson at red-elvis.net wrote:
+>
+>On 14/12/2009, at 8:58 PM, exarkun at twistedmatrix.com wrote:
+>>On 07:39 pm, agasson at red-elvis.net wrote:
+>>>
+>>>On 14/12/2009, at 8:36 PM, Gas wrote:
+>>>>Hi
+>>>>
+>>>>I muck around in twisted and am trying to setup a site for a club 
+>>>>and
+>>>>would like to use twisted as much as possible because I like it. So
+>>>>saw stuff on Axiom and liked that then found mantissa only problem 
+>>>>is
+>>>>nothing on web on how to get mantissa to work that actually works ..
+>>>>So I've lost a few hours trying to get it going with latest svn on
+>>>>python 2.5 (2.6 you get normal 2.5 code in 2.6 warnings (ie md5 etc)
+>>>>plus axiom/_pysqlite2.py needs to point to sqlite3 otherwise same
+>>>>errors) but keep getting the
+>>
+>>I've just done some work to let Axiom use the stdlib sqlite3 module.
+>>This was put off for a long time because of some data-corrupting bugs 
+>>in
+>>the version of sqlite3 in Python 2.5.
+>>
+>>If someone wants to put together some patches to fix the md5 issue, 
+>>I'm
+>>around to review them.
+>
+>Ok I could do that I think (presume use same method used for twisted 
+>9.0 which I willl have to look into to see what they did)
+>>>>
+>>>>File "/Users/gas/src/py/twisted/axiom-
+>>>>tests/Wiki/xmantissa/plugins/wikioff.py", line 3, in <module>
+>>>>            from xmantissa import website, offering, provisioning
+>>>>        exceptions.ImportError: cannot import name provisioning
+>>
+>>I'm guess you tried to follow
+>><http://divmod.org/trac/wiki/MantissaWikiTutorial>.  Quite some time
+>>ago, I added a warning to the top of that page indicating that the
+>>tutorial is broken.  So, don't look at it.
+>
+>yeah I know its broken however my issues is the installation of 
+>mantissa is broken so even though I am trying to decipher a broken 
+>tutorial my installation is mantissa install is broken from setup hence 
+>I cant progress. If I could get a hint on what i needed to look at to 
+>fix mantissa install (issue in setup that has been deleted form this 
+>post)  then maybe I could make progress ?
+
+Here's that error again:
+>    raise ObjectNotFound('%r does not name an object' % (name,))
+>ObjectNotFound: 'doc.listings.interstore.xmantissa.plugins' does not 
+>name an object
+>Full plugin list for 'nevow.plugins':
+>[<nevow.athena.AutoJSPackage object at 0x10363fe50>,
+><nevow.athena.AutoCSSPackage object at 0x10363f750>,
+><nevow.athena.AutoJSPackage object at 0x10363fd10>]
+
+It looks like a problem with Mantissa's setup.py.  I assume that's what 
+you ran to produce this, right?
+
+I'm not exactly sure what's going on here, but I can sort of reproduce 
+the problem, although I get a less informative exception:
+
+  File "/home/exarkun/Projects/Twisted/trunk/twisted/python/reflect.py", 
+line 473, in namedAny
+    obj = getattr(obj, n)
+AttributeError: 'module' object has no attribute 'listings'
+
+For some reason I also don't understand.  This is indeed unfortunate and 
+someone should investigate. :)
+
+However, with Combinator you really don't need to install it.  The first 
+time you source environment.py after using "chbranch Divmod trunk ..." 
+(which will probably only be after you open another shell), you should 
+get axiomatic in your path (also, axiomatic is actually part of Axiom, 
+but you get that with your Divmod checkout too, of course).
+>>
+>>This leaves us with the question of what documentation you ''should''
+>>look at.  This highlights a major problem with Mantissa - its near 
+>>lack
+>>of documentation.  I don't think anything really exists to help a
+>>beginning get up to speed with things.
+>>
+>>Sorry about that.
+>No worries - if I can get past setup issue then I would know errors are 
+>my lack of understanding..
+>>>>
+>>>>So my questions are - being a twisted and web NOB seeing Divmod
+>>>>died/disbanded (I think  6 months ago?) and Mantissa doesnt look 
+>>>>like
+>>>>its been touched for 2 years, and Nevow??? --- I'm not sure what is
+>>>>strategy if you want to develop a web app with twisted?
+>>
+>>You will probably be able to find some assistance in #divmod on
+>>irc.freenode.net, as several people (myself included) with Mantissa
+>>experience still frequent that channel.  Additionally, Mantissa
+>>development is still underway, although at a very languid pace, so 
+>>it's
+>>possible documentation will appear at some point.  The best way for 
+>>this
+>>to happen is for more people to pitch in, though. ;)
+>I hear your hint however my help would probably be a hindrance but will 
+>try. Need to get off company network to access IRC which is pain..
+>>  Divmod may be
+>>gone, but Mantissa and the related libraries are and always have been
+>>open source projects - anyone is welcome to help, and such help is
+>>needed for the projects to survive.
+>
+>Ok will I will help if you throw me a morcel on where I should look to 
+>fix mantissa setup issue ;)
+>>>>Do I continue and try and work out the code for Mantissa (which I
+>>>>doubt Im capable of being a programming NOB), try to do it via Nevow
+>>>>or go back to JPs web in 60 second tutorial and work out a web
+>>>>application from there?
+>>
+>>Whether the effort of learning Mantissa will ultimately be worthwhile 
+>>or
+>>not depends on what kind of application you intend to develop.  It may
+>>be that Mantissa isn't even particularly applicable to your problem
+>>space, in which case looking at Twisted Web or Nevow directly would 
+>>make
+>>more sense.
+>All it is are some pet projects where I store some data in a database 
+>about exercise I have done/planned or club members and that I have 
+>authenticated access to some pages that have confidential information 
+>(for club) I could probably do it it django but would like to keep on 
+>twisted learning curve ie testing before writing
+>>Or it could be exactly the other way around.  However, at
+>>the very least, Mantissa is quite heavily based on Nevow, so learning
+>>Nevow is going to be a benefit to you no matter way.  And once you 
+>>have
+>>some Nevow familiarity, the learning curve for Mantissa might not look
+>>so steep.
+>
+>Ok so nevow still adds on web ie it has stan and athena, do these sit 
+>on top of web or does nevow have its own web implementation?
+
+Nevow builds on Twisted Web, yes.  Stan and Athena are both provided by 
+Nevow, and Nevow mostly relies on the HTTP implementation from Twisted 
+Web.
+
+Jean-Paul
+
+
+From realgrandrew at gmail.com  Tue Dec 15 03:18:58 2009
+From: realgrandrew at gmail.com (Andrew Gryaznov)
+Date: Tue, 15 Dec 2009 11:18:58 +0300
+Subject: [Twisted-web] twisted web write to a connection closedfrom
+	client-side
+In-Reply-To: <20091214165322.2667.164160305.divmod.xquotient.109@localhost.localdomain>
+References: <e894aa270912111451n72fc3b58se85ae63e58a7aa62@mail.gmail.com>
+	<20091211232022.2549.2059822382.divmod.xquotient.712@localhost.localdomain>
+	<0C40B34038FD824FACDB387E77887287033904AA@seaxch08.desktop.isilon.com>
+	<20091214165322.2667.164160305.divmod.xquotient.109@localhost.localdomain>
+Message-ID: <e894aa270912150018w19928ff3ib4faf2b4df2e8c2@mail.gmail.com>
+
+Jean-Paul, thank you for your reply, I got it working great.
+
+Anyways I suggest to indicate it somehow more clearly in the Request
+documentation because Deferred interface is far from trivial.
+
+Jean, and for your great post- could you please extend your post title
+to contain "connection drop" or variants to be easier to find it via
+google. You're doing great work with your "twisted in 60 seconds",
+many thanks again.
+
+On Mon, Dec 14, 2009 at 7:53 PM,  <exarkun at twistedmatrix.com> wrote:
+> On 04:12 pm, jared.gisin at isilon.com wrote:
+>>Shouldn't the HTTP protocol implementation (twisted.web.http) itself
+>>respond to connectionLost? 'haps you need to augment that.
+>
+> It does. ?What else do you think it should do?
+>
+> Jean-Paul
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+From descentspb at gmail.com  Sun Dec 20 11:05:35 2009
+From: descentspb at gmail.com (Igor Katson)
+Date: Sun, 20 Dec 2009 19:05:35 +0300
+Subject: [Twisted-web] Newbie question about chaining deffereds
+Message-ID: <4B2E4B4F.6060105@gmail.com>
+
+Hello,
+
+I need to download a videofile, a thumbnail to it, process that 
+videofile, and after the processing is finished, process the thumbnail 
+with the result of processing the video.
+
+I do this, but it the logic (or the order) is wrong, so it does not 
+work, it freezes after processing the video, while it downloads both of 
+the files:
+
+url = 'http://..../video.flv'
+filename = 'video.flv'
+video_deffered = downloadPage(url, filename)
+video_deffered.addCallback(process_video, filename) => process_video 
+returns video_id
+
+url = 'http://..../thumbnail.jpg'
+filename = 'thumbnail.jpg'
+image_deffered = downloadPage(url, filename)
+
+image_deffered.chainDeffered(video_deffered)
+image_deffered.addCallback(process_image, filename) =< video_id needed here
+
+What should I change for it to work?
+And also I need to make process_video and process_image work in threads, 
+but I can't figure out how to solve this problem first.
+
+
+From rlotun at gmail.com  Sun Dec 20 11:27:08 2009
+From: rlotun at gmail.com (Reza Lotun)
+Date: Sun, 20 Dec 2009 16:27:08 +0000
+Subject: [Twisted-web] Newbie question about chaining deffereds
+In-Reply-To: <4B2E4B4F.6060105@gmail.com>
+References: <4B2E4B4F.6060105@gmail.com>
+Message-ID: <95bb10690912200827x5a809132h1f4410b6a772f612@mail.gmail.com>
+
+Hi Igor,
+
+> I need to download a videofile, a thumbnail to it, process that
+> videofile, and after the processing is finished, process the thumbnail
+> with the result of processing the video.
+>
+> [SNIP]
+>
+> url = 'http://..../video.flv'
+> filename = 'video.flv'
+> video_deffered = downloadPage(url, filename)
+> video_deffered.addCallback(process_video, filename) => process_video
+> returns video_id
+>
+> url = 'http://..../thumbnail.jpg'
+> filename = 'thumbnail.jpg'
+> image_deffered = downloadPage(url, filename)
+>
+> image_deffered.chainDeffered(video_deffered)
+> image_deffered.addCallback(process_image, filename) =< video_id needed here
+
+As far as I understand you want to:
+1. Get the videofile - represented by video_deferred
+2. Process the videofile after it's downloaded (the function process_video)
+3. Get the thumbnail in parallel - image_deferred
+4. Do a final processing *after* step 2 and step 3 (process_image)
+
+What you want to do is fire off video_deferred and image_deferred as
+you do immediately, but put the two deferreds in a DeferredList. What
+this allows you to do is attach a callback that will only fire when
+*both* jobs have been completed. The addCallback on that deferred list
+will be process_image.
+
+To run jobs in threads, please take a look a
+twisted.internet.threads.deferToThread.
+
+Hope that helps.
+
+Reza
+
+
+-- 
+Reza Lotun
+mobile: +44 (0)7521 310 763
+email:  rlotun at gmail.com
+work:   reza at tweetdeck.com
+twitter: @rlotun
+
+
+From descentspb at gmail.com  Mon Dec 21 06:48:01 2009
+From: descentspb at gmail.com (Igor Katson)
+Date: Mon, 21 Dec 2009 14:48:01 +0300
+Subject: [Twisted-web] Newbie question about chaining deffereds
+In-Reply-To: <95bb10690912200827x5a809132h1f4410b6a772f612@mail.gmail.com>
+References: <4B2E4B4F.6060105@gmail.com>
+	<95bb10690912200827x5a809132h1f4410b6a772f612@mail.gmail.com>
+Message-ID: <4B2F6071.9040402@gmail.com>
+
+Reza Lotun wrote:
+> Hi Igor,
+> 
+>> I need to download a videofile, a thumbnail to it, process that
+>> videofile, and after the processing is finished, process the thumbnail
+>> with the result of processing the video.
+>>
+>> [SNIP]
+>>
+>> url = 'http://..../video.flv'
+>> filename = 'video.flv'
+>> video_deffered = downloadPage(url, filename)
+>> video_deffered.addCallback(process_video, filename) => process_video
+>> returns video_id
+>>
+>> url = 'http://..../thumbnail.jpg'
+>> filename = 'thumbnail.jpg'
+>> image_deffered = downloadPage(url, filename)
+>>
+>> image_deffered.chainDeffered(video_deffered)
+>> image_deffered.addCallback(process_image, filename) =< video_id needed here
+> 
+> As far as I understand you want to:
+> 1. Get the videofile - represented by video_deferred
+> 2. Process the videofile after it's downloaded (the function process_video)
+> 3. Get the thumbnail in parallel - image_deferred
+> 4. Do a final processing *after* step 2 and step 3 (process_image)
+> 
+> What you want to do is fire off video_deferred and image_deferred as
+> you do immediately, but put the two deferreds in a DeferredList. What
+> this allows you to do is attach a callback that will only fire when
+> *both* jobs have been completed. The addCallback on that deferred list
+> will be process_image.
+> 
+> To run jobs in threads, please take a look a
+> twisted.internet.threads.deferToThread.
+> 
+> Hope that helps.
+> 
+> Reza
+> 
+> 
+Thank you, Reza, for a quick and helpful answer! That worked perfectly. 
+And to make my existing callbacks non-blocking conveniently, I wrote a 
+decorator for deferToThread, looks like this:
+
+def defer_to_thread_decorator(func):
+     def wrap(*args, **kwargs):
+         return deferToThread(func, *args, **kwargs)
+     return wrap
+
+
+From k_r_a_j_kumar at yahoo.co.in  Tue Dec 29 11:12:46 2009
+From: k_r_a_j_kumar at yahoo.co.in (Raj kumar)
+Date: Tue, 29 Dec 2009 21:42:46 +0530 (IST)
+Subject: [Twisted-web] twisted version of openid
+Message-ID: <140575.11540.qm@web8708.mail.in.yahoo.com>
+
+Hi,
+Currently I'm having a server running under twisted. I'm planning to implement openid in my application. Is there any twisted version of openid api? I need some reference to go through openid examples.
+
+Thanks in advance.
+
+Raj.
+
+
+
+      The INTERNET now has a personality. YOURS! See your Yahoo! Homepage. http://in.yahoo.com/
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20091229/b8b60a68/attachment.htm 
+
+From rlotun at gmail.com  Tue Dec 29 11:25:30 2009
+From: rlotun at gmail.com (Reza Lotun)
+Date: Tue, 29 Dec 2009 16:25:30 +0000
+Subject: [Twisted-web] twisted version of openid
+In-Reply-To: <140575.11540.qm@web8708.mail.in.yahoo.com>
+References: <140575.11540.qm@web8708.mail.in.yahoo.com>
+Message-ID: <95bb10690912290825w5c45bd0akdcee5eb160b16645@mail.gmail.com>
+
+Hi Raj,
+
+> Currently I'm having a server running under twisted. I'm planning to
+> implement openid in my application. Is there any twisted version of openid
+> api? I need some reference to go through openid examples.
+
+Check out
+https://launchpad.net/txopenid
+
+For future reference, there are a set of diverse Twisted projects
+tagged with the 'tx' namespace on launchpad which could come in handy
+at some point in the future.
+
+Cheers,
+Reza
+
+
+-- 
+Reza Lotun
+mobile: +44 (0)7521 310 763
+email:  rlotun at gmail.com
+work:   reza at tweetdeck.com
+twitter: @rlotun
+
+
+From phil at bubblehouse.org  Wed Dec 30 02:15:48 2009
+From: phil at bubblehouse.org (Phil Christensen)
+Date: Wed, 30 Dec 2009 02:15:48 -0500
+Subject: [Twisted-web] twisted version of openid
+In-Reply-To: <95bb10690912290825w5c45bd0akdcee5eb160b16645@mail.gmail.com>
+References: <140575.11540.qm@web8708.mail.in.yahoo.com>
+	<95bb10690912290825w5c45bd0akdcee5eb160b16645@mail.gmail.com>
+Message-ID: <2AFF2AB0-A4BA-4FC3-A372-8868EE851FDD@bubblehouse.org>
+
+On Dec 29, 2009, at 11:25 AM, Reza Lotun wrote:
+> Hi Raj,
+>> Currently I'm having a server running under twisted. I'm planning to
+>> implement openid in my application. Is there any twisted version of  
+>> openid
+>> api? I need some reference to go through openid examples.
+>
+> Check out
+> https://launchpad.net/txopenid
+>
+> For future reference, there are a set of diverse Twisted projects
+> tagged with the 'tx' namespace on launchpad which could come in  
+> handy at some point in the future.
+
+txopenid is an identity provider for OpenID version 1.1. That is, it  
+can provide credentials for sites that accept OpenID logins, based on  
+data stored in a MySQL database.
+
+It won't currently help you *accept* OpenID as an authentication  
+mechanism, but it's a great provider, IMNSHO ;-) I use it as my  
+identity provider, and so far it works well for my purposes. It also  
+has been pleasantly stable the whole time I've been running it (at  
+least as monitored by Nagios).
+
+Also, it provides a number of utility functions that are essential to  
+the OpenID spec which should make writing a consumer a bit easier  
+(particularly in regards to hmac digest support and encoding integers  
+into their big-endian two's complement as a binary string...ugh)...
+
+Admittedly OpenID is at version 2.x these days, so I'm hoping soon to  
+update the provider and/or write a consumer implementation. I'd like  
+to think OpenID is finally starting to catch on...
+
+-phil
+
+

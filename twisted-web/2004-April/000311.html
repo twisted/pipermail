@@ -1,0 +1,399 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Performance of twisted web with Quixote [was
+	Performance of twisted web with HTTP/1.1 vs. HTTP/1.0]
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Performance%20of%20twisted%20web%20with%20Quixote%20%5Bwas%0A%09Performance%20of%20twisted%20web%20with%20HTTP/1.1%20vs.%20HTTP/1.0%5D&In-Reply-To=20040406105253.GA3392%40frobozz">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000288.html">
+   <LINK REL="Next"  HREF="000279.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Performance of twisted web with Quixote [was
+	Performance of twisted web with HTTP/1.1 vs. HTTP/1.0]</H1>
+    <B>Jason E. Sibre</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Performance%20of%20twisted%20web%20with%20Quixote%20%5Bwas%0A%09Performance%20of%20twisted%20web%20with%20HTTP/1.1%20vs.%20HTTP/1.0%5D&In-Reply-To=20040406105253.GA3392%40frobozz"
+       TITLE="[Twisted-web] Performance of twisted web with Quixote [was
+	Performance of twisted web with HTTP/1.1 vs. HTTP/1.0]">jsibre at sibre.org
+       </A><BR>
+    <I>Wed Apr 14 21:37:19 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000288.html">[Twisted-web] Performance of twisted web with HTTP/1.1 vs.
+	HTTP/1.0
+</A></li>
+        <LI>Next message: <A HREF="000279.html">[Twisted-web] Performance of twisted web with HTTP/1.1 vs.
+	HTTP/1.0
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#311">[ date ]</a>
+              <a href="thread.html#311">[ thread ]</a>
+              <a href="subject.html#311">[ subject ]</a>
+              <a href="author.html#311">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi folks,
+
+I previously wrote to this list about a performance problem I was having
+with Twisted, Quixote, and (I thought) HTTP/1.1, which I erroneously thought
+was a problem in Twisted's ability to deal with HTTP/1.1...
+
+I've since spent lots of time digging, and first figured out that the
+problem wasn't really in Twisted (and it really didn't have anything to do
+with HTTP/1.1, though persistent connections did contribute.  More
+accurately, the lack of persistent connections would mask the problem.), and
+then eventually figured out what the problem REALLY was.
+
+It was an odd little thing that had to do with Linux, Windows, network
+stacks, slow ACKs, and sending more packets than were needed.  Well, I don't
+want to go into much more detail, because your time is valuable.
+
+First, for those that haven't heard of it, Quixote is a python based web
+publishing framework that doesn't include a web server.  Instead, it can be
+published through a number of mechanisms:  CGI, FastCGI, SCGI, or
+mod_python, plus it has interfaces for Twisted and Medusa.  I think I may be
+missing one, but I'm not sure.  It's home page is at
+<A HREF="http://www.mems-exchange.org/software/quixote/">http://www.mems-exchange.org/software/quixote/</A>
+
+We (the quixote-users folks) seem to have a lack of expertise in Twisted :)
+
+The interface between twisted and quixote: A twisted request object is used
+to create a quixote request object, quixote is called to publish the
+request, and then the output of quixote is wrapped into a producer which
+twisted then finishes handling.  Actually, that's how it has been for quite
+some time, except for the producer bit.  My modifications revolved around
+creating the producer class that (I think/hope) works well in the Twisted
+framework, and let's twisted publish it when it's ready (i.e., in it's event
+loop).  Formerly, quixote's output was just pushed out through the twisted
+request object's write() method.  Which could cause REALLY bad performance;
+the bug I was chasing. In many cases it did just fine, however.  This was
+also just a generally bad idea, because, for instance, publishing a large
+file could consume large amounts of RAM until it was done being pushed over
+the wire.
+
+It's also worth mentioning that a quixote Stream object (noticable in the
+source) is a producer, but it uses the iterator protocol instead of .more()
+or resumeProducing().
+
+I'm hoping that someone can take a look at the finished product (just the
+interface module) and say something like, &quot;you're nuts! you're doing this
+all wrong!&quot;, or &quot;yeah, this looks like the right general idea, except maybe
+this bit here...&quot;.
+
+Also, if anyone can share a brief one-liner or two about whether or not I
+should leave in the hooks for pb and threadable, I'd appreciate it (quixote
+is almost always run single threaded...  Maybe just always...). I also
+changed the demo/test code at the bottom of the module from using the
+Application object to using the reactor.  I'd appreciate any feedback on
+that and the SSL code (it's also new...) as well.
+
+If anyone should want to actually run this, it'll work with Quixote-1.0b1,
+and the previous 'stable' (I say that because it was the latest version for
+several months...) version 0.7a3.  I wrote the interface against twisted
+1.2.0, but I think it'll work with older versions.  I just don't know how
+old.  Oh, and if you wanna drop it in a quixote install, it lives as
+quixote.server.twisted_http
+
+Thanks in advance for any help,
+
+Jason Sibre
+-------------- next part --------------
+#!/usr/bin/env python
+
+&quot;&quot;&quot;
+twist -- Demo of an HTTP server built on top of Twisted Python.
+&quot;&quot;&quot;
+
+__revision__ = &quot;$Id: medusa_http.py 21221 2003-03-20 16:02:41Z akuchlin $&quot;
+
+# based on qserv, created 2002/03/19, AMK
+# last mod 2003.03.24, Graham Fawcett
+# tested on Win32 / Twisted 0.18.0 / Quixote 0.6b5
+#
+# version 0.2 -- 2003.03.24 11:07 PM
+#   adds missing support for session management, and for
+#   standard Quixote response headers (expires, date)
+#
+# modified 2004/04/10 jsibre
+#   better support for Streams
+#   wraps output (whether Stream or not) into twisted type producer.
+#   modified to use reactor instead of Application (Appication 
+#     has been deprecated)
+
+
+import urllib
+from twisted.protocols import http
+from twisted.web import server
+
+from quixote.http_response import Stream
+
+# Imports for the TWProducer object
+from twisted.spread import pb
+from twisted.python import threadable
+from twisted.internet import abstract
+
+class QuixoteTWRequest(server.Request):
+
+    def process(self):
+        self.publisher = self.channel.factory.publisher
+        environ = self.create_environment()
+        ## this seek is important, it doesnt work without it
+        ## (It doesn't matter for GETs, but POSTs will not
+        ## work properly without it.)
+        self.content.seek(0,0)
+        qxrequest = self.publisher.create_request(self.content, environ)
+        self.quixote_publish(qxrequest, environ)
+        resp = qxrequest.response
+        self.setResponseCode(resp.status_code)
+        for hdr, value in resp.generate_headers():
+            self.setHeader(hdr, value)
+        if resp.body is not None:
+            TWProducer(resp.body, self)
+        else:
+            self.finish()
+
+
+    def quixote_publish(self, qxrequest, env):
+        &quot;&quot;&quot;
+        Warning, this sidesteps the Publisher.publish method,
+        Hope you didn't override it...
+        &quot;&quot;&quot;
+        pub = self.publisher
+        output = pub.process_request(qxrequest, env)
+
+        # don't write out the output, just set the response body
+        # the calling method will do the rest.
+        if output:
+            qxrequest.response.set_body(output)
+
+        pub._clear_request()
+
+
+    def create_environment(self):
+        &quot;&quot;&quot;
+        Borrowed heavily from twisted.web.twcgi
+        &quot;&quot;&quot;
+        # Twisted doesn't decode the path for us,
+        # so let's do it here.  This is also
+        # what medusa_http.py does, right or wrong.
+        if '%' in self.path:
+            self.path = urllib.unquote(self.path)
+
+        serverName = self.getRequestHostname().split(':')[0]
+        env = {&quot;SERVER_SOFTWARE&quot;:   server.version,
+               &quot;SERVER_NAME&quot;:       serverName,
+               &quot;GATEWAY_INTERFACE&quot;: &quot;CGI/1.1&quot;,
+               &quot;SERVER_PROTOCOL&quot;:   self.clientproto,
+               &quot;SERVER_PORT&quot;:       str(self.getHost()[2]),
+               &quot;REQUEST_METHOD&quot;:    self.method,
+               &quot;SCRIPT_NAME&quot;:       '',
+               &quot;SCRIPT_FILENAME&quot;:   '',
+               &quot;REQUEST_URI&quot;:       self.uri,
+               &quot;HTTPS&quot;:             (self.isSecure() and 'on') or 'off',
+        }
+
+        client = self.getClient()
+        if client is not None:
+            env['REMOTE_HOST'] = client
+        ip = self.getClientIP()
+        if ip is not None:
+            env['REMOTE_ADDR'] = ip
+        xx, xx, remote_port = self.transport.getPeer()
+        env['REMOTE_PORT'] = remote_port
+        env[&quot;PATH_INFO&quot;] = self.path
+
+        qindex = self.uri.find('?')
+        if qindex != -1:
+            env['QUERY_STRING'] = self.uri[qindex+1:]
+        else:
+            env['QUERY_STRING'] = ''
+
+        # Propogate HTTP headers
+        for title, header in self.getAllHeaders().items():
+            envname = title.replace('-', '_').upper()
+            if title not in ('content-type', 'content-length'):
+                envname = &quot;HTTP_&quot; + envname
+            env[envname] = header
+
+        return env
+
+
+class TWProducer(pb.Viewable):
+    &quot;&quot;&quot;
+    A class to represent the transfer of data over the network.
+    
+    JES Note: This has more stuff in it than is minimally neccesary.
+    However, since I'm no twisted guru, I built this by modifing
+    twisted.web.static.FileTransfer.  FileTransfer has stuff in it 
+    that I don't really understand, but know that I probably don't 
+    need. I'm leaving it in under the theory that if anyone ever 
+    needs that stuff (e.g. because they're running with multiple 
+    threads) it'll be MUCH easier for them if I had just left it in
+    than if they have to figure out what needs to be in there.  
+    Furthermore, I notice no performance penalty for leaving it in.
+    &quot;&quot;&quot;
+    request = None
+    def __init__(self, data, request):
+        self.request = request
+        self.data = &quot;&quot;
+        self.size = 0
+        self.stream = None
+        self.streamIter = None
+    
+        self.outputBufferSize = abstract.FileDescriptor.bufferSize
+
+        if isinstance(data, Stream):    # data could be a Stream
+            self.stream = data
+            self.streamIter = iter(data)
+            self.size = data.length
+        elif data:                      # data could be a string
+            self.data = data
+            self.size = len(data)
+        else:                           # data could be None
+            # We'll just leave self.data as &quot;&quot;
+            pass
+
+        request.registerProducer(self, 0)
+
+
+    def resumeProducing(self):
+        &quot;&quot;&quot; 
+        This is twisted's version of a producer's '.more()', or
+        an iterator's '.next()'.  That is, this function is 
+        responsible for returning some content.
+        &quot;&quot;&quot;
+        if not self.request:
+            return
+
+        if self.stream:
+            # If we were provided a Stream, let's grab some data
+            # and push it into our data buffer
+            
+            buffer = [self.data]
+            bytesInBuffer = len(buffer[-1])
+            while bytesInBuffer &lt; self.outputBufferSize:
+                try:
+                    buffer.append(self.streamIter.next())
+                    bytesInBuffer += len(buffer[-1])
+                except StopIteration:
+                    # We've exhausted the Stream, time to clean up.
+                    self.stream = None
+                    self.streamIter = None
+                    break
+            self.data = &quot;&quot;.join(buffer)
+            
+        if self.data:
+            chunkSize = min(self.outputBufferSize, len(self.data))
+            data, self.data = self.data[:chunkSize], self.data[chunkSize:]
+        else:
+            data = &quot;&quot;
+            
+        if data:
+            self.request.write(data)
+        
+        if not self.data:
+            self.request.unregisterProducer()
+            self.request.finish()
+            self.request = None
+
+    def pauseProducing(self):
+        pass
+
+    def stopProducing(self):
+        self.data    = &quot;&quot;
+        self.request = None
+        self.stream  = None
+        self.streamIter = None
+
+    # Remotely relay producer interface.
+
+    def view_resumeProducing(self, issuer):
+        self.resumeProducing()
+
+    def view_pauseProducing(self, issuer):
+        self.pauseProducing()
+
+    def view_stopProducing(self, issuer):
+        self.stopProducing()
+
+    synchronized = ['resumeProducing', 'stopProducing']
+
+threadable.synchronize(TWProducer)
+
+
+
+class QuixoteFactory (http.HTTPFactory):
+
+    def __init__(self, publisher):
+        self.publisher = publisher
+        http.HTTPFactory.__init__(self, None)
+
+    def buildProtocol (self, addr):
+        p = http.HTTPFactory.buildProtocol(self, addr)
+        p.requestFactory = QuixoteTWRequest
+        return p
+
+
+def run ():
+    from twisted.internet import reactor
+    from quixote import enable_ptl
+    from quixote.publish import Publisher
+
+    enable_ptl()
+
+    import quixote.demo
+    # Port this server will listen on
+    http_port = 8080
+    namespace = quixote.demo
+
+    #  If you want SSL, make sure you have OpenSSL,
+    #  uncomment the follownig, and uncomment the 
+    #  listenSSL() call below.
+    
+    ##from OpenSSL import SSL
+    ##class ServerContextFactory:
+    ##    def getContext(self):
+    ##        ctx = SSL.Context(SSL.SSLv23_METHOD)
+    ##        ctx.use_certificate_file('/path/to/pem/encoded/ssl_cert_file')
+    ##        ctx.use_privatekey_file('/path/to/pem/encoded/ssl_key_file')
+    ##        return ctx
+
+    publisher = Publisher(namespace)
+    ##publisher.setup_logs()
+    qf = QuixoteFactory(publisher)
+
+    reactor.listenTCP(http_port, qf)
+    ##reactor.listenSSL(http_port, qf, ServerContextFactory())
+
+    reactor.run()
+
+if __name__ == '__main__':
+    run()
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000288.html">[Twisted-web] Performance of twisted web with HTTP/1.1 vs.
+	HTTP/1.0
+</A></li>
+	<LI>Next message: <A HREF="000279.html">[Twisted-web] Performance of twisted web with HTTP/1.1 vs.
+	HTTP/1.0
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#311">[ date ]</a>
+              <a href="thread.html#311">[ thread ]</a>
+              <a href="subject.html#311">[ subject ]</a>
+              <a href="author.html#311">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

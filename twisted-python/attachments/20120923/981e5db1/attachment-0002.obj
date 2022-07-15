@@ -1,0 +1,94 @@
+from zope.interface import implementer
+
+from twisted.cred import portal, checkers, credentials
+from twisted.web import server, xmlrpc
+from twisted.internet import reactor, defer
+
+class NotAuthorized(AttributeError):
+    """
+    Access to this attribute is not allowed.
+    """
+
+
+class SettableValue(object):
+    """
+    An object whose value can be set or get.
+    """
+
+    def __init__(self, initialValue):
+        self.set(initialValue)
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class AccessControlledValue(object):
+    """
+    A wrapper for a SettableValue, enforcing access control.
+    """
+    def __init__(self, wrappedObject, permissions):
+        self.wrappedObject = wrappedObject
+        self.permissions = permissions
+
+    def __getattr__(self, attr):
+        if attr not in self.permissions:
+            raise NotAuthorized()
+        return getattr(self.wrappedObject, attr)
+
+
+@implementer(portal.IRealm)
+class ValueRealm(object):
+    """
+    A realm that wraps a SettableValue.
+    """
+
+    def __init__(self):
+        self.settableValue = SettableValue(1)
+
+    def requestAvatar(self, avatarId, mind, *interfaces):
+        if avatarId == checkers.ANONYMOUS:
+            return AccessControlledValue(self.settableValue, ["get"])
+        else:
+            return AccessControlledValue(self.settableValue, ["get", "set"])
+
+
+
+class XMLRPCValue(xmlrpc.XMLRPC):
+    """
+    XML-RPC API for setting/getting a value.
+
+    Adding cookie-based sessions (or pure XML-RPC sessions) so login only
+    needs to be done once is left as an excercise for the reader.
+    """
+
+    def __init__(self):
+        xmlrpc.XMLRPC.__init__(self, allowNone=True)
+        userdb = checkers.InMemoryUsernamePasswordDatabaseDontUse(
+            user="password")
+        self.portal = portal.Portal(ValueRealm(),
+                                    [checkers.AllowAnonymousAccess(), userdb])
+
+    def _login(self, username, password):
+        if username == None:
+            identity = credentials.Anonymous()
+        else:
+            identity = credentials.UsernamePassword(username, password)
+        return self.portal.login(identity, None, SettableValue)
+
+    @defer.inlineCallbacks
+    def xmlrpc_get(self, username, password):
+        avatar = yield self._login(username, password)
+        defer.returnValue(avatar.get())
+
+    @defer.inlineCallbacks
+    def xmlrpc_set(self, username, password, value):
+        avatar = yield self._login(username, password)
+        avatar.set(value)
+
+
+if __name__ == '__main__':
+    reactor.listenTCP(8080, server.Site(XMLRPCValue()))
+    reactor.run()

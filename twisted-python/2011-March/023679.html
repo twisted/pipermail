@@ -1,0 +1,198 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Asynchronous context in Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Asynchronous%20context%20in%20Twisted&In-Reply-To=AANLkTikX_wkb5-jgmxQ7Y-3_ENurHS-COTOfBQN%3DvGX4%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="023621.html">
+   <LINK REL="Next"  HREF="023747.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Asynchronous context in Twisted</H1>
+    <B>Fantix King</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Asynchronous%20context%20in%20Twisted&In-Reply-To=AANLkTikX_wkb5-jgmxQ7Y-3_ENurHS-COTOfBQN%3DvGX4%40mail.gmail.com"
+       TITLE="[Twisted-Python] Asynchronous context in Twisted">fantix at exoweb.net
+       </A><BR>
+    <I>Tue Mar 15 02:54:10 EDT 2011</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="023621.html">[Twisted-Python] Asynchronous context in Twisted
+</A></li>
+        <LI>Next message: <A HREF="023747.html">[Twisted-Python] Asynchronous context in Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#23679">[ date ]</a>
+              <a href="thread.html#23679">[ thread ]</a>
+              <a href="subject.html#23679">[ subject ]</a>
+              <a href="author.html#23679">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mar 3, 2011, at 2:39 PM, Glyph Lefkowitz wrote:
+&gt;<i> On Mar 3, 2011, at 7:31 AM, Fantix King wrote:
+</I>&gt;<i>
+</I>&gt;<i> &gt; Hi,
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I tried to make python.context work in asynchronous code between main
+</I>loops. Anyone has similar experience to share please?
+&gt;<i> &gt;
+</I>&gt;<i> &gt; Not sure if I am rebuilding a wheel :P
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I><A HREF="http://code.google.com/p/little-site/source/browse/littlesite/custom_reactor.py">http://code.google.com/p/little-site/source/browse/littlesite/custom_reactor.py</A>
+&gt;<i>
+</I>&gt;<i> This is something I've often thought about doing in Twisted itself,
+</I>actually :).  But I wasn't sure that chaining context would actually do
+anything practically useful most of the time.  Have you found that it's
+actually useful?  Have you managed to leverage this to, for example, get
+more informative error messages out of Deferred failures?
+&gt;<i>
+</I>&gt;<i> Doing it as a subclass like this is not optimal, as it limits you to one
+</I>reactor (and the Select reactor is not really the best one).  A wrapper
+would be slightly more tricky (you'd have to deal with the places that the
+reactor passes itself through to things like Process and Port, so you'd have
+to create wrappers for those as well) but much more general.
+
+
+Thanks for replying! :)
+
+Yes! That's a wonderful idea to use this context for asynchronous traceback!
+I made
+some small changes to the code and wrote a patch for Twisted (as addReader
+and
+addWriter is quite different from one impl to another, I changed
+SelectReactor only.
+I haven't got a better idea for this, please advise), please see attachment.
+
+With a simple example of raising exception in deferLater-ed function
+(a-b-c-deferLater-d-e-f-g):
+
+from twisted.internet import reactor
+from twisted.internet.task import deferLater
+reactor.usingAsyncTraceback = True
+
+def g():
+    raise Exception('Something happened inside.')
+
+def f():
+    return g()
+
+def e():
+    return f()
+
+def d():
+    return e()
+
+def c():
+    deferred = deferLater(reactor, 1, lambda: None)
+    deferred.addCallback(lambda x: d())
+    return deferred
+
+def b():
+    return c()
+
+def a():
+    return b()
+
+if __name__ == '__main__':
+    deferred = a()
+    def errback(failure):
+        failure.printTraceback()
+    deferred.addErrback(errback)
+    deferred.addBoth(lambda x: reactor.stop())
+    reactor.run()
+
+
+I could get this:
+
+
+Traceback (most recent call last):
+  File &quot;test.py&quot;, line 31, in &lt;module&gt;
+    deferred = a()
+  File &quot;test.py&quot;, line 28, in a
+    return b()
+  File &quot;test.py&quot;, line 25, in b
+    return c()
+  File &quot;test.py&quot;, line 20, in c
+    deferred = deferLater(reactor, 1, lambda: None)
+  File &quot;/home/fantix/ac/twisted/internet/task.py&quot;, line 751, in deferLater
+    delayedCall = clock.callLater(delay, d.callback, None)
+  File &quot;/home/fantix/ac/twisted/internet/base.py&quot;, line 701, in callLater
+    _f, args, kw = self._chainContext(_f, args, kw)
+*--- &lt;asynchronous break point&gt; ---*
+  File &quot;/home/fantix/ac/twisted/python/context.py&quot;, line 59, in
+callWithContext
+    return self.currentContext().callWithContext(ctx, func, *args, **kw)
+  File &quot;/home/fantix/ac/twisted/python/context.py&quot;, line 37, in
+callWithContext
+    return func(*args,**kw)
+  File &quot;/home/fantix/ac/twisted/internet/defer.py&quot;, line 361, in callback
+    self._startRunCallbacks(result)
+  File &quot;/home/fantix/ac/twisted/internet/defer.py&quot;, line 455, in
+_startRunCallbacks
+    self._runCallbacks()
+--- &lt;exception caught here&gt; ---
+  File &quot;/home/fantix/ac/twisted/internet/defer.py&quot;, line 542, in
+_runCallbacks
+    current.result = callback(current.result, *args, **kw)
+  File &quot;test.py&quot;, line 21, in &lt;lambda&gt;
+    deferred.addCallback(lambda x: d())
+  File &quot;test.py&quot;, line 17, in d
+    return e()
+  File &quot;test.py&quot;, line 14, in e
+    return f()
+  File &quot;test.py&quot;, line 11, in f
+    return g()
+  File &quot;test.py&quot;, line 8, in g
+    raise Exception('Something happened inside.')
+
+
+Additionally, in my scenario of a 5 years old asynchronous Twisted web
+application, we
+need the &quot;request&quot; object available throughout all code between asynchronous
+network
+accesses and database accesses because our global configuration system
+needs the
+request object. It would greatly reduce our manual work to pass through the
+request
+object here and there to have a context working in the asynchronous way.
+
+
+BR,
+Fantix.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20110315/d3315923/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20110315/d3315923/attachment.htm</A> 
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: fantix_async_context.patch
+Type: text/x-patch
+Size: 6511 bytes
+Desc: not available
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20110315/d3315923/attachment.bin">http://twistedmatrix.com/pipermail/twisted-python/attachments/20110315/d3315923/attachment.bin</A> 
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="023621.html">[Twisted-Python] Asynchronous context in Twisted
+</A></li>
+	<LI>Next message: <A HREF="023747.html">[Twisted-Python] Asynchronous context in Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#23679">[ date ]</a>
+              <a href="thread.html#23679">[ thread ]</a>
+              <a href="subject.html#23679">[ subject ]</a>
+              <a href="author.html#23679">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

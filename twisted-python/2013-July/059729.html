@@ -1,0 +1,264 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] transport.write performance.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20transport.write%20performance.&In-Reply-To=%3CSNT131-W42743A6AF69DF292E83ABFB4560%40phx.gbl%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="027267.html">
+   <LINK REL="Next"  HREF="059730.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] transport.write performance.</H1>
+    <B>zipxing</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20transport.write%20performance.&In-Reply-To=%3CSNT131-W42743A6AF69DF292E83ABFB4560%40phx.gbl%3E"
+       TITLE="[Twisted-Python] transport.write performance.">zipxing at hotmail.com
+       </A><BR>
+    <I>Tue Jul 30 02:58:17 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="027267.html">[Twisted-Python] transport.write performance.
+</A></li>
+        <LI>Next message (by thread): <A HREF="059730.html">[Twisted-Python] transport.write performance.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59729">[ date ]</a>
+              <a href="thread.html#59729">[ thread ]</a>
+              <a href="subject.html#59729">[ subject ]</a>
+              <a href="author.html#59729">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>tsvr.py
+-----------------------------------------------------------
+import sys, time, random, socket, traceback
+from twisted.internet import epollreactor
+epollreactor.install()
+from twisted.internet import defer, reactor, task
+from twisted.internet.protocol import Protocol, Factory
+from protocol import TCPServerProtocol
+
+def main():
+        tcpprotocol = TCPServerProtocol
+        factory = Factory()
+        factory.protocol = tcpprotocol
+        reactor.listenTCP(9976, factory)
+        reactor.run()
+
+if __name__ == '__main__':
+        main()
+
+protocol.py
+--------------------------------------------------------- 
+import socket
+import datetime
+import traceback
+from twisted.protocols.basic import LineReceiver
+from twisted.internet import protocol
+
+class TCPServerProtocol(LineReceiver):
+        req_count = 0
+        req_time = datetime.datetime.now()
+
+        def lineReceived(self, data):
+                TCPServerProtocol.req_count+=1
+                if TCPServerProtocol.req_count%10000==0:
+                        ct = datetime.datetime.now()
+                        dt = ct-TCPServerProtocol.req_time
+                        pps = 10000/(dt.seconds+dt.microseconds/1000000.0)
+                        TCPServerProtocol.req_time=ct
+                        print('RPS='+str(pps))
+                try:
+                        #self.transport.write(data)
+                        self.transport.getHandle().send(data)
+                except:
+                        traceback.print_exc()
+
+tcli.py 
+-----------------------------------------------------------------
+import sys
+import socket
+import traceback
+import time
+import datetime
+
+host = 'localhost'
+port = 9976
+loopcount = 300
+sockcount = 5000
+RPS = 4000
+
+ss=[]
+for x in xrange(sockcount):
+        ss.append(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+        ss[x].connect((host, port))
+        ss[x].settimeout(120)
+
+for x in xrange(10000000):
+        st = datetime.datetime.now()
+        for y in xrange(loopcount):
+                try:
+                        if ss[x%sockcount]!=None:
+                                ss[x%sockcount].sendall('1234567890\r\n')
+                                ss[x%sockcount].recv(1024)
+                except:
+                        print y
+                        sys.exit()
+        time.sleep(0.1)
+        dt = (datetime.datetime.now()-st)
+        plc = loopcount/(dt.seconds+dt.microseconds/1000000.0)
+        print loopcount/(dt.seconds+dt.microseconds/1000000.0)
+        #auto adjust RPS
+        if plc&lt;RPS:
+                if RPS-plc&gt;50:
+                        loopcount+=10
+        else:
+                if plc-RPS&gt;50:
+                        loopcount-=10
+
+echosvr.c 
+----------------------------------------------------------------------
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;assert.h&gt;
+
+#include &lt;event2/event.h&gt;
+#include &lt;event2/bufferevent.h&gt;
+
+#define LISTEN_PORT 9976
+#define LISTEN_BACKLOG 32
+
+#ifdef FD_SETSIZE
+#undef FD_SETSIZE
+#endif
+#define FD_SETSIZE 65536
+
+void do_accept(evutil_socket_t listener, short event, void *arg);
+void read_cb(struct bufferevent *bev, void *arg);
+void error_cb(struct bufferevent *bev, short event, void *arg);
+void write_cb(struct bufferevent *bev, void *arg);
+
+int main(int argc, char *argv[])
+{
+    int ret;
+    evutil_socket_t listener;
+    listener = socket(AF_INET, SOCK_STREAM, 0);
+    assert(listener&gt; 0);
+    evutil_make_listen_socket_reuseable(listener);
+
+    struct sockaddr_in sin;
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = 0;
+    sin.sin_port = htons(LISTEN_PORT);
+
+    if (bind(listener, (struct sockaddr *)&amp;sin, sizeof(sin)) &lt; 0) {
+        perror(&quot;bind&quot;);
+        return 1;
+    }
+
+    if (listen(listener, LISTEN_BACKLOG) &lt; 0) {
+        perror(&quot;listen&quot;);
+        return 1;
+    }
+
+    printf (&quot;Listening...\n&quot;);
+
+    evutil_make_socket_nonblocking(listener);
+
+    struct event_base *base = event_base_new();
+    assert(base != NULL);
+    struct event *listen_event;
+    listen_event = event_new(base, listener, EV_READ|EV_PERSIST, do_accept, (void*)base);
+    event_add(listen_event, NULL);
+    event_base_dispatch(base);
+
+    printf(&quot;The End.&quot;);
+    return 0;
+}
+
+void do_accept(evutil_socket_t listener, short event, void *arg)
+{
+    struct event_base *base = (struct event_base *)arg;
+    evutil_socket_t fd;
+    struct sockaddr_in sin;
+    socklen_t slen;
+    fd = accept(listener, (struct sockaddr *)&amp;sin, &amp;slen);
+    if (fd &lt; 0) {
+        perror(&quot;accept&quot;);
+        return;
+    }
+    if (fd&gt; FD_SETSIZE) {
+        perror(&quot;fd&gt; FD_SETSIZE\n&quot;);
+        return;
+    }
+
+    printf(&quot;ACCEPT: fd = %u\n&quot;, fd);
+
+    struct bufferevent *bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, read_cb, NULL, error_cb, arg);
+    bufferevent_enable(bev, EV_READ|EV_WRITE|EV_PERSIST);
+}
+
+void read_cb(struct bufferevent *bev, void *arg)
+{
+#define MAX_LINE    256
+    char line[MAX_LINE+1];
+    int n;
+    evutil_socket_t fd = bufferevent_getfd(bev);
+
+    while (n = bufferevent_read(bev, line, MAX_LINE), n&gt; 0) {
+        line[n] = '\0';
+        //printf(&quot;fd=%u, read line: %s\n&quot;, fd, line);
+
+        bufferevent_write(bev, line, n);
+    }
+}
+
+void write_cb(struct bufferevent *bev, void *arg) {}
+
+void error_cb(struct bufferevent *bev, short event, void *arg)
+{
+    evutil_socket_t fd = bufferevent_getfd(bev);
+    printf(&quot;fd = %u, &quot;, fd);
+    if (event &amp; BEV_EVENT_TIMEOUT) {
+        printf(&quot;Timed out\n&quot;); //if bufferevent_set_timeouts() called
+    }
+    else if (event &amp; BEV_EVENT_EOF) {
+        printf(&quot;connection closed\n&quot;);
+    }
+    else if (event &amp; BEV_EVENT_ERROR) {
+        printf(&quot;some other error\n&quot;);
+    }
+    bufferevent_free(bev);
+} 		 	   		  
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="027267.html">[Twisted-Python] transport.write performance.
+</A></li>
+	<LI>Next message (by thread): <A HREF="059730.html">[Twisted-Python] transport.write performance.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59729">[ date ]</a>
+              <a href="thread.html#59729">[ thread ]</a>
+              <a href="subject.html#59729">[ subject ]</a>
+              <a href="author.html#59729">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,265 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] help with refcounts and memleaks
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20help%20with%20refcounts%20and%20memleaks&In-Reply-To=20051226160735.GP9576%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="012219.html">
+   <LINK REL="Next"  HREF="012222.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] help with refcounts and memleaks</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20help%20with%20refcounts%20and%20memleaks&In-Reply-To=20051226160735.GP9576%40opteron.random"
+       TITLE="[Twisted-Python] help with refcounts and memleaks">exarkun at divmod.com
+       </A><BR>
+    <I>Mon Dec 26 12:21:29 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="012219.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+        <LI>Next message: <A HREF="012222.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12220">[ date ]</a>
+              <a href="thread.html#12220">[ thread ]</a>
+              <a href="subject.html#12220">[ subject ]</a>
+              <a href="author.html#12220">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, 26 Dec 2005 17:07:35 +0100, Andrea Arcangeli &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">andrea at cpushare.com</A>&gt; wrote:
+&gt;<i>Hello,
+</I>
+Hey,
+
+This is really a question for a Python list.  However, I've attached 
+some comments below. 
+
+&gt;<i>
+</I>&gt;<i>I was just shoked today when I noticed this:
+</I>&gt;<i>
+</I>&gt;<i>-------------------
+</I>&gt;<i>import sys
+</I>&gt;<i>
+</I>&gt;<i>class A(object):
+</I>&gt;<i>	y = None
+</I>&gt;<i>	def x(self):
+</I>&gt;<i>		pass
+</I>&gt;<i>	def __del__(self):
+</I>&gt;<i>		print 'deleted'
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>a = A()
+</I>&gt;<i>print sys.getrefcount(a)
+</I>&gt;<i>if 1:
+</I>&gt;<i>	a.y = a.x
+</I>&gt;<i>print sys.getrefcount(a)
+</I>&gt;<i>del a
+</I>&gt;<i>-------------------
+</I>&gt;<i>
+</I>&gt;<i>I understood the cross references memleaks well, like &quot;x.y = y; y.x= x;
+</I>&gt;<i>del x,y&quot;, but I didn't imagine that &quot;a.y = a.x&quot; would be enough to
+</I>&gt;<i>generate a memleak. &quot;a.y = a.x&quot; isn't referencing another structure,
+</I>&gt;<i>it's referencing itself only. Infact if I do this the memleak goes
+</I>&gt;<i>away!!
+</I>
+I'm not sure how far you've gotten into this, but here's the basic 
+explanation: &quot;a.x&quot; gives you a &quot;bound method instance&quot;; since you 
+might do anything at all with the object it evaluates to, it wraps 
+up a reference to the object &quot;a&quot; references, so it knows what object 
+to use as &quot;self&quot;; this has the effect of increasing the reference 
+count of &quot;a&quot;, but it doesn't actually leak any memory.
+
+Of course, in creating a cycle which contains an object with an 
+implementation of __del__, you have created a leak, since Python's 
+GC cannot collect that kind of graph.
+
+Hopefully the __del__ implementation is only included as an aid to 
+understanding what is going on, and you don't actually need it in 
+any of your actual applications.  Once removed, the cycle will be 
+collectable by Python.
+
+Another strategy is to periodically examine gc.garbage and manually 
+break cycles.  This way, if you do have any __del__ implementations, 
+they will no longer be part of a cycle, and Python will again be 
+able to collect these objects.
+
+&gt;<i>
+</I>&gt;<i>-------------------
+</I>&gt;<i>import sys
+</I>&gt;<i>
+</I>&gt;<i>class A(object):
+</I>&gt;<i>	def x(self):
+</I>&gt;<i>		pass
+</I>&gt;<i>	y = x
+</I>&gt;<i>	def __del__(self):
+</I>&gt;<i>		print 'deleted'
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>a = A()
+</I>&gt;<i>print sys.getrefcount(a)
+</I>&gt;<i>a.x()
+</I>&gt;<i>a.y()
+</I>&gt;<i>print a.x, a.y
+</I>&gt;<i>del a
+</I>&gt;<i>-------------------
+</I>&gt;<i>
+</I>&gt;<i>Now the fact a static field doesn't generate a reference but a dynamic
+</I>&gt;<i>one does is quite confusing to me and it also opened a can of worms in
+</I>&gt;<i>my code. I can handle that now that I know about it, but I wonder what
+</I>&gt;<i>people recommends to solve memleaks of this kind.
+</I>
+This is an interesting case.  Python does not do what you probably 
+expect here.  When you define a class with methods, Python does not 
+actually create any method objects!  It is the actual attribute lookup 
+on an instance which creates the method object.  You can see this in 
+the following example:
+
+
+    &gt;&gt;&gt; class X:
+    ...   def y(self): pass
+    ... 
+    &gt;&gt;&gt; a = X()
+    &gt;&gt;&gt; a.y is a.y
+    False
+    &gt;&gt;&gt; a.y is X.__dict__['y']
+    False
+    &gt;&gt;&gt; X.__dict__['y'] is X.__dict__['y']
+    True
+    &gt;&gt;&gt; 
+
+So when you added &quot;y&quot; to your class &quot;A&quot;, Python didn't care, because 
+there aren't even any method objects until you access an attribute 
+which is bound to a function.  Continuing the above example:
+
+    &gt;&gt;&gt; sys.getrefcount(a)
+    2
+    &gt;&gt;&gt; L = [a.y, a.y, a.y, a.y]
+    &gt;&gt;&gt; sys.getrefcount(a)
+    6
+    &gt;&gt;&gt; 
+
+&gt;<i>
+</I>&gt;<i>I'd also like to know how other languages like ruby and java behave in
+</I>&gt;<i>terms of self-references of objects. Can't the language understand it's
+</I>&gt;<i>a self reference, and in turn it's the same as an integer or a string,
+</I>&gt;<i>like it already does when the member is initialized statically?
+</I>
+I don't know Ruby well enough to comment directly, but I believe Ruby's 
+GC is much simpler (and less capable) than Python's.  Java doesn't have 
+bound methods (or unbound methods, or heck, functions): the obvious way 
+in which you would construct them on top of the primitives the language 
+does offer seems to me as though it would introduce the same &quot;problem&quot; 
+you are seeing in Python, but that may just be due to the influence 
+Python has had on my thinking.
+
+&gt;<i>
+</I>&gt;<i>Infact can't the language be smart enough to even understand when two
+</I>&gt;<i>cross referenced objects lost visibility from all points of view, and
+</I>&gt;<i>drop both objects even if they hold a reference on each other? I
+</I>&gt;<i>understand this is a lot more complicated but wouldn't it be possible in
+</I>&gt;<i>theory? What does the garbage collection of other languages like ruby
+</I>&gt;<i>and java, the same as python or more advanced?
+</I>
+When you have &quot;two cross referenced objects&quot;, that's a cycle, and 
+Python will indeed clean it up.  The only exception is if there is a 
+__del__ implementation, as I mentioned above.  This is a general problem 
+with garbage collection.  If you have two objects which refer to each 
+other and which each wish to perform some finalization, which finalizer 
+do you call first?
+
+&gt;<i>
+</I>&gt;<i>So far my python programs never really cared to released memory (so my
+</I>&gt;<i>not full understanding of python refcounts wasn't a problem), but now
+</I>&gt;<i>since I'm dealing with a server I must make sure that the &quot;proto&quot; is
+</I>&gt;<i>released after a loseConnection invocation. So I must cleanup all cross
+</I>&gt;<i>and self! references in loseConnection and use weakrefs where needed.
+</I>&gt;<i>
+</I>&gt;<i>Now those structures that I'm leaking (like the protocol object) are so
+</I>&gt;<i>tiny that there's no chance that I could ever notice the memleak in real
+</I>&gt;<i>life, so I had to add debugging code to trap memleaks. You can imagine
+</I>&gt;<i>my server code like this:
+</I>
+You might be surprised :)  These things tend to build up, if your process 
+is long-running.
+
+&gt;<i>
+</I>&gt;<i>class cpushare_protocol(Int32StringReceiver):
+</I>&gt;<i>	def connectionMade(self):
+</I>&gt;<i>		[..]
+</I>&gt;<i>		self.hard_handlers = {
+</I>&gt;<i>			PROTO_SECCOMP : self.seccomp_handler,
+</I>&gt;<i>			PROTO_LOG : self.log_handler,
+</I>&gt;<i>			}
+</I>&gt;<i>		[..]
+</I>&gt;<i> 	def log_handler(self, string):
+</I>&gt;<i>		[..]
+</I>&gt;<i>	def seccomp_handler(self, string):
+</I>&gt;<i>		[..]
+</I>&gt;<i>	def __del__(self):
+</I>&gt;<i>		print 'protocol deleted'
+</I>&gt;<i>	def connectionLost(self, reason):
+</I>&gt;<i>		[..]
+</I>&gt;<i>		# memleaks
+</I>&gt;<i>		del self.hard_handlers
+</I>&gt;<i>		print 'protocol refcount:', sys.getrefcount(self)
+</I>&gt;<i>		#assert sys.getrefcount(self) == 4
+</I>&gt;<i>
+</I>&gt;<i>For things like hard_handlers (that are self-referencing callbacks) I
+</I>&gt;<i>can't even use the weakref.WeakValueDictionary, because it wouldn't hold
+</I>&gt;<i>itself, the object gets released immediately. So the only chance I have
+</I>&gt;<i>to release the memory of the protocol object when the connection is
+</I>&gt;<i>dropped, is to do an explicit del self.hard_handlers in loseConnection.
+</I>&gt;<i>
+</I>&gt;<i>I wonder what other twisted developers do to avoid those troubles.
+</I>&gt;<i>Perhaps I shouldn't use self referencing callbacks to hold the state
+</I>&gt;<i>machine, and do like the smpt protocol that does this:
+</I>&gt;<i>
+</I>&gt;<i>    def lookupMethod(self, command):
+</I>&gt;<i>        return getattr(self, 'do_' + command.upper(), None)
+</I>&gt;<i>
+</I>&gt;<i>basically working with strings instead of pointers. Or I can simply make
+</I>&gt;<i>sure to cleanup all structures when I stop using them (like with the del
+</I>&gt;<i>self.hard_handlers above), but then I'll lose part of the automatic
+</I>&gt;<i>garbage collection features of python. I really want garbage collection
+</I>&gt;<i>or I could have written this in C++ if I'm forced to cleanup by hand.
+</I>
+(You can probably guess what I'm going to say here. ;)  In general, I 
+avoid implementing __del__.  My programs may end up with cycles, but 
+as long as I don't have __del__, Python can figure out how to free the 
+objects.  Note that it does sometimes take it a while (and this has 
+implications for peak memory usage which may be important to you), but 
+if you find a case that it doesn't handle, then you've probably found 
+a bug in the GC that python-dev will fix.
+
+Hope this helps, and happy holidays,
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="012219.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+	<LI>Next message: <A HREF="012222.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12220">[ date ]</a>
+              <a href="thread.html#12220">[ thread ]</a>
+              <a href="subject.html#12220">[ subject ]</a>
+              <a href="author.html#12220">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

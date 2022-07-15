@@ -1,0 +1,180 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] [PATCH] Recognise multiple possible line-endings for LineReciever
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20%5BPATCH%5D%20Recognise%20multiple%20possible%20line-endings%20for%20LineReciever&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001076.html">
+   <LINK REL="Next"  HREF="001077.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] [PATCH] Recognise multiple possible line-endings for LineReciever</H1>
+    <B>Andrew Stribblehill</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20%5BPATCH%5D%20Recognise%20multiple%20possible%20line-endings%20for%20LineReciever&In-Reply-To="
+       TITLE="[Twisted-Python] [PATCH] Recognise multiple possible line-endings for LineReciever">a.d.stribblehill at durham.ac.uk
+       </A><BR>
+    <I>Fri Apr 26 09:24:14 EDT 2002</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001076.html">[Twisted-Python] twistedmatrix.com now un-wedged
+</A></li>
+        <LI>Next message: <A HREF="001077.html">[Twisted-Python] DICE Job - Austin-Games (Network, Server) Programmer
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1078">[ date ]</a>
+              <a href="thread.html#1078">[ thread ]</a>
+              <a href="subject.html#1078">[ subject ]</a>
+              <a href="author.html#1078">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>The attached patch changes LineReceiver to call out to
+self.splitAtNewline for line splitting rather than doing it within
+dataReceived. It doesn't change the default behaviour in any way.
+
+However, if the user chooses to change their protocol from:
+
+|<i> class MyProto(base.LineReceiver):
+</I>|<i>    ...
+</I>
+to
+
+|<i> class MyProto(base.MultiLinebreakMixin, base.LineReceiver)
+</I>|<i>    ...
+</I>
+lines will be split on the first (or longest, if there's a tie)
+line-break in the list self.newlines (by default, CRLF, CR, LF). This
+has the effect that I can netcat (nc) to servers and they'll treat my
+\n as a newline.
+
+I dropped a unit test into test_protocol.py and it even passes!
+
+I'm afraid the patch is relative to 0.17-3; I can't cope with new
+versions every day ;)
+
+Oh yeah: I hereby relinquish copyright for the code in the attached
+patch and any subsequent code I contribute to Twisted, to Matthew
+Lefkowitz. Much good may it do him :&gt;
+
+-- 
+PORTLAND PLYMOUTH
+MAINLY WESTERLY 5 OR 6. SHOWERS. GOOD
+-------------- next part --------------
+diff -u --exclude=*.pyc -r twisted-0.17.3.orig/twisted/protocols/basic.py twisted-0.17.3/twisted/protocols/basic.py
+--- twisted-0.17.3.orig/twisted/protocols/basic.py	Mon Jan 21 23:06:37 2002
++++ twisted-0.17.3/twisted/protocols/basic.py	Fri Apr 26 12:52:41 2002
+@@ -139,6 +139,9 @@
+     delimiter = '\r\n'
+     MAX_LENGTH = 16384
+ 
++    def splitAtNewline(self, data):
++        return string.split(self.__buffer, self.delimiter, 1)
++
+     def dataReceived(self, data):
+         &quot;&quot;&quot;Protocol.dataReceived.
+         Translates bytes into lines, and calls lineReceived (or
+@@ -147,8 +150,7 @@
+         self.__buffer = self.__buffer+data
+         while self.line_mode:
+             try:
+-                line, self.__buffer = string.split(self.__buffer,
+-                                                   self.delimiter, 1)
++                line, self.__buffer = self.splitAtNewline(self.__buffer)
+             except ValueError:
+                 if len(self.__buffer) &gt; self.MAX_LENGTH:
+                     self.transport.loseConnection()
+@@ -198,6 +200,38 @@
+         &quot;&quot;&quot;Sends a line to the other end of the connection.
+         &quot;&quot;&quot;
+         self.transport.write(line + self.delimiter)
++
++
++class MultiLinebreakMixin:
++    &quot;&quot;&quot;A mixin class, designed for LineReciever. List \'newlines\'
++    is a list of the possible line endings (default CRLF, CR, LF).
++
++    This does _not_ affect the output line ending.
++    &quot;&quot;&quot;
++    newlines = ['\r\n', '\n', '\r']
++
++    def splitAtNewline(self, data):
++        &quot;&quot;&quot;Split a string of data on the first (and longest)
++        line-separator of self.newlines.
++        &quot;&quot;&quot;
++        def cmpPossibleSplits(a,b):
++            if a[0] == -1: return +1
++            if b[0] == -1: return -1
++            epsilon=cmp(a[0], b[0])
++            if epsilon != 0:
++                return epsilon
++            else:
++                return -cmp(len(a[1]), len(b[1]))
++
++        newlineHits=map(
++            lambda delim, data=data: (string.find(data,delim),delim),
++            self.newlines)
++        newlineHits.sort(cmpPossibleSplits)
++        bestBreak = newlineHits[0]
++        if bestBreak[1] == -1:
++            return [data]
++        else:
++            return string.split(data, bestBreak[1], 1)
+ 
+ 
+ class Int32StringReceiver(protocol.Protocol):
+diff -u --exclude=*.pyc -r twisted-0.17.3.orig/twisted/test/test_protocols.py twisted-0.17.3/twisted/test/test_protocols.py
+--- twisted-0.17.3.orig/twisted/test/test_protocols.py	Tue Apr  9 21:37:03 2002
++++ twisted-0.17.3/twisted/test/test_protocols.py	Fri Apr 26 13:24:30 2002
+@@ -122,6 +122,20 @@
+                 a.dataReceived(s)
+             self.failUnlessEqual(self.output, a.received)
+ 
++
++class MultiLinebreakTestCase(unittest.TestCase):
++
++    def testNoLineEnding(self):
++        testData = {'foo bar': ['foo bar'],
++                    'foo\nbar': ['foo', 'bar'],
++                    'foo\rbar': ['foo', 'bar'],
++                    'foo\r\nbar': ['foo', 'bar'],
++                    'foo\nbar\nbaz': ['foo', 'bar\nbaz']}
++        a = basic.MultiLinebreakMixin()
++        for i,o in testData.items():
++            self.failUnlessEqual(a.splitAtNewline(i), o)
++    
++
+ class TestNetstring(basic.NetstringReceiver):
+ 
+     def connectionMade(self):
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 232 bytes
+Desc: not available
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20020426/32f60ae3/attachment.pgp">http://twistedmatrix.com/pipermail/twisted-python/attachments/20020426/32f60ae3/attachment.pgp</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001076.html">[Twisted-Python] twistedmatrix.com now un-wedged
+</A></li>
+	<LI>Next message: <A HREF="001077.html">[Twisted-Python] DICE Job - Austin-Games (Network, Server) Programmer
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1078">[ date ]</a>
+              <a href="thread.html#1078">[ thread ]</a>
+              <a href="subject.html#1078">[ subject ]</a>
+              <a href="author.html#1078">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

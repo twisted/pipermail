@@ -1,0 +1,154 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] XML-RPC and None
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20XML-RPC%20and%20None&In-Reply-To=42B096BE.9030608%40twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001901.html">
+   <LINK REL="Next"  HREF="001904.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] XML-RPC and None</H1>
+    <B>kgi</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20XML-RPC%20and%20None&In-Reply-To=42B096BE.9030608%40twistedmatrix.com"
+       TITLE="[Twisted-web] XML-RPC and None">iacovou at gmail.com
+       </A><BR>
+    <I>Fri Sep  9 15:01:11 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001901.html">[Twisted-web] Problems with images and css
+</A></li>
+        <LI>Next message: <A HREF="001904.html">[Twisted-web] Context Help
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1903">[ date ]</a>
+              <a href="thread.html#1903">[ thread ]</a>
+              <a href="subject.html#1903">[ subject ]</a>
+              <a href="author.html#1903">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wednesday 15 June 2005 23:59, Tommi Virtanen wrote:
+&gt;<i> Matt Feifarek wrote:
+</I>&gt;<i> &gt; We'd like to pass None through the rpc connection on occasion. There's
+</I>&gt;<i> &gt; a flag in the standard lib to allow this to serialize ( send
+</I>&gt;<i> &gt; allow_none=True to the xmlrpclib.Server() )
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; We're getting this error from the twisted resource when we try to
+</I>&gt;<i> &gt; serialize 'None':
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Fault: &lt;Fault 8002: &quot;can't serialize output&quot;&gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I know that the twisted resources uses the stock xmlrpclib, but how
+</I>&gt;<i> &gt; can we tell it to allow None to serialize the twisted way?
+</I>&gt;<i>
+</I>&gt;<i> With the current twisted.web.xmlrpc, you can't.
+</I>&gt;<i> (You'd need to patch that to optionally give an allow_none
+</I>&gt;<i> flag to everything using dumps/loads.)
+</I>&gt;<i>
+</I>&gt;<i> Why do people want to break the perfectly nice standard, anyway?
+</I>&gt;<i> Return a tuple (False, ) for None and (True, stuff) for stuff,
+</I>&gt;<i> or something..
+</I>
+(I know I'm a little late to this discussion, but I thought I'd reply to the 
+thread for those who keep the mailing list for reference, like I do).
+
+Whereas Tommi is strictly correct when he says, &quot;Why do people want to break 
+the perfectly nice standard?&quot; in that it's generally a Good Thing to stick to 
+standards, it's not always as simple as he implies: not all lookups are 
+simple ones that return nice simple scalar values that can be wrapped up in 
+two-tuples.
+
+Personally, I think the absence of a &quot;None&quot; concept from the XML-RPC standard 
+is astounding, and that the decision to adhere strictly to the standard or 
+not should be up to the developer, since only he can make the decision as to 
+whether the allow_none hack is worse than alternative workarounds.
+
+One way would be to write wrappers that recurse through the data structure 
+just before serialization and after deserialization and use magical strings 
+like &quot;NULLVALUE&quot;) but this is a really nasty hack and affects performance, 
+since you're effectively walking the tree twice.
+
+I'm moving some multithreaded xmlrpclib servers to Twisted; some of them 
+return structured data that ultimately comes from a database. Both the 
+*existence* of the column and the *absence* of a defined value are important 
+to the client application.
+
+Since the original servers used allow_none, I'd like that to be allowed via 
+Twisted's xmlrpc.py. The trivial patch below is against SVN head. Note that 
+rather than adding a construction argument to xmlrpc.XMLRPC, it simply adds a 
+class attribute which defaults to False (this means that users don't need to 
+subclass xmlrpc.XMLRPC):
+
+class MyServer ( xmlrpc.XMLRPC ):
+&#160; &#160; allow_none = True
+&#160; &#160; def xmlrpc_Foo ( self, ... ):
+&#160; &#160; &#160; &#160; ...
+
+Note that the modification to xmlrpclib.dumps when serializing the Fault is 
+technically not needed; it's just there for completeness, just in case a hook 
+for user-created Fault objects is added in the future.
+
+Could this patch (or something like it) be committed to SVN, please?
+
+Thanks,
+
+Ricky
+
+
+
+Index: xmlrpc.py
+===================================================================
+--- xmlrpc.py &#160; (revision 14375)
++++ xmlrpc.py &#160; (working copy)
+@@ -93,6 +93,8 @@
+&#160; &#160; &#160;isLeaf = 1
+&#160; &#160; &#160;separator = '.'
+
++ &#160; &#160;allow_none = False
++
+&#160; &#160; &#160;def __init__(self):
+&#160; &#160; &#160; &#160; &#160;resource.Resource.__init__(self)
+&#160; &#160; &#160; &#160; &#160;self.subHandlers = {}
+@@ -128,10 +130,12 @@
+&#160; &#160; &#160; &#160; &#160;if not isinstance(result, Fault):
+&#160; &#160; &#160; &#160; &#160; &#160; &#160;result = (result,)
+&#160; &#160; &#160; &#160; &#160;try:
+- &#160; &#160; &#160; &#160; &#160; &#160;s = xmlrpclib.dumps(result, methodresponse=1)
++ &#160; &#160; &#160; &#160; &#160; &#160;s = xmlrpclib.dumps(result, methodresponse=1,
++ &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160;allow_none = self.allow_none)
+&#160; &#160; &#160; &#160; &#160;except:
+&#160; &#160; &#160; &#160; &#160; &#160; &#160;f = Fault(self.FAILURE, &quot;can't serialize output&quot;)
+- &#160; &#160; &#160; &#160; &#160; &#160;s = xmlrpclib.dumps(f, methodresponse=1)
++ &#160; &#160; &#160; &#160; &#160; &#160;s = xmlrpclib.dumps(f, methodresponse=1,
++ &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160; &#160;allow_none = self.allow_none )
+&#160; &#160; &#160; &#160; &#160;request.setHeader(&quot;content-length&quot;, str(len(s)))
+&#160; &#160; &#160; &#160; &#160;request.write(s)
+&#160; &#160; &#160; &#160; &#160;request.finish()
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001901.html">[Twisted-web] Problems with images and css
+</A></li>
+	<LI>Next message: <A HREF="001904.html">[Twisted-web] Context Help
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1903">[ date ]</a>
+              <a href="thread.html#1903">[ thread ]</a>
+              <a href="subject.html#1903">[ subject ]</a>
+              <a href="author.html#1903">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

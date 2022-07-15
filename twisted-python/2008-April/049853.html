@@ -1,0 +1,165 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Deferreds and Tasklets
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Deferreds%20and%20Tasklets&In-Reply-To=%3CBAY114-DAV356F62F28A687BC24A512BEF00%40phx.gbl%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="049855.html">
+   <LINK REL="Next"  HREF="049854.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Deferreds and Tasklets</H1>
+    <B>Simon Pickles</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Deferreds%20and%20Tasklets&In-Reply-To=%3CBAY114-DAV356F62F28A687BC24A512BEF00%40phx.gbl%3E"
+       TITLE="[Twisted-Python] Deferreds and Tasklets">sipickles at hotmail.com
+       </A><BR>
+    <I>Sun Apr  6 10:42:02 MDT 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="049855.html">[Twisted-Python] Stackless/Twisted integration again
+</A></li>
+        <LI>Next message (by thread): <A HREF="049854.html">[Twisted-Python] Deferreds and Tasklets
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#49853">[ date ]</a>
+              <a href="thread.html#49853">[ thread ]</a>
+              <a href="subject.html#49853">[ subject ]</a>
+              <a href="author.html#49853">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>So I am still fiddling with interesting ways to combine stackless and 
+twisted. Its fun, but I am probably naively hacking! (I always seem to 
+want to use the deprecated code!- probably says a lot about me?)
+
+I'm using Perspective Broker to do remote calls to an app running 
+Twisted-Stackless. PB is positively brilliant, btw.
+
+So say the a remote caller wants to get data from my app. It calls 
+remote_GetData() in my PB app, which uses the actor model(each object 
+has a channel.receive() running in its own tasklet).
+
+remote_GetData() has to send a message thru a stackless.channel() to get 
+the required data, then it must stackless.schedule()
+
+Now it waits for the result to arrive at its own channel.receive(), 
+which then needs to be passed back as the return value of remote_GetData().
+
+Is this possible?
+
+Perhaps like this:
+
+from twisted.spread import pb
+from twisted.internet import reactor
+import stackless
+
+dbRx = stackless.channel()
+pbRx = stackless.channel()
+
+class DataSource:
+   def Listen(self):
+       while 1:
+           msg = dbrx.receive() # a channel will arrive here
+           msg.send(42)
+           stackless.schedule()
+   def __init__(self):
+       stackless.tasklet(self.Listen)()
+
+
+class pbBroker(pb.Referenceable):
+   def remote_GetData(self):
+       dbRx.send(pbRx)
+       result = pbRx.receive()
+       # return 42 to remote caller thru pb
+       return result    
+
+This isn't ideal since I don't want pbBroker to block during the 
+receive. I'd like it to closer resemble the Listen loop of the first 
+class, so other objects can talk to pbBroker while it is waiting. Maybe 
+like this:
+
+class pbBroker(pb.Referenceable):
+   def Listen(self):
+       while 1:
+           msg = self.rx.receive()
+           # do stuff with msg from other local objects
+           stackless.schedule()
+   def __init__(self):
+       self.rx = stackless.channel()
+       stackless.tasklet(self.Listen)()
+   def remote_GetData(self):
+       ch = stackless.channel()
+       dbRx.send(ch)
+       # can block since its a dedicated channel
+       result = ch.receive()
+       # return 42 to remote caller thru pb
+       return result    
+I guess the same problem arise when remote_GetData() has to use a 
+deferred too.
+
+from twisted.enterprise import adbapi
+dbPool = adbapi.ConnectionPool(&quot;MySQLdb&quot;, db=&quot;db&quot;, user=&quot;user&quot;, 
+passwd=&quot;pw&quot;)
+
+class pbBroker(pb.Referenceable):
+   def remote_GetDeferredData(self):
+       d = dbPool.runInteraction(DoQuery, &quot;SELECT * FROM users&quot;) # 
+DoQuery just wraps a query with try/except
+       d.addCallback(self.GetDeferredData_Success)
+
+   def GetDeferredData_Success(self, result):
+       # return to remote caller thru pb
+       return result   ## WRONG
+
+How can I return a value for a remote_* call when I only get that value 
+thru another callback?
+
+Sorry its a long and confusing one!
+
+Simon
+
+
+-- 
+Linux user #458601 - <A HREF="http://counter.li.org.">http://counter.li.org.</A>
+
+
+
+
+
+-- 
+Linux user #458601 - <A HREF="http://counter.li.org.">http://counter.li.org.</A>
+
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="049855.html">[Twisted-Python] Stackless/Twisted integration again
+</A></li>
+	<LI>Next message (by thread): <A HREF="049854.html">[Twisted-Python] Deferreds and Tasklets
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#49853">[ date ]</a>
+              <a href="thread.html#49853">[ thread ]</a>
+              <a href="subject.html#49853">[ subject ]</a>
+              <a href="author.html#49853">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,154 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] resource navigation
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20resource%20navigation&In-Reply-To=%3C3FC01D1A-FB3A-11D7-A3F0-000A95864FC4%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="038484.html">
+   <LINK REL="Next"  HREF="038485.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] resource navigation</H1>
+    <B>Donovan Preston</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20resource%20navigation&In-Reply-To=%3C3FC01D1A-FB3A-11D7-A3F0-000A95864FC4%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] resource navigation">dp at twistedmatrix.com
+       </A><BR>
+    <I>Fri Oct 10 09:56:02 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="038484.html">[Twisted-Python] resource navigation
+</A></li>
+        <LI>Next message (by thread): <A HREF="038485.html">[Twisted-Python] woven dynamic table cell updating
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#38486">[ date ]</a>
+              <a href="thread.html#38486">[ thread ]</a>
+              <a href="subject.html#38486">[ subject ]</a>
+              <a href="author.html#38486">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Oct 9, 2003, at 6:01 PM, Syver Enstad wrote:
+
+&gt;<i>
+</I>&gt;<i> Let's say I have a hierarchy of resources like this:
+</I>&gt;<i>
+</I>&gt;<i> grandparent
+</I>&gt;<i>   parent1
+</I>&gt;<i>   parent2
+</I>&gt;<i>      child1
+</I>&gt;<i>      child2
+</I>&gt;<i>         grandchild
+</I>&gt;<i>
+</I>&gt;<i> Is there an easy way to know at runtime what url goes to let's say
+</I>&gt;<i> parent2? I am interested primarily because I am interested in having
+</I>&gt;<i> as self contained page classes as possible and hardcoding links to
+</I>&gt;<i> parent2 in grandchilds view template seems brittle.
+</I>
+Indeed. I have been experimenting with techniques for making all the 
+Resource subclasses in a resource tree ignorant of each other for a 
+while. One useful technique, if your path segments have meaningful 
+names, is to simply use request.prepath to build a view of links 
+leading to the current object (or &quot;breadcrumbs&quot;):
+
+def wvupdate_breadcrumbs(self, request, widget, data):
+	l = lmx(widget)
+	fullpath = '/' # let us assume our application is installed at the 
+root of the webserver
+	for pathsegment in request.prepath:
+		fullpath += pathsegment + '/'
+		l.a(href= fullpath).text(pathsegment)
+
+But this is only useful for rendering immediate ancestors, and also the 
+only text you can put in the anchor tag is the actual pathsegment which 
+shows up in the URL.
+
+&gt;<i> Woven seems to be strangely symetric regarding models and pages. An
+</I>&gt;<i> example is getChild / getSubmodel and on top of that wchild_ /
+</I>&gt;<i> wmfactory_. The woven model framwork supports asking parents of a
+</I>&gt;<i> model if a submodel name can't be found, it might be interesting to
+</I>&gt;<i> have something similar for resources so that one can have link's on a
+</I>&gt;<i> child page that will be resolved by the parent.
+</I>
+Woven models keep track of the parents they were looked up from using 
+IModel wrappers, but Resources, being a significantly older API, do 
+not. As I mentioned above, I have been experimenting with techniques in 
+this area recently, and one of the ideas I have come up with is in 
+Quotient. (Note that while the code is in Quotient, nothing actually 
+uses it yet.)
+
+To use this technique, you have to control getChild (or you could 
+rewrite getChildForRequest -- but that's an exercise for the reader). 
+The idea is to gather a list of all the objects that had a getChild 
+called on them for a given request. Here's the trick:
+
+class IObjectCrumbs(components.Interface):
+     &quot;&quot;&quot;An interface on the request which keeps track of the list
+     objects that were involved in the url traversal process
+     for this request.
+     &quot;&quot;&quot;
+
+components.registerAdapter(lambda _: [], server.Request, IObjectCrumbs)
+
+class MyPageSubclass(page.LivePage):
+     def getChild(self, name, request):
+         rv = page.LivePage.getChild(self, name, request) # substitute 
+Page if you aren't using LivePage
+         if name != '' or request.prepath == ['']:
+             IObjectCrumbs(request).append(rv)
+         return rv
+
+Once you have installed this getChild on all of the Resource objects 
+involved in your application's Resource tree, you can then at any point 
+in the render process get an IObjectCrumbs adapter on the request to 
+get the list of actual instances which correspond with the path 
+segments in request.prepath. What you do with them is then up to you; 
+the most obvious things that come to mind are asking the instances to 
+render a nicely formatted anchor instead of using the pathsegment text 
+in the breadcrumbs example above, and introspecting the instances to 
+see which child names they are capable of rendering (which you will 
+have to do in a fairly application-specific manner; because of 
+getChild, it isn't possible to write a general solution which lists all 
+valid child names for a given resource).
+
+I'm still trying to find the best solution to this problem in Quotient, 
+and it would be really great if we could get it to the point where we 
+could provide a Widget which anyone could drop into any Page anywhere 
+in the Resource tree, and it would render a nice tree of links the user 
+can use to navigate, but we're probably quite a ways off from actually 
+being able to do that in a sane manner.
+
+dp
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="038484.html">[Twisted-Python] resource navigation
+</A></li>
+	<LI>Next message (by thread): <A HREF="038485.html">[Twisted-Python] woven dynamic table cell updating
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#38486">[ date ]</a>
+              <a href="thread.html#38486">[ thread ]</a>
+              <a href="subject.html#38486">[ subject ]</a>
+              <a href="author.html#38486">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,176 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] socket communications in flash
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20socket%20communications%20in%20flash&In-Reply-To=%3C0492FFB5-A0B7-11D7-85A7-000A95686CD8%40redivi.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="037096.html">
+   <LINK REL="Next"  HREF="037058.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] socket communications in flash</H1>
+    <B>Bob Ippolito</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20socket%20communications%20in%20flash&In-Reply-To=%3C0492FFB5-A0B7-11D7-85A7-000A95686CD8%40redivi.com%3E"
+       TITLE="[Twisted-Python] socket communications in flash">bob at redivi.com
+       </A><BR>
+    <I>Tue Jun 17 05:29:54 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="037096.html">[Twisted-Python] socket communications in flash
+</A></li>
+        <LI>Next message (by thread): <A HREF="037058.html">[Twisted-Python] release fever
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37101">[ date ]</a>
+              <a href="thread.html#37101">[ thread ]</a>
+              <a href="subject.html#37101">[ subject ]</a>
+              <a href="author.html#37101">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Thursday, Jun 12, 2003, at 20:00 America/New_York, e okyere wrote:
+&gt;<i> I am looking at doing low-level sock comms with flash mx and hopefully  
+</I>&gt;<i> c++
+</I>&gt;<i> and upon hitting this thread:
+</I>&gt;<i>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2002-May/001121.html">http://twistedmatrix.com/pipermail/twisted-python/2002-May/001121.html</A>
+</I>&gt;<i>
+</I>&gt;<i> thought I should contact you to see if you have any experience in that  
+</I>&gt;<i> line.
+</I>&gt;<i> If so, I'd appreciate any resources you can share or point to.
+</I>
+This is similar to how I've done it in the past (warning: untested, not  
+commented, mostly rape &amp; paste from other code I've written):
+
+########
+import sys, random, md5
+from twisted.python.compat import True, False
+from twisted.python import log
+from twisted.protocols.basic import LineReceiver
+from twisted.web import microdom
+from twisted.internet.protocol import Factory
+
+
+class XMLPipe(LineReceiver):
+     delimiter = '\0'
+
+     def connectionMade(self):
+         pass
+
+     def sendMessage(self, message):
+         self.transport.writeSequence(('&lt;packet&gt;', str(message),  
+'&lt;/packet&gt;', self.delimiter))
+
+     def lineReceived(self, line):
+         if not line:
+             log.msg(&quot;WARNING:  Empty message from client&quot;)
+             return
+         packet = microdom.parseString(line).childNodes[0]
+         if packet.nodeName != 'packet':
+             raise ValueError, '%r is not a packet tag' % packet
+         self.packetReceived(packet)
+
+     def packetReceived(self, packet):
+         raise NotImplementedError
+
+     def connectionLost(self, reason):
+         pass
+
+class FlashPipe(XMLPipe):
+     def connectionMade(self):
+         self.authenticated = False
+         self.user = None
+         self.issueChallenge()
+
+     def packetReceived(self, packet):
+         for node in packet.childNodes:
+             self.nodeReceived(node)
+
+     def nodeReceived(self, node):
+         return getattr(self, 'handle_'+node.nodeName,  
+self.xmlerror)(node)
+
+     def xmlerror(self, node):
+         log.msg('Unrecognized Node %r %r' % (node, node.toxml()))
+         self.sendMessage('&lt;error&gt;Unrecognized Node&lt;/error&gt;')
+
+     def issueChallenge(self):
+         # some entropy
+         self.pendingChallenge = md5.new(''.join((
+             hex(id(self)),
+             hex(random.randrange(sys.maxint)),
+         ))).hexdigest()
+         self.sendMessage(''.join(
+             ('&lt;challenge&gt;', self.pendingChallenge, '&lt;/challenge&gt;'
+         )))
+
+     def handle_response(self, node):
+         resp = node.firstChild().nodeValue.strip()
+         for possible, user in self.factory.authorized.iteritems():
+             h = md5.new(self.pendingChallenge)
+             h.update(possible)
+             if h.hexdigest() == resp:
+                 break
+         else:
+             return
+         log.msg('authenticated as %s' % user)
+         self.user = user
+         self.authenticated = True
+         self.sendMessage('&lt;authenticated /&gt;')
+
+class FlashXMLFactory(Factory):
+     noisy = 0
+     protocol = FlashPipe
+     authorized = {'somerandomdata' : 'valid user'}
+
+if __name__=='__main__':
+     from twisted.internet import reactor
+     log.startLogging(sys.stdout)
+     reactor.listenTCP(8888, FlashXMLFactory())
+     reactor.run()
+
+####
+
+A conversation would look like this:
+SERVER:  
+'&lt;packet&gt;&lt;challenge&gt;d41d8cd98f00b204e9800998ecf8427e&lt;/challenge&gt;&lt;/ 
+packet&gt;\0'
+CLIENT:  
+'&lt;packet&gt;&lt;response&gt;f87504a987151d223335f0753f010b74&lt;/response&gt;&lt;/ 
+packet&gt;\0'
+SERVER: '&lt;packet&gt;&lt;authenticated /&gt;&lt;/packet&gt;\0'
+
+-bob
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="037096.html">[Twisted-Python] socket communications in flash
+</A></li>
+	<LI>Next message (by thread): <A HREF="037058.html">[Twisted-Python] release fever
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37101">[ date ]</a>
+              <a href="thread.html#37101">[ thread ]</a>
+              <a href="subject.html#37101">[ subject ]</a>
+              <a href="author.html#37101">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

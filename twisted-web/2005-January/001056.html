@@ -1,0 +1,170 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20pgasync%20%28was%3A%20/freeform_post%21%21random%20causes%0A%09exceptions%29&In-Reply-To=20050119013507.GA13696%40dualathlon.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001054.html">
+   <LINK REL="Next"  HREF="001053.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20pgasync%20%28was%3A%20/freeform_post%21%21random%20causes%0A%09exceptions%29&In-Reply-To=20050119013507.GA13696%40dualathlon.random"
+       TITLE="[Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)">andrea at cpushare.com
+       </A><BR>
+    <I>Wed Jan 19 18:15:36 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001054.html">[Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)
+</A></li>
+        <LI>Next message: <A HREF="001053.html">[Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1056">[ date ]</a>
+              <a href="thread.html#1056">[ thread ]</a>
+              <a href="subject.html#1056">[ subject ]</a>
+              <a href="author.html#1056">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I checked out pgasync, and the ConnectionPool is already implemented, exactly
+like I suggested in my last email ;).
+
+I already fixed up my runinteractions to do this:
+
+				if not isinstance(result, Deferred):
+					return zip_description(result, cur)
+				return result.addCallback(zip_description, cur)
+
+With just the above change I'm done with the API.  So now with a single global
+variable set to True or False I can switch transparently between pgasync and
+adbapi+psycopg2.
+
+Next thing I had to fix to be able to login has been to add this:
+
+Index: pgasync/format.py
+===================================================================
+--- pgasync/format.py	(revision 37)
++++ pgasync/format.py	(working copy)
+@@ -7,7 +7,7 @@
+ from errors import *
+ 
+ # Types that are already suitable for str() representation
+-donetypes  = [STRING,BINARY,NUMBER,ROWID,DATETIME]
++donetypes  = [STRING,BINARY,NUMBER,ROWID,DATETIME,BOOL]
+ 
+ def typeCastParam(p):
+ 	&quot;&quot;&quot;Cast v to the appropriate type if possible.
+@@ -30,8 +30,10 @@
+ 		return Date(p.year, p.month, p.day)
+ 	if tp is datetime.time:
+ 		return Time(p.hour, p.minute, p.second, p.microsecond)
++	if tp is bool:
++		return Bool(p)
+ 
+-	raise ProgrammingError, (&quot;Query parameter '%s': cannot convert %s to a PostgreSQL data type&quot; % (k,tp))
++	raise ProgrammingError, (&quot;Query parameter '%s': cannot convert %s to a PostgreSQL data type&quot; % (p,tp))
+ 
+ def format(s,params):
+ 	&quot;&quot;&quot;Make params appear in s correctly.
+Index: pgasync/fe.py
+===================================================================
+--- pgasync/fe.py	(revision 37)
++++ pgasync/fe.py	(working copy)
+@@ -80,7 +80,7 @@
+ 	def runOperation(self, query, args={}):
+ 		conn = connect(*self.params[0],**self.params[1])
+ 		cur = conn.cursor()
+-		cursor.execute(query, args).addErrback(self._error)
++		cur.execute(query, args).addErrback(self._error)
+ 		d = conn.commit()
+ 		d.addErrback(self._error)
+ 		cur.release()
+Index: pgasync/pgtypes.py
+===================================================================
+--- pgasync/pgtypes.py	(revision 37)
++++ pgasync/pgtypes.py	(working copy)
+@@ -70,6 +70,15 @@
+ 	def _dotime(self):
+ 		return &quot;%02d:%02d:%02d.%06d&quot; % (self.hour, self.minute, self.second, self.microsecond)
+ 
++class BOOL:
++	def __init__(self, b):
++		self.__b = b
++	def __str__(self):
++		if self.__b:
++			return &quot;'T'&quot;
++		else:
++			return &quot;'F'&quot;
++
+ def Date(y,m,d): 
+ 	dt = DATETIME(y,m,d)
+ 	dt._tm = 0
+@@ -95,3 +104,5 @@
+ def TimestampFromTicks(t): return DATETIME.fromtimestamp(t)
+ 
+ def Binary(s): return BINARY(s)
++
++def Bool(b): return BOOL(b)
+
+With the above a good part of my app started working. But it's not enough.
+
+Here a list of the remaining issues (which I believe aren't related anymore to
+the API, as far as I'm concerned the current adbapi wrapper is all I need ;).
+
+1) the '%(xx)d' format for integeres/logs insn't recognized. I'd like to use
+   &quot;%(xx)d&quot; to be strict for integers.
+
+btw, is there any difference in python between %u and %d at all?
+
+2) it cannot handle a &quot;;&quot; at the end of the sql string. so I deleted all the
+   finals &quot;;&quot; and I left only the intermediate ones.
+
+3) it doesn't print the nevow url type, note that such parameter is just
+   incidentally passed down to the sql query, and pgasync should ignore it
+   instead of complaining since it never gets resolved
+
+Here's what I get:
+
+            raise ProgrammingError, (&quot;Query parameter '%s': cannot convert %s to a PostgreSQL data type&quot; % (p,tp))
+        pgasync.errors.ProgrammingError: Query parameter '<A HREF="https://localhost:8443/verify_email':">https://localhost:8443/verify_email':</A> cannot convert &lt;class 'nevow.url.URL'&gt; to a PostgreSQL data type
+
+
+So I'm going back to adbapi until I get confirmation on how to proceed. I could
+change my app in theory to deal with the different API, but I've no idea what
+the standard says about the above 3 points. So I prefer to wait before
+making more modifications to already working code.
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001054.html">[Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)
+</A></li>
+	<LI>Next message: <A HREF="001053.html">[Twisted-web] pgasync (was: /freeform_post!!random causes
+	exceptions)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1056">[ date ]</a>
+              <a href="thread.html#1056">[ thread ]</a>
+              <a href="subject.html#1056">[ subject ]</a>
+              <a href="author.html#1056">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

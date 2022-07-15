@@ -1,0 +1,254 @@
+import sys
+import struct
+import time
+
+from twisted.internet import defer, reactor
+
+TEST_PARAMS = {
+                #A list with the tests. Each test corresponds to a number
+                #of runs. A single run means a conversion from an integer to
+                #a bytestring, and back to an integer.
+                "InputTests"    : [1, 10, 100, 1000, 10000, 100000],
+
+                #The integer to do the test with. I define this once to make
+                #sure the generation of the integer is not part of the test.
+                "InputInteger"  : (2**24) - 1 # == 16777215 ~= 16MB
+              }
+
+global globalStartTime
+
+def int2binAsync(anInteger):
+    """
+    This function converts an integer to a byte string using Python's "struct" module.
+    It uses Twisted.
+
+    @param anInteger:
+        The Integer to be converted to the bytestring
+        
+    @return:
+        A Twisted Deferred Instance which will eventually return a bytestring
+    """
+    def packStruct(i):
+        #Packs an integer, result is 4 bytes
+        return struct.pack("i", i)    
+
+    d = defer.Deferred()
+    d.addCallback(packStruct)
+
+    reactor.callLater(0,
+                      d.callback,
+                      anInteger)
+
+    return d
+
+def bin2intAsync(aBin):
+    """
+    This function converts a byte string back to an integer, using Python's "struct" module.
+    It uses Twisted.
+
+    @param aBin:
+        The byte string to be converted to an integer
+        
+    @return:
+        A Twisted Deferred Instance which will eventually return an integer
+    """
+    def unpackStruct(p):
+        #Unpacks a bytestring into an integer
+        return struct.unpack("i", p)[0]
+
+    d = defer.Deferred()
+    d.addCallback(unpackStruct)
+
+    reactor.callLater(0,
+                      d.callback,
+                      aBin)
+    return d
+
+def int2binSync(anInteger):
+    """
+    This function converts an integer to a byte string using the "struct" module.
+
+    @param anInteger:
+        The Integer to be converted to the bytestring
+        
+    @return:
+        The byte string
+    """
+    
+    #Packs an integer, result is 4 bytes
+    return struct.pack("i", anInteger)    
+
+def bin2intSync(aBin):
+    """
+    This function converts a byte string back to an integer, using Python's "struct" module.
+
+    @param aBin:
+        The byte string to be converted to an integer
+        
+    @return:
+        The integer
+    """
+    #Unpacks a bytestring into an integer
+    return struct.unpack("i", aBin)[0]  
+
+def benchmarkCompleted(nrOfRuns, localStartTime, asynchronous=True):
+    """
+    This function gets called when a single benchmark (synchronous and asynchronous)
+    has completed.
+
+    @param nrOfRuns:
+        The number af runs that where benchmarked in this test
+
+    @param localStartTime:
+        The starttime of this specific test.
+
+    @param asynchronous:
+        A boolean indicating whether or not the test was asynchronous
+    """
+    
+    localStopTime = time.time()
+    localDiffTime = localStopTime - localStartTime
+
+    if asynchronous:
+        print "  -> Asynchronous Benchmark ("+str(nrOfRuns)+" runs) Completed in "+str(localDiffTime)+" seconds."
+    else:
+        print "  -> Synchronous Benchmark ("+str(nrOfRuns)+" runs) Completed in "+str(localDiffTime)+" seconds."
+    
+
+def benchmarksCompleted(asynchronous=True):
+    """
+    This function gets called when all the benchmarks (synchronous and asynchronous)
+    have been completed.
+
+    @param asynchronous:
+        A boolean indicating whether or not the tests where asynchronous
+    """
+    
+    globalStopTime = time.time()
+    globalDiffTime = globalStopTime - globalStartTime
+    if asynchronous:
+        print "\n*** Asynchronous Benchmarks Completed in "+str(globalDiffTime)+" seconds."
+        reactor.stop()
+    else:
+        print "\n*** Synchronous Benchmarks Completed in "+str(globalDiffTime)+" seconds."
+
+def runAsynchronousBenchmark(nrOfRuns):
+    """
+    This function runs a single asynchronous benchmark.
+
+    @param nrOfRuns:
+        The number af runs that should be benchmarked in this test
+
+    @return:
+        A Twisted Deferred(List) Instance which will trigger "benchmarkCompleted" as soon as all
+        the conversions are done.
+    """
+    
+    testInt  = TEST_PARAMS["InputInteger"]
+
+    localStartTime = time.time()
+
+    def int2binAsyncCompleted(bin):
+        return bin2intAsync(bin)
+
+    def bin2intAsyncCompleted(integer):
+        if integer != testInt:
+            raise Exception("Failed converting the byte string back to the integer!")
+    
+    deferredList = []
+    for i in range(nrOfRuns):
+        deferredInstance = int2binAsync(testInt)
+        deferredInstance.addCallback(int2binAsyncCompleted)
+        deferredList.append(deferredInstance)
+
+    dl = defer.DeferredList(deferredList)
+    #"benchmarkCompleted" will be triggered when all the deferreds in the list have been triggered.
+    dl.addCallback(lambda _: benchmarkCompleted(nrOfRuns, localStartTime, asynchronous=True))
+
+    return dl
+
+def runAsynchronousBenchmarks():
+    """
+    This function run all asynchronous benchmarks.
+    """
+    
+    print "*** Starting Asynchronous Benchmarks.\n"
+    global globalStartTime
+    globalStartTime = time.time()
+
+    testRuns = TEST_PARAMS["InputTests"]
+    
+    deferredList = []
+    for nrOfRuns in testRuns:
+        deferredInstance = runAsynchronousBenchmark(nrOfRuns)
+        deferredList.append(deferredInstance)
+
+
+    dl = defer.DeferredList(deferredList)
+    #"benchmarksCompleted" will be triggered when all the deferreds in the list have been triggered.
+    dl.addCallback(lambda _: benchmarksCompleted(asynchronous=True))
+
+    reactor.run()
+
+def runSynchronousBenchmark(nrOfRuns):
+    """
+    This function runs a single asynchronous benchmark.
+
+    @param nrOfRuns:
+        The number af runs that should be benchmarked in this test
+    """
+    
+    testInt  = TEST_PARAMS["InputInteger"]
+
+    localStartTime = time.time()
+
+    def int2binSyncCompleted(bin):
+        return bin2intSync(bin)
+
+    def bin2intAsyncCompleted(integer):
+        if integer != testInt:
+            raise Exception("Failed converting the byte string back to the integer!")
+
+    for i in range(nrOfRuns):
+        returnValue = bin2intAsyncCompleted(int2binSyncCompleted(int2binSync(testInt)))
+
+    #Trigger "benchmarkCompleted"
+    benchmarkCompleted(nrOfRuns, localStartTime, asynchronous=False)
+    
+
+def runSynchronousBenchmarks():
+    """
+    This function run all synchronous benchmarks.
+    """
+    
+    print "*** Starting Synchronous Benchmarks.\n"
+    global globalStartTime
+    globalStartTime = time.time()
+
+    testRuns = TEST_PARAMS["InputTests"]
+    
+    for nrOfRuns in testRuns:
+        runSynchronousBenchmark(nrOfRuns)
+
+    #Trigger "benchmarksCompleted"
+    benchmarksCompleted(asynchronous=False)    
+
+if __name__ == "__main__":
+    correctSyntax = False
+    if len(sys.argv) > 1:
+        test = sys.argv[1]
+
+        if test == "-async":
+            correctSyntax = True
+            runAsynchronousBenchmarks()
+            
+        elif test == "-sync":
+            correctSyntax = True
+            runSynchronousBenchmarks()
+
+    if not correctSyntax:
+        print "Usage: python twistedbenchmark.py [test]"
+        print "Valid \"test\" values: "
+        print "\t-async (Fully asynchronous implementation using Twisted)"
+        print "\t-sync (Not asynchronous, no Twisted involved."
+    

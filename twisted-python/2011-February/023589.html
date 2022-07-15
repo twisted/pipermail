@@ -1,0 +1,153 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Error (and response) handling in protocols
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Error%20%28and%20response%29%20handling%20in%20protocols&In-Reply-To=AANLkTincjBuM0EkOJ-3UMZhmaOWcraTqVQfph7no4RFe%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="023591.html">
+   <LINK REL="Next"  HREF="023592.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Error (and response) handling in protocols</H1>
+    <B>Jason Rennie</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Error%20%28and%20response%29%20handling%20in%20protocols&In-Reply-To=AANLkTincjBuM0EkOJ-3UMZhmaOWcraTqVQfph7no4RFe%40mail.gmail.com"
+       TITLE="[Twisted-Python] Error (and response) handling in protocols">jrennie at gmail.com
+       </A><BR>
+    <I>Mon Feb 21 09:45:43 EST 2011</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="023591.html">[Twisted-Python] Error (and response) handling in protocols
+</A></li>
+        <LI>Next message: <A HREF="023592.html">[Twisted-Python] Error (and response) handling in protocols
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#23589">[ date ]</a>
+              <a href="thread.html#23589">[ thread ]</a>
+              <a href="subject.html#23589">[ subject ]</a>
+              <a href="author.html#23589">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>(...catching up on this thread...)
+
+On Mon, Feb 21, 2011 at 6:21 AM, Jason Heeris &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">jason.heeris at gmail.com</A>&gt;wrote:
+
+&gt;<i> There's a connectionMade event when you do SerialPort(protocol, ...).
+</I>&gt;<i> There's no connectionLost event, even if you do that over and over
+</I>&gt;<i> again.
+</I>&gt;<i>
+</I>
+As Jean-Paul noted, that's a genuine bug with Twisted.  However, since
+Twisted is pure python, you can likely override the SerialPort class and
+make user-land changes to fix the issue.  Maybe you'd even be able to help
+review or fix the bug? :)  See the following link for guidelines:
+
+<A HREF="http://twistedmatrix.com/trac/wiki/TwistedDevelopment">http://twistedmatrix.com/trac/wiki/TwistedDevelopment</A>
+
+Should I? I don't know. My problem is, as a newbie, I *just don't
+&gt;<i> know* what the usual way to approach a problem like this is. Or if
+</I>&gt;<i> there is one.
+</I>&gt;<i>
+</I>
+IIUC, SerialPort doesn't work with the twisted factory infrastructure.
+ Factories are used to persist data across different connections.  With
+SerialPort, there's just one connection.  Any data you want to store (e.g. a
+Deferred) should go in your protocol.
+
+So, please help me think this through... let's say I have this
+&gt;<i> long-lasting protocol. It needs to keep a DeferredLock, so it doesn't
+</I>&gt;<i> try to send one message before it's received the reply for another &#8212;
+</I>&gt;<i> right? It should have a method for sending a command that returns a
+</I>&gt;<i> Deferred, that will eventually fire with the response (parsed and
+</I>&gt;<i> converted as necessary, that bit's easy). The bit I have trouble with
+</I>&gt;<i> is that the *origin* of the Deferred callback or errback is the
+</I>&gt;<i> &quot;lineReceived&quot; method &#8212; somehow this method needs to know which
+</I>&gt;<i> Deferred to callback with the response. But how?
+</I>&gt;<i>
+</I>
+Sounds like you just need a queue of pending commands and a state object for
+the currently executing command.  When runCommand() is called, add the
+command to the pending queue.  If no command is running, pop the first
+command in the queue and send it.  When you get a response, the state object
+tells you what Deferred to fire.  Again, if there's a pending command, send
+it.  Sketch:
+
+def _runNext(self):
+    if len(self.queue) &gt; 0 and self.state == 'IDLE':
+        self.state = 'PROCESSING'
+        self.currentCmd, self.currentDeferred = self.queue.pop()
+        self.sendLine(self.constructMessage(self.currentCmd))
+def runCommand(self, command, callback):
+    ret = Deferred()
+    self.queue.append((command, ret))
+    self._runNext(self)
+    return ret
+def lineReceived(self, line):
+    self.state = 'IDLE'
+    try:
+        result = self.parseResponse(self.currentCmd, line)
+        self.currentDeferred.callback(result)
+    except Exception, err:
+        self.currentDeferred.errback(err)
+    self._runNext(self)
+
+
+&gt;<i> PS. Twisted has great documentation for its individual components, but
+</I>&gt;<i> as soon as you get into anything that doesn't centre around
+</I>&gt;<i> &quot;reactor.connectTCP&quot;, it seems like you're in the dark. All of the
+</I>&gt;<i> examples and tutorials seem to have near-trivial, completely
+</I>&gt;<i> synchronous protocols, requiring no back-and-forth or error handling.
+</I>&gt;<i> Ultimately I'd like to take all of this advice, have an epiphany,
+</I>&gt;<i> finish my project, bundle my new-found wisdom up into a neat little
+</I>&gt;<i> package of things I think would make serial comms a happier experience
+</I>&gt;<i> for all, and publish it somewhere. And maybe write about how to use
+</I>&gt;<i> Twisted for non-internetty things. But I do need to actually
+</I>&gt;<i> accomplish something first.
+</I>
+
+In case you haven't yet, see:
+
+ <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2011-January/023362.html">http://twistedmatrix.com/pipermail/twisted-python/2011-January/023362.html</A>
+
+and follow-up threads.
+
+Cheers,
+
+Jason
+
+-- 
+Jason Rennie
+Research Scientist, ITA Software
+617-714-2645
+<A HREF="http://www.itasoftware.com/">http://www.itasoftware.com/</A>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20110221/65e00e8c/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20110221/65e00e8c/attachment.htm</A> 
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="023591.html">[Twisted-Python] Error (and response) handling in protocols
+</A></li>
+	<LI>Next message: <A HREF="023592.html">[Twisted-Python] Error (and response) handling in protocols
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#23589">[ date ]</a>
+              <a href="thread.html#23589">[ thread ]</a>
+              <a href="subject.html#23589">[ subject ]</a>
+              <a href="author.html#23589">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

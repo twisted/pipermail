@@ -1,0 +1,153 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] deferToThread and thrown exceptions break gc - ticket 3853
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20deferToThread%20and%20thrown%20exceptions%20break%20gc%20-%0A%20ticket%203853&In-Reply-To=%3C20130626210725.28793.316817.divmod.xquotient.35%40top%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="027146.html">
+   <LINK REL="Next"  HREF="027148.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] deferToThread and thrown exceptions break gc - ticket 3853</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20deferToThread%20and%20thrown%20exceptions%20break%20gc%20-%0A%20ticket%203853&In-Reply-To=%3C20130626210725.28793.316817.divmod.xquotient.35%40top%3E"
+       TITLE="[Twisted-Python] deferToThread and thrown exceptions break gc - ticket 3853">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Wed Jun 26 15:07:25 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="027146.html">[Twisted-Python] deferToThread and thrown exceptions break gc - ticket 3853
+</A></li>
+        <LI>Next message: <A HREF="027148.html">[Twisted-Python] EuroPython Sprint Ideas?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27147">[ date ]</a>
+              <a href="thread.html#27147">[ thread ]</a>
+              <a href="subject.html#27147">[ subject ]</a>
+              <a href="author.html#27147">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 08:15 pm, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">rutt.4 at osu.edu</A> wrote:
+&gt;<i>I am not sure that that trac issue contains a patch that will fix it. 
+</I>&gt;<i>The
+</I>&gt;<i>most recent patch on that trac issue is for twisted 8.1, and it does 
+</I>&gt;<i>not
+</I>&gt;<i>apply cleanly to twisted 12.3.0.  When I tried to place the 2 lines 
+</I>&gt;<i>that
+</I>&gt;<i>form the patch in the most obvious place in the 12.3.0 codebase (before 
+</I>&gt;<i>the
+</I>&gt;<i>code 'self.waiters.append(ct)') I could not get it to fix the repro I 
+</I>&gt;<i>have.
+</I>&gt;<i>Here's my repro:
+</I>&gt;<i>
+</I>&gt;<i>from twisted.internet import reactor
+</I>&gt;<i>from twisted.internet.threads import deferToThread
+</I>&gt;<i>
+</I>&gt;<i>class SomeClass(object):
+</I>&gt;<i>    def __del__(self):
+</I>&gt;<i>        print 'SomeClass\'s destructor was called!'
+</I>
+You need to be a little careful here.  Adding an object with a `__del__` 
+method is a good way to further confuse garbage collection issues.  For 
+this test to be valid, you now also need to prove that this object never 
+becomes part of a reference cycle.
+
+It's generally safer to use a weakref with a callback to prove things 
+about when objects get collected.
+
+However, I don't think this is a problem in this case.
+
+I did modify your example in another way though:
+
+from twisted.internet import reactor
+from twisted.internet.threads import deferToThread
+
+class SomeClass(object):
+    def __del__(self):
+        print &quot;SomeClass\'s destructor was called!&quot;
+
+def foo():
+    sc = SomeClass()
+    raise RuntimeError('bah')
+
+def shutmedown(data):
+    print 'reactor shutdown happening soon'
+    reactor.callLater(1, stop)
+
+def stop():
+    print 'reactor shutdown happening now'
+    reactor.stop()
+
+def go():
+    d = deferToThread(foo)
+    d.addCallbacks(shutmedown, shutmedown)
+reactor.callWhenRunning(go)
+reactor.run()
+print 'Reactor shutdown'
+
+Notice that now it doesn't shutdown as soon as the thread completes, but 
+lets execution continue for a little while longer.
+
+Against <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">trunk at HEAD</A> on Debian Wheezy, I see this behavior:
+
+reactor shutdown happening soon
+reactor shutdown happening now
+SomeClass's destructor was called!
+Reactor shutdown
+
+This still shows there is a problem, since the object is kept alive for 
+an arbitrary amount of time after the function in the thread raises the 
+exception.
+
+Then I inserted just the `sys.exc_clear()` call above the &quot;with 
+self._workerState...&quot; statement in threadpool.py in <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">trunk at HEAD.</A>  This 
+changes the behavior to:
+
+with
+reactor shutdown happening soon
+SomeClass's destructor was called!
+reactor shutdown happening now
+Reactor shutdown
+
+Notice the destructor is called sooner.  From watching this run, I can 
+also say it is called soon after the callback on the deferToThread 
+Deferred fires (not, say, after the 1 second delay I inserted).
+
+Whether or not it's possible to have the destructor called *even* sooner 
+than this, I don't know.  This behavior does seem like it's good enough 
+for most cases though.
+
+Jean-Paul
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="027146.html">[Twisted-Python] deferToThread and thrown exceptions break gc - ticket 3853
+</A></li>
+	<LI>Next message: <A HREF="027148.html">[Twisted-Python] EuroPython Sprint Ideas?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27147">[ date ]</a>
+              <a href="thread.html#27147">[ thread ]</a>
+              <a href="subject.html#27147">[ subject ]</a>
+              <a href="author.html#27147">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

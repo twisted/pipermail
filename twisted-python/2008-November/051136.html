@@ -1,0 +1,143 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Trying to proxy through multiple IPs
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Trying%20to%20proxy%20through%20multiple%20IPs&In-Reply-To=%3C20081104100443.GI12038%40steerpike.home.puzzling.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051133.html">
+   <LINK REL="Next"  HREF="051138.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Trying to proxy through multiple IPs</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Trying%20to%20proxy%20through%20multiple%20IPs&In-Reply-To=%3C20081104100443.GI12038%40steerpike.home.puzzling.org%3E"
+       TITLE="[Twisted-Python] Trying to proxy through multiple IPs">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Tue Nov  4 03:04:43 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051133.html">[Twisted-Python] Trying to proxy through multiple IPs
+</A></li>
+        <LI>Next message (by thread): <A HREF="051138.html">[Twisted-Python] Trying to proxy through multiple IPs
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51136">[ date ]</a>
+              <a href="thread.html#51136">[ thread ]</a>
+              <a href="subject.html#51136">[ subject ]</a>
+              <a href="author.html#51136">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Erik Wickstrom wrote:
+&gt;<i> Hi all,
+</I>&gt;<i> 
+</I>&gt;<i> I'm trying to write a proxy server that accepts connections on
+</I>&gt;<i> multiple ports, and depending on the port, using a different IP for
+</I>&gt;<i> the outgoing connection.  My code works except that adding additional
+</I>&gt;<i> reactor.listenTCP(...)s overwrite the IP of the previous listenTCPs.
+</I>&gt;<i> So the proxy accepts connections on all the desired ports, but only
+</I>&gt;<i> uses the last IP address for outgoing connections.
+</I>&gt;<i> 
+</I>&gt;<i> The ip (bindIP) is somehow being overwritten.  Based on advice from
+</I>&gt;<i> IRC (exarkun --thanks!), I've tried a couple attempts at using
+</I>&gt;<i> closures to solve the problem, but non of my implementations have done
+</I>&gt;<i> the trick.
+</I>
+I doesn't look like you understand how to write closures in Python.  Consider
+this snippet of your code:
+
+&gt;<i> class ProxyFactory(http.HTTPFactory):
+</I>&gt;<i>     def class_factory(self, bindIP):
+</I>&gt;<i>         def closure(ip):
+</I>&gt;<i>             klass2 = ProxyRequest
+</I>&gt;<i>             setattr(klass2, 'bindIP', ip)
+</I>&gt;<i>             return klass2
+</I>&gt;<i>         klass = Proxy
+</I>&gt;<i>         setattr(klass, 'requestFactory', closure(bindIP))
+</I>&gt;<i>         return klass
+</I>&gt;<i> 
+</I>&gt;<i>     def __init__(self, ip):
+</I>&gt;<i>         http.HTTPFactory.__init__(self)
+</I>&gt;<i>         self.ip = ip
+</I>&gt;<i>         #self.protocol = proxy.Proxy
+</I>&gt;<i>         self.protocol = self.class_factory(ip)
+</I>
+These lines are equivalent to the much simpler:
+
+class ProxyFactory(http.HTTPFactory):
+
+    def __init__(self, ip):
+         self.protocol = Proxy
+         self.protocol.requestFactory = ProxyRequest
+         self.protocol.requestFactory.bindIP = ip
+
+In particular, even though you define a function you call “closure”, because you
+always invoke it immediately after defining it (and do nothing else with it) you
+don't gain any difference in behaviour by making a function.
+
+So the problem is you have just a single global requestFactory for all ProxyFactory's
+(the ProxyRequest class), but you're mutating that as if it's not global.
+
+The solution is to either,
+
+  a) actually have a different requestFactory, or
+  b) pass the bindIP to the ProxyRequest (the object that cares about it) some
+     other way.
+
+a) is a bit messy, even when done correctly.  The simpler way is b):
+
+    class ProxyRequest(Request):
+
+        protocols = {'http': ProxyClientFactory}
+        ports = {'http': 80}
+    
+        def __init__(self, channel, queued, reactor=reactor):
+            Request.__init__(self, channel, queued)
+            self.reactor = reactor
+            self.bindIP = self.channel.factory.ip
+
+        # ...the rest of ProxyRequest as you had it...
+
+    class Proxy(HTTPChannel):
+        requestFactory = ProxyRequest
+    
+    class ProxyFactory(http.HTTPFactory):
+
+        def __init__(self, ip):
+             http.HTTPFactory.__init__(self)
+             self.ip = ip
+
+-Andrew.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051133.html">[Twisted-Python] Trying to proxy through multiple IPs
+</A></li>
+	<LI>Next message (by thread): <A HREF="051138.html">[Twisted-Python] Trying to proxy through multiple IPs
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51136">[ date ]</a>
+              <a href="thread.html#51136">[ thread ]</a>
+              <a href="subject.html#51136">[ subject ]</a>
+              <a href="author.html#51136">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

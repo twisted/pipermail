@@ -1,0 +1,150 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] A kinder and more consistent	defer.inlineCallbacks
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20A%20kinder%20and%20more%20consistent%0A%09defer.inlineCallbacks&In-Reply-To=%3C368574aa0811211120l32b2df66j8031199aa17f7850%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051238.html">
+   <LINK REL="Next"  HREF="051242.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] A kinder and more consistent	defer.inlineCallbacks</H1>
+    <B>Drew Smathers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20A%20kinder%20and%20more%20consistent%0A%09defer.inlineCallbacks&In-Reply-To=%3C368574aa0811211120l32b2df66j8031199aa17f7850%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] A kinder and more consistent	defer.inlineCallbacks">drew.smathers at gmail.com
+       </A><BR>
+    <I>Fri Nov 21 12:20:33 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051238.html">[Twisted-Python] A kinder and more consistent defer.inlineCallbacks
+</A></li>
+        <LI>Next message (by thread): <A HREF="051242.html">[Twisted-Python] A kinder and more consistent	defer.inlineCallbacks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51240">[ date ]</a>
+              <a href="thread.html#51240">[ thread ]</a>
+              <a href="subject.html#51240">[ subject ]</a>
+              <a href="author.html#51240">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, Nov 21, 2008 at 1:04 PM, Terry Jones &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">terry at jon.es</A>&gt; wrote:
+&gt;<i> Here's a suggestion for making inlineCallbacks more consistent and less
+</I>&gt;<i> confusing.  Let's suppose you're writing something like this:
+</I>&gt;<i>
+</I>&gt;<i>    @inlineCallbacks
+</I>&gt;<i>    def func():
+</I>&gt;<i>        ....
+</I>&gt;<i>
+</I>&gt;<i>    result = func()
+</I>&gt;<i>
+</I>&gt;<i> There are 2 things that could be better, IMO:
+</I>&gt;<i>
+</I>&gt;<i> 1. func may not yield. In that case, you either get an AttributeError when
+</I>&gt;<i> inlineCallbacks tries to send(). Or worse, the call to send might actually
+</I>&gt;<i> work, and do who knows what. I.e., func() could return an object with a
+</I>&gt;<i> send method but which is not a generator. For some fun, run some code that
+</I>&gt;<i> calls the following decorated function (see if you can figure out what will
+</I>&gt;<i> happen before you do):
+</I>&gt;<i>
+</I>&gt;<i>    @defer.inlineCallbacks
+</I>&gt;<i>    def f():
+</I>&gt;<i>        class yes():
+</I>&gt;<i>            def send(x, y):
+</I>&gt;<i>                print 'yes'
+</I>&gt;<i>                # accidentally_destroy_the_universe_too()
+</I>&gt;<i>        return yes()
+</I>&gt;<i>
+</I>
+Why not just return a Deferred from the function and not decorate it.
+Or document the function as returning a value if it doesn't block.
+
+&gt;<i> 2. func might raise before it get to its first yield. In that case you'll
+</I>&gt;<i> get an exception thrown when the inlineCallbacks decorator tries to create
+</I>&gt;<i> the wrapper function:
+</I>&gt;<i>
+</I>&gt;<i>    File &quot;/usr/lib/python2.5/site-packages/twisted/internet/defer.py&quot;, line 813, in unwindGenerator
+</I>&gt;<i>      return _inlineCallbacks(None, f(*args, **kwargs), Deferred())
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> There's a simple and consistent way to handle both of these. Just have
+</I>&gt;<i> inlineCallbacks do some initial work based on what it has been passed:
+</I>&gt;<i>
+</I>&gt;<i>    def altInlineCallbacks(f):
+</I>&gt;<i>        def unwindGenerator(*args, **kwargs):
+</I>&gt;<i>            deferred = defer.Deferred()
+</I>&gt;<i>            try:
+</I>&gt;<i>                result = f(*args, **kwargs)
+</I>&gt;<i>            except Exception, e:
+</I>&gt;<i>                deferred.errback(e)
+</I>&gt;<i>                return deferred
+</I>&gt;<i>            if isinstance(result, types.GeneratorType):
+</I>&gt;<i>                return defer._inlineCallbacks(None, result, deferred)
+</I>&gt;<i>            deferred.callback(result)
+</I>&gt;<i>            return deferred
+</I>&gt;<i>
+</I>&gt;<i>        return mergeFunctionMetadata(f, unwindGenerator)
+</I>
+Essentially this is equivalent to _not_ decorating your function and
+returning a Deferred via defer.succeed(value) or defer.fail(error).
+I'm still not sure why it's necessary to stitch this kind of behavior
+into inlineCallbacks().  From my perspective inlineCallbacks() simply
+equates: &quot;I want to do more than one asynchronous operation inline and
+here's some syntactic sugar using yield as an expression.&quot;
+
+&gt;<i>
+</I>&gt;<i> This has the advantage that (barring e.g., a KeyboardInterrupt in the
+</I>&gt;<i> middle of things) you'll *always* get a deferred back when you call an
+</I>&gt;<i> inlineCallbacks decorated function. That deferred might have already called
+</I>&gt;<i> or erred back (corresponding to cases 1 and 2 above).
+</I>&gt;<i>
+</I>
+You will always get a Deferred  back if the function is a generator.
+
+&gt;<i> I'm going to use this version of inlineCallbacks in my code.  There's a
+</I>&gt;<i> case for it making it into Twisted itself: inlinecallbacks is already
+</I>&gt;<i> cryptic enough in its operation that anything we can do to make its
+</I>&gt;<i> operation more uniform and less surprising, the better.
+</I>&gt;<i>
+</I>&gt;<i> You might think that case 1 rarely comes up. But I've hit it a few times,
+</I>&gt;<i> usually when commenting out sections of code for testing. If you
+</I>&gt;<i> accidentally comment out the last yield in func, it no longer returns a
+</I>&gt;<i> generator and that causes a different error.
+</I>
+That's what unit tests are for :)  But I'm not sure how you could
+easily wind up in this scenario considering generators don't allow
+return with an argument.
+
+Drew
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051238.html">[Twisted-Python] A kinder and more consistent defer.inlineCallbacks
+</A></li>
+	<LI>Next message (by thread): <A HREF="051242.html">[Twisted-Python] A kinder and more consistent	defer.inlineCallbacks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51240">[ date ]</a>
+              <a href="thread.html#51240">[ thread ]</a>
+              <a href="subject.html#51240">[ subject ]</a>
+              <a href="author.html#51240">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,142 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] render_GET and memory consumption
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20render_GET%20and%20memory%20consumption&In-Reply-To=4D10F9CB.5030502%40fosstel.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004607.html">
+   <LINK REL="Next"  HREF="004609.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] render_GET and memory consumption</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20render_GET%20and%20memory%20consumption&In-Reply-To=4D10F9CB.5030502%40fosstel.com"
+       TITLE="[Twisted-web] render_GET and memory consumption">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Tue Dec 21 14:24:20 EST 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004607.html">[Twisted-web] render_GET and memory consumption
+</A></li>
+        <LI>Next message: <A HREF="004609.html">[Twisted-web] render_GET and memory consumption
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4608">[ date ]</a>
+              <a href="thread.html#4608">[ thread ]</a>
+              <a href="subject.html#4608">[ subject ]</a>
+              <a href="author.html#4608">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 07:02 pm, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">psanchez at fosstel.com</A> wrote:
+&gt;<i>On 10-12-21 12:47 PM, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">exarkun at twistedmatrix.com</A> wrote:
+</I>&gt;&gt;<i>On 04:43 pm, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">psanchez at fosstel.com</A> wrote:
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>OK, I guess I'm being slow :-( Here's another version, same results.
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>import os
+</I>&gt;&gt;&gt;<i>from twisted.internet import reactor
+</I>&gt;&gt;&gt;<i>from twisted.web.server import Site
+</I>&gt;&gt;&gt;<i>from twisted.web.resource import Resource
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>CHUNK_SIZE = 32*1024
+</I>&gt;&gt;&gt;<i>data = os.urandom(10*1024*1024)
+</I>&gt;&gt;&gt;<i>chunks = []
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>def make_chunks():
+</I>&gt;&gt;&gt;<i>      s = 0
+</I>&gt;&gt;&gt;<i>      for chunk in iter(lambda: data[s:s+CHUNK_SIZE], ''):
+</I>&gt;&gt;&gt;<i>          chunks.append(chunk)
+</I>&gt;&gt;&gt;<i>          s = s + CHUNK_SIZE
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>class TestPage(Resource):
+</I>&gt;&gt;&gt;<i>       isLeaf = True
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>       def render_GET(self, request):
+</I>&gt;&gt;&gt;<i>           for chunk in chunks:
+</I>&gt;&gt;&gt;<i>               request.write(chunk)
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>make_chunks()
+</I>&gt;&gt;&gt;<i>root = Resource()
+</I>&gt;&gt;&gt;<i>root.putChild('test', TestPage())
+</I>&gt;&gt;&gt;<i>reactor.listenTCP(8880, Site(root))
+</I>&gt;&gt;&gt;<i>reactor.run()
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>This version has flat memory usage on my system - 33MB all the way
+</I>&gt;&gt;<i>through.
+</I>&gt;&gt;<i>Jean-Paul
+</I>&gt;<i>
+</I>&gt;<i>Did you try this running the clients on a different machine than the 
+</I>&gt;<i>one
+</I>&gt;<i>running the server? I find that if I run both the server and the 
+</I>&gt;<i>clients
+</I>&gt;<i>(using httperf) on the same machine things behave differently. I can
+</I>&gt;<i>only see the memory consumption problem consistently when running the
+</I>&gt;<i>clients on a separate machine (which would be my real use case).
+</I>&gt;<i>
+</I>&gt;<i>BTW, I'm running these test on Ubuntu 10.04, Python 2.6.5, twisted
+</I>&gt;<i>10.0.0-2ubuntu2.
+</I>
+Argh.  I just ran it over loopback, so I wasn't accurately testing the 
+case you described.  James Knight just reminded me that the transport 
+will still find a way to copy data in this case, so you're right that 
+this still isn't a working solution.  Instead, you have to go all the 
+way to producers/consumers, and only write more data to the transport 
+buffer when it has finished dealing with what you previously gave it.
+
+Request implements IConsumer, which means you can pass an IProducer 
+provider to its registerProducer method.  When the send buffer gets 
+close to empty, the IProducer's resumeProducing method will be called 
+and you can write some more bytes to the Request.
+
+There are some more complications and subtleties in the 
+IProducer/IConsumer interfaces, which you can read about at 
+&lt;<A HREF="http://twistedmatrix.com/documents/current/core/howto/producers.html">http://twistedmatrix.com/documents/current/core/howto/producers.html</A>&gt;.
+
+Basically, you'll end up with something like:
+
+    from twisted.python.log import err
+    from twisted.protocols.basic import FileSender
+    from twisted.web.server import NOT_DONE_YET
+
+    def render_GET(self, request):
+        producer = FileSender()
+        d = producer.beginFileTransfer(StringIO(chunk), request)
+        def finished(ignored):
+            request.finish()
+        d.addErrback(err, &quot;Streaming data to client failed&quot;)
+        d.addCallback(finished)
+        return NOT_DONE_YET
+
+Sorry for the earlier mis-information.
+
+Jean-Paul
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004607.html">[Twisted-web] render_GET and memory consumption
+</A></li>
+	<LI>Next message: <A HREF="004609.html">[Twisted-web] render_GET and memory consumption
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4608">[ date ]</a>
+              <a href="thread.html#4608">[ thread ]</a>
+              <a href="subject.html#4608">[ subject ]</a>
+              <a href="author.html#4608">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

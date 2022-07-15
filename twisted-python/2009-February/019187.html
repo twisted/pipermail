@@ -1,0 +1,215 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted.web benchmarks
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20twisted.web%20benchmarks&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="019186.html">
+   <LINK REL="Next"  HREF="019188.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted.web benchmarks</H1>
+    <B>Alvin Delagon</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20twisted.web%20benchmarks&In-Reply-To="
+       TITLE="[Twisted-Python] twisted.web benchmarks">adelagon at gmail.com
+       </A><BR>
+    <I>Tue Feb 17 23:00:47 EST 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="019186.html">[Twisted-Python] Available for short-term Twisted consulting, e.g. training, design (but not coding)
+</A></li>
+        <LI>Next message: <A HREF="019188.html">[Twisted-Python] raw xml to element, char encoding/decoding error
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19187">[ date ]</a>
+              <a href="thread.html#19187">[ thread ]</a>
+              <a href="subject.html#19187">[ subject ]</a>
+              <a href="author.html#19187">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello All,
+
+First of all thanks for all the pointers in the #twisted about twisted.web
+being able to use threadpool. Here's the benchmark between cherryPy 3.0 and
+twisted.web that I promised. I hope this could serve as a reference in the
+future.
+
+*Testing parameters:*
+- Office PC: Intel(R) Pentium(R) D CPU 2.80GHz with 1GB RAM
+- Apache bench set to 500 concurrent attempts within 30 secs
+- LinuxMint Elyssa/Python 2.5.2/Twisted 2.5
+- Twisted using SelectReactor
+- Webservers just returning &quot;Hello!&quot; after some mathematical calculation:
+
+            result = 0
+            for i in range(random.randint(100, 300)):
+                angle = math.radians(random.randint(0, 45))
+                result += math.tanh(angle)/math.cosh(angle)
+
+*
+CherryPy Results:*
+Concurrency Level:      500
+Time taken for tests:   30.1441 seconds
+Complete requests:      *6421*
+Failed requests:        0
+Write errors:           0
+Total transferred:      834990 bytes
+HTML transferred:       38538 bytes
+Requests per second:    214.02 [#/sec] (mean)
+Time per request:       2336.197 [ms] (mean)
+Time per request:       4.672 [ms] (mean, across all concurrent requests)
+Transfer rate:          27.17 [Kbytes/sec] received
+*
+twisted-web Results (no threading):*
+Concurrency Level:      500
+Time taken for tests:   30.35509 seconds
+Complete requests:      *10051*
+Failed requests:        0
+Write errors:           0
+Total transferred:      502600 bytes
+HTML transferred:       60312 bytes
+Requests per second:    334.64 [#/sec] (mean)
+Time per request:       1494.155 [ms] (mean)
+Time per request:       2.988 [ms] (mean, across all concurrent requests)
+Transfer rate:          16.31 [Kbytes/sec] received
+
+
+*twisted-web Results (with threading, threadpool [min=100, max=400]):*
+Concurrency Level:      500
+Time taken for tests:   30.16998 seconds
+Complete requests:      *11068*
+Failed requests:        0
+Write errors:           0
+Total transferred:      553450 bytes
+HTML transferred:       66414 bytes
+Requests per second:    368.72 [#/sec] (mean)
+Time per request:       1356.026 [ms] (mean)
+Time per request:       2.712 [ms] (mean, across all concurrent requests)
+Transfer rate:          17.99 [Kbytes/sec] received
+
+
+*Source Listing (using Twisted):
+*
+#!/usr/bin/python
+from twisted.internet import reactor
+from twisted.web import http
+from twisted.python.threadpool import ThreadPool
+import random, math, sys
+
+class HTTPProtocol(http.Request):
+    def process(self):
+        def process_finish():
+            result = 0
+            for i in range(random.randint(100, 300)):
+                angle = math.radians(random.randint(0, 45))
+                result += math.tanh(angle)/math.cosh(angle)
+            self.setHeader('Content-Type', 'text/html')
+            self.write(&quot;Hello!&quot;)
+            self.finish()
+        if self.channel.factory.app.threads_enabled:
+            print(&quot;Using threads&quot;)
+            reactor.callFromThread(process_finish)
+        else:
+            print(&quot;Not using threads&quot;)
+            process_finish()
+
+class HTTPChannel(http.HTTPChannel):
+    requestFactory = HTTPProtocol
+
+class HTTPFactory(http.HTTPFactory):
+    protocol = HTTPChannel
+    def __init__(self, app):
+        self.app = app
+
+    def start(self, port=8080):
+        reactor.listenTCP(port, self)
+
+class BenchmarkApplication():
+    def __init__(self):
+        self.httpfactory = None
+        self.pool = None
+        self.threads_enabled = False
+
+    def start(self):
+        try:
+            minthreads = int(sys.argv[1])
+            maxthreads = int(sys.argv[2])
+            self.pool = ThreadPool(minthreads, maxthreads)
+            self.pool.start()
+            self.threads_enabled = True
+            print &quot;Threads enabled: MIN:%d MAX:%d&quot; % (minthreads,
+maxthreads)
+        except Exception, e:
+            print(&quot;minthreads and maxthreads is not set or malformed.
+Threading will be disabled&quot;)
+        self.httpfactory = HTTPFactory(self)
+        self.httpfactory.start()
+        return (True)
+
+    def end(self):
+        if self.pool != None:
+            self.pool.stop()
+
+if __name__ == &quot;__main__&quot;:
+    gba = BenchmarkApplication()
+    if gba.start():
+        reactor.run()
+    gba.end()*
+
+Source Listing (using CherryPy):
+*#!/usr/bin/python
+import cherrypy
+from amazilia import *
+from amazilia import base
+from amazilia import mysql
+import random, math
+
+class Root:
+    def index(self):
+    result = 0
+        for i in range(random.randint(100, 300)):
+            angle = math.radians(random.randint(0, 45))
+            result += math.tanh(angle)/math.cosh(angle)
+        return &quot;Hello!&quot;
+    index.exposed = True
+
+root = Root()
+cherrypy.quickstart(root)*
+
+
+*I haven't had much time to tinker with CherryPy. Threre might be some ways
+to increase its performance. :)
+
+---
+Alvin
+-- 
+<A HREF="http://www.alvinatorsplayground.blogspot.com/">http://www.alvinatorsplayground.blogspot.com/</A>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20090218/c5c9d81f/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20090218/c5c9d81f/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="019186.html">[Twisted-Python] Available for short-term Twisted consulting, e.g. training, design (but not coding)
+</A></li>
+	<LI>Next message: <A HREF="019188.html">[Twisted-Python] raw xml to element, char encoding/decoding error
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19187">[ date ]</a>
+              <a href="thread.html#19187">[ thread ]</a>
+              <a href="subject.html#19187">[ subject ]</a>
+              <a href="author.html#19187">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

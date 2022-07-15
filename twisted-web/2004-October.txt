@@ -1,0 +1,4347 @@
+From dialtone at gmail.com  Fri Oct  1 19:33:52 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Fri Oct  1 19:33:57 2004
+Subject: [Twisted-web] [PATCH] twisted.web2 support for gzip stream in/out
+Message-ID: <c893b853041001183351ef8143@mail.gmail.com>
+
+Following there's a patch for twisted.web2 to support gzip
+Content-Encoding of chunks.
+
+Thanks to Bob Ippolito for answering immediately to my mail about the
+permission to include his gzstream work in twisted.web2.
+
+Here is his mail:
+===
+From: Bob Ippolito <bob@redivi.com>
+To: Valentino Volonghi <dialtone@gmail.com>
+Date: Fri, 1 Oct 2004 20:50:35 -0400
+Subject: Re: gzstream integration with twisted
+
+Twisted.web2 may use my gzstream.
+
+On Oct 1, 2004, at 8:33 PM, Valentino Volonghi wrote:
+
+> Hi,
+> I'm helping out Twisted developers to get twisted.web2 out before
+> October 31.
+>
+> We are going to have a very complete implementation of HTTP 1.1 RFC.
+> Doing so requires also having a gzip/gunzip stream to handle the
+> Transfer-Coding.
+>
+> I've already talked to foom (the main developer of t.web2) and he
+> asked for your permission to include gzstream in twisted.web2.
+>
+> That would be very helpful and your copyright will be kept entirely.
+>
+> Let me now your decision please. Thanks for attention.
+>
+> --
+> Valentino Volonghi aka Dialtone
+> Now running FreeBSD 5.3-beta6
+> Blog: http://vvolonghi.blogspot.com
+> Home Page: http://xoomer.virgilio.it/dialtone/
+===
+
+files needed are attached. and patch following.
+I'll write also a bug for web2 and attach everything, but it's 3.30 AM
+now, and I'll do that tomorrow.
+
+Comments are welcome.
+
+Index: twisted/web2/http.py
+===================================================================
+--- twisted/web2/http.py        (revision 11886)
++++ twisted/web2/http.py        (working copy)
+@@ -33,6 +33,7 @@
+ from twisted.web2 import http_headers
+ from twisted.web2 import iweb
+ from twisted.web2 import error
++from twisted.web2 import gzstream
+
+ PERSIST_NO_PIPELINE = 2
+
+@@ -301,6 +302,12 @@
+         else:
+             return ifrange == self.out_headers.getHeader("last-modified")
+
++    def requestContentEncoding(self, name):
++        if name.lower() != 'gzip':
++            warnings.warn("WARNING! Currently only gzip content is supported")
++            return
++        self.out_headers.setHeader('Content-Encoding', name)
++
+
+ # FIXME: these last 3 methods don't belong here.
+
+@@ -347,6 +354,8 @@
+     partialHeader = ''
+     queued = 0
+     finishedReading = False
++    inChunkHandler = False
++    outChunkHandler = False
+
+     channel = None
+     request = None
+@@ -449,13 +458,14 @@
+
+     def rawDataReceived(self, data):
+         datalen = len(data)
++
+         if datalen < self.length:
+             if not self.finished:
+-                self.request.handleContentChunk(data)
++                self.inChunkHandler(data)
+             self.length = self.length - datalen
+         else:
+             if not self.finished:
+-                self.request.handleContentChunk(data[:self.length])
++                self.inChunkHandler(data[:self.length])
+             extraneous = data[self.length:]
+             channel = self.channel # could go away from allContentReceived.
+             if not self.chunkedIn:
+@@ -493,6 +503,18 @@
+
+         self.channel.queueRequest(self)
+         request = self.channel.requestFactory(self, self.command,
+self.path, self.version, self.reqHeaders)
++
++        def decode_gzip(self, chunkHandler):
++            gunzipper = gzstream.GunzipStream()
++            gunzipper.write = chunkHandler
++            return gunzipper
++
++        # Set the client chunkhandler if the content is gzipped.
++        for encoding in self.reqHeaders.get('Content-Encoding', ()):
++            if encoding == 'gzip':
++                self.inChunkHandler = decode_gzip(request.handleContentChunk)
++            else:
++                self.inChunkHandler = request.handleContentChunk
+
+         # Reset header state variables
+         del self.reqHeaders
+@@ -633,11 +655,22 @@
+
+         l.append("\r\n")
+         self.transport.writeSequence(l)
++
++        def encode_gzip(chunkHandler):
++            gzipper = gzstream.GzipStream()
++            gzipper.write = chunkHandler
++            return gzipper
++
++        for encoding in headers.getHeader('Content-Encoding', ()):
++            if encoding == 'gzip':
++                self.outChunkHandler = encode_gzip(toChunk)
++            else:
++                self.outChunkHandler = toChunk
+
+
+     def writeData(self, data):
+         if self.chunkedOut:
+-            self.transport.writeSequence(toChunk(data))
++            self.transport.writeSequence(self.outChunkHandler(data))
+         else:
+             self.transport.write(data)
+
+=======
+
+HTH
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: gzstream.tbz2
+Type: application/octet-stream
+Size: 2911 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041002/1579a28b/gzstream.obj
+From dialtone at gmail.com  Fri Oct  1 19:42:43 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Fri Oct  1 19:42:45 2004
+Subject: [Twisted-web] Re: [PATCH] twisted.web2 support for gzip stream
+	in/out
+In-Reply-To: <c893b853041001183351ef8143@mail.gmail.com>
+References: <c893b853041001183351ef8143@mail.gmail.com>
+Message-ID: <c893b853041001184260db3837@mail.gmail.com>
+
+On Sat, 2 Oct 2004 03:33:52 +0200, Valentino Volonghi
+<dialtone@gmail.com> wrote:
+
+Ehm sorry... this patch is completely broken... Ignore it.
+
+I should sleep instead of writing code at 4am.
+
+sry
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+
+From foom at fuhm.net  Sun Oct  3 12:41:18 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Sun Oct  3 12:41:25 2004
+Subject: [Twisted-web] nevow/stackless bugs -- patch
+In-Reply-To: <761C47A2-133B-11D9-BE0A-000A95864FC4@ulaluma.com>
+References: <6654eac404093012451dd5d40f@mail.gmail.com>
+	<115B6036-1335-11D9-B112-000A95A50FB2@fuhm.net>
+	<761C47A2-133B-11D9-BE0A-000A95864FC4@ulaluma.com>
+Message-ID: <D06E9D04-156B-11D9-B112-000A95A50FB2@fuhm.net>
+
+On Sep 30, 2004, at 7:50 PM, Donovan Preston wrote:
+> I think writing a test that verifies your adapters are registered 
+> properly is the best solution.
+
+I don't see how that addresses the inability to provide compatibility 
+when refactoring modules and moving classes.
+
+James
+
+
+From maoy+twisted at cis.upenn.edu  Mon Oct  4 10:06:15 2004
+From: maoy+twisted at cis.upenn.edu (Yun Mao)
+Date: Mon Oct  4 10:06:26 2004
+Subject: [Twisted-web] How to get rid of web logs? 
+In-Reply-To: <Pine.LNX.4.56.0409301352220.4417@klondike.cis.upenn.edu>
+References: <Pine.LNX.4.56.0409301352220.4417@klondike.cis.upenn.edu>
+Message-ID: <Pine.LNX.4.56.0410041203120.7794@klondike.cis.upenn.edu>
+
+It seems nobody else cares about this problem. Anyway here is the
+solution:
+
+class NevowSiteNoLog(appserver.NevowSite):
+    def log(self, request):
+        return
+
+Yun
+
+
+On Thu, 30 Sep 2004, Yun Mao wrote:
+
+>
+> Right now I'm using the log for debugging, and I don't wan to log those
+> info like below. How should I achieve this?  Thanks!
+>
+> 2004/09/30 13:31 Eastern Daylight Time [HTTPChannel,1,127.0.0.1] 127.0.0.1
+> - - [
+> 30/Sep/2004:17:31:56 +0000] "GET /?view=all HTTP/1.1" 200 2767
+> "http://localhost
+> :1083/" "Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.7)
+> Gecko/20040803
+> Firefox/0.9.3"
+>
+> Yun
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+From foom at fuhm.net  Mon Oct  4 22:52:54 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Mon Oct  4 22:53:09 2004
+Subject: [Twisted-web] Re: [Web-SIG] A more Twisted approach to async apps
+	in WSGI
+In-Reply-To: <5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+References: <5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+Message-ID: <6B8CDF7C-168A-11D9-B112-000A95A50FB2@fuhm.net>
+
+A bit late with the response...but better late than never I hope. ;)
+
+On Sep 22, 2004, at 9:56 PM, Phillip J. Eby wrote:
+> On the positive side of the iterator approach, it could make it easier 
+> for asynchronous applications to pause waiting for input, and it could 
+> in principle support "chunked" transfer encoding of the input stream.
+>
+> Anyway, the long and short of it is that CGI and chunked encoding are 
+> quite simply incompatible, which means that relying on its 
+> availability would be nonportable in a WSGI application anyway.
+
+I do not find that a good reason to copy the mistake (not supporting 
+chunking) to a new API.
+
+However! I don't think that the file-like-object API even has a problem 
+with chunked incoming data. As long as WSGI does not make 
+CONTENT_LENGTH a required header, and as long as the result of read 
+looks different for "more data still to come" and "data finished" (it 
+does, blocking for more data to occur vs. returning ''), I think it 
+should be fine (for non-async apps). Am I missing something here?
+
+> [...] That means that if we switch from an input stream to an 
+> iterator, a lot of people are going to be trying to make sensible 
+> wrappers to convert the iterator back to an input stream, and that's 
+> just getting ridiculous, [...]
+
+Iterable input stream does seems like it may be a loser for the common 
+case.
+
+> So, I'm thinking we should shift the burden to an async-specific API.  
+> But, in this case, "burden" means that we get to give asynchronous 
+> apps an API much more suited to their use cases.
+> [...]
+> The idea is that this would create an iterator that the server/gateway 
+> could recognize as "special", similar to the file-wrapper trick.  But, 
+> the object returned would provide an extra API for use by the 
+> asynchronous application, maybe something like:
+>
+>     put(data) -- queue data for retrieval when the controller is 
+> iterated over
+>
+>     finish() -- mark the iterator finished, so it raises StopIteration
+>
+>     on_get(length,callback) -- call 'callback(data)' when 'length' 
+> bytes are available on 'wsgi.input' (but return immediately from the 
+> 'on_get()' call)
+>
+> While this API is an optional extension, it seems it would be closer 
+> to what some async fans wanted, and less of a kludge.  It won't do 
+> away with the possibility that middleware might block waiting for 
+> input, of course, but when no middleware is present or the middleware 
+> isn't transforming the input stream, it should work out quite well.
+
+That sounds okay. I'd specify that the on_get "length" bit is a hint, 
+and may or may not be honored. put/finish is the right API for output 
+(although I'd call it write/finish myself), and on_get seems like the a 
+fairly usable API for input. It doesn't let you pause the incoming 
+data, so if you're passing it on to a slow downstream you'll 
+potentially need to buffer a lot, but maybe that's too much to ask for. 
+I assume callback('') is used to indicate end of incoming data: that 
+should be specified.
+
+However, interaction with middleware seems quite tricky here:
+- For input modifying middleware: I guess on_get would have to just 
+raise an exception if wsgi.input has been replaced. If the input stream 
+was iterable, an on_get callback could just be considered notice that 
+you can iterate the input stream once without blocking, assuming the 
+block boundary requirements were also in effect here. Then it would 
+work right even if the input stream was replaced. However, I think it 
+might be the case that middleware that wants to modify the input stream 
+is so rare, it doesn't really matter.
+- Output. The block boundary section implies that middleware that 
+follows the guidelines, and doesn't do any blocking operations of its 
+own should work without worrying about the server and application being 
+async or sync. If this is to work, the server cannot expect to actually 
+receive an asyncwrapper iterable as the return value, even if the app 
+is using it, because the middleware might be consuming that iterable 
+and returning one of its own. This means the .put/.next methods should 
+communicate out-of-band, effectively calling pause/resume functions in 
+the server so it knows when it's safe to iterate the vanilla iterator 
+the middleware returned without the middleware blocking when calling 
+the asyncwrapper-iterator.
+
+> But if this is the overall right approach, I'd like to drop the 
+> current proposals to make 'wsgi.input' an iterator and add optional 
+> 'pause'/'resume' APIs, since they were rather kludgy compared to 
+> giving async apps their own mini-API for nonblocking I/O.
+
+Perhaps Peter Hunt could try to implement it in his twisted wsgi 
+gateway and see if it works out. :)
+
+James
+
+
+From pje at telecommunity.com  Tue Oct  5 00:37:18 2004
+From: pje at telecommunity.com (Phillip J. Eby)
+Date: Tue Oct  5 00:37:46 2004
+Subject: [Twisted-web] Re: [Web-SIG] A more Twisted approach to
+	async apps in WSGI
+In-Reply-To: <6B8CDF7C-168A-11D9-B112-000A95A50FB2@fuhm.net>
+References: <5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+	<5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+Message-ID: <5.1.1.6.0.20041005022421.02fae470@mail.telecommunity.com>
+
+At 12:52 AM 10/5/04 -0400, James Y Knight wrote:
+>A bit late with the response...but better late than never I hope. ;)
+>
+>On Sep 22, 2004, at 9:56 PM, Phillip J. Eby wrote:
+>>On the positive side of the iterator approach, it could make it easier 
+>>for asynchronous applications to pause waiting for input, and it could in 
+>>principle support "chunked" transfer encoding of the input stream.
+>>
+>>Anyway, the long and short of it is that CGI and chunked encoding are 
+>>quite simply incompatible, which means that relying on its availability 
+>>would be nonportable in a WSGI application anyway.
+>
+>I do not find that a good reason to copy the mistake (not supporting 
+>chunking) to a new API.
+
+Perhaps not, but there are also lots of other reasons not to support 
+chunked input, mainly that a Google search for "chunked encoding CGI" turns 
+up reams of vulnerabilities that suggest existing HTTP implementations may 
+leave a bit to be desired with respect to accepting a POST of chunked 
+input.  :)
+
+
+>However! I don't think that the file-like-object API even has a problem 
+>with chunked incoming data. As long as WSGI does not make CONTENT_LENGTH a 
+>required header, and as long as the result of read looks different for 
+>"more data still to come" and "data finished" (it does, blocking for more 
+>data to occur vs. returning ''), I think it should be fine (for non-async 
+>apps). Am I missing something here?
+
+I don't think so.  Although you probably want something more like a pipe 
+error if the input times out or the connection is broken.
+
+
+>>So, I'm thinking we should shift the burden to an async-specific API.
+>>But, in this case, "burden" means that we get to give asynchronous apps 
+>>an API much more suited to their use cases.
+>>[...]
+>>The idea is that this would create an iterator that the server/gateway 
+>>could recognize as "special", similar to the file-wrapper trick.  But, 
+>>the object returned would provide an extra API for use by the 
+>>asynchronous application, maybe something like:
+>>
+>>     put(data) -- queue data for retrieval when the controller is 
+>> iterated over
+>>
+>>     finish() -- mark the iterator finished, so it raises StopIteration
+>>
+>>     on_get(length,callback) -- call 'callback(data)' when 'length' bytes 
+>> are available on 'wsgi.input' (but return immediately from the 'on_get()' call)
+>>
+>>While this API is an optional extension, it seems it would be closer to 
+>>what some async fans wanted, and less of a kludge.  It won't do away with 
+>>the possibility that middleware might block waiting for input, of course, 
+>>but when no middleware is present or the middleware isn't transforming 
+>>the input stream, it should work out quite well.
+>
+>That sounds okay. I'd specify that the on_get "length" bit is a hint, and 
+>may or may not be honored. put/finish is the right API for output 
+>(although I'd call it write/finish myself),
+
+The reason for not using 'write' is to avoid confusion with the existing 
+"write" callable, both in terms of knowing which one we're talking about, 
+and in terms of not confusing the semantics, which may differ subtly 
+between the two.
+
+
+>  and on_get seems like the a fairly usable API for input. It doesn't let 
+> you pause the incoming data,
+
+Actually it does; it's supposed to be a one-shot.  You have to call it 
+again if you want to get called back again.
+
+
+>  so if you're passing it on to a slow downstream you'll potentially need 
+> to buffer a lot, but maybe that's too much to ask for. I assume 
+> callback('') is used to indicate end of incoming data: that should be 
+> specified.
+
+I missed that entirely, but it sounds like a good idea.
+
+
+
+>However, interaction with middleware seems quite tricky here:
+>- For input modifying middleware: I guess on_get would have to just raise 
+>an exception if wsgi.input has been replaced.
+
+Yep.  Although it might be that the wrapper would just refuse to 
+instantiate in the first place in that circumstance.
+
+
+>  If the input stream was iterable, an on_get callback could just be 
+> considered notice that you can iterate the input stream once without 
+> blocking, assuming the block boundary requirements were also in effect here.
+
+Yes, but this'd only work if the input were an iterator.  input.read() 
+returning an empty string would mean EOF, so the boundary stuff doesn't 
+work in that case.
+
+
+>- Output. The block boundary section implies that middleware that follows 
+>the guidelines, and doesn't do any blocking operations of its own should 
+>work without worrying about the server and application being async or 
+>sync. If this is to work, the server cannot expect to actually receive an 
+>asyncwrapper iterable as the return value, even if the app is using it, 
+>because the middleware might be consuming that iterable and returning one 
+>of its own.
+
+Correct.
+
+
+>  This means the .put/.next methods should communicate out-of-band, 
+> effectively calling pause/resume functions in the server so it knows when 
+> it's safe to iterate the vanilla iterator the middleware returned without 
+> the middleware blocking when calling the asyncwrapper-iterator.
+
+It could do that, certainly.  But, the truth is it's *always* safe to 
+iterate.  Note that the application can just use the on_get callback to set 
+a flag that it's ready to continue, and just keep yielding empty strings 
+till then.
+
+More to the point, the iterator-wrapper can simply yield empty strings when 
+its internal queue is empty, and a sensible async server should back off 
+its iterator.next() retry attempts when an application yields empty 
+strings.  This is pretty much always safe and sensible.
+
+However, the out-of-band communication you describe can also take place, 
+since it provides better communication in the case where the extension is 
+available.
+
+
+From dialtone at gmail.com  Tue Oct  5 05:47:03 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Tue Oct  5 05:47:07 2004
+Subject: [Twisted-web] [PATCH] twisted.web2 support for gzip stream in/out,
+	this time for real
+Message-ID: <c893b85304100504473ef76edd@mail.gmail.com>
+
+The patch is attached and should work.
+
+At least this is what I can see from the tests I wrote.
+
+Attached there are also the 2 files needed for this patch to work.
+Both files should go in twsited/web2, but since they can be useful to
+other protocols too maybe there is a better location.
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: gzip.patch
+Type: application/octet-stream
+Size: 8389 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041005/dfbf5fa0/gzip-0001.obj
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: gzstream.py
+Type: application/octet-stream
+Size: 8224 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041005/dfbf5fa0/gzstream-0001.obj
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: util.py
+Type: application/octet-stream
+Size: 2182 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041005/dfbf5fa0/util-0001.obj
+From sam at SpinwardStars.com  Tue Oct  5 09:41:44 2004
+From: sam at SpinwardStars.com (Samuel Reynolds)
+Date: Tue Oct  5 09:45:17 2004
+Subject: [Twisted-web] Re: [Web-SIG] A more Twisted approach to
+	async apps in WSGI
+In-Reply-To: <6B8CDF7C-168A-11D9-B112-000A95A50FB2@fuhm.net>
+References: <5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+	<6B8CDF7C-168A-11D9-B112-000A95A50FB2@fuhm.net>
+Message-ID: <6.1.2.0.0.20041005094026.044e9ad0@pop.mindspring.com>
+
+At 2004-10-05 12:52 AM -0400, you wrote:
+>I assume callback('') is used to indicate end of incoming data: that 
+>should be specified.
+
+Reasonable assumption. But this is Python; why not
+callback(None) to indicate no more data?
+Semantically, None makes more sense here than
+an empty string.
+
+Just my $.02.
+
+- Sam
+
+__________________________________________________________
+Spinward Stars, LLC                        Samuel Reynolds
+Software Consulting and Development           303-805-1446
+http://SpinwardStars.com/            sam@SpinwardStars.com 
+
+
+
+From pje at telecommunity.com  Wed Oct  6 23:28:42 2004
+From: pje at telecommunity.com (Phillip J. Eby)
+Date: Wed Oct  6 23:29:00 2004
+Subject: [Twisted-web] Re: [Web-SIG] A more Twisted approach to
+	async apps in WSGI
+In-Reply-To: <B6269DF6-181D-11D9-AAA6-000A95A50FB2@fuhm.net>
+References: <5.1.1.6.0.20041005022421.02fae470@mail.telecommunity.com>
+	<5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+	<5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+	<5.1.1.6.0.20041005022421.02fae470@mail.telecommunity.com>
+Message-ID: <5.1.1.6.0.20041007010942.02d33c90@mail.telecommunity.com>
+
+At 12:59 AM 10/7/04 -0400, James Y Knight wrote:
+>On Oct 5, 2004, at 2:37 AM, Phillip J. Eby wrote:
+>>Although you probably want something more like a pipe error if the input 
+>>times out or the connection is broken.
+>
+>You normally only get pipe errors on writes, read just sees EOF.
+>
+>But that does bring up a good point: How does the server notify the 
+>application that the client has gone away, and any further work is useless?
+>- For non-async apps that use the iterator model: I think the server is 
+>allowed to just call iterable.close() and never iterate again.
+
+Yes.
+
+
+>- For async applications, with the proposed API, that may not be an 
+>option, because the iterable returned is the special wrapper, not a 
+>user-created class. Although, actually, I guess the app can return its own 
+>iterable whose __iter__ calls through and returns the wrapper's __iter__.
+
+Not if the server wants to be able to handle that iterable specially.  But 
+anyway, it seems that the wrapper's constructor should take a close method, 
+or have a way to set one.
+
+
+>- What about for non-async applications that use the write callable? 
+>Should write be allowed to raise an exception? Or should it just become a 
+>no-op when the client is disconnected?
+
+It's allowed to raise an exception, though this was never explicitly put in 
+the spec; I'll have to fix that.  The actual process for that scenario 
+looks something like this:
+
+    * app calls write()
+    * write() raises error
+    * app catches error (maybe) and calls start_response() with exc_info
+    * start_response() reraises the error, because it has already sent 
+headers to the client and can't restart the response
+    * application error handler bombs out and returns to server/gateway
+    * server/gateway logs the exception (maybe) and gets on with life in 
+the big 'net
+
+
+>Hmm, yes. I totally missed the option of just yielding ''. Of course it's 
+>a very bad idea to repeatedly yield '' to a server if you don't know the 
+>server can properly handle it (by e.g. delaying longer and longer), but, 
+>in this case, since the server itself is providing the special iterable, 
+>that should be fine.
+
+Yes.  Also, when we finally settle on an async API, I do want to cover the 
+issue of backing off iteration when empty strings are yielded.  I'm 
+actually inclined to suggest that an async application should take 
+responsibility for doing the delaying if it's called repeatedly, and the 
+async API isn't available.
+
+
+>It seems like it should be possible to make a generic class that 
+>implements this async API for use with sync servers that do not support it 
+>natively. That would allow async apps to run on a sync server without 
+>modification, which is potentially useful. To do that, though, I think the 
+>it'd have to spawn an extra thread per request that is waiting to read 
+>data, for the read() call to block on. Unless, of course, the app never 
+>needs to yield outgoing data while waiting for incoming data.
+
+Well, with Twisted you could deferToThread the read() operations, though 
+it's hard for me to think straight about that scenario because I keep 
+finding it hard to imagine an async web app that isn't just written to the 
+Twisted API to start with... ;)
+
+
+>The one remaining issue I have is the required thread-safeness of various 
+>APIs.
+>
+>The spec doesn't mention much of anything about threadsafeness: is it ok 
+>to call wsgi methods from a different thread than the one the server 
+>originally called the request on? Especially interesting for implementing 
+>the above sync->async adapter: environ['wsgi.input'].read(x) would be 
+>called from a second thread.
+
+Excellent question; I should add the answer to the spec, as soon as I 
+decide precisely what it is. :)
+
+One point: the spec should absolutely forbid servers from using thread 
+identity to identify the application/caller.  The "what can you call while 
+what else is executing" part of the question is a bit trickier.
+
+
+>What thread (if there's a choice) does the on_get callback get called on. Etc.
+
+My inclination is to make threading issues symmetrical.  That is, the 
+application doesn't get any thread-identity guarantees either.
+
+
+>  I haven't really thought about these thready questions much either, so 
+> maybe the answers are obvious, but in my experience, that's usually not 
+> the case when it comes to threads.
+
+Yep.  :)  However, the more I think about it, the more it seems to me that 
+WSGI should emulate single-threadedness with respect to any 
+function/method/iterator invocations associated with a given application 
+invocation.  However, it is *not* guaranteed that all such invocations will 
+occur from the same thread.
+
+Basically, it means "no multitasking with the other guy's objects", and 
+puts the locking burdens on whoever's trying to mix multitasking into the 
+works.
+
+
+>That's why async apps are nice. ;)
+
+Not to mention fork().  :)
+
+
+By the way, after all this discussion...  do you think it would be better to:
+
+1) Push towards a full async API, nailing down all these loose ends
+
+2) Use the simple-but-klugdy "pause iteration" API idea
+
+3) Don't make an "official" async API, and just leave it open to server 
+authors to create their own extensions, and maybe cherry pick the best 
+ideas for WSGI 2.0, or
+
+4) Do something else altogether?
+
+
+From corydodt at twistedmatrix.com  Thu Oct  7 20:01:41 2004
+From: corydodt at twistedmatrix.com (Cory Dodt)
+Date: Thu Oct  7 20:03:33 2004
+Subject: [Twisted-web] Trivial diff -- automatically adapt renderers
+Message-ID: <4165F505.9040604@twistedmatrix.com>
+
+When using a hand-made (doesn't inherit from rend.Page) Page that wraps real
+pages, I discovered that registering an adapter for IRendererFactory doesn't
+automatically allow .renderer to get called.  Attached is a diff that
+automatically adapts rendererFactories to IRendererFactory in flatstan.py.
+
+The following is a minimal app that exhibits the buggy behavior:
+e.g.
+-----------
+from nevow import inevow, rend, loaders, appserver, tags as T
+from twisted.application import service, internet
+from twisted.python import components
+
+class MyWrapper:
+     __implements__ = inevow.IResource,
+     def __init__(self, wrapped):
+       self.wrapped = inevow.IResource(wrapped)
+     def renderHTTP(self, ctx):
+       return self.wrapped.renderHTTP(ctx)
+     def locateChild(self, ctx, segments):
+       wr, segments = self.wrapped.locateChild(ctx, segments)
+       return MyWrapper(wr), ()
+components.registerAdapter(lambda self: self.wrapped, MyWrapper,
+inevow.IRendererFactory)
+
+class DumbResource(rend.Page):
+     def render_x(self, ctx, data):
+         return T.body['hi']
+     docFactory = loaders.xmlstr("<html
+xmlns:n='http://nevow.com/ns/nevow/0.1'><a n:render='x' /></html>")
+
+
+application = service.Application("brokenIRendererFactory")
+svc = internet.TCPServer(8080, appserver.NevowSite(MyWrapper(DumbResource())))
+svc.setServiceParent(application)
+-----------
+
+# ===> MyWrapper instance has no attribute 'renderer'
+
+
+
+(Donovan, you might remember me bringing this up on #t.web a few months ago.)
+
+
+
+And, as an anticlimax, the patch to fix the above:
+
+Index: nevow/flat/flatstan.py
+===================================================================
+--- nevow/flat/flatstan.py      (revision 695)
++++ nevow/flat/flatstan.py      (working copy)
+@@ -204,7 +204,7 @@
+      if context.precompile:
+          return original
+
+-    rendererFactory = context.locate(IRendererFactory)
++    rendererFactory = IRendererFactory(context.locate(IRendererFactory))
+      renderer = rendererFactory.renderer(context, original.name)
+      return serialize(renderer, context)
+
+From radeex at gmail.com  Thu Oct  7 20:37:16 2004
+From: radeex at gmail.com (Christopher Armstrong)
+Date: Thu Oct  7 20:37:51 2004
+Subject: [Twisted-web] Trivial diff -- automatically adapt renderers
+In-Reply-To: <4165F505.9040604@twistedmatrix.com>
+References: <4165F505.9040604@twistedmatrix.com>
+Message-ID: <60ed19d40410071937c23dc3@mail.gmail.com>
+
+On Thu, 07 Oct 2004 19:01:41 -0700, Cory Dodt
+<corydodt@twistedmatrix.com> wrote:
+> # ===> MyWrapper instance has no attribute 'renderer'
+> ...
+> Index: nevow/flat/flatstan.py
+> ===================================================================
+> --- nevow/flat/flatstan.py      (revision 695)
+> +++ nevow/flat/flatstan.py      (working copy)
+> @@ -204,7 +204,7 @@
+>       if context.precompile:
+>           return original
+> 
+> -    rendererFactory = context.locate(IRendererFactory)
+> +    rendererFactory = IRendererFactory(context.locate(IRendererFactory))
+
+It seems the best way to fix this ought to be fixing whatever does
+context.remember(IRendererFactory,
+somethingThatDoesntProvideRendererFactoryDirectly)
+
+-- 
+ Twisted | Christopher Armstrong: International Man of Twistery
+  Radix  |          Release Manager,  Twisted Project
+---------+            http://radix.twistedmatrix.com
+
+From radeex at gmail.com  Thu Oct  7 20:44:53 2004
+From: radeex at gmail.com (Christopher Armstrong)
+Date: Thu Oct  7 20:45:25 2004
+Subject: [Twisted-web] Trivial diff -- automatically adapt renderers
+In-Reply-To: <60ed19d40410071937c23dc3@mail.gmail.com>
+References: <4165F505.9040604@twistedmatrix.com>
+	<60ed19d40410071937c23dc3@mail.gmail.com>
+Message-ID: <60ed19d40410071944315b21ca@mail.gmail.com>
+
+(or maybe to change Context.__conform__ to always try to adapt the
+found object to the interface?)
+
+
+On Fri, 8 Oct 2004 13:37:16 +1100, Christopher Armstrong
+<radeex@gmail.com> wrote:
+> On Thu, 07 Oct 2004 19:01:41 -0700, Cory Dodt
+> <corydodt@twistedmatrix.com> wrote:
+> > # ===> MyWrapper instance has no attribute 'renderer'
+> > ...
+> > Index: nevow/flat/flatstan.py
+> > ===================================================================
+> > --- nevow/flat/flatstan.py      (revision 695)
+> > +++ nevow/flat/flatstan.py      (working copy)
+> > @@ -204,7 +204,7 @@
+> >       if context.precompile:
+> >           return original
+> >
+> > -    rendererFactory = context.locate(IRendererFactory)
+> > +    rendererFactory = IRendererFactory(context.locate(IRendererFactory))
+> 
+> It seems the best way to fix this ought to be fixing whatever does
+> context.remember(IRendererFactory,
+> somethingThatDoesntProvideRendererFactoryDirectly)
+> 
+> --
+>  Twisted | Christopher Armstrong: International Man of Twistery
+>   Radix  |          Release Manager,  Twisted Project
+> ---------+            http://radix.twistedmatrix.com
+> 
+
+
+-- 
+ Twisted | Christopher Armstrong: International Man of Twistery
+  Radix  |          Release Manager,  Twisted Project
+---------+            http://radix.twistedmatrix.com
+
+From dialtone at gmail.com  Fri Oct  8 05:04:56 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Fri Oct  8 05:04:59 2004
+Subject: [Twisted-web] [BUG] static.File and nevow.static.File
+Message-ID: <c893b853041008040431c58eab@mail.gmail.com>
+
+Every page that has a static.File() inside when is reloaded from the
+browser causes a timeout error. Removing the static.File from the page
+solves the situation so I guess that the problem is inside
+static.File.
+
+The same erroneous behaviour could be observed in customform.tac
+example if you refresh it.
+
+In some cases refreshing 2 or 3 times the same example renders it.
+I don't remember having problems with this stuff except in the last 2
+days, so it could have something to do with the latest changes in tcp
+and abstract, anyway I can reproduce this problem all the times is
+needed. I also have ethereal packets file that I used to sniff the
+connection from the browser and the server (if needed).
+
+Here is a minimal example to demonstrate the bug:
+
+==
+
+from twisted.application import service, internet
+from nevow import appserver, rend, loaders, static
+
+class Page(rend.Page):
+    docFactory = loaders.xmlfile('min.html')
+    children = {'style.css':static.File('style.css')}
+    
+site = appserver.NevowSite(
+    Page()
+)
+
+application = service.Application("minimal")
+internet.TCPServer(8080, site).setServiceParent(application)
+
+==
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>Error</title>
+<style type="text/css">@import url('style.css');</style>
+</head>
+<body>
+I'm not starting when you hit refresh on me
+</body>
+</html>
+
+==
+
+body {
+	background-color: #CE9090;
+}
+
+==
+
+
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+
+From dialtone at gmail.com  Fri Oct  8 05:20:24 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Fri Oct  8 05:20:30 2004
+Subject: [Twisted-web] Re: [BUG] static.File and nevow.static.File
+In-Reply-To: <c893b853041008040431c58eab@mail.gmail.com>
+References: <c893b853041008040431c58eab@mail.gmail.com>
+Message-ID: <c893b853041008042016915e8d@mail.gmail.com>
+
+On Fri, 8 Oct 2004 13:04:56 +0200, Valentino Volonghi
+<dialtone@gmail.com> wrote:
+
+Further investigation brought my attention to this:
+
+        if request.setLastModified(self.fp.getmtime()) is http.CACHED:
+            return ''
+
+lines 285-286 in nevow.static
+
+This resolves to True during the refresh while doesn't during the first request.
+
+If I remove those lines everything works again both in the minimal and
+in weever (which is the responsible for me investigating this bug).
+
+As foom pointed out, this could be because a deferred is not properly fired.
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+
+From dialtone at gmail.com  Fri Oct  8 12:40:39 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Fri Oct  8 12:40:49 2004
+Subject: [Twisted-web] [PATH] Twisted.web2 little bug fixes.
+Message-ID: <c893b85304100811403508b39d@mail.gmail.com>
+
+Index: twisted/web2/server.py
+===================================================================
+--- twisted/web2/server.py      (revision 11928)
++++ twisted/web2/server.py      (working copy)
+@@ -111,7 +111,7 @@
+
+         requestContext = context.RequestContext(tag=self)
+
+-        self.deferredContext = self._getChild(requestContext,
+site.getRootResource(), self.postpath)
++        self.deferredContext = self._getChild(requestContext,
+self.site.getRootResource(), self.postpath)
+         self.deferredContext.addErrback(self._processingFailed, requestContext)
+
+     def handleContentChunk(self, data):
+@@ -140,7 +140,7 @@
+         ).addErrback(
+             self._processingFailed, newctx
+         ).addCallback(
+-            self.handleSegment, path, newctx
++            self._handleSegment, path, newctx
+         )
+
+     def _handleSegment(self, result, path, pageContext):
+@@ -239,7 +239,7 @@
+             raise TypeError("html is not a string")
+         return
+
+-        def notifyFinish(self):
++    def notifyFinish(self):
+         """Notify when finishing the request
+
+         @return: A deferred. The deferred will be triggered when the
+
+
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+
+From mary-twisted at puzzling.org  Sun Oct 10 13:44:45 2004
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Sun Oct 10 13:45:00 2004
+Subject: [Twisted-web] Sub-tag level templating in Nevow: possible?
+Message-ID: <20041010194445.GC4726@fuchsia.puzzling.org>
+
+I have a use-case for sub-tag level templating in Nevow.
+
+Imagine that for some reason I have a list of categories that I want to
+link to. I might want to link to them like this:
+
+    <a href="catname1">catname1</a>
+    <a href="catname2">catname2</a>
+    <a href="catname3">catname3</a>
+
+Or I might want to link to them like this:
+
+    <a href="catname1">Category catname1</a>
+    <a href="catname2">Category catname2</a>
+    <a href="catname3">Category catname3</a>
+
+As best I can tell, the only way to do this is by changing a render_
+method to be either:
+
+    render_atag(self, ctx, data):
+        return ctx.tag(href=data)[data]
+
+or
+    
+    render_atag(self, ctx, data):
+        return ctx.tag(href=data)["Category: " + data]
+
+I'd prefer to specify it in an HTML template rather than the Python code for
+various reasons (for starters, it isn't "business logic", it's a design
+choice). Is there any way to do that?
+
+-Mary
+
+From matt at pollenation.net  Sun Oct 10 14:57:26 2004
+From: matt at pollenation.net (Matt Goodall)
+Date: Sun Oct 10 14:57:39 2004
+Subject: [Twisted-web] Sub-tag level templating in Nevow: possible?
+In-Reply-To: <20041010194445.GC4726@fuchsia.puzzling.org>
+References: <20041010194445.GC4726@fuchsia.puzzling.org>
+Message-ID: <1097441846.4735.42.camel@localhost.localdomain>
+
+On Sun, 2004-10-10 at 21:44 +0200, Mary Gardiner wrote:
+> I have a use-case for sub-tag level templating in Nevow.
+> 
+> Imagine that for some reason I have a list of categories that I want to
+> link to. I might want to link to them like this:
+> 
+>     <a href="catname1">catname1</a>
+>     <a href="catname2">catname2</a>
+>     <a href="catname3">catname3</a>
+> 
+> Or I might want to link to them like this:
+> 
+>     <a href="catname1">Category catname1</a>
+>     <a href="catname2">Category catname2</a>
+>     <a href="catname3">Category catname3</a>
+> 
+> As best I can tell, the only way to do this is by changing a render_
+> method to be either:
+> 
+>     render_atag(self, ctx, data):
+>         return ctx.tag(href=data)[data]
+> 
+> or
+>     
+>     render_atag(self, ctx, data):
+>         return ctx.tag(href=data)["Category: " + data]
+> 
+> I'd prefer to specify it in an HTML template rather than the Python code for
+> various reasons (for starters, it isn't "business logic", it's a design
+> choice). Is there any way to do that?
+
+Yes, this is what slots are for ...
+
+Your template should look something like this:
+
+        <a href="#" n:render="category"><n:attr name="href"><n:slot
+        name="link"/></n:attr>Category: <n:slot name="name"/></a>
+
+The "contract" between the HTML template and the render method is to
+provide (at least) the two slots 'link' and 'name'. Your renderer should
+therefore look something:
+
+        def render_category(self, ctx, data):
+            ctx.tag.fillSlots('link', data)
+            ctx.tag.fillSlots('name', data)
+            return ctx.tag
+
+As you can see, the render method provides the information but has no
+idea how it is used; the template expects the slots to be filled but it
+can do anything it wants with the information.
+
+You can now change the template to the following, without affecting the
+renderer, if you wanted to:
+
+        <p n:render="category">I was provided with '<n:slot
+        name="link" />' as a link and '<n:slot name="name" />' as the
+        name.</p>
+
+Judging by your example, you only need a single slot in which case just
+use the same slot name in both places in the template and change the
+renderer to fill only one. Note: your renderer is allowed to fill too
+many slots as long as everything the template needs is provided.
+
+Hope this helps.
+
+Cheers, Matt
+
+-- 
+Matt Goodall <matt@pollenation.net>
+
+
+From andrew-twisted at puzzling.org  Sun Oct 10 15:29:14 2004
+From: andrew-twisted at puzzling.org (Andrew Bennetts)
+Date: Sun Oct 10 15:29:28 2004
+Subject: Comparison with ZPT [Was: [Twisted-web] Sub-tag level templating in
+	Nevow: possible?]
+In-Reply-To: <1097441846.4735.42.camel@localhost.localdomain>
+References: <20041010194445.GC4726@fuchsia.puzzling.org>
+	<1097441846.4735.42.camel@localhost.localdomain>
+Message-ID: <20041010212914.GA4927@frobozz>
+
+On Sun, Oct 10, 2004 at 09:57:26PM +0100, Matt Goodall wrote:
+[...]
+> 
+> Yes, this is what slots are for ...
+> 
+> Your template should look something like this:
+> 
+>         <a href="#" n:render="category"><n:attr name="href"><n:slot
+>         name="link"/></n:attr>Category: <n:slot name="name"/></a>
+
+Pardon me for hijacking the discussion like this when I barely know
+Nevow, and have relatively limited knowledge of Zope Page Templates (ZPT)...
+
+This looks much more verbose than the ZPT way of setting attributes:
+
+    <a tal:attributes="href context/link">Category: <span 
+    tal:replace="context/name" /></a>
+
+[The tal:replace isn't relevant to setting the attribute, I'm just doing
+that for completeness sake with the Nevow example].
+
+Here "context/link" could be an TALES expression, of course.
+
+Multiple attributes can be set with, e.g.:
+
+    <a tal:attributes="href foo; class bar">...</a>
+
+> The "contract" between the HTML template and the render method is to
+> provide (at least) the two slots 'link' and 'name'. Your renderer should
+> therefore look something:
+> 
+>         def render_category(self, ctx, data):
+>             ctx.tag.fillSlots('link', data)
+>             ctx.tag.fillSlots('name', data)
+>             return ctx.tag
+> 
+> As you can see, the render method provides the information but has no
+> idea how it is used; the template expects the slots to be filled but it
+> can do anything it wants with the information.
+
+In Zope 3, the contract is specified by an interface.  Somewhere, usually in
+ZCML, you declare what interfaces are allowed to be accessed on what content
+types when rendering (or publishing in general, I guess).  You can also
+define view classes (which are adapters that adapt a request and a context)
+if you want to define display logic that doesn't belong with your business
+logic (such as helper methods for generating HTML, or form processing), and
+again the contract here is controlled by interfaces.
+
+This is a very nice model -- interfaces are designed to be contracts, after
+all.  
+
+I mention all this because I suspect that in many ways ZPT and Nevow are 
+quite similar, and it would be good if they could cross-pollinate,
+particularly if it helps users of one shift to the other.  The easier it is
+for ZPT users to play with Nevow, the better :)
+
+So, I guess this suggests two questions:
+  - is it possible to make the attribute-setting syntax in Nevow nicer by
+    borrowing ZPT's syntax for it?
+  - is it possible to use interfaces to define contracts between templates
+    and renders in Nevow? (so as to make it easier for people to shift from
+    the Zope 3 model and back)
+
+-Andrew.
+
+
+From dp at ulaluma.com  Mon Oct 11 11:14:16 2004
+From: dp at ulaluma.com (Donovan Preston)
+Date: Mon Oct 11 11:14:22 2004
+Subject: [Twisted-web] Trivial diff -- automatically adapt renderers
+In-Reply-To: <60ed19d40410071944315b21ca@mail.gmail.com>
+References: <4165F505.9040604@twistedmatrix.com>
+	<60ed19d40410071937c23dc3@mail.gmail.com>
+	<60ed19d40410071944315b21ca@mail.gmail.com>
+Message-ID: <FAF26F98-1BA8-11D9-A819-000A95864FC4@ulaluma.com>
+
+
+On Oct 7, 2004, at 7:44 PM, Christopher Armstrong wrote:
+
+> (or maybe to change Context.__conform__ to always try to adapt the
+> found object to the interface?)
+
+This sounds like the right way to do it, except done in locate() which 
+is called by __conform__ (which is still named getComponent IIRC)
+
+This will not only fix this problem but have the added benefit of 
+preventing any other issues of this sort from cropping up.
+
+However, it may cause pretty massive slowdown. Might as well just do it 
+though, since it is obviously semantically correct, and optimizations 
+can be performed in other areas to make up for it.
+
+dp
+
+
+From mailinglist at ltsai.com  Tue Oct 12 04:38:54 2004
+From: mailinglist at ltsai.com (Tsai Li Ming)
+Date: Tue Oct 12 04:39:44 2004
+Subject: [Twisted-web] request.getHost() warning message
+Message-ID: <ckgc97$rdp$1@sea.gmane.org>
+
+Hi
+
+I'm getting the following warning message in my twistd.log when I use 
+request.getHost
+
+2004/10/12 18:25 SGT [HTTPChannel,0,192.168.1.213] /root/server.tac:69: 
+exceptions.DeprecationWarning: IPv4Address.__getitem__ is deprecated. 
+Use attributes instead.
+
+Should I be concern at all?
+
+
+Liming
+
+
+From radeex at gmail.com  Tue Oct 12 23:10:42 2004
+From: radeex at gmail.com (Christopher Armstrong)
+Date: Tue Oct 12 23:11:18 2004
+Subject: [Twisted-web] Fragment's IGettable
+Message-ID: <60ed19d40410122210bb58c90@mail.gmail.com>
+
+I recently noticed a difference in Nevow from some old SVN checkout vs
+0.3. 0.3's behavior got in my way while writing a nevow app, but I'm
+not sure if it's considered a bug.
+
+The minimal example is below. The difference is that in the old Nevow,
+it would display "Hi"; now it displays big-red-NONE.
+
+After some debugging with the help of Tv and dreid on #twisted-web, we
+discovered that it was the change that added an IGettable to
+rend.Fragment. It __implements__ IGettable and implements 'get' as
+'return self.original', which is None. Removing IGettable from
+__implements__ and deleting 'def get' makes it display "hi".
+
+I'll probably work around this problem by not passing the Fragment
+through the data machinery, and instead look it up and return it
+directly in a render function. I'm just notifying you guys about this
+issue and you can decide whether or not it should be considered a bug.
+I'm interested in knowing why this IGettable implementation was added
+to Fragment, as well.
+
+Thanks,
+
+-- 
+ Twisted | Christopher Armstrong: International Man of Twistery
+  Radix  |          Release Manager,  Twisted Project
+---------+            http://radix.twistedmatrix.com
+
+
+snip:
+
+from nevow import appserver, rend, loaders, inevow, tags as T
+
+class Page(rend.Page):
+
+    def data_foo(self, ctx, data):
+        return rend.Fragment(docFactory=loaders.stan(T.div["Hi"]))
+
+    def render_default(self, ctx, data):
+        # data is None here in 0.3 (as is IData(ctx), not so in old-nevow
+        return data
+
+    docFactory = loaders.stan(T.html[T.body[
+        T.div(data=T.directive("foo"),
+              render=T.directive("default"))
+        ]])
+
+
+from twisted.application import internet, service
+
+application = service.Application("nevow")
+internet.TCPServer(8080, appserver.NevowSite(Page())
+                   ).setServiceParent(application)
+
+From dreid at dreid.org  Wed Oct 13 11:30:51 2004
+From: dreid at dreid.org (David Reid)
+Date: Wed Oct 13 11:30:56 2004
+Subject: [Twisted-web] Fragment's IGettable
+In-Reply-To: <60ed19d40410122210bb58c90@mail.gmail.com>
+References: <60ed19d40410122210bb58c90@mail.gmail.com>
+Message-ID: <1097688650.16383.1.camel@localhost>
+
+On Tue, 2004-10-12 at 22:10, Christopher Armstrong wrote:
+> I recently noticed a difference in Nevow from some old SVN checkout
+Just to be clear Fragment was made IGettable at r587 by dp.
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: This is a digitally signed message part
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041013/34adf51e/attachment.bin
+From radeex at gmail.com  Wed Oct 13 16:30:57 2004
+From: radeex at gmail.com (Christopher Armstrong)
+Date: Wed Oct 13 16:31:17 2004
+Subject: [Twisted-web] Re: Fragment's IGettable
+In-Reply-To: <60ed19d40410122210bb58c90@mail.gmail.com>
+References: <60ed19d40410122210bb58c90@mail.gmail.com>
+Message-ID: <60ed19d4041013153078ee9296@mail.gmail.com>
+
+On Wed, 13 Oct 2004 16:10:42 +1100, Christopher Armstrong
+<radeex@gmail.com> wrote:
+> I'll probably work around this problem by not passing the Fragment
+> through the data machinery, and instead look it up and return it
+> directly in a render function. 
+
+This was harder than I expected, as I wanted to render a list of these
+Fragments with the 'sequence' renderer -- meaning I'd have to pass it
+as data to that renderer, which still showed the same problem.
+
+What I did to work around it, then, was to define a subclass of
+Fragment which specified __implements__, leaving out IGettable.
+
+-- 
+ Twisted | Christopher Armstrong: International Man of Twistery
+  Radix  |          Release Manager,  Twisted Project
+---------+            http://radix.twistedmatrix.com
+
+From floydophone at gmail.com  Thu Oct 14 07:29:50 2004
+From: floydophone at gmail.com (Peter Hunt)
+Date: Thu Oct 14 07:30:29 2004
+Subject: [Twisted-web] nevow.compy
+Message-ID: <6654eac404101406297bf87f1b@mail.gmail.com>
+
+I've been looking into adaption frameworks recently. I've found the
+following different frameworks:
+
+PEP 246
+PyProtocols
+Zope3
+Twisted
+Nevow.compy
+
+Can someone explain to me the differences between them, and why we have so many?
+
+From andrew-twisted at puzzling.org  Thu Oct 14 07:51:15 2004
+From: andrew-twisted at puzzling.org (Andrew Bennetts)
+Date: Thu Oct 14 07:51:51 2004
+Subject: [Twisted-web] nevow.compy
+In-Reply-To: <6654eac404101406297bf87f1b@mail.gmail.com>
+References: <6654eac404101406297bf87f1b@mail.gmail.com>
+Message-ID: <20041014135115.GB5055@frobozz>
+
+On Thu, Oct 14, 2004 at 09:29:50AM -0400, Peter Hunt wrote:
+> I've been looking into adaption frameworks recently. I've found the
+> following different frameworks:
+> 
+> PEP 246
+> PyProtocols
+> Zope3
+> Twisted
+> Nevow.compy
+> 
+> Can someone explain to me the differences between them, and why we have so many?
+
+The SVN version Twisted uses Zope 3's zope.interface package for interfaces
+now, so that reduces the choices a little.
+
+-Andrew.
+
+
+From foom at fuhm.net  Thu Oct 14 09:15:25 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Thu Oct 14 09:15:31 2004
+Subject: [Twisted-web] nevow.compy
+In-Reply-To: <20041014135115.GB5055@frobozz>
+References: <6654eac404101406297bf87f1b@mail.gmail.com>
+	<20041014135115.GB5055@frobozz>
+Message-ID: <E027BE45-1DF3-11D9-AAA6-000A95A50FB2@fuhm.net>
+
+On Oct 14, 2004, at 9:51 AM, Andrew Bennetts wrote:
+
+> On Thu, Oct 14, 2004 at 09:29:50AM -0400, Peter Hunt wrote:
+>> I've been looking into adaption frameworks recently. I've found the
+>> following different frameworks:
+>>
+>> PEP 246
+>> PyProtocols
+>> Zope3
+>> Twisted
+>> Nevow.compy
+>>
+>> Can someone explain to me the differences between them, and why we 
+>> have so many?
+>
+> The SVN version Twisted uses Zope 3's zope.interface package for 
+> interfaces
+> now, so that reduces the choices a little.
+
+Nevow.compy is a nasty thing that will be going away soon. Right now, 
+if you use Nevow with Twisted SVN, it doesn't use compy. Compy should 
+be going away (leaving only the compatibility wrapper) soon after 
+Twisted 2.0 is released, thus nevow will be using Zope Interface as 
+well.
+
+So, really, your choices are only: PEP 246, Zope Interface, and 
+PyProtocols.
+
+As I understand it, Zope Interface is an implementation and extension 
+of PEP246: they both use the __adapt__ and __conform__ methods. Zope 
+Interface adds a declarative interface, so you don't need to manually 
+implement those methods, you can just say implements(IMyInterface).
+
+I dunno about how that differs from PyProtocols, but PyProtocols does 
+have some compatibility code so that Zope Interface interfaces can work 
+with it, instead of being an entirely different world.
+
+As to why there are so many: because everyone needed one.
+
+James
+
+
+From dialtone at gmail.com  Thu Oct 14 09:35:19 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Thu Oct 14 09:35:26 2004
+Subject: [Twisted-web] nevow.compy
+In-Reply-To: <E027BE45-1DF3-11D9-AAA6-000A95A50FB2@fuhm.net>
+References: <6654eac404101406297bf87f1b@mail.gmail.com>
+	<20041014135115.GB5055@frobozz>
+	<E027BE45-1DF3-11D9-AAA6-000A95A50FB2@fuhm.net>
+Message-ID: <c893b8530410140835746520b3@mail.gmail.com>
+
+On Thu, 14 Oct 2004 11:15:25 -0400, James Y Knight <foom@fuhm.net> wrote:
+
+> Nevow.compy is a nasty thing that will be going away soon. Right now,
+> if you use Nevow with Twisted SVN, it doesn't use compy. Compy should
+> be going away (leaving only the compatibility wrapper) soon after
+> Twisted 2.0 is released, thus nevow will be using Zope Interface as
+> well.
+
+Right now you must use compy.Interface to remember some interface on
+the context, otherwise it will crash. :(.
+I seeing this in weever (my sandbox) and I had to use compy.Interface
+to declare the interfaces that need to be remembered in the context.
+
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+
+From foom at fuhm.net  Thu Oct 14 10:20:53 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Thu Oct 14 10:21:00 2004
+Subject: [Twisted-web] nevow.compy
+In-Reply-To: <c893b8530410140835746520b3@mail.gmail.com>
+References: <6654eac404101406297bf87f1b@mail.gmail.com>
+	<20041014135115.GB5055@frobozz>
+	<E027BE45-1DF3-11D9-AAA6-000A95A50FB2@fuhm.net>
+	<c893b8530410140835746520b3@mail.gmail.com>
+Message-ID: <05439934-1DFD-11D9-AAA6-000A95A50FB2@fuhm.net>
+
+
+On Oct 14, 2004, at 11:35 AM, Valentino Volonghi wrote:
+
+> On Thu, 14 Oct 2004 11:15:25 -0400, James Y Knight <foom@fuhm.net> 
+> wrote:
+>
+>> Nevow.compy is a nasty thing that will be going away soon. Right now,
+>> if you use Nevow with Twisted SVN, it doesn't use compy. Compy should
+>> be going away (leaving only the compatibility wrapper) soon after
+>> Twisted 2.0 is released, thus nevow will be using Zope Interface as
+>> well.
+>
+> Right now you must use compy.Interface to remember some interface on
+> the context, otherwise it will crash. :(.
+> I seeing this in weever (my sandbox) and I had to use compy.Interface
+> to declare the interfaces that need to be remembered in the context.
+
+If you're using Nevow with Twisted SVN, compy is already stubbed out, 
+so that shouldn't be the case. But, yes, if you're using it with 
+Twisted 1.3, you need to use compy or else random things won't work 
+right. BTW, if you do use nevow with Twisted SVN I recommend doing:
+   import warnings
+   import twisted.python.components
+   warnings.filterwarnings('ignore', '', 
+twisted.python.components.ComponentsDeprecationWarning)
+or you'll be flooded with warnings. ;)
+
+James
+
+
+From dialtone at gmail.com  Thu Oct 14 10:27:43 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Thu Oct 14 10:27:47 2004
+Subject: [Twisted-web] nevow.compy
+In-Reply-To: <05439934-1DFD-11D9-AAA6-000A95A50FB2@fuhm.net>
+References: <6654eac404101406297bf87f1b@mail.gmail.com>
+	<20041014135115.GB5055@frobozz>
+	<E027BE45-1DF3-11D9-AAA6-000A95A50FB2@fuhm.net>
+	<c893b8530410140835746520b3@mail.gmail.com>
+	<05439934-1DFD-11D9-AAA6-000A95A50FB2@fuhm.net>
+Message-ID: <c893b85304101409271969d351@mail.gmail.com>
+
+On Thu, 14 Oct 2004 12:20:53 -0400, James Y Knight <foom@fuhm.net> wrote:
+
+> If you're using Nevow with Twisted SVN, compy is already stubbed out,
+> so that shouldn't be the case. But, yes, if you're using it with
+> Twisted 1.3, you need to use compy or else random things won't work
+> right. BTW, if you do use nevow with Twisted SVN I recommend doing:
+>    import warnings
+>    import twisted.python.components
+>    warnings.filterwarnings('ignore', '',
+> twisted.python.components.ComponentsDeprecationWarning)
+> or you'll be flooded with warnings. ;)
+
+Let me explain better :).
+Uhmmm I'm using Nevow with Twisted SVN but in weever I had to use
+compy.Interface in order to correctly use IFoo(ctx) api to get back
+the object from the context.
+
+If this is not known I guess it should be corrected, but this is the
+behaviour I get.
+
+Thx for the tip on warnings :)
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+
+From foom at fuhm.net  Fri Oct 15 09:20:34 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Fri Oct 15 09:20:44 2004
+Subject: [Twisted-web] Re: [Web-SIG] A more Twisted approach to async apps
+	in WSGI
+In-Reply-To: <5.1.1.6.0.20041007010942.02d33c90@mail.telecommunity.com>
+References: <5.1.1.6.0.20041005022421.02fae470@mail.telecommunity.com>
+	<5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+	<5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+	<5.1.1.6.0.20041005022421.02fae470@mail.telecommunity.com>
+	<5.1.1.6.0.20041007010942.02d33c90@mail.telecommunity.com>
+Message-ID: <C2ABAA9E-1EBD-11D9-AAA6-000A95A50FB2@fuhm.net>
+
+
+On Oct 7, 2004, at 1:28 AM, Phillip J. Eby wrote:
+>> - For async applications, with the proposed API, that may not be an 
+>> option, because the iterable returned is the special wrapper, not a 
+>> user-created class. Although, actually, I guess the app can return 
+>> its own iterable whose __iter__ calls through and returns the 
+>> wrapper's __iter__.
+>
+> Not if the server wants to be able to handle that iterable specially.  
+> But anyway, it seems that the wrapper's constructor should take a 
+> close method, or have a way to set one.
+
+As already discussed, the server cannot really expect to actually get 
+the iterable back anyhow. But yes, I'd say either the init should take 
+a close argument, or else the use of something like "wrapper.close = 
+myCloseFunction" should be part of the API.
+
+
+>> Hmm, yes. I totally missed the option of just yielding ''. Of course 
+>> it's a very bad idea to repeatedly yield '' to a server if you don't 
+>> know the server can properly handle it (by e.g. delaying longer and 
+>> longer), but, in this case, since the server itself is providing the 
+>> special iterable, that should be fine.
+>
+> Yes.  Also, when we finally settle on an async API, I do want to cover 
+> the issue of backing off iteration when empty strings are yielded.  
+> I'm actually inclined to suggest that an async application should take 
+> responsibility for doing the delaying if it's called repeatedly, and 
+> the async API isn't available.
+
+If the async API isn't available, and I'm an async application, I would 
+assume I'm running on a synch server, and thus am allowed to block the 
+request thread indefinitely, and do so, waiting for a wakeup 
+notification from the reactor loop. It doesn't seem to me that any 
+iterator back-off behavior is needed, or desirable. I can fabricate an 
+async wrapper that uses threads
+
+>> It seems like it should be possible to make a generic class that 
+>> implements this async API for use with sync servers that do not 
+>> support it natively. That would allow async apps to run on a sync 
+>> server without modification, which is potentially useful. To do that, 
+>> though, I think the it'd have to spawn an extra thread per request 
+>> that is waiting to read data, for the read() call to block on. 
+>> Unless, of course, the app never needs to yield outgoing data while 
+>> waiting for incoming data.
+>
+> Well, with Twisted you could deferToThread the read() operations, 
+> though it's hard for me to think straight about that scenario because 
+> I keep finding it hard to imagine an async web app that isn't just 
+> written to the Twisted API to start with... ;)
+
+Right -- but deferToThread'ing a read() operation is essentially the 
+same as spawning an extra thread per request to read the data, just 
+with nicer thread management.
+
+> [thread stuff]
+>
+>>  I haven't really thought about these thready questions much either, 
+>> so maybe the answers are obvious, but in my experience, that's 
+>> usually not the case when it comes to threads.
+>
+> Yep.  :)  However, the more I think about it, the more it seems to me 
+> that WSGI should emulate single-threadedness with respect to any 
+> function/method/iterator invocations associated with a given 
+> application invocation.  However, it is *not* guaranteed that all such 
+> invocations will occur from the same thread.
+>
+> Basically, it means "no multitasking with the other guy's objects", 
+> and puts the locking burdens on whoever's trying to mix multitasking 
+> into the works.
+
+That does sound good. No multitasking means it's impossible to write a 
+response while already waiting for incoming data. But actually I think 
+it's probably fine for an async app running on a sync server to not be 
+able to simultaneously read data and write data, so I take back 
+anything about needing to call wsgi server methods from more than one 
+thread. In the compat wrapper, calling on_get can just block writing 
+until the read has occurred; in that case, all wsgi methods can be 
+called from the server's request thread.
+
+> By the way, after all this discussion...  do you think it would be 
+> better to:
+>
+> 1) Push towards a full async API, nailing down all these loose ends
+>
+> 2) Use the simple-but-klugdy "pause iteration" API idea
+>
+> 3) Don't make an "official" async API, and just leave it open to 
+> server authors to create their own extensions, and maybe cherry pick 
+> the best ideas for WSGI 2.0, or
+>
+> 4) Do something else altogether?
+
+I think the API you've outlined sounds good. I can imagine ways to 
+implement it both for an async server like twisted, and as a 
+compatibility layer for an async-requiring application on a sync 
+server. I think it's easier to make the compatibility layer with this 
+API than with the pause/resume API.  However, I would be quite wary of 
+including it in the final spec without it being implemented first.
+
+Another question is: what is the current use for it? Does anyone want 
+to write untwisted async web applications?
+
+My current interest in WSGI is basically on the "plug twisted web into 
+another webserver as an application" side of things. I wouldn't want to 
+write an application to WSGI (without a framework on top)... If 
+everyone else feels that way, an async API may not be actually useful 
+until there is some other Async-WSGI web server that you could plug 
+twisted framework stuff on top of, or some other async framework you 
+can plug on top of the twisted server.
+
+As for postponing until WSGI 2.0, I would hope there doesn't need to be 
+a WSGI 2.0, though, since the interface is so darn simple. ;) But it 
+could be in a separate WSGI async addons.
+
+James
+
+
+From pje at telecommunity.com  Fri Oct 15 09:52:58 2004
+From: pje at telecommunity.com (Phillip J. Eby)
+Date: Fri Oct 15 09:53:04 2004
+Subject: [Twisted-web] Re: [Web-SIG] A more Twisted approach to
+	async apps in WSGI
+In-Reply-To: <C2ABAA9E-1EBD-11D9-AAA6-000A95A50FB2@fuhm.net>
+References: <5.1.1.6.0.20041007010942.02d33c90@mail.telecommunity.com>
+	<5.1.1.6.0.20041005022421.02fae470@mail.telecommunity.com>
+	<5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+	<5.1.1.6.0.20040922204838.024f61c0@mail.telecommunity.com>
+	<5.1.1.6.0.20041005022421.02fae470@mail.telecommunity.com>
+	<5.1.1.6.0.20041007010942.02d33c90@mail.telecommunity.com>
+Message-ID: <5.1.1.6.0.20041015113209.02155ba0@mail.telecommunity.com>
+
+At 11:20 AM 10/15/04 -0400, James Y Knight wrote:
+
+>On Oct 7, 2004, at 1:28 AM, Phillip J. Eby wrote:
+>>By the way, after all this discussion...  do you think it would be better to:
+>>
+>>1) Push towards a full async API, nailing down all these loose ends
+>>
+>>2) Use the simple-but-klugdy "pause iteration" API idea
+>>
+>>3) Don't make an "official" async API, and just leave it open to server 
+>>authors to create their own extensions, and maybe cherry pick the best 
+>>ideas for WSGI 2.0, or
+>>
+>>4) Do something else altogether?
+>
+>I think the API you've outlined sounds good. I can imagine ways to 
+>implement it both for an async server like twisted, and as a compatibility 
+>layer for an async-requiring application on a sync server. I think it's 
+>easier to make the compatibility layer with this API than with the 
+>pause/resume API.  However, I would be quite wary of including it in the 
+>final spec without it being implemented first.
+
+Right, this is one reason I'm thinking that #3 might be a good idea, 
+although it'd probably be more like 1.1 than 2.0.  Or really, it would just 
+be an optional extension available under 1.0.  Even if we finalize the 1.0 
+spec, nothing stops us from adding optional extensions that don't alter the 
+existing required semantics.
+
+
+>Another question is: what is the current use for it? Does anyone want to 
+>write untwisted async web applications?
+
+Right.  That's the really big issue, and another reason why saying, "let's 
+wait for implementations" might be a good idea.  That is, if people 
+implement something, there's clearly a market for it.  If they don't, maybe 
+we don't need it.
+
+
+>My current interest in WSGI is basically on the "plug twisted web into 
+>another webserver as an application" side of things. I wouldn't want to 
+>write an application to WSGI (without a framework on top)... If everyone 
+>else feels that way, an async API may not be actually useful until there 
+>is some other Async-WSGI web server that you could plug twisted framework 
+>stuff on top of, or some other async framework you can plug on top of the 
+>twisted server.
+
+Yep, that's the issue alright.  It seems that the common usecase for an 
+async web app is going to boil down to: "do you want to proxy your Twisted 
+app from some other web server?"  Because let's face it, Twisted's process 
+model isn't really a match for say, the Apache prefork model, or CGI.
+
+ISTM, then, that the useful thing to write would be a synchronous 
+WSGI->HTTP "application" object.  That would allow Twisted or any other 
+async server (or really any HTTP server at all) to be treated as a WSGI 
+application, thus letting async apps join the WSGI party without forcing 
+them to give up any asyncness or to have to do other really horrid things 
+to fit.
+
+With a little more sophistication, such an application component could 
+perhaps actually spawn the async server if it's not running, by checking a 
+pid file or some such.  Or that could be middleware; you have a "server 
+starter" middleware that just ensures the server is running before it 
+passes the request down to the proxy middleware.
+
+
+>As for postponing until WSGI 2.0, I would hope there doesn't need to be a 
+>WSGI 2.0, though, since the interface is so darn simple. ;) But it could 
+>be in a separate WSGI async addons.
+
+Technically, I don't think finalizing the base specification would prevent 
+us from amending the PEP to add optional features even to 1.0.
+
+
+From naijasms at gmail.com  Sat Oct 16 14:44:34 2004
+From: naijasms at gmail.com (Seun Osewa)
+Date: Sat Oct 16 14:44:40 2004
+Subject: [Twisted-web] HTTP/1.1 Persistent Connections and Pipelining
+In-Reply-To: <5d35fc5d041016133950489940@mail.gmail.com>
+References: <5d35fc5d041016133950489940@mail.gmail.com>
+Message-ID: <5d35fc5d041016134464744453@mail.gmail.com>
+
+Hi,
+
+Does Twisted.Web support persistent connections and pipelining?  how
+can I take advantage of this, if it does?  And, if not, do you feel
+the interface is such that support for persistent connections can be
+transparently added?
+
+Regards,
+Seun Osewa.
+
+From foom at fuhm.net  Sun Oct 17 21:30:43 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Sun Oct 17 21:30:49 2004
+Subject: [Twisted-web] HTTP/1.1 Persistent Connections and Pipelining
+In-Reply-To: <5d35fc5d041016134464744453@mail.gmail.com>
+References: <5d35fc5d041016133950489940@mail.gmail.com>
+	<5d35fc5d041016134464744453@mail.gmail.com>
+Message-ID: <1746E91F-20B6-11D9-BAB2-000A95A50FB2@fuhm.net>
+
+On Oct 16, 2004, at 4:44 PM, Seun Osewa wrote:
+> Does Twisted.Web support persistent connections and pipelining?
+
+Kindasorta. I believe it does HTTP 1.1 persistent connections.
+
+> how
+> can I take advantage of this, if it does?  And, if not, do you feel
+> the interface is such that support for persistent connections can be
+> transparently added?
+
+It's all automatic, as far as it goes.
+
+The new version of the http protocol for web2 supports it a lot better, 
+and works with both HTTP 1.0 keepalive and HTTP 1.1 pipelining and 
+persistent connections. Web2 is not ready for non-developmental use 
+yet, however. The core HTTP protocol layer should be pretty stable at 
+this point, but the layer above still needs work.
+
+James
+
+
+From mesozoic at polynode.com  Mon Oct 18 07:52:08 2004
+From: mesozoic at polynode.com (Alex Levy)
+Date: Mon Oct 18 07:52:42 2004
+Subject: [Twisted-web] Passing context through/around/across webform
+Message-ID: <20041018135208.GA31358@perpetual.moxn.net>
+
+So I've started to move Payago (formerly Go) towards compatibility with
+Nevow 0.3's API changes; the biggest impact has been the ubiquitous context,
+and not being able to rely on a Page having self.context.
+
+Previously, I had _many_ TypedInterfaces which did something along the lines
+of:
+
+class ICanDoSomething(TypedInterface):
+  def doSomething(self, arg = Choice(choicesAttribute='choices')):
+    pass
+  doSomething = autocallable(doSomething)
+
+class MyPage(Page):
+  __implements__ = ICanDoSomething
+  def _get_choices(self):
+    ## do something involving self.context
+    return some_list
+  choices = property(_get_choices)
+
+Now, with the ubiquitous context changes, self.context doesn't exist. (Makes
+you wonder what "ubiquitous" really means.) So there are a couple solutions
+that I've thought of:
+
+1. Make annotate.Choice support 'choicesMethod', which would take context as
+an argument. This seems very difficult because not only webform, but
+Typed.coerce(), would have to be able to retrieve the context. Then we'd
+have to support Deferreds, because some crazy person would obviously want
+that at some point. ;) I tried to write a patch, and it got ugly.
+
+2. Set self.context whenever Page.locateChild or Page.renderHTTP is called.
+This is a lot simpler, but it seems like a hack to me, and I'm not sure
+whether this will _always_ work.
+
+What do other people think? Is option #1 easier to implement than I'm
+thinking? Is option #2 safer than it seems to me? Is there an option #3 that
+I don't see right now?
+
+-- 
+Alex Levy
+WWW: http://mesozoic.geecs.org/
+ 
+"Never let your sense of morals prevent you from doing what is right."
+ -- Salvor Hardin, Isaac Asimov's _Foundation_
+
+From foom at fuhm.net  Mon Oct 18 16:45:51 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Mon Oct 18 16:45:57 2004
+Subject: [Twisted-web] Passing context through/around/across webform
+In-Reply-To: <20041018135208.GA31358@perpetual.moxn.net>
+References: <20041018135208.GA31358@perpetual.moxn.net>
+Message-ID: <767B8019-2157-11D9-BAB2-000A95A50FB2@fuhm.net>
+
+Here's my horribly hacked up copy of Choice that works for what I need. 
+The changes from the normal Choice are that choicesAttribute is really 
+choicesMethod, and that it's supposed to return a list of (id, text), 
+and the ids are used as the keys sent to the client, instead of the 
+offset in the list. Offset in the list is worthless to me, because the 
+list is dynamically generated and won't be consistent.
+
+class ChoiceTuple(Typed):
+     """Allow the user to pick from a list of "choices", or a list of 
+choices found
+     by accessing the list in the attribute "choicesAttribute" of the 
+object we
+     are configuring. The elements of the list will be rendered by 
+calling "str".
+     """
+     def __init__(self, choices=None, choicesAttribute=None, *args, 
+**kw):
+         Typed.__init__(self, *args, **kw)
+         if choices is None:
+             self.choices = ()
+         else:
+             self.choices = choices
+         self.choicesAttribute = choicesAttribute
+
+     def coerce(self, val, binding):
+         """Coerce a value with the help of an object, which is the 
+object
+         we are configuring.
+         """
+         try:
+             val = int(val)
+         except ValueError:
+             raise InputError("%r is an invalid choice." % val)
+         return val
+
+class ChoiceTupleRenderer(webform.BaseInputRenderer):
+     def input(self, context, slot, data, name, value):
+         tv = data.typedValue
+         if tv.choicesAttribute:
+             choices = 
+getattr(context.locate(iformless.IConfigurable).boundTo, 
+tv.choicesAttribute)(context, data)
+         else:
+             choices = tv.choices
+         if isinstance(choices, defer.Deferred):
+             return choices.addCallback(self.input2, context, slot, 
+data, name, value)
+         self.input2(choices, context, slot, data, name, value)
+
+     def input2(self, choices, context, slot, data, name, value):
+         numChoices = len(choices)
+         if numChoices == 0:
+             return None
+
+         selecter = tags.select(id=formutils.keyToXMLID(context.key), 
+name=name)
+
+         for key, val in choices:
+             if key == value:
+                 selecter[tags.option(value=str(key), 
+selected="selected")[str(val)]]
+             else:
+                 selecter[tags.option(value=str(key))[str(val)]]
+         return slot[selecter]
+
+
+From dreid at dreid.org  Tue Oct 19 01:42:46 2004
+From: dreid at dreid.org (David Reid)
+Date: Tue Oct 19 01:42:42 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+Message-ID: <1098171766.9447.17.camel@localhost>
+
+Ok, so currently if you want dynamic stuff to happen in an attribute you
+have to do something along the lines of this.
+
+<a render="mylink">
+    <nevow:attr name="href">
+        <nevow:slot name="link" />
+    </nevow:attr>
+    <nevow:slot name="label" />
+</a>
+
+def render_mylink(self, ctx, data):
+	ctx.fillSlots('link', data[0])
+	ctx.fillSlots('label', data[1])
+	
+	return ctx.tag
+
+Which is horrendously ugly and difficult to explain to pretty much
+anyone.  Now, there are plenty of other solutions to this problem, but
+none of them provide the flexability for the template author as
+<nevow:attr> and <nevow:slot> do.
+
+For instance:
+   <nevow:attr name="href">
+        /users/<nevow:slot name="username" />/images
+   </ nevow:attr>
+
+Works perfectly well.  Which according to fzZzy is the main reason for
+choosing this syntax.
+
+A comparison to this with the syntax of TAL was recently mentioned on
+the ML (Comparison with ZPT [Was: [Twisted-web] Sub-tag level templating
+in Nevow: possible?]), and the TAL syntax seems to be cleaner, though
+I'm not sure if it provides the above functionality.  While discussing
+it on IRC I came to a conclusion that the following would be
+comfortable, and flexible syntax alternative (not replacement) for
+<nevow:attr>
+
+<a href="/images/archives/%(year)/%(month)/%(day)"
+nevow:attributes="href=year,month,day alt=label">
+    <nevow:slot name="label" />
+</a>
+
+basically when the template was getting parsed, the Tag instance would
+end up something like this.
+	
+Tag(name='a', attributes={'href': 
+	['/images/archives/', slot(name='year'), slot(name='month'),
+slot(name='day')]
+})
+
+It provides the flexibility, and in my opinion is just a little more
+intuitive than <nevow:attr>.
+
+--David
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: This is a digitally signed message part
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041019/addeb3cd/attachment.bin
+From andrew-twisted at puzzling.org  Tue Oct 19 03:51:48 2004
+From: andrew-twisted at puzzling.org (Andrew Bennetts)
+Date: Tue Oct 19 03:51:59 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+In-Reply-To: <1098171766.9447.17.camel@localhost>
+References: <1098171766.9447.17.camel@localhost>
+Message-ID: <20041019095148.GA4892@frobozz>
+
+On Tue, Oct 19, 2004 at 12:42:46AM -0700, David Reid wrote:
+[...]
+> Which is horrendously ugly and difficult to explain to pretty much
+> anyone.  Now, there are plenty of other solutions to this problem, but
+> none of them provide the flexability for the template author as
+> <nevow:attr> and <nevow:slot> do.
+> 
+> For instance:
+>    <nevow:attr name="href">
+>         /users/<nevow:slot name="username" />/images
+>    </ nevow:attr>
+> 
+> Works perfectly well.  Which according to fzZzy is the main reason for
+> choosing this syntax.
+> 
+> A comparison to this with the syntax of TAL was recently mentioned on
+> the ML (Comparison with ZPT [Was: [Twisted-web] Sub-tag level templating
+> in Nevow: possible?]), and the TAL syntax seems to be cleaner, though
+> I'm not sure if it provides the above functionality.  While discussing
+
+TAL does allow this, in two ways (that I know of):
+
+First, there's the hackish way:
+
+    <a tal:attributes="href python:'/users/' + context/username + '/images'"
+     />
+
+The second way is to put this sort of complex code a view:
+
+    class ViewBlah:
+        def __init__(self, context, request):
+            self.context = context
+            self.request = request
+        def imagesPath(self):
+            return '/users/' + self.context.username + '/images'
+    
+then you can do:
+
+    <a tal:attributes="href view/imagesPath" />
+
+-Andrew.
+
+
+From sam at SpinwardStars.com  Tue Oct 19 07:36:06 2004
+From: sam at SpinwardStars.com (Samuel Reynolds)
+Date: Tue Oct 19 07:46:23 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+In-Reply-To: <1098171766.9447.17.camel@localhost>
+References: <1098171766.9447.17.camel@localhost>
+Message-ID: <6.1.2.0.0.20041019073050.027dc358@pop.mindspring.com>
+
+At 2004-10-19 12:42 AM -0700, you wrote:
+>Ok, so currently if you want dynamic stuff to happen in an attribute you
+>have to do something along the lines of this.
+>
+><a render="mylink">
+>     <nevow:attr name="href">
+>         <nevow:slot name="link" />
+>     </nevow:attr>
+>     <nevow:slot name="label" />
+></a>
+>
+>def render_mylink(self, ctx, data):
+>         ctx.fillSlots('link', data[0])
+>         ctx.fillSlots('label', data[1])
+>
+>         return ctx.tag
+>
+>Which is horrendously ugly and difficult to explain to pretty much
+>anyone.  Now, there are plenty of other solutions to this problem, but
+>none of them provide the flexability for the template author as
+><nevow:attr> and <nevow:slot> do.
+
+I haven't started using nevow:attr yet. I've done some
+straightforward string substitutions. Anathema to the
+Twisted Way, I suspect, but it works.
+
+An example from a working application:
+
+[In TEMPLATE]
+<a href='/daily/%s' nevow:data='today'
+     nevow:render='interpolateHref'>Today</a>
+
+[In Renderer]
+def render_interpolateHref(self, context, data):
+     """
+     Interpolate data into href attribute of tag.
+
+     Href attribute is assumed to contain a '%s' formatting spec.
+     """
+     tag = context.tag()
+     href = tag.attributes['href']
+     tag.attributes['href'] = href % str(data)
+     return tag
+
+FWIW.
+
+- Sam
+
+__________________________________________________________
+Spinward Stars, LLC                        Samuel Reynolds
+Software Consulting and Development           303-805-1446
+http://SpinwardStars.com/            sam@SpinwardStars.com 
+
+
+
+From tv at twistedmatrix.com  Tue Oct 19 10:27:57 2004
+From: tv at twistedmatrix.com (Tommi Virtanen)
+Date: Tue Oct 19 10:28:01 2004
+Subject: [Twisted-web] Passing context through/around/across webform
+In-Reply-To: <767B8019-2157-11D9-BAB2-000A95A50FB2@fuhm.net>
+References: <20041018135208.GA31358@perpetual.moxn.net>
+	<767B8019-2157-11D9-BAB2-000A95A50FB2@fuhm.net>
+Message-ID: <4175408D.4040109@twistedmatrix.com>
+
+James Y Knight wrote:
+> Here's my horribly hacked up copy of Choice that works for what I need. 
+> The changes from the normal Choice are that choicesAttribute is really 
+> choicesMethod, and that it's supposed to return a list of (id, text), 
+
+Sounds like you should use dict instead of a list. Otherwise there could
+be duplicate ids.
+
+From mesozoic at polynode.com  Tue Oct 19 11:27:10 2004
+From: mesozoic at polynode.com (Alex Levy)
+Date: Tue Oct 19 11:27:43 2004
+Subject: [Twisted-web] Re: Passing context through/around/across webform
+In-Reply-To: <4175408D.4040109@twistedmatrix.com>
+References: <20041018135208.GA31358@perpetual.moxn.net>
+	<767B8019-2157-11D9-BAB2-000A95A50FB2@fuhm.net>
+	<4175408D.4040109@twistedmatrix.com>
+Message-ID: <20041019172710.GB3493@perpetual.moxn.net>
+
+On Tue, Oct 19, 2004 at 07:27:57PM +0300, Tommi Virtanen wrote:
+> James Y Knight wrote:
+> >Here's my horribly hacked up copy of Choice that works for what I need. 
+> >The changes from the normal Choice are that choicesAttribute is really 
+> >choicesMethod, and that it's supposed to return a list of (id, text), 
+> 
+> Sounds like you should use dict instead of a list. Otherwise there could
+> be duplicate ids.
+
+This is true, except that you will sometimes need a way to specify what
+order the items appear in -- which might mean a (dict, list) tuple, or
+something of the sort.
+
+I'm having some initial success with this approach in Payago, and if I come
+up with something generic enough to be useful to others, I'll post it back
+here.
+
+The real problem is getting the context object passed down to the
+Typed.coerce call, so that you don't have to implement code to "retrieve my
+(dict, list) and check for the key" in a million different places.
+
+-- 
+Alex Levy
+WWW: http://mesozoic.geecs.org/
+ 
+"Never let your sense of morals prevent you from doing what is right."
+ -- Salvor Hardin, Isaac Asimov's _Foundation_
+
+From dreid at dreid.org  Tue Oct 19 13:10:37 2004
+From: dreid at dreid.org (David Reid)
+Date: Tue Oct 19 13:11:01 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+In-Reply-To: <20041019095148.GA4892@frobozz>
+References: <1098171766.9447.17.camel@localhost>
+	<20041019095148.GA4892@frobozz>
+Message-ID: <1098213036.3585.3.camel@localhost>
+
+On Tue, 2004-10-19 at 02:51, Andrew Bennetts wrote: 
+> TAL does allow this, in two ways (that I know of):
+> 
+> First, there's the hackish way:
+
+They're both hackish ways in my opinion, and the latter
+Another alternative is for the alternative syntax to not even support
+such behavior, and only be for the general case which would look
+something like this:
+
+<a nevow:attributes="href=link alt=label"><nevow:slot name="label"
+/></a>
+
+(Looks an aweful lot like mg's attr.tac example, doesn't it?)
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: This is a digitally signed message part
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041019/e0a6408d/attachment.bin
+From dp at divmod.org  Tue Oct 19 14:19:51 2004
+From: dp at divmod.org (Donovan Preston)
+Date: Tue Oct 19 14:19:58 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+In-Reply-To: <20041019095148.GA4892@frobozz>
+References: <1098171766.9447.17.camel@localhost>
+	<20041019095148.GA4892@frobozz>
+Message-ID: <3B340918-220C-11D9-96E1-000A95864FC4@divmod.org>
+
+
+On Oct 19, 2004, at 2:51 AM, Andrew Bennetts wrote:
+> TAL does allow this, in two ways (that I know of):
+>
+> First, there's the hackish way:
+>
+>     <a tal:attributes="href python:'/users/' + context/username + 
+> '/images'"
+>      />
+>
+> The second way is to put this sort of complex code a view:
+>
+>     class ViewBlah:
+>         def __init__(self, context, request):
+>             self.context = context
+>             self.request = request
+>         def imagesPath(self):
+>             return '/users/' + self.context.username + '/images'
+>
+> then you can do:
+>
+>     <a tal:attributes="href view/imagesPath" />
+
+Which is exactly what Nevow allows you to do very easily, as well. 
+Currently, if you want to put this type of information in python code, 
+you can use a technique similar to your second example:
+
+def render_imagesPath(self, ctx, username):
+	return ctx.tag(href=['/users/', username, '/images'])
+
+If you'd rather put that information in the template, you can do it 
+using nevow:attr:
+
+<a><nevow:attr name="href">/users/<nevow:slot name="username" 
+/>/images</nevow:attr></a>
+
+Again, the reason I arrived at this syntax is because it doesn't 
+require you to learn any new substitution syntax and the full range of 
+nevow functionality is available. It's consistent.
+
+I don't see what the huge advantage of dreid's proposed 
+nevow:attributes syntax is, in fact I'm not even sure how it would 
+work. I'm against it mostly because it's another mechanism users have 
+to learn, and is only useful for one small use case.
+
+Another possibility is a python renderer:
+
+<a nevow:render="python ctx.tag(href=["/users/", slot('username'), 
+"/images"])" />
+
+The implementation would be pretty simple:
+
+def render_python(self, ctx, code):
+	def evalIt(ctx, data):
+		return eval(code, {'ctx': ctx, 'data': data})
+	return evalIt
+
+dp
+
+
+From andrew-twisted at puzzling.org  Tue Oct 19 15:06:11 2004
+From: andrew-twisted at puzzling.org (Andrew Bennetts)
+Date: Tue Oct 19 15:06:22 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+In-Reply-To: <1098213036.3585.3.camel@localhost>
+References: <1098171766.9447.17.camel@localhost>
+	<20041019095148.GA4892@frobozz> <1098213036.3585.3.camel@localhost>
+Message-ID: <20041019210611.GA5213@frobozz>
+
+On Tue, Oct 19, 2004 at 12:10:37PM -0700, David Reid wrote:
+> On Tue, 2004-10-19 at 02:51, Andrew Bennetts wrote: 
+> > TAL does allow this, in two ways (that I know of):
+> > 
+> > First, there's the hackish way:
+> 
+> They're both hackish ways in my opinion, and the latter
+> Another alternative is for the alternative syntax to not even support
+> such behavior, and only be for the general case which would look
+> something like this:
+> 
+> <a nevow:attributes="href=link alt=label"><nevow:slot name="label"
+> /></a>
+> 
+> (Looks an aweful lot like mg's attr.tac example, doesn't it?)
+
+Firstly, I really don't know Nevow, I just lurk on the discussions about it.
+I mention ZPT from time-to-time mainly out of selfishness: it would be
+easier for me to learn Nevow if it were more like ZPT ;)
+
+Now, on to the reply...
+
+mg's attr.tac has this in the template:
+
+    <ul nevow:data="links" nevow:render="sequence">
+      <li nevow:pattern="item" nevow:render="link"><a href="#" nevow:render="attribute href=link,alt=label"><nevow:slot name="label">label</nevow:slot></a></li>
+    </ul>
+
+I don't see what this does that is different to:
+
+    <ul tal:repeat="linkinfo context/links">
+      <li><a href="#" tal:attributes="href linkinfo/link; label linkinfo/label"/></li>
+    </ul>
+
+Although I don't totally understand why mg's attr.tac has a nevow:slot tag
+for label and not link, as far as I can tell the ZPT I give here is
+equivalent in concept.  Explanations and/or corrections welcome!
+
+Of course, my ZPT examples requires that the code would require there to be
+a linkinfo class, e.g.
+
+    class LinkInfo:
+        def __init__(self, link, label):
+            self.link = link
+            self.label = label
+
+And context/links would just be a list of these.  I don't see this as being
+any more complex than what attr.tac does, though.
+
+If nothing else, I hope this discussion can serve as the basis for a "Nevow for
+ZPT users" tutorial.
+
+-Andrew.
+
+
+From foom at fuhm.net  Tue Oct 19 19:17:25 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Tue Oct 19 19:17:31 2004
+Subject: [Twisted-web] Passing context through/around/across webform
+In-Reply-To: <4175408D.4040109@twistedmatrix.com>
+References: <20041018135208.GA31358@perpetual.moxn.net>
+	<767B8019-2157-11D9-BAB2-000A95A50FB2@fuhm.net>
+	<4175408D.4040109@twistedmatrix.com>
+Message-ID: <CD5A5C57-2235-11D9-BAB2-000A95A50FB2@fuhm.net>
+
+On Oct 19, 2004, at 12:27 PM, Tommi Virtanen wrote:
+> James Y Knight wrote:
+>> Here's my horribly hacked up copy of Choice that works for what I 
+>> need. The changes from the normal Choice are that choicesAttribute is 
+>> really choicesMethod, and that it's supposed to return a list of (id, 
+>> text),
+>
+> Sounds like you should use dict instead of a list. Otherwise there 
+> could
+> be duplicate ids.
+
+But since I provide the list, I can guarantee that there aren't. And I 
+need the ordering. And even if there are duplicates, it's not a 
+horrible thing. It just means there'll be two entries in the menu that 
+mean the same thing. Under some conditions you might even want that.
+
+James
+
+
+From weeti at usr.fi  Wed Oct 20 01:34:17 2004
+From: weeti at usr.fi (Miika Keskinen)
+Date: Wed Oct 20 01:34:53 2004
+Subject: [Twisted-web] mod_rewrite while persisting client ips
+Message-ID: <Pine.LNX.4.61.0410201029340.4649@localhost>
+
+
+Hi there.
+
+I'm writing to the list in case someone finds this useful, I include short 
+ProxyIPResource-'hack' and corresponding rewriterule to set 
+request.client.host correctly :)
+
+here it goes:
+
+--snip--
+
+from twisted.application import service, internet
+
+from nevow import rend, loaders, appserver, vhost, inevow
+from nevow import tags as T
+
+"""
+Example apache configuration
+
+NameVirtualHost *
+
+<VirtualHost *>
+         RewriteEngine        on
+         RewriteRule (.*)/ http://localhost:8080/proxyip/%{REMOTE_HOST}/vhost/http/test.com/$1 [P]
+         ServerName test.com
+</VirtualHost>
+
+"""
+
+class ProxyIPResource:
+     __implements__ = inevow.IResource,
+
+     def putChild(self, child, res):
+         setattr(self, 'child_%s' % (child,), res)
+
+     def locateChild(self, ctx, segments):
+         if len(segments) < 1:
+             return rend.NotFound
+
+         elif "child_%s" % (segments[0],) in self.__dict__:
+             return self.__dict__['child_%s' % (segments[0],)], segments[1:]
+
+         else:
+             request = inevow.IRequest(ctx)
+             request.client.host = segments[0]
+
+             prefixLen = len('/'+'/'.join(request.prepath)+'/'+'/'.join(segments[:1]))
+             request.path = '/'+'/'.join(segments[1:])
+             request.uri = request.uri[prefixLen:]
+             request.prepath = request.prepath[2:]
+             return self, segments[1:]
+
+class Simple(rend.Page):
+     addSlash = True
+     docFactory = loaders.stan(
+             T.html[
+                 T.body[
+                     T.h1["hello"]
+                 ]
+             ])
+
+application = service.Application("Simple")
+
+res = Simple()
+
+vResource = vhost.VHostMonsterResource()
+pResource = ProxyIPResource()
+
+res.putChild('proxyip', pResource)
+pResource.putChild('vhost', vResource)
+
+internet.TCPServer(8080, 
+appserver.NevowSite(res)).setServiceParent(application)
+
+--snip--
+
+From jackup at gmail.com  Wed Oct 20 02:37:26 2004
+From: jackup at gmail.com (Young-gue Park)
+Date: Wed Oct 20 02:37:30 2004
+Subject: [Twisted-web] hi? i have some problem in using simpleguard example
+In-Reply-To: <dd87482b0410200132650aaf27@mail.gmail.com>
+References: <dd87482b0410200132650aaf27@mail.gmail.com>
+Message-ID: <dd87482b04102001373bc5f2b3@mail.gmail.com>
+
+i execute your sample example code
+
+but the result is like next
+
+the page can not display
+
+i don't know the reason and why doesn't it work
+
+Is There anybody to answer my confusing?
+
+i hope this problem solve as soon as possible
+
+please help me
+
+From naijasms at gmail.com  Wed Oct 20 02:43:05 2004
+From: naijasms at gmail.com (Seun Osewa)
+Date: Wed Oct 20 02:43:07 2004
+Subject: [Twisted-web] mod_rewrite while persisting client ips
+In-Reply-To: <Pine.LNX.4.61.0410201029340.4649@localhost>
+References: <Pine.LNX.4.61.0410201029340.4649@localhost>
+Message-ID: <5d35fc5d041020014373bb56aa@mail.gmail.com>
+
+I've been searching for a potential solution to this 'loss of client
+ip' problem for a long time.
+
+
+On Wed, 20 Oct 2004 10:34:17 +0300 (EEST), Miika Keskinen <weeti@usr.fi> wrote:
+> 
+> Hi there.
+> 
+> I'm writing to the list in case someone finds this useful, I include short
+> ProxyIPResource-'hack' and corresponding rewriterule to set
+> request.client.host correctly :)
+> 
+> here it goes:
+> 
+> --snip--
+> 
+> from twisted.application import service, internet
+> 
+> from nevow import rend, loaders, appserver, vhost, inevow
+> from nevow import tags as T
+> 
+> """
+> Example apache configuration
+> 
+> NameVirtualHost *
+> 
+> <VirtualHost *>
+>         RewriteEngine        on
+>         RewriteRule (.*)/ http://localhost:8080/proxyip/%{REMOTE_HOST}/vhost/http/test.com/$1 [P]
+>         ServerName test.com
+> </VirtualHost>
+> 
+> """
+> 
+> class ProxyIPResource:
+>     __implements__ = inevow.IResource,
+> 
+>     def putChild(self, child, res):
+>         setattr(self, 'child_%s' % (child,), res)
+> 
+>     def locateChild(self, ctx, segments):
+>         if len(segments) < 1:
+>             return rend.NotFound
+> 
+>         elif "child_%s" % (segments[0],) in self.__dict__:
+>             return self.__dict__['child_%s' % (segments[0],)], segments[1:]
+> 
+>         else:
+>             request = inevow.IRequest(ctx)
+>             request.client.host = segments[0]
+> 
+>             prefixLen = len('/'+'/'.join(request.prepath)+'/'+'/'.join(segments[:1]))
+>             request.path = '/'+'/'.join(segments[1:])
+>             request.uri = request.uri[prefixLen:]
+>             request.prepath = request.prepath[2:]
+>             return self, segments[1:]
+> 
+> class Simple(rend.Page):
+>     addSlash = True
+>     docFactory = loaders.stan(
+>             T.html[
+>                 T.body[
+>                     T.h1["hello"]
+>                 ]
+>             ])
+> 
+> application = service.Application("Simple")
+> 
+> res = Simple()
+> 
+> vResource = vhost.VHostMonsterResource()
+> pResource = ProxyIPResource()
+> 
+> res.putChild('proxyip', pResource)
+> pResource.putChild('vhost', vResource)
+> 
+> internet.TCPServer(8080,
+> appserver.NevowSite(res)).setServiceParent(application)
+> 
+> --snip--
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+From jackup at gmail.com  Wed Oct 20 03:01:33 2004
+From: jackup at gmail.com (Young-gue Park)
+Date: Wed Oct 20 03:01:36 2004
+Subject: [Twisted-web] Re: hi? i have some problem in using simpleguard
+	example
+In-Reply-To: <dd87482b0410200132650aaf27@mail.gmail.com>
+References: <dd87482b0410200132650aaf27@mail.gmail.com>
+Message-ID: <dd87482b04102002011a8e6e2d@mail.gmail.com>
+
+I just add the last line at the whole source
+
+resource = buildGuardedResource()
+
+Don't you feel me stupid?
+
+%^.^%
+
+On Wed, 20 Oct 2004 17:32:07 +0900, Young-gue Park <jackup@gmail.com> wrote:
+> i execute your sample example code
+> 
+> but the result is like next
+> 
+> the page can not display
+> 
+> i don't know the reason and why doesn't it work
+> 
+> Is There anybody to answer my confusing?
+> 
+> i hope this problem solve as soon as possible
+> 
+> please help me
+>
+
+From matt at pollenation.net  Wed Oct 20 03:26:36 2004
+From: matt at pollenation.net (Matt Goodall)
+Date: Wed Oct 20 03:26:45 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+In-Reply-To: <20041019210611.GA5213@frobozz>
+References: <1098171766.9447.17.camel@localhost>
+	<20041019095148.GA4892@frobozz> <1098213036.3585.3.camel@localhost>
+	<20041019210611.GA5213@frobozz>
+Message-ID: <1098264396.22920.31.camel@localhost.localdomain>
+
+On Tue, 2004-10-19 at 23:06 +0200, Andrew Bennetts wrote:
+> On Tue, Oct 19, 2004 at 12:10:37PM -0700, David Reid wrote:
+> > On Tue, 2004-10-19 at 02:51, Andrew Bennetts wrote: 
+> > > TAL does allow this, in two ways (that I know of):
+> > > 
+> > > First, there's the hackish way:
+> > 
+> > They're both hackish ways in my opinion, and the latter
+> > Another alternative is for the alternative syntax to not even support
+> > such behavior, and only be for the general case which would look
+> > something like this:
+> > 
+> > <a nevow:attributes="href=link alt=label"><nevow:slot name="label"
+> > /></a>
+> > 
+> > (Looks an aweful lot like mg's attr.tac example, doesn't it?)
+[...]
+> mg's attr.tac has this in the template:
+> 
+>     <ul nevow:data="links" nevow:render="sequence">
+>       <li nevow:pattern="item" nevow:render="link"><a href="#" nevow:render="attribute href=link,alt=label"><nevow:slot name="label">label</nevow:slot></a></li>
+>     </ul>
+> 
+> I don't see what this does that is different to:
+
+I think that was David's point, they're basically doing the same thing
+with a different syntax.
+
+
+>     <ul tal:repeat="linkinfo context/links">
+>       <li><a href="#" tal:attributes="href linkinfo/link; label linkinfo/label"/></li>
+>     </ul>
+> 
+> Although I don't totally understand why mg's attr.tac has a nevow:slot tag
+> for label and not link, as far as I can tell the ZPT I give here is
+> equivalent in concept.  Explanations and/or corrections welcome!
+
+The attribute renderer in attr.tac example updates updates from values
+in slots, i.e. href is set to the href slot and alt (yeah, it should be
+label;-)) is set to the label slot. The slot *inside* the <a>...</a> is
+actually nothing to do with the attribute renderer but ensures that the
+label also appears inside the element.
+
+I don't know ZPT well enough to know if your example does exactly the
+same (I can't see how it could) but that really doesn't matter for this
+discussion anyway.
+
+I should point out that most of the time, I use the <n:attr ...
+><n:slot ...></n:attr> syntax because it's always there and it's more
+flexible. I wrote the attr.tac more as an example of how one might
+implement something like this using a renderer although it does have the
+benefit of being compact for really simple stuff.
+
+> 
+> Of course, my ZPT examples requires that the code would require there to be
+> a linkinfo class, e.g.
+> 
+>     class LinkInfo:
+>         def __init__(self, link, label):
+>             self.link = link
+>             self.label = label
+> 
+> And context/links would just be a list of these.  I don't see this as being
+> any more complex than what attr.tac does, though.
+
+This is probably the right way with Nevow too. The difference with Nevow
+is that Nevow refuses to look inside objects it doesn't understand by
+default so it would never use getattr unless explicitly told to.
+
+You can tell Nevow how to look inside objects by registering a
+inevow.IContainer adapter. We've talked about providing a IContainer
+adapter that does getattr magic in Nevow but it would be up to the
+developer to register the adapter for specific types.
+
+> 
+> If nothing else, I hope this discussion can serve as the basis for a "Nevow for
+> ZPT users" tutorial.
+
+I guess I should learn ZPT properly sometime, just to get another angle
+on all this.
+
+Cheers, Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \          Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+
+
+From andrew-twisted at puzzling.org  Wed Oct 20 06:01:36 2004
+From: andrew-twisted at puzzling.org (Andrew Bennetts)
+Date: Wed Oct 20 06:01:52 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+In-Reply-To: <1098264396.22920.31.camel@localhost.localdomain>
+References: <1098171766.9447.17.camel@localhost>
+	<20041019095148.GA4892@frobozz> <1098213036.3585.3.camel@localhost>
+	<20041019210611.GA5213@frobozz>
+	<1098264396.22920.31.camel@localhost.localdomain>
+Message-ID: <20041020120136.GA4891@frobozz>
+
+On Wed, Oct 20, 2004 at 10:26:36AM +0100, Matt Goodall wrote:
+> On Tue, 2004-10-19 at 23:06 +0200, Andrew Bennetts wrote:
+[...]
+> 
+> 
+> >     <ul tal:repeat="linkinfo context/links">
+> >       <li><a href="#" tal:attributes="href linkinfo/link; label linkinfo/label"/></li>
+> >     </ul>
+> > 
+> > Although I don't totally understand why mg's attr.tac has a nevow:slot tag
+> > for label and not link, as far as I can tell the ZPT I give here is
+> > equivalent in concept.  Explanations and/or corrections welcome!
+> 
+> The attribute renderer in attr.tac example updates updates from values
+> in slots, i.e. href is set to the href slot and alt (yeah, it should be
+> label;-)) is set to the label slot. The slot *inside* the <a>...</a> is
+> actually nothing to do with the attribute renderer but ensures that the
+> label also appears inside the element.
+
+Oh, right.  I get it now, duh :)
+
+> I don't know ZPT well enough to know if your example does exactly the
+> same (I can't see how it could) but that really doesn't matter for this
+> discussion anyway.
+
+My ZPT to be equivalent should be:
+
+    <ul tal:repeat="linkinfo context/links">
+      <li><a href="#" tal:attributes="href linkinfo/link; alt linkinfo/label"
+             tal:content="linkinfo/label"/>Label will go here</li>
+    </ul>
+
+I think it's a shame that no-one seems to know both ZPT and Nevow, as I
+suspect there may be something they can learn from each other, as they have
+some similar goals.  I'd like to learn Nevow (although I'm really no ZPT
+expert), but time is always the problem...
+
+> I should point out that most of the time, I use the <n:attr ...
+> ><n:slot ...></n:attr> syntax because it's always there and it's more
+> flexible. I wrote the attr.tac more as an example of how one might
+> implement something like this using a renderer although it does have the
+> benefit of being compact for really simple stuff.
+> 
+> > 
+> > Of course, my ZPT examples requires that the code would require there to be
+> > a linkinfo class, e.g.
+> > 
+> >     class LinkInfo:
+> >         def __init__(self, link, label):
+> >             self.link = link
+> >             self.label = label
+> > 
+> > And context/links would just be a list of these.  I don't see this as being
+> > any more complex than what attr.tac does, though.
+> 
+> This is probably the right way with Nevow too. The difference with Nevow
+> is that Nevow refuses to look inside objects it doesn't understand by
+> default so it would never use getattr unless explicitly told to.
+
+I don't know exactly where this happens in Zope 3, but it won't by default
+either.  So, the code would look more like this:
+
+    from zope.interface import Interface, Attribute, implements
+
+    class ILinkInfo(Interface):
+        link = Attribute('URI that a link points to')
+        label = Attribute('Short description of the link')
+
+    class LinkInfo:
+        implements(ILinkInfo)
+        ...
+
+And then usually in a ZCML file say that ZPT (or really the publisher in
+general) is allowed to access attributes and methods defined in ILinkInfo.
+
+> You can tell Nevow how to look inside objects by registering a
+> inevow.IContainer adapter. We've talked about providing a IContainer
+> adapter that does getattr magic in Nevow but it would be up to the
+> developer to register the adapter for specific types.
+
+I see.  This seems essentially equivalent to the ZPT way -- registering an
+adapter from ILinkInfo to IContainer.  Zope does things via security
+declarations because there's a desire to allow relatively untrusted sources
+to write page templates, I guess.  There's more in common here than
+different, though :)
+
+> > If nothing else, I hope this discussion can serve as the basis for a "Nevow for
+> > ZPT users" tutorial.
+> 
+> I guess I should learn ZPT properly sometime, just to get another angle
+> on all this.
+
+And I should learn Nevow  :)
+
+-Andrew.
+
+
+From mesozoic at polynode.com  Wed Oct 20 08:04:01 2004
+From: mesozoic at polynode.com (Alex Levy)
+Date: Wed Oct 20 08:04:42 2004
+Subject: [Twisted-web] Re: Passing context through/around/across webform
+In-Reply-To: <CD5A5C57-2235-11D9-BAB2-000A95A50FB2@fuhm.net>
+References: <20041018135208.GA31358@perpetual.moxn.net>	<767B8019-2157-11D9-BAB2-000A95A50FB2@fuhm.net>	<4175408D.4040109@twistedmatrix.com>
+	<CD5A5C57-2235-11D9-BAB2-000A95A50FB2@fuhm.net>
+Message-ID: <41767051.2010101@polynode.com>
+
+James Y Knight wrote:
+> But since I provide the list, I can guarantee that there aren't. And I 
+> need the ordering. And even if there are duplicates, it's not a horrible 
+> thing. It just means there'll be two entries in the menu that mean the 
+> same thing. Under some conditions you might even want that.
+
+For the sake of argument, I can't think of _any_ circumstances where I'd 
+want two different objects associated with the same key. Can you? How 
+would you go about determining which object was actually chosen?
+
+-- 
+Alex Levy
+WWW: http://mesozoic.geecs.org
+
+"Never let your sense of morals prevent you from doing what is right."
+  -- Salvor Hardin, Isaac Asimov's _Foundation_
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 254 bytes
+Desc: OpenPGP digital signature
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041020/c04d2143/signature.bin
+From foom at fuhm.net  Wed Oct 20 10:29:51 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Wed Oct 20 10:29:58 2004
+Subject: [Twisted-web] Re: Passing context through/around/across webform
+In-Reply-To: <41767051.2010101@polynode.com>
+References: <20041018135208.GA31358@perpetual.moxn.net>	<767B8019-2157-11D9-BAB2-000A95A50FB2@fuhm.net>	<4175408D.4040109@twistedmatrix.com>
+	<CD5A5C57-2235-11D9-BAB2-000A95A50FB2@fuhm.net>
+	<41767051.2010101@polynode.com>
+Message-ID: <448BAF2E-22B5-11D9-BAB2-000A95A50FB2@fuhm.net>
+
+
+On Oct 20, 2004, at 10:04 AM, Alex Levy wrote:
+
+> James Y Knight wrote:
+>> But since I provide the list, I can guarantee that there aren't. And 
+>> I need the ordering. And even if there are duplicates, it's not a 
+>> horrible thing. It just means there'll be two entries in the menu 
+>> that mean the same thing. Under some conditions you might even want 
+>> that.
+>
+> For the sake of argument, I can't think of _any_ circumstances where 
+> I'd want two different objects associated with the same key. Can you? 
+> How would you go about determining which object was actually chosen?
+
+Well, I think it's a silly thing to argue about since the most 
+important part is the ordering. The ability to have duplicates kinda 
+just falls out of that. But, here goes, anyways. Two strings, presented 
+to the user, with the same meaning. You wouldn't determine which was 
+chosen, what with them having the same meaning and all.
+
+This example has two sets of duplicate keys, just for extra points. 
+United States of America shows up in the alphabetized list, and in a 
+separate section at the top. The blank entry shows up first, and 
+between the initial countries and the rest.
+
+Choose your Country:
+
+   USA [United States of America]
+   Canada
+
+   Afganistan
+   Algeria
+   United Kingdom
+   United States of America
+   Uruguay
+   Zimbabwe
+
+
+James
+
+
+From radeex at gmail.com  Wed Oct 20 21:37:47 2004
+From: radeex at gmail.com (Christopher Armstrong)
+Date: Wed Oct 20 21:38:21 2004
+Subject: [Twisted-web] Alternative to <nevow:attr>
+In-Reply-To: <20041020120136.GA4891@frobozz>
+References: <1098171766.9447.17.camel@localhost>
+	<20041019095148.GA4892@frobozz> <1098213036.3585.3.camel@localhost>
+	<20041019210611.GA5213@frobozz>
+	<1098264396.22920.31.camel@localhost.localdomain>
+	<20041020120136.GA4891@frobozz>
+Message-ID: <60ed19d404102020376e28ed6a@mail.gmail.com>
+
+On Wed, 20 Oct 2004 14:01:36 +0200, Andrew Bennetts
+<andrew-twisted@puzzling.org> wrote:
+
+> I think it's a shame that no-one seems to know both ZPT and Nevow, as I
+> suspect there may be something they can learn from each other, as they have
+> some similar goals.  I'd like to learn Nevow (although I'm really no ZPT
+> expert), but time is always the problem...
+
+Well, I just did my first in-depth zope2/plone project (heavily
+involving ZPT) in the last couple of weeks, and I'm also versed in
+Nevow's templates. However, I haven't yet had a need to do computed
+attributes in a situation where it would be problematic to just set
+them in a render_ method for the entire tag. I'll pipe up if I ever
+do.
+
+-- 
+ Twisted | Christopher Armstrong: International Man of Twistery
+  Radix  |          Release Manager,  Twisted Project
+---------+            http://radix.twistedmatrix.com
+
+From tfillmor at socalbahai.org  Thu Oct 21 18:41:10 2004
+From: tfillmor at socalbahai.org (Tom Fillmore)
+Date: Thu Oct 21 18:44:16 2004
+Subject: [Twisted-web] Template engines
+Message-ID: <20041021174110.1bf8356c.tfillmor@socalbahai.org>
+
+Hi, all - 
+
+I'm a newbie so please be gentle... 8-)
+
+I am really impressed with Twisted and its capabilities and have looked at Nevow but the lack of docs (outside the source code that is) leaves it essentially unusable for me at this point.
+
+I see on the site docs that Quixote is listed as a template engine that can be used by Twisted.  Can any others, such as Cheetah?
+
+Thanks in advance.
+
+Tom Fillmore
+Rainy Southern California
+
+From spam at mike-warren.com  Thu Oct 21 19:22:02 2004
+From: spam at mike-warren.com (Mike Warren)
+Date: Thu Oct 21 19:26:25 2004
+Subject: [Twisted-web] Template engines
+In-Reply-To: <20041021174110.1bf8356c.tfillmor@socalbahai.org>
+References: <20041021174110.1bf8356c.tfillmor@socalbahai.org>
+Message-ID: <E1CKo82-0005yq-00@meejah.homeip.net>
+
+Tom Fillmore <tfillmor@socalbahai.org> writes:
+
+> I see on the site docs that Quixote is listed as a template engine
+> that can be used by Twisted.  Can any others, such as Cheetah?
+
+I have used Cheetah with Twisted, but somewhat-recently switched to
+Nevow and find it much, much nicer (thanks, guys!). I think in general
+it will be worth the slight pain to learn Nevow since it [obviously]
+integrates nicely with Twisted.
+
+What I found with Cheetah was that there was no way to pause part-way
+through the rendering -- in other words, no obvious way to Defer
+rendering (which makes sense for threaded servers, but not for
+Twisted). If you know you will never need to do this (i.e. wait for
+something partway through a page-render), then perhaps using a
+non-Twisted templating system will be fine.
+
+-- 
+mike [at] mike [dash] warren [dot] com
+<URL:http://www.mike-warren.com>
+gpg --keyserver 80.71.227.37 --recv-key 579911BD
+87F2 4D98 BDB0 0E90 EE2A 0CF9 1087 0884 5799 11BD
+
+From foom at fuhm.net  Fri Oct 22 09:10:03 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Fri Oct 22 09:10:10 2004
+Subject: [Twisted-web] Re: [Nevow-commits] r740 - Refactor urlToChild API to
+	avoid passing superfluous data (#1 from issue 121).
+In-Reply-To: <E1CL0vv-00082B-IP@tesla.divmod.com>
+References: <E1CL0vv-00082B-IP@tesla.divmod.com>
+Message-ID: <7304C323-243C-11D9-9668-000A95A50FB2@fuhm.net>
+
+I believe this change is wrong: prePathURL() changes. setupSession has 
+to use the prePathURL in place when guard's locateChild() is called, 
+not the one in place at the time some other resource calls 
+setupSession().
+
+James
+
+On Oct 22, 2004, at 11:02 AM, <mg@divmod.net> wrote:
+> Refactor urlToChild API to avoid passing superfluous data (#1 from 
+> issue 121).
+
+
+From tfillmor at socalbahai.org  Fri Oct 22 08:59:24 2004
+From: tfillmor at socalbahai.org (Tom Fillmore)
+Date: Fri Oct 22 10:00:27 2004
+Subject: [Twisted-web] Twisted vs Webware
+Message-ID: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+
+Can anyone shoot me their (fact-based) opinion as to why Twisted is 
+more appropriate than Webware?  I'm not trolling here, I've just never 
+used Webware.
+
+Thanks
+
+Tom Fillmore
+in traffic-clogged southern California
+
+
+From spam at mike-warren.com  Fri Oct 22 10:24:01 2004
+From: spam at mike-warren.com (Mike Warren)
+Date: Fri Oct 22 10:21:30 2004
+Subject: [Twisted-web] Twisted vs Webware
+In-Reply-To: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+References: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+Message-ID: <E1CL2Cv-0008FU-00@meejah.homeip.net>
+
+Tom Fillmore <tfillmor@socalbahai.org> writes:
+
+> Can anyone shoot me their (fact-based) opinion as to why Twisted is
+> more appropriate than Webware?  I'm not trolling here, I've just
+> never used Webware.
+
+This is not fact-based, but "fact-based opinion" sounds oxymoronic to
+me ;) Anyway, I found twisted to be much more intuitive and "pythonic"
+(yes! vagueness!)  than Webware. I first started a project with
+webware and rather liked it initially, but became increasingly
+frustrated with Webware forcing me to write my code in a certain way
+(specifically forcing certain class-tree layouts and disallowing
+multiple-inheritance in templates) so I started looking for another
+toolkit and settled with Twisted (which allows a lot more freedom,
+inheritance-wise, due to the use of interfaces/components). Webware
+also, IIRC, forces directory-layouts on you, too, which is just a Bad
+Idea, IMO (I was trying to map URIs in some arbitrary fashion and
+found it quite painful). This was a while ago, though: perhaps some of
+these things are no longer true.
+
+Of course, any toolkit is going to do a certain amount of "forcing",
+but, FWIW, I prefer Twisted (perhaps I just prefer the way it forces
+me). Also, Twisted appears to have support for many more protocols,
+etc., so if you are looking at integrating some web app with other
+things eventually (as I am), then it seems to make even more sense.
+
+HTH,
+
+-- 
+mike [at] mike [dash] warren [dot] com
+<URL:http://www.mike-warren.com>
+gpg --keyserver 80.71.227.37 --recv-key 579911BD
+87F2 4D98 BDB0 0E90 EE2A 0CF9 1087 0884 5799 11BD
+
+From nico at tekNico.net  Fri Oct 22 11:44:43 2004
+From: nico at tekNico.net (Nicola Larosa)
+Date: Fri Oct 22 11:44:55 2004
+Subject: [Twisted-web] Re: Twisted vs Webware
+References: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+Message-ID: <clbguf$6gk$1@sea.gmane.org>
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+> Can anyone shoot me their (fact-based) opinion as to why Twisted is
+> more appropriate than Webware?  I'm not trolling here, I've just never
+> used Webware.
+
+Simple: Webware is threaded, Twisted is aynchronous event-based. That's all
+you need to be able to choose, even without mentioning all the rest. :-)
+
+
+- -- 
+Nicola Larosa - nico@tekNico.net
+
+"Mind like water" doesn't mean you should try to configure the ripples.
+- -- Christoph Vorwerk, August 2004
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.5 (GNU/Linux)
+
+iD8DBQFBeUcOXv0hgDImBm4RAvUMAJ0StPg0HtKcvY6TfAktNj2CnT08DgCfVRnt
+Bt8D3Y7oa2HzKg6OBA2hGbk=
+=YIY6
+-----END PGP SIGNATURE-----
+
+
+From tfillmor at socalbahai.org  Fri Oct 22 10:58:42 2004
+From: tfillmor at socalbahai.org (Tom Fillmore)
+Date: Fri Oct 22 12:10:35 2004
+Subject: [Twisted-web] Twisted vs Webware
+In-Reply-To: <E1CL2Cv-0008FU-00@meejah.homeip.net>
+References: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+	<E1CL2Cv-0008FU-00@meejah.homeip.net>
+Message-ID: <A10611E2-244B-11D9-90CC-000393AC0C96@socalbahai.org>
+
+Thanks - that was helpful!
+
+Tom
+
+On Oct 22, 2004, at 9:24 AM, Mike Warren wrote:
+
+> Tom Fillmore <tfillmor@socalbahai.org> writes:
+>
+>> Can anyone shoot me their (fact-based) opinion as to why Twisted is
+>> more appropriate than Webware?  I'm not trolling here, I've just
+>> never used Webware.
+>
+> This is not fact-based, but "fact-based opinion" sounds oxymoronic to
+> me ;) Anyway, I found twisted to be much more intuitive and "pythonic"
+> (yes! vagueness!)  than Webware. I first started a project with
+> webware and rather liked it initially, but became increasingly
+> frustrated with Webware forcing me to write my code in a certain way
+> (specifically forcing certain class-tree layouts and disallowing
+> multiple-inheritance in templates) so I started looking for another
+> toolkit and settled with Twisted (which allows a lot more freedom,
+> inheritance-wise, due to the use of interfaces/components). Webware
+> also, IIRC, forces directory-layouts on you, too, which is just a Bad
+> Idea, IMO (I was trying to map URIs in some arbitrary fashion and
+> found it quite painful). This was a while ago, though: perhaps some of
+> these things are no longer true.
+>
+> Of course, any toolkit is going to do a certain amount of "forcing",
+> but, FWIW, I prefer Twisted (perhaps I just prefer the way it forces
+> me). Also, Twisted appears to have support for many more protocols,
+> etc., so if you are looking at integrating some web app with other
+> things eventually (as I am), then it seems to make even more sense.
+>
+> HTH,
+>
+> -- 
+> mike [at] mike [dash] warren [dot] com
+> <URL:http://www.mike-warren.com>
+> gpg --keyserver 80.71.227.37 --recv-key 579911BD
+> 87F2 4D98 BDB0 0E90 EE2A 0CF9 1087 0884 5799 11BD
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+From cce at clarkevans.com  Fri Oct 22 13:37:43 2004
+From: cce at clarkevans.com (Clark C. Evans)
+Date: Fri Oct 22 13:38:05 2004
+Subject: [Twisted-web] Twisted vs Webware
+In-Reply-To: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+References: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+Message-ID: <20041022193743.GA21670@prometheusresearch.com>
+
+Tom,
+
+It would depend on what sort of application you are constructing.
+What did you have in mind?
+
+Clark
+
+From tfillmor at socalbahai.org  Fri Oct 22 13:55:31 2004
+From: tfillmor at socalbahai.org (Tom Fillmore)
+Date: Fri Oct 22 13:58:39 2004
+Subject: [Twisted-web] Twisted vs Webware
+In-Reply-To: <20041022193743.GA21670@prometheusresearch.com>
+References: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+	<20041022193743.GA21670@prometheusresearch.com>
+Message-ID: <20041022125531.7f2d08ff.tfillmor@socalbahai.org>
+
+Hi - 
+
+I have a couple on the drawing board - one will be a _very_ data intensive app for commercial real estate, while the other will be a front end to a text search engine for various types of text/writings, with PDF output, etc.  The commercial real estate app would sustain a fair level of hits (several hundred per hour to start I am imagining), the other significantly less.
+
+Thanks
+
+Tom
+
+
+On Fri, 22 Oct 2004 15:37:43 -0400
+"Clark C. Evans" <cce@clarkevans.com> wrote:
+
+> Tom,
+> 
+> It would depend on what sort of application you are constructing.
+> What did you have in mind?
+> 
+> Clark
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> 
+
+From dialtone at gmail.com  Fri Oct 22 18:40:57 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Fri Oct 22 18:41:05 2004
+Subject: [Twisted-web] Twisted vs Webware
+In-Reply-To: <20041022125531.7f2d08ff.tfillmor@socalbahai.org>
+References: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+	<20041022193743.GA21670@prometheusresearch.com>
+	<20041022125531.7f2d08ff.tfillmor@socalbahai.org>
+Message-ID: <c893b853041022174012fd86c3@mail.gmail.com>
+
+On Fri, 22 Oct 2004 12:55:31 -0700, Tom Fillmore
+<tfillmor@socalbahai.org> wrote:
+> Hi -
+> 
+> I have a couple on the drawing board - one will be a _very_ data intensive app for commercial real estate, while the other will be a front end to a text search engine for various types of text/writings, with PDF output, etc.  The commercial real estate app would sustain a fair level of hits (several hundred per hour to start I am imagining), the other significantly less.
+
+I tested Nevow with ab (which, actually, is not the perfect tool for
+the job) and I have been able to reach (with 2-3 long queries to a DB
+in the same page, and by long I mean that there is a subquery
+processed for every row in the outer select that counts the elements
+(with COUNT(*)) with a fixed attribute on another table) over 7
+clients/sec with no particular optimizations like query caching or
+page caching, which corresponds to 142ms per page. With this speed you
+can handle (with no efforts) 25200 hits per hour 7*60*60, which is
+quite a fair number for 'serveral hundred' :). Of course, if you do
+query result caching and you cache rendered pages for later use (with
+a cache lifetime) you will get to much better speeds.
+
+Just for the curious ones :): 25200 is also 18M hits/month (which is
+quite good).
+This was achieved with very low ram usage (nevow was 'capped' at
+~15MB, the rest were the queries) and a 'modest' Athlon XP 2000+ with
+2GB RAM under FreeBSD 5.3-rc1.
+
+If what you need is just to serve static pages, then Twisted.web can
+handle quite a big number of them.
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+
+From cce at clarkevans.com  Fri Oct 22 19:40:28 2004
+From: cce at clarkevans.com (Clark C. Evans)
+Date: Fri Oct 22 19:40:56 2004
+Subject: [Twisted-web] Twisted vs Webware
+In-Reply-To: <20041022125531.7f2d08ff.tfillmor@socalbahai.org>
+References: <F69816B3-243A-11D9-90CC-000393AC0C96@socalbahai.org>
+	<20041022193743.GA21670@prometheusresearch.com>
+	<20041022125531.7f2d08ff.tfillmor@socalbahai.org>
+Message-ID: <20041023014027.GA18597@prometheusresearch.com>
+
+On Fri, Oct 22, 2004 at 12:55:31PM -0700, Tom Fillmore wrote:
+| I have a couple on the drawing board - one will be a _very_ data
+| intensive app for commercial real estate, while the other will be a
+| front end to a text search engine for various types of
+| text/writings, with PDF output, etc. 
+
+It sounds like you have some pretty traditional requirements -- both
+Twisted or Webware will work for you well.  I was using Webware about
+2-3 years ago, so I can't tell you what is new since then, but I've
+switched to Twisted and have been very happy.  Perhaps if I explained
+why I switched, it might be helpful.
+
+First, I wanted a built-in web server, I got tired of configuring
+Apache separately and at the time Webware didn't have its own HTTPS
+server implementation.  I've been using Twisted's HTTPS for some
+time now and have been very happy; just recently I've written digest
+authentication for Twisted -- its in my sandbox if you wish.
+
+Second, I wanted 'ftp' server support "built-in" since many
+operating systems allow these to be mounted and used just like file
+systems. This seemed quite a useful feature, and when I saw a
+built-in 'smtp' implementation I got a fuzzy feeling inside.
+
+Third, when I first started to play with Twisted, I really loved how
+it handled resources.  Webware has 'page' objects, whil Twisted's
+resource is similar, it is more flexible and since I was writing a
+very serious HTTP URL based system I needed quite a bit of
+flexibility in how my system should handle URLs.  For Webware I was
+maintaining a series of patches -- with Twisted I didn't need the
+patches and this made me very happy.
+
+Fourth, Twisted uses 4-space indentation, usually at 76 columns,
+and if it isn't, they don't mind me patching it so that it does
+fit on my 80-column-huge-font-for-blind-people-screen.  By
+contrast, Webware used tabs mixed with eight-space-indents that
+often put their source code at 159 columns and out.   This may seem
+nit-picky, but when you have to read the source code to really 
+"grok" what is going on... having to squint sucks.
+
+Fifth, I actually dislike threads, and to my suprise, people here
+had the same opinion.  Twisted's deferreds take some time getting
+use to, but once you do they are simple and powerful. 
+
+Probably the major difference is scope.  Twisted is very large
+framework and growing.  It is a application framework plus all
+of the lower-level guts you need.  Webware, on the other hand,
+was small and focused application layer that used Apache and
+didn't try to do everything.  If you want to hammer out a quick
+application -- perhaps Webware may be better.
+
+That said... if you go with twisted, you may want to hang out
+on IRC to get to know people some.
+
+Clark
+
+From foom at fuhm.net  Fri Oct 22 22:47:08 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Fri Oct 22 22:47:15 2004
+Subject: [Twisted-web] Re: [Twisted-Python] twisted webdav server
+In-Reply-To: <20041023.122323.104028643.yasusii@lowlife.jp>
+References: <417928C0.10305@donfu.com>
+	<ffb7b7f804102209085ea42e11@mail.gmail.com>
+	<E470CA68-2447-11D9-9963-000A95BA5446@redivi.com>
+	<20041023.122323.104028643.yasusii@lowlife.jp>
+Message-ID: <9834A2DE-24AE-11D9-9668-000A95A50FB2@fuhm.net>
+
+Following up on twisted-web mailing list.
+
+On Oct 22, 2004, at 11:23 PM, Yasushi Iwata wrote:
+> On Fri, 22 Oct 2004 12:31:57 -0400 Bob Ippolito wrote:
+>> This particular package is not going to go into Twisted unless the
+>> license changes.  LGPL is not compatible with MIT.
+>
+> Some code of akaDAV were adapted from Twisted 1.3.0 which is
+> distributed under LGPL, so I cannot change the lisence of akaDAV.
+>
+> I'm glad to change the lincense and contribute what I wrote to Twisted
+> project. Should I rewrite all the code adapted from Twisted 1.3.0 to
+> change the license?
+
+To change the license, you should copy the code from Twisted again, but 
+this time from a version of Twisted under the MIT license (current SVN 
+or 2.0 when it's released). Or you could just say you did that, and no 
+one would know the difference, since the code you copied likely hasn't 
+changed much since 1.3. ;)
+
+I'd *love* to have a WebDAV package as part of Twisted, with a few 
+caveats (I have not looked at your package yet, so none of this is 
+criticism, just generic comments):
+
+- I would require it to be completely RFC conforming.  Bugs are one 
+thing, but some of the other python WebDAV implementations I've looked 
+at have left me very unimpressed. A quick glance through the code and 
+the RFC found numerous MUSTs that they didn't even _attempt_ to 
+implement. It seemed as if the authors wrote the absolute minimum to 
+make it "work" with some popular clients and left it at that. An 
+absolutely minimal implementation is okay for some purposes, I suppose, 
+but not for inclusion as a protocol implementation in Twisted.
+
+- I'm not sure how much code you duplicated, but that would likely have 
+to be resolved somehow, as it's clearly not acceptable to have two 
+slightly different copies of a large portion of code in twisted.
+
+- It should be very well unit-tested.
+
+- I'd like it based on the web2 API (which is currently still 
+unfinished, so don't write to it yet expecting it to be stable). 
+Hopefully it will be easier to not copy code with the new API. If not, 
+the new API should be fixed so that it is. ;)
+
+- It should integrate nicely into a standard twisted web resource tree.
+
+
+I have muttered about possibly doing WebDAV for Twisted at "some point 
+in the future" a few times, and that still stands. But, for now, I 
+don't have time to do it. I've got more than enough on my plate just 
+trying to get the web2 rewrite done, without adding highly complicated 
+new protocols. So, either you or someone else would have to volunteer 
+to get it into merge-able shape *and* to be the primary Twisted 
+maintainer to handle any bugs which will inevitably show up. Or wait 
+probably at least a year for me to become able to do it. :)
+
+James
+
+
+From yasusii at lowlife.jp  Sat Oct 23 01:49:35 2004
+From: yasusii at lowlife.jp (Yasushi Iwata)
+Date: Sat Oct 23 01:50:08 2004
+Subject: [Twisted-web] Re: [Twisted-Python] twisted webdav server
+In-Reply-To: <9834A2DE-24AE-11D9-9668-000A95A50FB2@fuhm.net>
+References: <E470CA68-2447-11D9-9963-000A95BA5446@redivi.com>
+	<20041023.122323.104028643.yasusii@lowlife.jp>
+	<9834A2DE-24AE-11D9-9668-000A95A50FB2@fuhm.net>
+Message-ID: <20041023.164935.85414193.yasusii@lowlife.jp>
+
+On Sat, 23 Oct 2004 00:47:08 -0400 James Y Knight wrote:
+
+> To change the license, you should copy the code from Twisted again, but 
+> this time from a version of Twisted under the MIT license (current SVN 
+> or 2.0 when it's released). Or you could just say you did that, and no 
+> one would know the difference, since the code you copied likely hasn't 
+> changed much since 1.3. ;)
+
+Thank you. I'll try SVN version and release next version under MIT
+license.
+
+
+From tv at twistedmatrix.com  Sat Oct 23 01:57:32 2004
+From: tv at twistedmatrix.com (Tommi Virtanen)
+Date: Sat Oct 23 01:57:37 2004
+Subject: [Twisted-web] Re: [Nevow-commits] r740 - Refactor urlToChild
+	API to	avoid passing superfluous data (#1 from issue 121).
+In-Reply-To: <7304C323-243C-11D9-9668-000A95A50FB2@fuhm.net>
+References: <E1CL0vv-00082B-IP@tesla.divmod.com>
+	<7304C323-243C-11D9-9668-000A95A50FB2@fuhm.net>
+Message-ID: <417A0EEC.3050302@twistedmatrix.com>
+
+James Y Knight wrote:
+>> Refactor urlToChild API to avoid passing superfluous data (#1 from 
+>> issue 121).
+> I believe this change is wrong: prePathURL() changes. setupSession has 
+> to use the prePathURL in place when guard's locateChild() is called, not 
+> the one in place at the time some other resource calls setupSession().
+
+In theory, I believe you are right (and that particular patch can easily
+be reverted without really affecting rest of the issue, it was
+cleanup-only).
+
+In practise, is request.setupSession really wanted? Noone seems to be
+calling it, and commenting out the two lines that set it causes
+no unit tests to fail.
+
+I formally request you write unit tests for it if you want to keep it.
+If you can write a test that fails due to changing prePathURL, I'll
+happily make it work again.
+
+[0 tv@tao ~/src/nevow/upstream]$ grapple setupSession
+nevow/guard.py:186:        request.setupSession = lambda : 
+self.createSession(request, segments=[])
+nevow/guard.py:200:        request.setupSession = lambda : 
+self.createSession(request, segments)
+nevow/context.py:329:toSetOnRequest = ['args', 'content', 'fields', 
+'isSecure', 'method', 'path', 'postpath', 'prepath', 
+'receieved_headers', 'setupSession', 'session', 'uri']
+examples/userdb.tac:312:    def setupSession(self, ctx):
+examples/userdb.tac:318:        self.setupSession(ctx)
+examples/userdb.tac:322:        self.setupSession(ctx)
+# matches: 6
+# matching-files: 3
+[0 tv@tao ~/src/nevow/upstream]$
+
+The examples/userdb.tac seems to be an unrelated function that just
+happens to have the same name.
+
+[0 tv@tao ~/src/twisted/stable]$ grapple setupSession
+twisted/web/woven/guard.py:207:        request.setupSessionURL = setupURL
+twisted/web/woven/guard.py:208:        request.setupSession = lambda: 
+Redirect(setupURL)
+twisted/web/woven/guard.py:316:            return request.setupSession()
+twisted/web/woven/guard.py:417:            return request.setupSession()
+# matches: 4
+# matching-files: 1
+[0 tv@tao ~/src/twisted/stable]$
+
+So woven calls it. Whoppee. I see no reason for nevow guard to try to be
+compatible with woven guard.
+
+From naijasms at gmail.com  Sat Oct 23 02:43:30 2004
+From: naijasms at gmail.com (Seun Osewa)
+Date: Sat Oct 23 02:43:33 2004
+Subject: [Twisted-web] Documentation for Twisted.Web
+Message-ID: <5d35fc5d04102301436b51e77b@mail.gmail.com>
+
+Hi,
+
+I sure wish documentation for Twisted and Twisted.Web was more
+complete!  Right now I feel the information about using Twisted.Wed
+objects for managing http connections asynchronously _without_ the
+configuration system (Tap files etc.) is incomplete.  How can one get
+the required info?  It appears things are changing really fast ...
+
+Seun
+
+From Harald.Nyman at astrazeneca.com  Sat Oct 23 03:49:00 2004
+From: Harald.Nyman at astrazeneca.com (Harald.Nyman@astrazeneca.com)
+Date: Sat Oct 23 03:50:51 2004
+Subject: [Twisted-web] Documentation for Twisted.Web
+Message-ID: <9F028CC77827D611ACEE0002A5F12F0703ECC53D@semldsntmsx208.seml.astrazeneca.net>
+
+I agree.
+
+The info is there (see PS), but it took quite some time before it made any
+sense to me, and I still don't understand most of the "Using twisted.web"
+section, being probably unusually stupid.
+
+Here's a humble suggestion: Add something like these 2 points -
+
+1) Refer to Jason Hunter's "Java Servlet Programming"     # bcos that's
+pretty similar (I think)
+
+2) Try this code snippet:
+    class Servlet(resource.Resource):
+        def render_GET(self, request):
+            print request.__dict__           # .. and see what it contains
+
+Using that approach I've just managed to put together the coolest
+asynchronous, message-driven, "don't-hang-around-waiting-for-it" web GUI
+we've ever had.
+
+The more I fumble with Twisted, the more I appreciate it.
+
+Or did I get it all wrong again? ;-)
+Harald
+
+
+PS
+The Resource class, which is usually what one's Resource classes subclass,
+has a convenient default implementation of render. It will call a method
+named self.render_METHOD where "METHOD" is whatever HTTP method was used to
+request this resource. Examples: request_GET, request_POST, request_HEAD,
+and so on. It is recommended that you have your resource classes subclass
+Resource and implement render_METHOD methods as opposed to render itself.
+Note that for certain resources, request_POST = request_GET may be desirable
+in case one wants to process arguments passed to the resource regardless of
+whether they used GET (?foo=bar&baz=quux, and so forth) or POST.
+
+
+-----Original Message-----
+From: Seun Osewa [mailto:naijasms@gmail.com]
+Sent: l?rdag, 23 oktober 2004 10:50
+To: twisted-web@twistedmatrix.com
+Subject: [Twisted-web] Documentation for Twisted.Web
+
+
+Hi,
+
+I sure wish documentation for Twisted and Twisted.Web was more
+complete!  Right now I feel the information about using Twisted.Wed
+objects for managing http connections asynchronously _without_ the
+configuration system (Tap files etc.) is incomplete.  How can one get
+the required info?  It appears things are changing really fast ...
+
+Seun
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web@twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/ms-tnef
+Size: 3616 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20041023/f778041a/attachment-0001.bin
+From naijasms at gmail.com  Mon Oct 25 12:39:21 2004
+From: naijasms at gmail.com (Seun Osewa)
+Date: Mon Oct 25 12:46:29 2004
+Subject: [Twisted-web] HTTP/1.1 Persistent Connections and Pipelining
+In-Reply-To: <1746E91F-20B6-11D9-BAB2-000A95A50FB2@fuhm.net>
+References: <5d35fc5d041016133950489940@mail.gmail.com>
+	<5d35fc5d041016134464744453@mail.gmail.com>
+	<1746E91F-20B6-11D9-BAB2-000A95A50FB2@fuhm.net>
+Message-ID: <5d35fc5d041025113948f24120@mail.gmail.com>
+
+== FROM THE DOCUMENTATION ==
+"Alternatively, they can return a special constant,
+twisted.web.server.NOT_DONE_YET, which tells the web server not to
+close the connection;
+
+Doesn't this mean the web server automatically closes HTTP connections
+when request.close() is called?
+
+On Sun, 17 Oct 2004 23:30:43 -0400, James Y Knight <foom@fuhm.net> wrote:
+> On Oct 16, 2004, at 4:44 PM, Seun Osewa wrote:
+> > Does Twisted.Web support persistent connections and pipelining?
+> 
+> Kindasorta. I believe it does HTTP 1.1 persistent connections.
+> 
+> > how
+> > can I take advantage of this, if it does?  And, if not, do you feel
+> > the interface is such that support for persistent connections can be
+> > transparently added?
+> 
+> It's all automatic, as far as it goes.
+> 
+> The new version of the http protocol for web2 supports it a lot better,
+> and works with both HTTP 1.0 keepalive and HTTP 1.1 pipelining and
+> persistent connections. Web2 is not ready for non-developmental use
+> yet, however. The core HTTP protocol layer should be pretty stable at
+> this point, but the layer above still needs work.
+> 
+> James
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+From foom at fuhm.net  Mon Oct 25 14:51:08 2004
+From: foom at fuhm.net (James Y Knight)
+Date: Mon Oct 25 14:51:12 2004
+Subject: [Twisted-web] HTTP/1.1 Persistent Connections and Pipelining
+In-Reply-To: <5d35fc5d041025113948f24120@mail.gmail.com>
+References: <5d35fc5d041016133950489940@mail.gmail.com>
+	<5d35fc5d041016134464744453@mail.gmail.com>
+	<1746E91F-20B6-11D9-BAB2-000A95A50FB2@fuhm.net>
+	<5d35fc5d041025113948f24120@mail.gmail.com>
+Message-ID: <988B6184-26C7-11D9-9668-000A95A50FB2@fuhm.net>
+
+On Oct 25, 2004, at 2:39 PM, Seun Osewa wrote:
+> Doesn't this mean the web server automatically closes HTTP connections
+> when request.close() is called?
+
+No such thing as request.close...
+
+James
+
+
+From syver at inout.no  Tue Oct 26 03:21:00 2004
+From: syver at inout.no (Syver Enstad)
+Date: Tue Oct 26 03:21:04 2004
+Subject: [Twisted-web] HTTP/1.1 Persistent Connections and Pipelining
+In-Reply-To: <5d35fc5d041025113948f24120@mail.gmail.com>
+References: <5d35fc5d041016133950489940@mail.gmail.com>
+	<5d35fc5d041016134464744453@mail.gmail.com>
+	<1746E91F-20B6-11D9-BAB2-000A95A50FB2@fuhm.net>
+	<5d35fc5d041025113948f24120@mail.gmail.com>
+Message-ID: <umzy9omwz.fsf@inout.no>
+
+Seun Osewa <naijasms@gmail.com> writes:
+
+> == FROM THE DOCUMENTATION ==
+> "Alternatively, they can return a special constant,
+> twisted.web.server.NOT_DONE_YET, which tells the web server not to
+> close the connection;
+> 
+> Doesn't this mean the web server automatically closes HTTP connections
+> when request.close() is called?
+
+This has nothing to do with persistent connections. It just means that
+you have callbacks that must be triggered before the response will be
+finished.
+
+
+
+From joe at seventy-twodpi.com  Tue Oct 26 09:18:06 2004
+From: joe at seventy-twodpi.com (Joseph Bowers)
+Date: Tue Oct 26 09:19:23 2004
+Subject: [Twisted-web] Diagnosing a socket leak in nevow code
+Message-ID: <AGEIJJAOINCAPLOMDIAHGEDGEMAA.joe@seventy-twodpi.com>
+
+Hey, all!
+
+I'm working with a release nevow (0.1) on Twisted 1.3,
+and somewhere I've introduced a socket leak. 
+
+Unfortunately, I'm not sure how to go about debugging
+this: Does anybody have recommendations for tracking
+down this kind of error? What are common screw-ups with 
+nevow code that might lead to zombie sockets?
+
+Thanks!
+
+--------------------
+Joe Bowers
+Technical Director
+Seventy-two dpi
+
+828.252.2408 [x308]
+joe@seventytwodpi.com
+http://www.seventytwodpi.com
+
+
+From dialtone at gmail.com  Tue Oct 26 09:37:41 2004
+From: dialtone at gmail.com (Valentino Volonghi)
+Date: Tue Oct 26 09:38:18 2004
+Subject: [Twisted-web] Diagnosing a socket leak in nevow code
+In-Reply-To: <AGEIJJAOINCAPLOMDIAHGEDGEMAA.joe@seventy-twodpi.com>
+References: <AGEIJJAOINCAPLOMDIAHGEDGEMAA.joe@seventy-twodpi.com>
+Message-ID: <c893b85304102608375100d396@mail.gmail.com>
+
+On Tue, 26 Oct 2004 11:18:06 -0400, Joseph Bowers
+<joe@seventy-twodpi.com> wrote:
+> Hey, all!
+> 
+> I'm working with a release nevow (0.1) on Twisted 1.3,
+> and somewhere I've introduced a socket leak.
+> 
+> Unfortunately, I'm not sure how to go about debugging
+> this: Does anybody have recommendations for tracking
+> down this kind of error? What are common screw-ups with
+> nevow code that might lead to zombie sockets?
+
+Nevow releases before 0.3 had a bug with sessions leaking and talking
+a fairly big amount of memory with many connections.
+
+Otherwise the bug is in Twisted, since Nevow doesn't handle any
+sockets at its layer.
+
+-- 
+Valentino Volonghi aka Dialtone
+Now running FreeBSD 5.3-beta6
+Blog: http://vvolonghi.blogspot.com
+Home Page: http://xoomer.virgilio.it/dialtone/
+
+From vlupien at drummonddesigns.com  Wed Oct 27 10:34:55 2004
+From: vlupien at drummonddesigns.com (Vicky Lupien)
+Date: Wed Oct 27 10:35:00 2004
+Subject: [Twisted-web] Redirect with deferred
+Message-ID: <2275CD5F-2836-11D9-90B9-000A95DCA978@drummonddesigns.com>
+
+Hi,
+
+      I have a little problem.  I have a deferred and I want to redirect 
+after the defered is done.  But it seems that my page is rendered and 
+my redirect is never done.  Can someone help me.
+
+Here's my code:
+
+class HousesQuickSearch(pagelib.QuebecPage, sqlQueries):
+
+     def render_content(self, context, data):
+	request = context.locate(inevow.IRequest)
+          def _(data):
+		print data
+             	ses = request.getSession()
+             	self.houseSR = sessions.ISessionPrefs(ses).get('houseSR')
+             	sessions.ISessionPrefs(ses).set(self.houseSR[0], data)
+             	sessions.ISessionPrefs(ses).set(self.houseSR[4], 0)
+             	lengthPage = 
+sessions.ISessionPrefs(ses).get(self.houseSR[2])
+             	widthPage = 
+sessions.ISessionPrefs(ses).get(self.houseSR[3])
+             	currentPage, pageBatchItems = self.nextPage(data, 
+lengthPage, widthPage, 0)
+             	sessions.ISessionPrefs(ses).set(self.houseSR[4], 
+currentPage)
+             	sessions.ISessionPrefs(ses).set(self.houseSR[1], 
+pageBatchItems)
+             	dir = '/'.join(['', '/'.join(request.prepath[0:-1]), 
+"search", "results"])
+             	#this is not done
+		return request.redirect(dir)
+
+          conditions = " where 1"
+	if request.args.get('plan_number')[0]:
+             	conditions += " and 
+plan_number='"+str(request.args.get('plan_number')[0])+"'"
+             	sql = self.getHouseSearchResultsInfo(conditions)
+            	dbpool = 
+request.getSession().guard.resource.portal.realm.dbpool
+             	searchResults = dbpool.runQueryDict(sql)
+             	searchResults.addCallback(_)
+
+
+Vicky
+
+
+From floydophone at gmail.com  Wed Oct 27 11:39:51 2004
+From: floydophone at gmail.com (Peter Hunt)
+Date: Wed Oct 27 11:40:29 2004
+Subject: [Twisted-web] Re: Case for an Async MySQL Driver?
+Message-ID: <6654eac40410271039aa082e6@mail.gmail.com>
+
+I'd be willing to help; but I think we should shell out an async
+DB-API, too. Maybe go over to DB-SIG and propose an async version of
+the new upcoming spec?
+
+From tv at twistedmatrix.com  Wed Oct 27 11:50:33 2004
+From: tv at twistedmatrix.com (Tommi Virtanen)
+Date: Wed Oct 27 11:51:08 2004
+Subject: [Twisted-web] Redirect with deferred
+In-Reply-To: <2275CD5F-2836-11D9-90B9-000A95DCA978@drummonddesigns.com>
+References: <2275CD5F-2836-11D9-90B9-000A95DCA978@drummonddesigns.com>
+Message-ID: <417FDFE9.4090307@twistedmatrix.com>
+
+Vicky Lupien wrote:
+
+>      I have a little problem.  I have a deferred and I want to 
+> redirect after the defered is done.  But it seems that my page is 
+> rendered and my redirect is never done.  Can someone help me.
+
+...
+
+> class HousesQuickSearch(pagelib.QuebecPage, sqlQueries):
+>
+>     def render_content(self, context, data):
+>     request = context.locate(inevow.IRequest)
+>          def _(data):
+>         print data
+>                 ses = request.getSession()
+>                 self.houseSR = sessions.ISessionPrefs(ses).get('houseSR')
+>                 sessions.ISessionPrefs(ses).set(self.houseSR[0], data)
+>                 sessions.ISessionPrefs(ses).set(self.houseSR[4], 0)
+>                 lengthPage = 
+> sessions.ISessionPrefs(ses).get(self.houseSR[2])
+>                 widthPage = 
+> sessions.ISessionPrefs(ses).get(self.houseSR[3])
+>                 currentPage, pageBatchItems = self.nextPage(data, 
+> lengthPage, widthPage, 0)
+>                 sessions.ISessionPrefs(ses).set(self.houseSR[4], 
+> currentPage)
+>                 sessions.ISessionPrefs(ses).set(self.houseSR[1], 
+> pageBatchItems)
+>                 dir = '/'.join(['', '/'.join(request.prepath[0:-1]), 
+> "search", "results"])
+>                 #this is not done
+>         return request.redirect(dir)
+>
+>          conditions = " where 1"
+>     if request.args.get('plan_number')[0]:
+>                 conditions += " and 
+> plan_number='"+str(request.args.get('plan_number')[0])+"'"
+>                 sql = self.getHouseSearchResultsInfo(conditions)
+>                dbpool = 
+> request.getSession().guard.resource.portal.realm.dbpool
+>                 searchResults = dbpool.runQueryDict(sql)
+>                 searchResults.addCallback(_)
+
+Your indentation seems to be really all over the place, I'm assuming
+your "return request.redirect(dir)" is inside def _. Try adding a
+"return searchResults" at the bottom of render_content.
+
+
+From vlupien at drummonddesigns.com  Wed Oct 27 11:57:40 2004
+From: vlupien at drummonddesigns.com (Vicky Lupien)
+Date: Wed Oct 27 11:57:43 2004
+Subject: [Twisted-web] Redirect with deferred
+In-Reply-To: <417FDFE9.4090307@twistedmatrix.com>
+References: <2275CD5F-2836-11D9-90B9-000A95DCA978@drummonddesigns.com>
+	<417FDFE9.4090307@twistedmatrix.com>
+Message-ID: <B1AF91EA-2841-11D9-90B9-000A95DCA978@drummonddesigns.com>
+
+I tried this and it doesn't work
+On Oct 27, 2004, at 1:50 PM, Tommi Virtanen wrote:
+
+> Vicky Lupien wrote:
+>
+>>      I have a little problem.  I have a deferred and I want to 
+>> redirect after the defered is done.  But it seems that my page is 
+>> rendered and my redirect is never done.  Can someone help me.
+>
+> ...
+>
+>> class HousesQuickSearch(pagelib.QuebecPage, sqlQueries):
+>>
+>>     def render_content(self, context, data):
+>>     request = context.locate(inevow.IRequest)
+>>          def _(data):
+>>         print data
+>>                 ses = request.getSession()
+>>                 self.houseSR = 
+>> sessions.ISessionPrefs(ses).get('houseSR')
+>>                 sessions.ISessionPrefs(ses).set(self.houseSR[0], data)
+>>                 sessions.ISessionPrefs(ses).set(self.houseSR[4], 0)
+>>                 lengthPage = 
+>> sessions.ISessionPrefs(ses).get(self.houseSR[2])
+>>                 widthPage = 
+>> sessions.ISessionPrefs(ses).get(self.houseSR[3])
+>>                 currentPage, pageBatchItems = self.nextPage(data, 
+>> lengthPage, widthPage, 0)
+>>                 sessions.ISessionPrefs(ses).set(self.houseSR[4], 
+>> currentPage)
+>>                 sessions.ISessionPrefs(ses).set(self.houseSR[1], 
+>> pageBatchItems)
+>>                 dir = '/'.join(['', '/'.join(request.prepath[0:-1]), 
+>> "search", "results"])
+>>                 #this is not done
+>>                 return request.redirect(dir)
+>>
+>>          conditions = " where 1"
+>>     if request.args.get('plan_number')[0]:
+>>                 conditions += " and 
+>> plan_number='"+str(request.args.get('plan_number')[0])+"'"
+>>                 sql = self.getHouseSearchResultsInfo(conditions)
+>>                dbpool = 
+>> request.getSession().guard.resource.portal.realm.dbpool
+>>                 searchResults = dbpool.runQueryDict(sql)
+>>                 searchResults.addCallback(_)
+>
+> Your indentation seems to be really all over the place, I'm assuming
+> your "return request.redirect(dir)" is inside def _. Try adding a
+> "return searchResults" at the bottom of render_content.
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+From floydophone at gmail.com  Wed Oct 27 19:53:18 2004
+From: floydophone at gmail.com (Peter Hunt)
+Date: Wed Oct 27 19:53:51 2004
+Subject: [Twisted-web] Nevow bug?
+Message-ID: <6654eac4041027185312b68b69@mail.gmail.com>
+
+nevow.stan.Comment.__call__ has the following line:
+
+return NotImplementedError('comments are not callable')
+
+Shouldn't it be:
+
+raise NotImplementedError('comments are not callable')
+
+This was a tough bug to track down.
+
+From jackup at gmail.com  Wed Oct 27 23:31:43 2004
+From: jackup at gmail.com (Young-gue Park)
+Date: Wed Oct 27 23:32:17 2004
+Subject: [Twisted-web] How to use Woven.form
+Message-ID: <dd87482b041027223164b6b965@mail.gmail.com>
+
+i want to use Woven.form
+
+but i don't know exact using
+
+If I use Woven.form, I will really easy make form and process form data
+
+please help me
+
+Any example code and any hint make me so happy
+
+ps...
+
+     why don't you complete form in depth document?
+
+     and When was document completed?
+
+From matt at pollenation.net  Thu Oct 28 04:22:33 2004
+From: matt at pollenation.net (Matt Goodall)
+Date: Thu Oct 28 04:22:56 2004
+Subject: [Twisted-web] Nevow bug?
+In-Reply-To: <6654eac4041027185312b68b69@mail.gmail.com>
+References: <6654eac4041027185312b68b69@mail.gmail.com>
+Message-ID: <1098958953.9785.44.camel@localhost.localdomain>
+
+On Wed, 2004-10-27 at 21:53 -0400, Peter Hunt wrote:
+> nevow.stan.Comment.__call__ has the following line:
+> 
+> return NotImplementedError('comments are not callable')
+> 
+> Shouldn't it be:
+> 
+> raise NotImplementedError('comments are not callable')
+
+Fixed in svn. Thanks for the report.
+
+Just one small request ... next time could you add the issue to the
+Nevow tracker (http://divmod.org/users/roundup.twistd/nevow/). Posting
+the URL of the issue to the mailing list is probably useful too, just to
+let people know. Thanks.
+
+Cheers, Matt
+
+-- 
+Matt Goodall, Pollenation Internet Ltd
+w: http://www.pollenation.net
+e: matt@pollenation.net
+t: +44 (0)113 2252500
+
+
+From mesozoic at polynode.com  Thu Oct 28 13:54:34 2004
+From: mesozoic at polynode.com (Alex Levy)
+Date: Thu Oct 28 13:55:24 2004
+Subject: [Twisted-web] Re: How to use Woven.form
+In-Reply-To: <dd87482b041027223164b6b965@mail.gmail.com>
+References: <dd87482b041027223164b6b965@mail.gmail.com>
+Message-ID: <20041028195434.GG28349@perpetual.moxn.net>
+
+On Thu, Oct 28, 2004 at 02:31:43PM +0900, Young-gue Park wrote:
+> i want to use Woven.form
+> 
+> but i don't know exact using
+> 
+> If I use Woven.form, I will really easy make form and process form data
+> 
+> please help me
+> 
+> Any example code and any hint make me so happy
+> 
+> ps...
+> 
+>      why don't you complete form in depth document?
+> 
+>      and When was document completed?
+> 
+
+Woven is not only deprecated, it is poorly documented, and a general pain to
+work with. If you're looking for form processing, you want Nevow and
+Formless. Grab it:
+
+ svn co svn://divmod.org/svn/Nevow/trunk Nevow
+
+That will get you the ultra-latest version; your best bet is to poke at some
+of the examples, run them, try tweaking them, and if you get stuck, ask
+around in #twisted.web on freenode IRC.
+
+There is also a Nevow wiki, with plenty of goodies, available here:
+
+ http://divmod.org/users/wiki.twistd/nevow/moin.cgi
+
+-- 
+Alex Levy
+WWW: http://mesozoic.geecs.org/
+ 
+"Never let your sense of morals prevent you from doing what is right."
+ -- Salvor Hardin, Isaac Asimov's _Foundation_
+
+From bud at comune.grosseto.it  Fri Oct 29 08:40:24 2004
+From: bud at comune.grosseto.it (Bud P. Bruegger)
+Date: Fri Oct 29 08:27:19 2004
+Subject: [Twisted-web] Twisted as reverse proxy for access control?
+Message-ID: <5.2.1.1.0.20041029124121.029f8260@mail.comune.grosseto.it>
+
+Hello,
+
+I'm new to Twisted and would like to find out whether it is a good choice 
+to solve my problem.  For OpenPortalGuard's GateKeeper component 
+(http://openportalguard.sourceforge.net/wiki/index.php/Specification/Architecture), 
+I am looking for a platform to implement a reverse proxy that handles the 
+following tasks before giving access to a private network that hosts 
+multiple application servers:
+
+* ssl processing (offloaded from application servers)
+* ssl client cert authentication
+* a custom authentication module that writes cookies
+* a custom access control module (role based)
+* an URL-rewriting engine like Apache's mod-proxy or mod-rewrite
+
+My first idea was to use Apache with mod-ssl, mod-proxy, and mod-rewrite 
+out of the box and write the two custom modules with mod-python.
+
+My concern with Apache is scalability.  I believe that Twisted 
+(implementing the Reactor Pattern) should be able to handle many more 
+concurrent connections.  Can anybody confirm this and possibly quantify 
+this with examples?
+
+My concern with Twisted is (due to ignorance ;-) whether it has the out of 
+the box functionality equivalent to Apache's mod-ssl and mod-rewrite (to 
+proxy to remote hosts).  A first look seems to indicate that 
+twisted.internet.ssl,  twisted.web.proxy, and twisted.web.rewrite are my 
+friends.  Is this correct?  Are there any examples out there?  Any 
+experience on performance?
+
+Alltogether, is Twisted a good choice for my plan?  Has anyone already used 
+Twisted for such a purpose?
+
+Many thanks in advance for any input and suggestions.
+
+-b
+
+
+
+
+-------------------------------------------------------------------------------------------------
+Ing. Bud P. Bruegger, Ph.D.                 0564-488 577 (voice)
+Servizio Elaborazione Dati                    0564- 21139 (fax)
+Comune di Grosseto                            e-mail:  bud@comune.grosseto.it
+Via Ginori, 43                                      jabber:  bud@amessage.info
+58100 Grosseto                                   icq:      249-858-685
+
+Collaborazione Open Source per la CIE e CNS http://www.comune.grosseto.it/cie/
+Software Libero/Open Source in P.A.:  Non solo una buona idea,  ma una 
+necessita' 
+
+
+From pf_moore at yahoo.co.uk  Sat Oct 30 09:03:00 2004
+From: pf_moore at yahoo.co.uk (Paul Moore)
+Date: Sat Oct 30 09:03:07 2004
+Subject: [Twisted-web] Nevow: Authenticated site with "remember me" and
+	vhosts
+Message-ID: <uoeik9rkr.fsf@yahoo.co.uk>
+
+I'm trying to use Nevow to build a site which displays the results of
+a series of SQL queries. It looks good so far, I have the basic site
+structure all sorted out in my mind (it's *very* impressive how quick
+that was in Nevow). Before I flesh things out much further, I want to
+add some authentication - basically, "guest" users will be able to
+see a limited subset of the data.
+
+Adding authentication including a "login" form in the sidebar (a bit
+like Roundup does) was again very easy. I basically cribbed from the
+existing examples. But there are a few things I's now like to add:
+
+1. Ultimately, I want to proxy the app through Apache, so I was using
+   the Virtual Host Monster. Im ny original, unauthenticated,
+   application, I added a "vhost" child to the main application
+   resource, and that was it. I can no longer do that, as the
+   resource is wrapped in a guard.SessionWrapper, which doesn't have
+   a putChild method. I'm not clear that I want the vhost child to be
+   authenticated anyway - what I *think* I want is for "/" to be
+   authenticated, but "/vhost" not to be. Or do I? Any suggestions?
+2. I'd like to add a "remember me" checkbox, which if checked sets a
+   cookie to remember the user's ID, so that they don't have to log
+   in again for (say) 2 weeks. Much like gmail, or Yahoo, do. But I'm
+   not too sure how I'd go about this. I'm not even sure where I'd
+   *put* auto-login code: the page is too late (the guard has done
+   its thing by then) but anything else seems to be too early (ie,
+   not per-session, if you see what I mean). I suspect I need to
+   subclass the Portal, or something, but I'm not sure...
+
+I've scanned the various examples, both in the distribution and in
+the Nevow sandbox, but nothing seems to do what I want. Can anyone
+give me some pointers?
+
+<off on a tangent>
+This is the sort of area where the lack of documentation really
+hurts. Examples are great (and the wealth of Nevow examples is realy
+nice) but there's a lack of "general principle" documentation to make
+it easy to generalise the example code. My best example of this is
+that I can't work out what to return from a render_* method - should
+it be a function, or a string, or a stan tree, or what? I suspect
+that by the magic of interfaces, the answer is "anything that can be
+adapted to an ISomething" (which needs further documentation to say
+what standard adapters from string, sequence, whatever to ISomething
+exist) - but it's not stated anywhere, which makes writing render_*
+methods an exciting exercise in experimentation :-)
+
+At the other end of the scale, the source is really too low-level to
+follow for this sort of thing (I have tried).
+
+Is there any documentation effort for Nevow going on anywhere? I'd
+happily contribute, although it would more likely be in the form of
+questions than answers at the moment :-)
+</off on a tangent>
+
+FWIW, I attach my driver script below, in case it clarifies my
+authentication question above.
+
+-------------- next part --------------
+from twisted.application import internet
+from twisted.application import service
+
+from twisted.web import static
+
+from nevow import appserver
+from nevow import vhost
+from nevow import guard
+from nevow import inevow
+
+from twisted.cred import portal
+from twisted.cred import checkers
+from twisted.cred import credentials
+
+from testapp.web import pages
+
+# Authorisation setup.
+
+# First we need a realm, which provides requestAvatar
+# TODO: need NotLoggedIn, LoggedIn and noLogout
+class MyRealm:
+    """A simple implementor of cred's IRealm.
+       For web, this gives us the LoggedIn page.
+    """
+    __implements__ = portal.IRealm
+
+    def requestAvatar(self, avatarId, mind, *interfaces):
+        for iface in interfaces:
+            if iface is inevow.IResource:
+                # do web stuff
+                if avatarId is checkers.ANONYMOUS:
+                    resc = pages.BasePage()
+                else:
+                    resc = pages.BasePage(avatarId)
+		resc.realm = self
+		return (inevow.IResource, resc, resc.logout)
+
+        raise NotImplementedError("Can't support that interface.")
+
+
+# Now create a portal to our realm
+realm = MyRealm()
+portal = portal.Portal(realm)
+
+# Create a checker for a static list of test users
+myChecker = checkers.InMemoryUsernamePasswordDatabaseDontUse()
+myChecker.addUser("user","password")
+myChecker.addUser("fred", "flintstone")
+
+# Register our checker, and an anonymous user checker, with the portal
+portal.registerChecker(checkers.AllowAnonymousAccess(), credentials.IAnonymous)
+portal.registerChecker(myChecker)
+
+application = service.Application('testapp')
+
+# Instead of the application resource being the base page, it becomes a
+# SessionWrapper round the portal we created. The base page is part of the
+# realm - see above...
+
+# appResource = pages.BasePage()
+appResource = guard.SessionWrapper(portal)
+
+#appResource.putChild('robots.txt', static.File('static/robots.txt'))
+# SessionWrapper doesn't have a putChild method...
+#vResource = vhost.VHostMonsterResource()
+#appResource.putChild('vhost', vResource)
+
+webServer = internet.TCPServer(8080, appserver.NevowSite(appResource)) 
+webServer.setServiceParent(application)
+
+# vim:ft=python:
+-------------- next part --------------
+Paul
+-- 
+The scientific name for an animal that doesn't either run from or
+fight its enemies is lunch. -- Michael Friedman
+From dp at divmod.org  Sat Oct 30 10:26:46 2004
+From: dp at divmod.org (Donovan Preston)
+Date: Sat Oct 30 10:27:27 2004
+Subject: [Twisted-web] Nevow: Authenticated site with "remember me" and
+	vhosts
+In-Reply-To: <uoeik9rkr.fsf@yahoo.co.uk>
+References: <uoeik9rkr.fsf@yahoo.co.uk>
+Message-ID: <7E2ACDB2-2A90-11D9-82AC-000A95864FC4@divmod.org>
+
+
+On Oct 30, 2004, at 11:03 AM, Paul Moore wrote:
+
+> I'm trying to use Nevow to build a site which displays the results of
+> a series of SQL queries. It looks good so far, I have the basic site
+> structure all sorted out in my mind (it's *very* impressive how quick
+> that was in Nevow). Before I flesh things out much further, I want to
+> add some authentication - basically, "guest" users will be able to
+> see a limited subset of the data.
+>
+> Adding authentication including a "login" form in the sidebar (a bit
+> like Roundup does) was again very easy. I basically cribbed from the
+> existing examples. But there are a few things I's now like to add:
+>
+> 1. Ultimately, I want to proxy the app through Apache, so I was using
+>    the Virtual Host Monster. Im ny original, unauthenticated,
+>    application, I added a "vhost" child to the main application
+>    resource, and that was it. I can no longer do that, as the
+>    resource is wrapped in a guard.SessionWrapper, which doesn't have
+>    a putChild method. I'm not clear that I want the vhost child to be
+>    authenticated anyway - what I *think* I want is for "/" to be
+>    authenticated, but "/vhost" not to be. Or do I? Any suggestions?
+
+Are you using 0.3 or SVN head? I think Tv was working on fixing 
+guard-related problems in this area. You might have more luck using SVN 
+head, if you are not.
+
+> 2. I'd like to add a "remember me" checkbox, which if checked sets a
+>    cookie to remember the user's ID, so that they don't have to log
+>    in again for (say) 2 weeks. Much like gmail, or Yahoo, do. But I'm
+>    not too sure how I'd go about this. I'm not even sure where I'd
+>    *put* auto-login code: the page is too late (the guard has done
+>    its thing by then) but anything else seems to be too early (ie,
+>    not per-session, if you see what I mean). I suspect I need to
+>    subclass the Portal, or something, but I'm not sure...
+
+I'm not sure guard is sufficiently flexible to allow this. Perhaps one 
+of the guard replacements that is being worked on will help? mg, can 
+you comment? Also, indigo, can you comment on the session system you 
+wrote and/or perhaps turn it into an example or a module?
+
+> I've scanned the various examples, both in the distribution and in
+> the Nevow sandbox, but nothing seems to do what I want. Can anyone
+> give me some pointers?
+
+Sorry I can't be of more help. Guard is one of nevow's weak spots, 
+since I didn't write it and therefore don't understand it, because it 
+is pretty horrifically complex.
+
+> <off on a tangent>
+> This is the sort of area where the lack of documentation really
+> hurts. Examples are great (and the wealth of Nevow examples is realy
+> nice) but there's a lack of "general principle" documentation to make
+> it easy to generalise the example code. My best example of this is
+> that I can't work out what to return from a render_* method - should
+> it be a function, or a string, or a stan tree, or what? I suspect
+> that by the magic of interfaces, the answer is "anything that can be
+> adapted to an ISomething" (which needs further documentation to say
+> what standard adapters from string, sequence, whatever to ISomething
+> exist) - but it's not stated anywhere, which makes writing render_*
+> methods an exciting exercise in experimentation :-)
+
+Yes.
+
+> At the other end of the scale, the source is really too low-level to
+> follow for this sort of thing (I have tried).
+
+Yes.
+
+> Is there any documentation effort for Nevow going on anywhere? I'd
+> happily contribute, although it would more likely be in the form of
+> questions than answers at the moment :-)
+> </off on a tangent>
+
+There should be, and it is creeping up higher on my priority list. 
+However, life prevents me. Hopefully sometime in the next few months.
+
+Perhaps lurking on #twisted.web on irc.freenode.net would help?
+
+dp
+
+
+From pf_moore at yahoo.co.uk  Sat Oct 30 11:01:27 2004
+From: pf_moore at yahoo.co.uk (Paul Moore)
+Date: Sat Oct 30 12:42:43 2004
+Subject: [Twisted-web] Re: Nevow: Authenticated site with "remember me" and
+	vhosts
+References: <uoeik9rkr.fsf@yahoo.co.uk>
+	<7E2ACDB2-2A90-11D9-82AC-000A95864FC4@divmod.org>
+Message-ID: <uis8s6syg.fsf@yahoo.co.uk>
+
+Donovan Preston <dp@divmod.org> writes:
+
+> Are you using 0.3 or SVN head? I think Tv was working on fixing 
+> guard-related problems in this area. You might have more luck using SVN 
+> head, if you are not.
+
+I'm using SVN head. Actually, grubbing round in the source, it looks
+like putChild comes from ChildLookupMixin, which Page subclasses, but
+SessionGuard doesn't. So an empty class derived from both
+SessionGuard and ChildLookupMixin should work...
+
+[Tries it]
+Yes, that works. Feels like a hack, but it's a working hack :-) I'm
+still not sure if that leaves the vhost guarded or not, and what that
+means...
+
+>> 2. I'd like to add a "remember me" checkbox, which if checked sets a
+>>    cookie to remember the user's ID, so that they don't have to log
+>>    in again for (say) 2 weeks. Much like gmail, or Yahoo, do. But I'm
+>>    not too sure how I'd go about this. I'm not even sure where I'd
+>>    *put* auto-login code: the page is too late (the guard has done
+>>    its thing by then) but anything else seems to be too early (ie,
+>>    not per-session, if you see what I mean). I suspect I need to
+>>    subclass the Portal, or something, but I'm not sure...
+>
+> I'm not sure guard is sufficiently flexible to allow this. Perhaps one 
+> of the guard replacements that is being worked on will help? mg, can 
+> you comment? Also, indigo, can you comment on the session system you 
+> wrote and/or perhaps turn it into an example or a module?
+
+Interesting. I was getting that impression, too. Also, the code of
+guard looks very hairy, so I'm not surprised that replacements are
+under development. If a guinea pig is needed, let me know...
+
+I looked at the current guard code, and it seems odd. I don't see the
+point of things like __session_just_started__ (particularly as it's
+user-visible :-() and the fact that login/logout are represented by
+separate URLs, rather than just posting back to the current URL and
+reading the form data is different from other approaches I have seen.
+
+>> Is there any documentation effort for Nevow going on anywhere? I'd
+>> happily contribute, although it would more likely be in the form of
+>> questions than answers at the moment :-)
+>
+> There should be, and it is creeping up higher on my priority list. 
+> However, life prevents me. Hopefully sometime in the next few months.
+>
+> Perhaps lurking on #twisted.web on irc.freenode.net would help?
+
+I'll certainly do that. I'll also see if I can add any useful bits to
+the Wiki...
+
+Paul.
+-- 
+SCSI is not magic. There are fundamental technical reasons why it is
+necessary to sacrifice a young goat to your SCSI chain now and then.
+-- John Woods
+
+

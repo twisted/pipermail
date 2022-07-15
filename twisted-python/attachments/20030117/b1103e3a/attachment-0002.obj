@@ -1,0 +1,86 @@
+from twisted.internet import defer, reactor
+import sys
+from twisted.python import log, failure
+log.startLogging(sys.stdout)
+
+def errback(f):
+    f.trap(defer.TimeoutError)
+    print "TimeoutError"
+
+def callback(v):
+    print "No Error"
+
+class DoesntHandleTimeoutsByItself:
+    """This is analagous to most deferred processes in Twisted.
+    Rarely a way to cancel, possibility to raise unhandled exceptions to the reactor"""
+    def start(self, seconds):
+        d = defer.Deferred()
+        # simulate something that will take time
+        reactor.callLater(seconds, self.finish, d)
+        return d
+    
+    def finish(self, d):
+        print "DoesntHandleTimeoutsByItself ran to completion"
+        d.callback(1)
+
+def main_Problem():
+    print "\n** main_Problem()\n"
+    reactor.callLater(0.5, reactor.stop)
+    DoesntHandleTimeoutsByItself().start(0.4).addCallback(callback).addErrback(errback).setTimeout(0.2)
+    reactor.run()
+    reactor.callLater(0.5, reactor.stop)
+    DoesntHandleTimeoutsByItself().start(0.2).addCallback(callback).addErrback(errback).setTimeout(0.4)
+    reactor.run()
+
+def main_ProposedTemporarySolution():
+    # prevent another errback or callback from happening, thus you won't see the unhandled exceptions
+    # if they happen, which may or may not be a bad thing.. certainly suboptimal
+    print "\n** main_ProposedTemporarySolution()\n"
+    def new_default_timeout(deferred):
+        deferred.errback(failure.Failure(defer.TimeoutError("Callback timed out")))
+        deferred.callback = deferred.errback = lambda a: a
+    reactor.callLater(0.5, reactor.stop)
+    DoesntHandleTimeoutsByItself().start(0.4).addCallback(callback).addErrback(errback).setTimeout(0.2, timeoutFunc=new_default_timeout)
+    reactor.run()
+    reactor.callLater(0.5, reactor.stop)
+    DoesntHandleTimeoutsByItself().start(0.2).addCallback(callback).addErrback(errback).setTimeout(0.4, timeoutFunc=new_default_timeout)
+    reactor.run()
+
+class DoesHandleTimeoutsByItself:
+    """This is my proposal for how classes that do deferred things should be refactored to fix this issue
+    
+    Note that the timeout will actually stop execution of DoesHandleTimeoutsByItself with no additional user code
+    It will also 
+    """
+    def start(self, seconds):
+        self.isRunning = 1
+        d = defer.Deferred()
+        cl = reactor.callLater(seconds, self.finish, d)
+        return d.addErrback(self.cancel, cl)
+
+    def cancel(self, f, cl):
+        print "DoesHandleTimeoutsByItself has aborted"
+        # this check is not necessary in this case, but could 
+        # be for a class which could errback on its own
+        if self.isRunning:
+            cl.cancel()
+
+    def finish(self, d):
+        print "DoesHandleTimeoutsByItself ran to completion"
+        self.isRunning = 0
+        d.callback(1)
+        
+
+def main_ProposedFutureSolution():
+    print "\n** main_ProposedFutureSolution()\n"
+    reactor.callLater(0.5, reactor.stop)
+    DoesHandleTimeoutsByItself().start(0.4).addCallback(callback).addErrback(errback).setTimeout(0.2)
+    reactor.run()
+    reactor.callLater(0.5, reactor.stop)
+    DoesHandleTimeoutsByItself().start(0.2).addCallback(callback).addErrback(errback).setTimeout(0.4)
+    reactor.run()
+
+if __name__ == '__main__':
+    main_Problem()
+    main_ProposedTemporarySolution()
+    main_ProposedFutureSolution()

@@ -1,0 +1,173 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] How can ftpclient.py work?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20can%20ftpclient.py%20work%3F&In-Reply-To=87k7a47o6i.fsf%40complete.org">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005209.html">
+   <LINK REL="Next"  HREF="005213.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] How can ftpclient.py work?</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20can%20ftpclient.py%20work%3F&In-Reply-To=87k7a47o6i.fsf%40complete.org"
+       TITLE="[Twisted-Python] How can ftpclient.py work?">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Sat Jul 26 22:19:22 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005209.html">[Twisted-Python] How can ftpclient.py work?
+</A></li>
+        <LI>Next message: <A HREF="005213.html">[Twisted-Python] Re: How can ftpclient.py work?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5211">[ date ]</a>
+              <a href="thread.html#5211">[ thread ]</a>
+              <a href="subject.html#5211">[ subject ]</a>
+              <a href="author.html#5211">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sat, Jul 26, 2003 at 08:28:53PM -0500, John Goerzen wrote:
+&gt;<i> Hi,
+</I>&gt;<i> 
+</I>&gt;<i> I've been reading over the Twisted examples to learn the system and
+</I>&gt;<i> one of them, ftpclient.py, has me flummoxed.  Specifically, the
+</I>&gt;<i> connectionMade function near the end.
+</I>
+It's worth noting that that example is meant more as a brief example of how
+to use ftp.FTPClient, rather than as a real application.
+
+&gt;<i> It issues a number of commands right in a row, without waiting for the
+</I>&gt;<i> results to come back from the deferreds that they return.  To me this
+</I>&gt;<i> seems bad because:
+</I>&gt;<i> 
+</I>&gt;<i> 1. The system would have no way of knowing which command a particular
+</I>&gt;<i>    response belongs to
+</I>
+I think you're referring to these parts:
+
+    # Get the current working directory
+    ftpClient.pwd().addCallbacks(success, fail)
+
+    ... snip ...
+
+    # Change to the parent directory
+    ftpClient.cdup().addCallbacks(success, fail)
+
+You're right, in a real application, you probably do want to distinguish
+between the responses from these two commands.  That could be as simple as
+having different success functions for different commands, e.g.
+
+    ftpClient.pwd().addCallbacks(handlePWD, fail)
+    ftpClient.cdup().addCallbacks(handleCDUP, fail)
+
+Or you could pass extra arguments to the callbacks:
+
+    # Using .addCallback
+    ftpClient.pwd().addCallback(success, 'pwd').addErrback(fail)
+    # Using .addCallbacks
+    ftpClient.cdup().addCallbacks(success, fail, callbackArgs=('cdup,))
+
+In that case, the success function might be defined as:
+
+    def success(response, command):
+        print 'Success!  Got response for command %r:' % (command,)
+        print '---'
+        if response is None:
+            print None
+        else:
+            print string.join(response, '\n')
+        print '---'
+
+&gt;<i> 2. Sending additional commands before the server is done with the
+</I>&gt;<i>    first one may cause problems (for instance, if it takes a little
+</I>&gt;<i>    while to fully transmit the first command, the second one could be
+</I>&gt;<i>    transmitted in the middle)
+</I>
+This is not a problem for FTPClient -- it internally queues the commands and
+issues them when the server is ready for them.
+
+[In the case of FTP, Twisted's FTPClient doesn't attempt any funky
+pipelining, so it's simply a matter of waiting for a response to the last
+command if there's a response outstanding, otherwise it can be issued
+immediately.  See the implementation of FTPClient.sendNextCommand and
+FTPClient.lineReceiver (which calls sendNextCommand when appropriate) for
+details.]
+
+In general, though, most protocols would simply be doing something like:
+
+    def sendRequest(self, data):
+        # ...
+        self.transport.write(self.requestHeader)
+        self.transport.write(data)
+        # ...
+
+And the transport takes care of making sure the data is sent in the right
+order.  You're probably thinking &quot;but what if two calls are made to
+sendRequest at the same time?  Isn't there a race condition?&quot;  The answer is
+technically yes -- very little of Twisted is thread-safe[1].  But in practice,
+Twisted programs don't need to use threads to service multiple connections,
+so you don't have to worry about these sorts of problems.  Only one thing
+is happening at any one time in Twisted, the trick is to make sure none of
+those things blocks so that *looks* like it's doing several things at once.
+
+If you grep the Twisted source, you'll see that virtually nothing uses any
+thread-locking tools like threading.Lock :)
+
+[1] But if you need to safely call a function from a thread, you can use
+    reactor.callFromThread, which will schedule that function to be called
+    from the main event loop.
+
+&gt;<i> 3. There is no error-checking in there, so commands are issued that
+</I>&gt;<i>    are dependant on the success of earlier ones (rnuning nlst after
+</I>&gt;<i>    cdup, for instance), but they're issued potentially before the
+</I>&gt;<i>    earlier ones have a chance to return an error.
+</I>
+In the case of doc/examples/ftpclient.py, the commands Deferreds' have
+'fail' added as an errback.  It's defined as:
+
+    def fail(error):
+        print 'Failed.  Error was:'
+        print error
+        from twisted.internet import reactor
+        reactor.stop()
+
+So there's no problems there -- the error handler will shutdown the entire
+program by calling reactor.stop().  Probably not what you want to do in a
+real application, but sufficient for an example.
+
+&gt;<i> Now, I'm assuming that these problems do not actually exist.  Yet I
+</I>&gt;<i> cannot work out why not.  Can anybody shed some light?
+</I>
+I hope I've shed some light for you -- let us know if you need more :)
+
+-Andrew.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005209.html">[Twisted-Python] How can ftpclient.py work?
+</A></li>
+	<LI>Next message: <A HREF="005213.html">[Twisted-Python] Re: How can ftpclient.py work?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5211">[ date ]</a>
+              <a href="thread.html#5211">[ thread ]</a>
+              <a href="subject.html#5211">[ subject ]</a>
+              <a href="author.html#5211">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

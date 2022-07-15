@@ -1,0 +1,173 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Twisted Logging?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%20Logging%3F&In-Reply-To=%3C20050310223725.GA30170%40ref.nmedia.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="042263.html">
+   <LINK REL="Next"  HREF="042244.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Twisted Logging?</H1>
+    <B>Paul Campbell</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Twisted%20Logging%3F&In-Reply-To=%3C20050310223725.GA30170%40ref.nmedia.net%3E"
+       TITLE="[Twisted-Python] Twisted Logging?">paul at ref.nmedia.net
+       </A><BR>
+    <I>Thu Mar 10 15:37:25 MST 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="042263.html">[Twisted-Python] Twisted Logging?
+</A></li>
+        <LI>Next message (by thread): <A HREF="042244.html">[Twisted-Python] application design / threads
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#42276">[ date ]</a>
+              <a href="thread.html#42276">[ thread ]</a>
+              <a href="subject.html#42276">[ subject ]</a>
+              <a href="author.html#42276">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&gt;<i> 
+</I>&gt;<i> The whole thing becomes a workflow manager that collects information about processed newspaper pages. I'm planning to connect several modules (running on different machines) with PB. The server will handle a database connection and perhaps cache some data that the clients might request. Later the server will provide some status information via http (praise twisted).
+</I>&gt;<i> 
+</I>&gt;<i> One part is an Acrobat Distiller wrapper (via win32com.client):
+</I>&gt;<i> 
+</I>&gt;<i> I created a library with makepy and implemented an event handler class that catches Distiller's events, e.g. &quot;OnJobStart&quot;.
+</I>&gt;<i> That handler class is inherited from a base class by makepy. Each event calls one predefined method.
+</I>&gt;<i> The handler class is connected with the distiller class like
+</I>&gt;<i> dist = acrobatdistiller.PdfDistiller()
+</I>&gt;<i> win32com.client.WithEvents(dist, DistEventHandler)
+</I>&gt;<i> There can be only one Distiller instance. I guess I should keep that as long as possible, for several files to distill.
+</I>&gt;<i> -&gt; How should I handle these events with twisted? Do I need multiple inheritance to inherit my handler also from some twisted class?
+</I>
+This problem has come up before. Basically, you need to queue up your series
+of commands and then send them one at a time. Obviously, blocking is a bad
+thing. In this case, your PDF handler can be isolated into a separate
+process and/or thread. Twisted supports this. Read the threading stuff
+very carefully. The threading support has specific hooks designed to run a
+process in just this situation.
+
+So architecturally, you'd have your PDF application running in a thread. Every
+time it finishes a job, it sends a signal over to the twisted code signalling
+that the job is complete. The twisted code then schedules another one on an
+as-needed basis.
+
+On the twisted side, you can write a server. The server either queues a job
+or sends it immediately. Either way, it can return immediately and it won't
+be a problem blocking-wise since the time to execute the code is minimal (you
+hid all the blocking stuff in the side-thread where your PDF driver runs).
+The &quot;return&quot; function essentially is either an outright &quot;pull a command out
+of the queue and send it over&quot; function or you could set it up as a
+reactor.calllater(0.0001, functionToQcheduleQueuedPdfJob)
+
+&gt;<i> Before a PostScript file gets distilled [dist.FileToPDF(source, target, joboptions)], I must patch it (write some pdfmarks into it). I guess I should use a thread for those blocking operations (distilling can take several minutes).
+</I>&gt;<i> -&gt; One thread for both, just work blocking?
+</I>
+This can be in your threaded code as mentioned earlier since it's all one
+long process.
+
+&gt;<i> -&gt; Do I need a thread for every copy/move operation (large files via network)?
+</I>
+Nope. That's the beauty of twisted code. I've written this sort of handling
+multiple packet trains many times. Write a protocol. There are two ways to
+do this. First, you can write one protocol per file transfer. The factory
+sets up the protocol to do the file transfer. At the end of the file, the
+protocol then saves the file to disk and tears down the connection. Then
+on return to the factory, the factory can call the code to write the PDF
+file. The protocol code simply shovels the data from the network to a file.
+As each packet arrives, it executes for a short period of time before
+returning (which releases control back to the reactor). No blocking is
+necessary at all. The protocol itself will be little more than a modification
+of the Echo example protocol except you may want to add some headers or
+something to send a file size and/or CRC to make sure that the file comes
+through intact.
+
+&gt;<i> Another part reads some XML files (using minidom) and writes the mangled content into a database.
+</I>&gt;<i> I guess I can't split XML parsing into smaller non-blocking portions -&gt; one thread for every file?
+</I>
+I ran into long processing problems before. There's a simple solution. Pick
+something convenient such as simply chunking everything up into processing one
+line at a time. Store your state in a &quot;utility class&quot;. A utility class is
+something like this:
+
+class Utility:
+    pass
+
+Then you can store anything you want. First, initialize it:
+storage = Utility()
+
+Then attach whatever data you need for your state:
+storage.data = something
+storage.header = something else.
+
+Then, whenever you want to chunk your code into discrete steps, simply pass
+it along in a chain of functions, each one ending with:
+
+reactor.calllater(0.0001, nextstep, storage)
+
+The functions will look like:
+
+def nextstep(storage):
+    ...
+
+There are some other ways of handling this. You can get really creative with
+your constructs using deferreds. And the Flow module allows you to go even
+further than the hard coded version I'm suggesting here. Try reading through
+the Flow module documentation. Just don't get hung up about using it. For my
+purposes, it was usually better just to have the basic concept in mind than
+to actually use Flow.
+
+&gt;<i> For the database stuff I'm using runInteraction, seems to be the best solution.
+</I>
+Yep. Frequently, this is where I'd run a deferred() just after sending the
+request to the known-to-be-slow process. Read that section carefully too. Then
+your code gets called back immediately when the process completes. You will
+need to understand deferred's to fully utilize twisted's threading interface,
+and then you'll realize that you probably don't need threads.
+
+&gt;<i> A general issue is logging. I'm used to log4perl/log4net (same as log4j from apache), but dropped log4py in favour of the similar Python 2.3 standard logging. I already asked in my last mail to this list how I can integrate that with twisted. 
+</I>&gt;<i> -&gt; Is it possible to get correct linenumbers if using deferreds? Or can I trust logging to be non-blocking?
+</I>
+Deferred's work fine. It's just a programming construct that is a work-around
+for a lack of a real continuation. On the other hand, deferred's are much
+easier to use than continuations. The code seems VERY unnatural to write at
+first but once you get used to it, deferred's seem just well...obvious.
+
+As to logging itself...it might be easier to just write your own. Usually I
+haven't been overly thrilled with the mechanical-looking output of
+off-the-shelf loggers and logging is little more than just printing to a file
+anyways, sometimes with some extra (chop it up and reclaim space) features
+added.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="042263.html">[Twisted-Python] Twisted Logging?
+</A></li>
+	<LI>Next message (by thread): <A HREF="042244.html">[Twisted-Python] application design / threads
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#42276">[ date ]</a>
+              <a href="thread.html#42276">[ thread ]</a>
+              <a href="subject.html#42276">[ subject ]</a>
+              <a href="author.html#42276">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

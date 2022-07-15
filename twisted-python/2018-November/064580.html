@@ -1,0 +1,110 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] &quot;disconnecting properly&quot; in tests still hangs on macOS
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20%22disconnecting%20properly%22%20in%20tests%20still%20hangs%0A%20on%20macOS&In-Reply-To=%3C4E281641-12C4-44B6-BA50-95D39D69C622%40gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="064579.html">
+   <LINK REL="Next"  HREF="064581.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] &quot;disconnecting properly&quot; in tests still hangs on macOS</H1>
+    <B>exvito here</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20%22disconnecting%20properly%22%20in%20tests%20still%20hangs%0A%20on%20macOS&In-Reply-To=%3C4E281641-12C4-44B6-BA50-95D39D69C622%40gmail.com%3E"
+       TITLE="[Twisted-Python] &quot;disconnecting properly&quot; in tests still hangs on macOS">ex.vitorino at gmail.com
+       </A><BR>
+    <I>Wed Nov 14 06:41:14 MST 2018</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="064579.html">[Twisted-Python] &quot;disconnecting properly&quot; in tests still hangs on macOS
+</A></li>
+        <LI>Next message (by thread): <A HREF="064581.html">[Twisted-Python] &quot;disconnecting properly&quot; in tests still hangs on macOS
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64580">[ date ]</a>
+              <a href="thread.html#64580">[ thread ]</a>
+              <a href="subject.html#64580">[ subject ]</a>
+              <a href="author.html#64580">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On 14 Nov 2018, at 08:50, Chris Withers &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">chris at withers.org</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Right, so, I've been trying to get the technique in <A HREF="https://jml.io/pages/how-to-disconnect-in-twisted-really.html">https://jml.io/pages/how-to-disconnect-in-twisted-really.html</A> to work for me.
+</I>&gt;<i> 
+</I>&gt;<i> No hating please, most of my testing in the past has involved hitting a relational database, so there's already a TCP connection flying around, one more won't make any difference.
+</I>&gt;<i> 
+</I>&gt;<i> jml's example, exactly as-is on that page, hangs around 30-40% of the time when running on my macOS laptop. From changing the teardown to look like this:
+</I>&gt;<i> 
+</I>&gt;<i>     def tearDown(self):
+</I>&gt;<i>         ds = defer.maybeDeferred(self.serverPort.stopListening)
+</I>&gt;<i>         dc = defer.maybeDeferred(self.clientConnection.disconnect)
+</I>&gt;<i>         print()
+</I>&gt;<i> 
+</I>&gt;<i>         ds.addCallback(lambda _: print('serverPort.stopListening'))
+</I>&gt;<i>         dc.addCallback(lambda _: print('self.clientConnection.disconnect'))
+</I>&gt;<i>         self.clientDisconnected.addCallback(lambda _: print('self.clientDisconnected'))
+</I>&gt;<i>         self.serverDisconnected.addCallback(lambda _: print('self.serverDisconnected'))
+</I>&gt;<i>         self.serverDisconnected.addErrback(lambda _: print('self.serverDisconnected:', _))
+</I>&gt;<i>         return defer.gatherResults([ds, dc, self.clientDisconnected, self.serverDisconnected])
+</I>&gt;<i> 
+</I>&gt;<i> ...it appears that it's the serverDisconnected deferred that's failing to fire. I can't reproduce this on Linux as of yet, so I'm guessing this is a difference between the SelectReactor used on macOS and the EPollReactor used on Linux.
+</I>&gt;<i> 
+</I>&gt;<i> What's the best way to go about debugging a non-firing deferred like this?
+</I>&gt;<i> 
+</I>&gt;<i> Anyone know what this might be?
+</I>
+
+Chris,
+
+I played with this for a bit and quickly reproduced the &quot;server side disconnect never seems to happen&quot; behaviour you described, on my system running macOS 10.12.6 and Twisted 18.9.0 using the SelectReactor.
+
+Suspecting of an eventual race condition between &quot;server stop listen&quot; and &quot;server disconnect&quot;, I tried this variation of tearDown which seems to work reliably:
+
+    @defer.inlineCallbacks
+    def tearDown(self):
+        self.clientConnection.disconnect()
+        yield defer.gatherResults([self.clientDisconnected, self.serverDisconnected])
+        yield defer.maybeDeferred(self.serverPort.stopListening)
+
+Do I have any motive to suspect such race condition? No, but after ensuring &quot;disconnect first, stop listening later&quot;, things work much better here.
+
+Also tested the CFReactor and KQueueReactor: CFReactor seems to exhibit a similar behaviour (original code hangs every now and then on cleanup, my code works); KQueueReactor always hangs on cleanup with the original code, and works reliably with my code.
+
+My 2c.,
+--
+exvito
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="064579.html">[Twisted-Python] &quot;disconnecting properly&quot; in tests still hangs on macOS
+</A></li>
+	<LI>Next message (by thread): <A HREF="064581.html">[Twisted-Python] &quot;disconnecting properly&quot; in tests still hangs on macOS
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64580">[ date ]</a>
+              <a href="thread.html#64580">[ thread ]</a>
+              <a href="subject.html#64580">[ subject ]</a>
+              <a href="author.html#64580">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

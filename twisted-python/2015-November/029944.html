@@ -1,0 +1,205 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Implementing Postfix Inet Policy Check Client
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Implementing%20Postfix%20Inet%20Policy%20Check%20Client&In-Reply-To=%3C564DF684.1060100%40t0mb.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="029942.html">
+   <LINK REL="Next"  HREF="029945.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Implementing Postfix Inet Policy Check Client</H1>
+    <B>Tom Boland</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Implementing%20Postfix%20Inet%20Policy%20Check%20Client&In-Reply-To=%3C564DF684.1060100%40t0mb.net%3E"
+       TITLE="[Twisted-Python] Implementing Postfix Inet Policy Check Client">tom at t0mb.net
+       </A><BR>
+    <I>Thu Nov 19 09:19:16 MST 2015</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="029942.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+        <LI>Next message: <A HREF="029945.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29944">[ date ]</a>
+              <a href="thread.html#29944">[ thread ]</a>
+              <a href="subject.html#29944">[ subject ]</a>
+              <a href="author.html#29944">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thanks again for this.  It's really useful.  It turns out that the
+delimiter is a plain old \n.  Who knows how consistent this will be
+between different policy daemons, I don't know!
+
+I've modified it to manage a DeferredQueue which hopefully means I can
+just keep throwing requests at it without every being bounced away.  A
+stripped down example (with even less error checking!) of what I've
+managed to work your example in to is here:
+
+class PostfixPolicyClient(LineReceiver):
+
+    delimiter = '\n'
+
+    def __init__(self):
+        self.resultQueue = DeferredQueue()
+
+
+    def lineReceived(self, line):
+        if '=' in line:
+            self.resultQueue.put(True if line.split('=')[1] == 'OK' else
+False)
+
+
+    def sendPostfixPolicyClientRequest(self, request_dict):
+        for k, v in request_dict.items():
+            self.sendLine('{}={}'.format(k, v))
+        self.sendLine('')
+        return self.resultQueue.get()
+
+
+
+Now, this isn't a working example, it's just the minimum that will
+demonstrate my idea.  I just wonder if what I've done with the
+DeferredQueue is sane.  If I return the .get() entry from the
+DeferredQueue when doing the request, and then do a put() in
+lineReceived, am I guaranteeing that I will get my results in the
+correct order?
+
+Thanks again for all your help!
+
+Many thanks.  Tom.
+
+
+On 19/11/15 07:53, exvito here wrote:
+&gt;<i>
+</I>&gt;<i> On Wed, Nov 18, 2015 at 9:28 AM, Tom Boland &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">tom at t0mb.net</A>
+</I>&gt;<i> &lt;mailto:<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">tom at t0mb.net</A>&gt;&gt; wrote:
+</I>&gt;<i>
+</I>&gt;<i>     I think what you've provided me with is useful for me, but I think
+</I>&gt;<i>     it's backwards for my purposes, as I need to be connecting to the
+</I>&gt;<i>     policy daemon rather than being the policy daemon!
+</I>&gt;<i>
+</I>&gt;<i>     I wanted to do this with deferred calls in case one of the policy
+</I>&gt;<i>     daemons becomes unreachable and blocks my application.  Do you
+</I>&gt;<i>     think I should do something differently in that regard?  My SQL
+</I>&gt;<i>     lookups are done synchronously.  If the database server goes away,
+</I>&gt;<i>     I've got bigger problems anyway!
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> So maybe something like this is more likely to be useful:
+</I>&gt;<i>
+</I>&gt;<i> #!/usr/bin/env python
+</I>&gt;<i>
+</I>&gt;<i> from __future__ import print_function
+</I>&gt;<i>
+</I>&gt;<i> from twisted.internet import reactor, protocol, endpoints, defer
+</I>&gt;<i> from twisted.protocols import basic
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> class PostfixProtocol(basic.LineReceiver):
+</I>&gt;<i>
+</I>&gt;<i>     # Assuming Postfix uses '\r\n' line breaks (does it?)
+</I>&gt;<i>     delimiter = '\r\n'
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self):
+</I>&gt;<i>         self.action = None
+</I>&gt;<i>         self.action_deferred = None
+</I>&gt;<i>
+</I>&gt;<i>     def lineReceived(self, line):
+</I>&gt;<i>         if '=' in line:
+</I>&gt;<i>             self.action = line.split('=')[1]
+</I>&gt;<i>         elif line == '':
+</I>&gt;<i>             self.action_deferred.callback(self.action)
+</I>&gt;<i>             self.action_deferred = None
+</I>&gt;<i>         else:
+</I>&gt;<i>             # oops, bad input
+</I>&gt;<i>             pass
+</I>&gt;<i>
+</I>&gt;<i>     def sendPostfixRequest(self, request_dict):
+</I>&gt;<i>         if not self.action_deferred is None:
+</I>&gt;<i>             raise Exception('transaction pending')
+</I>&gt;<i>         for k, v in request_dict.items():
+</I>&gt;<i>             self.sendLine('{}={}'.format(k,v))
+</I>&gt;<i>         # Empty line signals we're done
+</I>&gt;<i>         self.sendLine('')
+</I>&gt;<i>         self.action_deferred = defer.Deferred()
+</I>&gt;<i>         return self.action_deferred
+</I>&gt;<i>
+</I>&gt;<i> @defer.inlineCallbacks
+</I>&gt;<i> def checkPostfixPolicy(request_dict):
+</I>&gt;<i>     ep = endpoints.clientFromString(reactor,
+</I>&gt;<i> 'tcp:host=127.0.0.1:port=10000')
+</I>&gt;<i>     p = yield endpoints.connectProtocol(ep, PostfixProtocol())
+</I>&gt;<i>     action = yield p.sendPostfixRequest(request_dict)
+</I>&gt;<i>     print('got: {}'.format(action))
+</I>&gt;<i>     reactor.stop()
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> if __name__ == '__main__':
+</I>&gt;<i>
+</I>&gt;<i>     request_dict = {
+</I>&gt;<i>         'recipient': '<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">email at ddr.ess</A>',
+</I>&gt;<i>         'sender': '<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">email at ddr.ess</A>',
+</I>&gt;<i>     }
+</I>&gt;<i>     reactor.callWhenRunning(checkPostfixPolicy, request_dict)
+</I>&gt;<i>     reactor.run()
+</I>&gt;<i>
+</I>&gt;<i> Highlights:
+</I>&gt;<i> - This is not the same protocol as before, in particular it uses a
+</I>&gt;<i> different delimiter.
+</I>&gt;<i> - It assumes the response is also terminated with an empty line (does
+</I>&gt;<i> it?).
+</I>&gt;<i> - It more than one outstanding response: a different exception should
+</I>&gt;<i> be used.
+</I>&gt;<i> - The input processing is very rudimentary and failure-prone.
+</I>&gt;<i> - checkPostfixPolicy could, of course, return instead of printing. :)
+</I>&gt;<i>
+</I>&gt;<i> Cheers,
+</I>&gt;<i> --
+</I>&gt;<i>   exvito
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20151119/8f8b4d9c/attachment.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20151119/8f8b4d9c/attachment.html</A>&gt;
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="029942.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+	<LI>Next message: <A HREF="029945.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29944">[ date ]</a>
+              <a href="thread.html#29944">[ thread ]</a>
+              <a href="subject.html#29944">[ subject ]</a>
+              <a href="author.html#29944">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

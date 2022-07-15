@@ -1,0 +1,138 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] logging
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20logging&In-Reply-To=%3C5DBF03B4-6FF3-42E1-95E2-15861877AB34%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="059527.html">
+   <LINK REL="Next"  HREF="059534.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] logging</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20logging&In-Reply-To=%3C5DBF03B4-6FF3-42E1-95E2-15861877AB34%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] logging">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Fri Jun 14 17:40:21 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="059527.html">[Twisted-Python] logging
+</A></li>
+        <LI>Next message (by thread): <A HREF="059534.html">[Twisted-Python] logging
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59531">[ date ]</a>
+              <a href="thread.html#59531">[ thread ]</a>
+              <a href="subject.html#59531">[ subject ]</a>
+              <a href="author.html#59531">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Jun 14, 2013, at 3:43 PM, Glyph &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; wrote:
+
+&gt;<i> I think that we can satisfy all of these requirements by expanding the notion of an &quot;identifier&quot; a bit.
+</I>
+In our last episode, I mentioned that an identifier should have several properties:
+
+human readable (and potentially non-unique) for ease of writing messages and reading them to get a general sense of the behavior of a system
+globally unique (and potentially hard to read) for ease of filtering and monitoring
+long-term (and potentially unique to humans) for ease of writing tools to deal with particular messages, whose exact details may change over time
+
+I think we can achieve all of these things by making there be multiple ways to identify a log message.  Here's how that could work:
+
+When you are first writing a log message, just do this, as you usually would; toss off some crummy english message:
+
+log.info(&quot;hey check it out I just {verb}ed a {noun}&quot;, verb=request.method, noun=request.uri)
+
+Asking the author to write a log message with more detail and care than this is basically just a recipe for disappointment :).
+
+Later, someone might want to instrument these messages.  We've all agreed that re.findall(&quot;hey check it out.*&quot;) is a crummy way to do this.  The obvious thing would be something like this:
+
+tapEventsLike(myObserver, publisher, log_format=&quot;hey check it out I just {verb}ed a {noun}&quot;)
+
+That's fine to start with, of course, but it's not very resilient to changes in the code; the developer might later change this line to read:
+
+log.info(&quot;hey check it out I just {verb}ed a {noun} and got a {result}&quot;, verb=request.method, noun=request.uri, result=request.response.status)
+
+Now the log tap is broken, and there's no reasonable way to fix it; the format string doesn't have a place that it could go.
+
+But, the 'log' in the above example is a logger object associated with a class or module, and so has 3 persistent pieces of information it can use to build a long-term identifier that the event tap can use.  We could reflect that in an API like this:
+
+from example.module import log
+tapEventsLike(myObserver, publisher,
+              log_id=log.idForOriginalFormat(&quot;hey check it out I just {verb}ed a {noun}&quot;))
+
+which could be computed offline, and then specified like this, to be even more resilient to API changes:
+
+tapEventsLike(myObserver, publisher, log_id='604e45b5-2d41-5ba5-9ae1-7205163c3e3f')
+
+That string, of course, is computed like this:
+
+&gt;&gt;&gt;<i> import uuid
+</I>&gt;&gt;&gt;<i> from urllib import urlencode
+</I>&gt;&gt;&gt;<i> uri = &quot;<A HREF="http://twistedmatrix.com/ns/log/?">http://twistedmatrix.com/ns/log/?</A>&quot; + urlencode(dict(format=&quot;hey check it out I just {verb}ed a {noun}&quot;, module=&quot;example.module&quot;))
+</I>&gt;&gt;&gt;<i> uuid.uuid5(uuid.NAMESPACE_URL, uri)
+</I>UUID('604e45b5-2d41-5ba5-9ae1-7205163c3e3f')
+
+(Although if we decide we like this system, we could of course go with a helpful command-line tool to generate these for you.)
+
+As you evolve your codebase to take logging more seriously, you could change the original 'log.info' call to instead look like this:
+
+verbANoun = log.declare(
+    &quot;hey check it out I just {verb}ed a {noun} and got a {result}&quot;,
+    log_id='604e45b5-2d41-5ba5-9ae1-7205163c3e3f',
+)
+# ...
+verbANoun(verb=request.method, noun=request.uri, result=request.response.status)
+
+and then monitoring can be accomplished via public API:
+
+from example.module import verbANoun
+verbANoun.tap(myObserver, theLogPublisher)
+
+So, after some evolution, our message has 3 identifiers:
+
+the original format string, which was easy to come up with on the spot, and need not be unique
+a UUID, that was automatically generated but can be carried around to allow for cleaning up the codebase and the message without breaking any code doing monitoring
+an API name that the logger and the logee can use to agree on the semantics of a particular message
+
+Best of all, you can get this even for the plethora of existing log messages within Twisted that aren't even using structured values, as we evolve them to have more metadata.  You also now have the ability to localize the format string, if you want to start presenting these log messages in contexts other than log files for system administrators.
+
+Thoughts?
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20130614/a93e35cb/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="059527.html">[Twisted-Python] logging
+</A></li>
+	<LI>Next message (by thread): <A HREF="059534.html">[Twisted-Python] logging
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59531">[ date ]</a>
+              <a href="thread.html#59531">[ thread ]</a>
+              <a href="subject.html#59531">[ subject ]</a>
+              <a href="author.html#59531">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

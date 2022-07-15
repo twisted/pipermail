@@ -1,0 +1,203 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] two twisted clients,	how can I trigger the other one's callback in one's callback?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20two%20twisted%20clients%2C%0A%09how%20can%20I%20trigger%20the%20other%20one%27s%20callback%20in%20one%27s%20callback%3F&In-Reply-To=981709.63531.qm%40web59107.mail.re1.yahoo.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="015579.html">
+   <LINK REL="Next"  HREF="015581.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] two twisted clients,	how can I trigger the other one's callback in one's callback?</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20two%20twisted%20clients%2C%0A%09how%20can%20I%20trigger%20the%20other%20one%27s%20callback%20in%20one%27s%20callback%3F&In-Reply-To=981709.63531.qm%40web59107.mail.re1.yahoo.com"
+       TITLE="[Twisted-Python] two twisted clients,	how can I trigger the other one's callback in one's callback?">exarkun at divmod.com
+       </A><BR>
+    <I>Wed Jun 20 07:38:51 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="015579.html">[Twisted-Python] two twisted clients,	how can I trigger the other one's callback in one's callback?
+</A></li>
+        <LI>Next message: <A HREF="015581.html">[Twisted-Python] two twisted clients,	how can I trigger the other one's callback in one's callback?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15580">[ date ]</a>
+              <a href="thread.html#15580">[ thread ]</a>
+              <a href="subject.html#15580">[ subject ]</a>
+              <a href="author.html#15580">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, 20 Jun 2007 03:35:37 -0700 (PDT), slowtech chen &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">slowtech.chen at yahoo.com</A>&gt; wrote:
+&gt;<i>I have 2 clients, one gets a message from a server, once I get the message, I want to send it with the other client to another server. how can i do this?  can I add some customized events and notice the other client? Thanks.
+</I>
+You need to build this system yourself.  Any protocol instance which needs to
+be able to interact with another protocol instance needs a reference to that
+other protocol instance, either directly (for example, as an attribute on
+itself) or indirectly (for example, as an attribute on its factory).  With
+this, methods on the other protocol instance can be invoked to send messages.
+Here's a trivial example:
+
+    from twisted.internet.protocol import Protocol, ServerFactory
+    from twisted.trial.unittest import TestCase
+
+
+    class BroadcastProtocol(Protocol):
+        &quot;&quot;&quot;
+        Protocol which echos received bytes back to all connected
+        BroadcastProtocols.
+        &quot;&quot;&quot;
+        def dataReceived(self, bytes):
+            &quot;&quot;&quot;
+            Handle received bytes by dispatching them to my factory for
+            broadcast to all clients.
+            &quot;&quot;&quot;
+            self.factory.sendMessage(bytes)
+
+
+        def sendMessage(self, bytes):
+            &quot;&quot;&quot;
+            Write the given bytes to my transport.
+            &quot;&quot;&quot;
+            self.transport.write(bytes)
+
+
+
+    class BroadcastFactory(ServerFactory):
+        &quot;&quot;&quot;
+        Serve and track BroadcastProtocol instances.
+
+        @ivar connectedProtocols: A list of all protocol instances which have
+            been returned by buildProtocol.
+        &quot;&quot;&quot;
+        protocol = BroadcastProtocol
+
+        def __init__(self):
+            self.connectedProtocols = []
+
+
+        def buildProtocol(self, addr):
+            &quot;&quot;&quot;
+            Instantiate my protocol class, append it to my tracking list, and
+            return it.
+            &quot;&quot;&quot;
+            protocol = ServerFactory.buildProtocol(self, addr)
+            self.connectedProtocols.append(protocol)
+            return protocol
+
+
+        def sendMessage(self, bytes):
+            &quot;&quot;&quot;
+            Send the given bytes to all tracked protocols.
+            &quot;&quot;&quot;
+            for proto in self.connectedProtocols:
+                proto.sendMessage(bytes)
+
+
+    class BroadcastProtocolTests(TestCase):
+        &quot;&quot;&quot;
+        BroadcastProtocol should send all bytes it receives to all other
+        connected BroadcastProtocol instances.
+        &quot;&quot;&quot;
+        def test_buildProtocol(self):
+            &quot;&quot;&quot;
+            BroadcastFactory.buildProtocol should return an instance of
+            BroadcastProtocol and add that instance to its tracking list.
+            &quot;&quot;&quot;
+            factory = BroadcastFactory()
+            protocol = factory.buildProtocol(None)
+            self.assertEqual(factory.connectedProtocols, [protocol])
+
+
+        def test_factorySendMessage(self):
+            &quot;&quot;&quot;
+            BroadcastFactory.sendMessage should call sendMessage on each
+            of the protocols in its tracking list.
+            &quot;&quot;&quot;
+            class StubProtocol(object):
+                &quot;&quot;&quot;
+                Mimick the message-sending interface of BroadcastProtocol.
+                &quot;&quot;&quot;
+                def __init__(self):
+                    self.messages = []
+                def sendMessage(self, message):
+                    self.messages.append(message)
+
+            factory = BroadcastFactory()
+            protocol = StubProtocol()
+            factory.connectedProtocols = [protocol]
+            message = object()
+            factory.sendMessage(message)
+            self.assertEqual(protocol.messages, [message])
+
+
+        def test_dataReceived(self):
+            &quot;&quot;&quot;
+            BroadcastProtocol.dataReceived should pass whatever bytes it is
+            called with to the factory's sendMessage method.
+            &quot;&quot;&quot;
+            class StubFactory(object):
+                &quot;&quot;&quot;
+                Mimick the message-sending interface of BroadcastFactory.
+                &quot;&quot;&quot;
+                def __init__(self):
+                    self.messages = []
+                def sendMessage(self, message):
+                    self.messages.append(message)
+            factory = StubFactory()
+            protocol = BroadcastProtocol()
+            protocol.factory = factory
+            message = object()
+            protocol.dataReceived(message)
+            self.assertEqual(factory.messages, [message])
+
+
+        def test_protocolSendMessage(self):
+            &quot;&quot;&quot;
+            BroadcastProtocol.sendMessage should write the bytes it is called
+            with to its transport.
+            &quot;&quot;&quot;
+            class StubTransport(object):
+                &quot;&quot;&quot;
+                Mimick a transport sufficiently for the purposes of simple
+                writes.
+                &quot;&quot;&quot;
+                def __init__(self):
+                    self.messages = []
+                def write(self, bytes):
+                    self.messages.append(bytes)
+            protocol = BroadcastProtocol()
+            transport = StubTransport()
+            protocol.makeConnection(transport)
+            message = object()
+            protocol.sendMessage(message)
+            self.assertEqual(transport.messages, [message])
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="015579.html">[Twisted-Python] two twisted clients,	how can I trigger the other one's callback in one's callback?
+</A></li>
+	<LI>Next message: <A HREF="015581.html">[Twisted-Python] two twisted clients,	how can I trigger the other one's callback in one's callback?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15580">[ date ]</a>
+              <a href="thread.html#15580">[ thread ]</a>
+              <a href="subject.html#15580">[ subject ]</a>
+              <a href="author.html#15580">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,171 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Sequential use of asynchronous calls
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Sequential%20use%20of%20asynchronous%20calls&In-Reply-To=%3C200705270820.41462.maarten%40treewalker.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="047948.html">
+   <LINK REL="Next"  HREF="047951.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Sequential use of asynchronous calls</H1>
+    <B>Maarten ter Huurne</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Sequential%20use%20of%20asynchronous%20calls&In-Reply-To=%3C200705270820.41462.maarten%40treewalker.org%3E"
+       TITLE="[Twisted-Python] Sequential use of asynchronous calls">maarten at treewalker.org
+       </A><BR>
+    <I>Sun May 27 00:20:30 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="047948.html">[Twisted-Python] Sequential use of asynchronous calls
+</A></li>
+        <LI>Next message (by thread): <A HREF="047951.html">[Twisted-Python] Sequential use of asynchronous calls
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#47950">[ date ]</a>
+              <a href="thread.html#47950">[ thread ]</a>
+              <a href="subject.html#47950">[ subject ]</a>
+              <a href="author.html#47950">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sunday 27 May 2007, Ben Artin wrote:
+&gt;<i> &gt; Since it is used as a decorator, the @sequential line will be
+</I>&gt;<i> &gt; written by the
+</I>&gt;<i> &gt; same person who wrote the function itself. If the author of the
+</I>&gt;<i> &gt; function
+</I>&gt;<i> &gt; knows it is not a generator, why would he apply @sequential (or
+</I>&gt;<i> &gt; @inlineCallbacks) to it?
+</I>&gt;<i>
+</I>&gt;<i> One reason is that if the function returns None, then if you require
+</I>&gt;<i> it to be a generator, you have to add a gratuitous &quot;yield None&quot; just
+</I>&gt;<i> to shut up the piece of code that requires a generator.
+</I>
+Maybe it's more clear to call it @inlineCallbacks, since that is the name 
+under which it is available; @sequential was just me re-inventing it.
+
+I agree that adding &quot;yield None&quot; is an ugly fix, but why not just remove the 
+@inlineCallbacks decoration from such a function instead? I still don't 
+understand what the point is of decorating a non-generator function with 
+@inlineCallbacks. 
+
+&gt;<i> The other main case where I've run into this is when you have a
+</I>&gt;<i> protocol that expects some method to behave according to @sequential,
+</I>&gt;<i> but a particular implementation of that protocol doesn't need to do
+</I>&gt;<i> more than immediately return.
+</I>
+The external protocol of @inlineCallbacks is just Deferred. There are a lot of 
+ways to convert something to a Deferred already, such as maybeDeferred, 
+execute, succeed, fail (all in the &quot;defer&quot; module). Using @inlineCallbacks 
+for that purpose seems a bit overcomplicated.
+
+There is never a requirement for a function to be decorated with 
+@inlineCallbacks, all the outside world sees is a Deferred. @inlineCallbacks 
+is just an implementation technique to avoid having to split sequential 
+asynchronous code over multiple functions.
+
+&gt;<i> For example: 
+</I>&gt;<i>
+</I>&gt;<i> class TakesALongTime():
+</I>&gt;<i> 	@sequential
+</I>&gt;<i> 	def doSomething(self):
+</I>&gt;<i> 		yield doPart1()
+</I>&gt;<i> 		yield doPart2()
+</I>&gt;<i> 		yield someResult
+</I>
+This doesn't do what you might expect...
+
+Let's assume doPart1 and doPart2 return Deferreds, named d1 and d2. When 
+doSomething is called, inlineCallbacks will run doPart1, register itself on 
+d1 and return its own Deferred (dr) to the caller of doSomething. When the 
+reactor does the callback on d1, doPart2 will be called and inlineCallbacks 
+will register itself on d2. Finally, when the callback of d2 is called, 
+someResult will be discarded by inlineCallbacks and the callback of dr will 
+be called with result None.
+
+To do what you probably intended, the code would look like this:
+
+class TakesALongTime():
+	@defer.inlineCallbacks
+	def doSomething(self):
+		yield doPart1()
+		yield doPart2()
+		defer.returnValue(someResult)
+
+Also note that neither of these examples blocks. Instead, the decorated method 
+will typically return a Deferred (dr) very soon. However, it could take a 
+long time before dr's callback (or errback) is called. During that time, the 
+caller of doSomething will probably register itself on dr and end, to pass 
+control to the reactor.
+
+&gt;<i> Now, if you use &quot;return&quot; in the first class, you get a syntax error
+</I>&gt;<i> right away, because a non-empty return in a generator is a syntax
+</I>&gt;<i> error. On the other hand, if you use &quot;return&quot; in the second class,
+</I>&gt;<i> you don't get a syntax error, but your implementation of @sequential
+</I>&gt;<i> would produce a runtime error. I understand why it's easy to produce
+</I>&gt;<i> that runtime error, but I don't see any benefit to it -- it doesn't
+</I>&gt;<i> really save the users of @sequential any effort.
+</I>
+Well, if you consider using @inlineCallbacks on a non-generator an error, 
+checking for this error as early as possible does save the user effort: you 
+will see the error as soon as your module is imported, instead of having to 
+trigger the function in question.
+
+If you consider using @inlineCallbacks on a non-generator a valid scenario, 
+there should not be a runtime error issued, neither at &quot;decoration time&quot; nor 
+at &quot;invocation time&quot;.
+
+Note that the current implementation of @inlineCallbacks will raise an error 
+at &quot;invocation time&quot;, specifically when &quot;g.send&quot; or &quot;g.throw&quot; is called. I'm 
+proposing to change that so an error will be raised by the decorator instead 
+(&quot;decoration time&quot;, typically when the module is imported).
+
+&gt;<i> &gt; But should it be given any interpretation at all? Unless there is a
+</I>&gt;<i> &gt; real use
+</I>&gt;<i> &gt; case for it, I think it's better to consider it an error.
+</I>&gt;<i>
+</I>&gt;<i> I would agree with you if I thought there was any possibility that
+</I>&gt;<i> interpreting a plain function as a generator with a single yield
+</I>&gt;<i> could yield unintended results, but I have yet to find such a case.
+</I>
+Should something be given an interpretation because there are no unintended 
+results, or because there are intended results?
+
+Bye,
+		Maarten
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: not available
+URL: &lt;/pipermail/twisted-python/attachments/20070527/ef81bdaf/attachment.sig&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="047948.html">[Twisted-Python] Sequential use of asynchronous calls
+</A></li>
+	<LI>Next message (by thread): <A HREF="047951.html">[Twisted-Python] Sequential use of asynchronous calls
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#47950">[ date ]</a>
+              <a href="thread.html#47950">[ thread ]</a>
+              <a href="subject.html#47950">[ subject ]</a>
+              <a href="author.html#47950">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

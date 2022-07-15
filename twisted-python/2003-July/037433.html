@@ -1,0 +1,342 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [LONG] Re: [Twisted-Python] Why do I get a _Dereference instance?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BLONG%5D%20Re%3A%20%5BTwisted-Python%5D%20Why%20do%20I%20get%20a%20_Dereference%20instance%3F&In-Reply-To=%3C20030709.015149.85705814.warner%40lothar.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="037412.html">
+   <LINK REL="Next"  HREF="037409.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[LONG] Re: [Twisted-Python] Why do I get a _Dereference instance?</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BLONG%5D%20Re%3A%20%5BTwisted-Python%5D%20Why%20do%20I%20get%20a%20_Dereference%20instance%3F&In-Reply-To=%3C20030709.015149.85705814.warner%40lothar.com%3E"
+       TITLE="[LONG] Re: [Twisted-Python] Why do I get a _Dereference instance?">warner at lothar.com
+       </A><BR>
+    <I>Wed Jul  9 02:51:49 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="037412.html">[Twisted-Python] Why do I get a _Dereference instance?
+</A></li>
+        <LI>Next message (by thread): <A HREF="037409.html">[Twisted-Python] FYI: sample of interpreted CGI usage in twisted (1.0.6, for windows)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37433">[ date ]</a>
+              <a href="thread.html#37433">[ thread ]</a>
+              <a href="subject.html#37433">[ subject ]</a>
+              <a href="author.html#37433">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&quot;Patrik Blommaskog&quot; &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">pb_twisted at olga.mine.nu</A>&gt; writes:
+
+&gt;<i> 	def setCopyableState(self, state):
+</I>&gt;<i> 	    self.__dict__.update(state)
+</I>&gt;<i> 
+</I>&gt;<i> gives the strange behavior
+</I>
+&gt;<i> While:
+</I>&gt;<i> 	def setCopyableState(self, state):
+</I>&gt;<i> 	    self.__dict__ = state
+</I>&gt;<i> 
+</I>&gt;<i> Gives the expected
+</I>
+&gt;<i> This feels like the twilight zone. Can somebody please tell me what is going
+</I>&gt;<i> on? I have attached the code for my experiment.
+</I>
+You're seeing an unfortunate artifact that results from the way circular
+references are handled in the standard Jelly code. The problem has been
+addressed somewhat in newjelly, but there are deeper issues which mean the
+problem may not be possible to fix completely.
+
+The following is a longish discussion of how jelly works and why this is
+mostly unavoidable, followed by some design possibilities for other ways to
+deal with it (newbanana enthusiasts are asked to read and comment upon the
+last bit).
+
+
+1: Mutable Containers
+
+To start with, think about how a self-referential list must be unserialized.
+This is a &quot;mutable container&quot;, a category of objects which also includes
+dictionaries. Something like:
+  
+  &gt;&gt;&gt; a = [1,2]
+  &gt;&gt;&gt; a.append(a)
+  &gt;&gt;&gt; a.append(4)
+  &gt;&gt;&gt; a
+  [1, 2, [...], 4]
+
+When this is serialized, jelly (just like pickle) gets to the third element
+and recognizes that this is something it has serialized before (or at least
+it has started the serialization process). Rather than engage in pointless
+infinite recursion, it inserts a 'dereference' marker that tells the
+unserializer to insert a reference to something it already knows about.
+
+(jelly, newjelly, and pickle all handle this slightly differently. oldjelly
+puts explicit 'reference' markers on things that will need to be used later,
+while newjelly uses an implicit reference counter that is incremented by
+one. I use newjelly examples here because they are slightly easier to
+follow.. oldjelly behaves pretty much the same way)
+
+The resulting sexp stream (for newjelly) is:
+  
+  &gt;&gt;&gt; from twisted.spread.newjelly import jelly
+  &gt;&gt;&gt; jelly(a)
+  ['list', 1, 2, ['dereference', 0], 4]
+
+The unserialization process handles one token at a time. It sees the &quot;list&quot;
+token and creates an empty list, and stashes a reference in the &quot;dereference
+table&quot; at index 0. It sees the number tokens and appends &quot;1&quot; and &quot;2&quot; to that
+previously-empty list. Then it gets the &quot;dereference&quot; marker, looks up the
+index in the dereference table, and ends up appending that list reference to
+the list. Then it sees the &quot;4&quot; and appends a number, then it sees the
+closing bracket and finishes up. This technique works for
+arbitrarily-deeply-nested self-referential mutable container objects.
+
+Note that the list is not really &quot;complete&quot; until the closing bracket, but
+it needs to be referenceable before that point. Because we can create empty
+lists and add things to them later, the list is referenceable starting with
+the open bracket, and complete at the closing bracket.
+
+
+2: Immutable Containers
+
+Now think about a somewhat self-referential tuple. This is a &quot;immutable
+container&quot;. Of course it can't be directly self-referential: the cycle (in
+graph-theory terms) must pass through a mutable container at some point,
+otherwise the object could never be constructed in the first place.
+  
+  &gt;&gt;&gt; b = [1,2]
+  &gt;&gt;&gt; c = (b,)
+  &gt;&gt;&gt; b.append(c)
+  &gt;&gt;&gt; c
+  ([1, 2, ([...],)],)
+
+This is serialized with similar dereference markers:
+
+  &gt;&gt;&gt; jelly(c)
+  ['tuple', ['list', 1, 2, ['dereference', 0]]]
+
+The difference this time is the immutable tuple (which needs to be
+referenced later). It is not possible to create an empty tuple and add its
+contents later. It is &quot;referenceable&quot; and &quot;complete&quot; at the same time,
+unlike the list object.
+
+To deal with this, we need a placeholder object. In jelly this is a
+&quot;_Tuple&quot;, which derives from twisted.persisted.crefutil.NotKnown . It acts
+like a list while we add contents, but if we ever add the _Tuple to another
+collection (like a dict or a list), the _Tuple remembers the collection
+object and index to which it was added. When the closing bracket is
+received, the _Tuple turns its list into a real tuple (making it &quot;complete&quot;
+and &quot;referenceable&quot;), then walks through all the places that point to it and
+fix them up. It does this by replacing the old _Tuple reference with a
+reference to the new, complete tuple object. If the container that needed to
+be fixed up is itself a _Tuple (or other NotKnown subclass), it might now be
+complete, so it is given a chance to fix up *its* references, etc.
+
+Cycles in the object graph are thus resolved in a chain, starting with the
+node closest to the root object (the original thing passed to jelly()) and
+propogating outwards to the deepest as-yet-unresolved container.
+
+The salient points are: tuples and other &quot;immutable containers&quot; (which
+currently includes bound instance methods) cannot be referenced until they
+are complete, which requires all of their contents to be referenceable.
+Placeholder objects and a post-completion fix-up step are used to deal with
+this frustrating property.
+
+
+3: Class Instances
+
+Now consider regular instance objects, which can be described by a fully
+qualified class name and a state dictionary. Clearly they are mutable
+containers: you can trivially create cycles of nothing but instances:
+
+  &gt;&gt;&gt; class A: pass
+  ... 
+  &gt;&gt;&gt; a1 = A(); a2 = A()
+  &gt;&gt;&gt; a1.a2 = a2; a2.a1 = a1
+  &gt;&gt;&gt; a1
+  &lt;__main__.A instance at 0x81abea4&gt;
+  &gt;&gt;&gt; jelly(a1)
+  ['__main__.A', ['dictionary', ['a2', ['__main__.A', ['dictionary', ['a1', ['dereference', 0]]]]]]]
+
+The particular problem you're seeing is a misbehavior in oldjelly that was
+addressed in newjelly. Oldjelly uses explicit reference tokens to mark
+things that will be pointed to by dereference tokens later. The syntax of
+those reference tokens is:
+
+ ['reference', number, [thing being referenced]]
+
+The oldjelly serialization of that pair of objects looks like this:
+  
+  &gt;&gt;&gt; from twisted.spread.jelly import jelly as oldjelly
+  &gt;&gt;&gt; oldjelly(a1)
+  ['reference', 1, ['__main__.A', ['dictionary', ['a2', ['__main__.A', ['dictionary', ['a1', ['dereference', 1]]]]]]]]
+
+When oldjelly sees the 'reference' tag, it unserializes the &quot;thing being
+referenced&quot;, then stuffs a reference to it in the table. While that
+unserialization is taking place (when the stack of things being unserialized
+is actually: (reference 1), (instance a1), (a1.__dict__), (key 'a2'),
+(instance a2), (a2.__dict__), (key 'a1')), the unjellying code hits the
+&quot;dereference 1&quot; marker. Now, that reference hasn't been created yet: it
+won't be until the enclosing object is finished. Oldjelly deals with this
+using a _Deference object, which is another NotKnown subclass like _Tuple.
+When the object is finally available, the _Dereference walks through the
+places that point to it (in this case, a2.a1) and fix them up to point to
+the correct object.
+
+Until that point, a2.a1 is a _Dereference object. After the object is
+complete, it is the correct A instance.
+
+To perform that fixup, the _Dereference knows the dictionary it was added
+to. Of course, it doesn't know about any *other* dictionaries that the
+_Dereference might have been copied into, such as the one you used here:
+
+&gt;<i> 	def setCopyableState(self, state):
+</I>&gt;<i> 	    self.__dict__.update(state)
+</I>
+The original 'state' dictionary is fixed-up with the correct instance
+reference, but the independent __dict__ is not, so you wind up seeing the
+_Dereference object that should have been hidden.
+
+
+Newjelly deals with this differently, but is vulnerable to a similar
+problem.
+
+In newjelly, there are no explicit 'reference' tags. Instead, every sexp
+that creates a new container object will increment the implicit reference
+number. We mainly did this to remove the overhead of those reference tags,
+both space (consumed in the bytestream), and computation (spent trying to
+decide whether the object was going to be referenced more than once before
+including the reference tag). It was far easier to simply track references
+to *everything*, on both sides of the wire.
+
+An important side-effect was that dereference tags will now *always* have a
+matching reference, which is inserted into the reference table as soon as
+the opening bracket is processed. The new unjelly_dereference() code
+eliminated _Dereference altogether.
+
+The (incomplete) instance object is referenceable as soon as the opening
+bracket has been processed. The same is true for the state dictionary. This
+means that the state handed to the .unjellyFor() method (and therefore to
+.setCopyableState()) will reference the correct (although incomplete)
+instance objects. No fixups are necessary, so there isn't a chance to fix-up
+the wrong dictionary if &quot;self.__dict__.update(state)&quot; is used.
+
+As a result, this pair of objects, when transported by newjelly, should
+arrive without weird _Dereference artifacts, fixing your immediate problem.
+
+
+4: the Remaining Problem
+
+Newjelly is still vulnerable to a similar problem that results when an
+immutable container (which cannot be fully resolved when the instance is
+complete) is part of the instance's state:
+  
+  &gt;&gt;&gt; a = A()
+  &gt;&gt;&gt; t = (1,2,a,4)
+  &gt;&gt;&gt; a.t = t
+  &gt;&gt;&gt; jelly(t)
+  ['tuple', 1, 2, ['__main__.A', ['dictionary', ['t', ['dereference', 0]]]], 4]
+
+Here, the tuple cannot be created until the '4' has been processed, so it is
+neither complete nor referenceable when the instance's state is being
+created. As a result, that state will have a _Tuple object that will
+eventually be replaced by the real tuple. This means that the _Tuple needs
+to remember that collection object &quot;a&quot;, key &quot;t&quot; (a.t) needs to be fixed up
+when the _Tuple is resolved. As before, if the _Tuple reference is copied
+into a different dictionary, this fix-up will miss the real target, and the
+instance will be left with a spurious _Tuple instance.
+
+So, even though newjelly fixes the &quot;instance.foo = instance&quot; problem, it is
+still vulnerable to certain &quot;instance.foo = tuple&quot; problems. Of course, this
+is only when you use &quot;self.__dict__.update(state)&quot;, so the simplest answer
+is to just not do that :).
+
+The more fundamental problem here is in presenting a coherent object graph
+to the functions that are involved in creating that object graph. When
+.setCopyableState() is called, the state dictionary may contain unresolved
+references, and it may contain references to objects that are not yet
+complete (other instances which have not yet had their own .setCopyableState
+called). This puts a restriction upon those methods: they may not be able to
+use all of their own state, or look inside related objects, or call methods
+on related objects.
+
+
+5: Possibilities  (newbanana people wake up)
+
+I think this is a Hard Problem, and it isn't generally possible to figure
+out a &quot;correct&quot; order in which to run these functions. It is very much like
+running finalization routines during object destruction. It may be possible
+to implement phases of deserialization.. .setCopyableState() could be run as
+soon as the state dictionary is full of referenceable objects (putting it
+off until all tuples were created, for example), and then call some other
+method after all the objects are complete. Perhaps having a more uniform
+scheme for indicating &quot;incomplete&quot; objects would help, one where instances
+could register callbacks to be run after a certain list of other objects are
+complete. The unserializer would then have to evaluate the callback requests
+and come up with a legal sequence in which they could be executed, a
+potentially impossible task if there are cycles in the dependency graph.
+
+Some smaller-scale solutions might be worth exploring:
+
+ Instead of things like _Tuple just storing a (collection,key) pair and
+ updating that reference blindly, perhaps they should call a
+ .resolvedReference(key, value) method. This would give the instance a
+ chance to run some code and do something useful with the newly available
+ data.
+
+ gc.get_referrers() could be used to find the places which point to the
+ _Tuple, then any which were instances could have a .resolvedReference
+ method called (and any which were lists/dicts could be searched for the
+ places that use the _Tuple, and then updated in place). This would probably
+ fix the __dict__.update problem, at the expense of performance
+ (get_referrers is very slow) and the inclusion of an uncomfortable amount
+ of magic.
+
+ The newbanana scheme (sandbox/warner/slicer.py) uses Deferreds as
+ placeholder objects. Arbitrary callbacks can be added, which might make it
+ easier to handle the &quot;self.__dict__.update(state)&quot; pattern.
+
+
+
+Anyway, that was probably a much longer answer than you were looking for,
+but I thought it important to explain the larger problem (which remains
+unfixed) rather than simply saying &quot;it's been fixed in newjelly&quot;, or &quot;don't
+use __dict__.update&quot;.
+
+hope that helps more than it confuses,
+ -Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="037412.html">[Twisted-Python] Why do I get a _Dereference instance?
+</A></li>
+	<LI>Next message (by thread): <A HREF="037409.html">[Twisted-Python] FYI: sample of interpreted CGI usage in twisted (1.0.6, for windows)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37433">[ date ]</a>
+              <a href="thread.html#37433">[ thread ]</a>
+              <a href="subject.html#37433">[ subject ]</a>
+              <a href="author.html#37433">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

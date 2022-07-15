@@ -1,0 +1,149 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] adbapi weirdness
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20adbapi%20weirdness&In-Reply-To=200307302130.27292.sflist%40ihonk.com%3E%20%3C200307302113.05020.sflist%40ihonk.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005285.html">
+   <LINK REL="Next"  HREF="005290.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] adbapi weirdness</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20adbapi%20weirdness&In-Reply-To=200307302130.27292.sflist%40ihonk.com%3E%20%3C200307302113.05020.sflist%40ihonk.com"
+       TITLE="[Twisted-Python] adbapi weirdness">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Thu Jul 31 01:08:49 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005285.html">[Twisted-Python] adbapi weirdness
+</A></li>
+        <LI>Next message: <A HREF="005290.html">[Twisted-Python] adbapi weirdness
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5286">[ date ]</a>
+              <a href="thread.html#5286">[ thread ]</a>
+              <a href="subject.html#5286">[ subject ]</a>
+              <a href="author.html#5286">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, Jul 30, 2003 at 09:30:27PM -0700, Steve Freitas wrote:
+&gt;<i> &gt; &gt; Hi all,
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt; Here's the latest thing I can't figure out.
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt; If I do this and make an XML-RPC call to dbtest(), it runs fine:
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt; class takeOne(xmlrpc.XMLRPC):
+</I>&gt;<i> &gt; &gt;     def __init__(self):
+</I>&gt;<i> &gt; &gt;         self.dbpool = adbapi.ConnectionPool(&quot;pyPgSQL.PgSQL&quot;, \
+</I>&gt;<i> &gt; &gt;           host='127.0.0.1', user='postgres', database='template1')
+</I>&gt;<i> &gt; &gt;         self.db = adbapi.Augmentation(self.dbpool)
+</I>&gt;<i> &gt; &gt;         self.prefs = Env(self.db)
+</I>[...]
+&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt;     def xmlrpc_listPrefs(self):
+</I>&gt;<i> &gt; &gt;         return self.prefs.prefs
+</I>&gt;<i> &gt; &gt; 
+</I>&gt;<i> &gt; &gt; class Env:
+</I>&gt;<i> &gt; &gt;     def __init__(self, db):
+</I>&gt;<i> &gt; &gt;         self.db = db
+</I>&gt;<i> &gt; &gt;         self.prefs = self.db.runQuery(&quot;select * from prefs&quot;)
+</I>[...]
+&gt;<i> &gt; &gt; But a call to listPrefs() hangs until I make another, concurrent
+</I>&gt;<i> &gt; &gt; request to dbtest(), at which point it comes through. Then if I try
+</I>&gt;<i> &gt; &gt; listPrefs() again, it returns Fault 8002: Can't serialize output.
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt; You can't send the same Deferred more than once.
+</I>&gt;<i> 
+</I>&gt;<i> Err, can you give it to me in NewbieSpeaque(tm)? :-)
+</I>
+I'll try :)
+
+runQuery returns a Deferred.  If you don't know what that is, you're going
+to run into bigger problems than just this, so speak up now :) -- and read:
+    twistedmatrix.com/documents/howto/defer
+
+Now, for twisted.web.xmlrpc to get the results of your deferred, it has to
+add a callback to it.  This callback consumes the result of your deferred
+(although I don't see any reason why this *has* to be the case, necessarily,
+but I can see how it could avoid confusing errors, so it's probably a good
+idea).  This means that the next callback added to that deferred will get a
+result of None, which can't be represented in XML-RPC, hence the error.
+
+One way to work around this would be something like this (completely
+untested, of course...):
+
+----
+from twisted.web import xmlrpc
+from twisted.internet import defer
+from twisted.python import log
+from twisted.enterprise import adbapi
+
+class TakeOne(xmlrpc.XMLRPC):
+    def __init__(self):
+        self.dbpool = adbapi.ConnectionPool(&quot;pyPgSQL.PgSQL&quot;, \
+                host='127.0.0.1', user='postgres', database='template1')
+        self.db = adbapi.Augmentation(self.dbpool)
+        self.prefs = Env(self.db)
+
+    def xmlrpc_listPrefs(self):
+        return self.prefs.getPrefs()
+
+class Env:
+    def __init__(self, db):
+        self.db = db
+        self.prefs = None
+        self.outstandingRequests = []
+        self.d = self.db.runQuery(&quot;select * from prefs&quot;)
+        d.addCallbacks(self._cb, self._eb)
+
+    def getPrefs(self):
+        if self.prefs is not None:
+            return self.prefs
+        else:
+            d = defer.Deferred()
+            self.outstandingRequests.append(d)
+            return d
+
+    def _cb(self, result):
+        self.prefs = results
+        for d in self.outstandingRequests:
+            d.callback(result)
+        del self.outstandingRequests[:]
+
+    def _eb(self, failure):
+        self.prefs = results
+        log.err(failure)
+----
+
+-Andrew.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005285.html">[Twisted-Python] adbapi weirdness
+</A></li>
+	<LI>Next message: <A HREF="005290.html">[Twisted-Python] adbapi weirdness
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5286">[ date ]</a>
+              <a href="thread.html#5286">[ thread ]</a>
+              <a href="subject.html#5286">[ subject ]</a>
+              <a href="author.html#5286">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

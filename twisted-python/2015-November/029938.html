@@ -1,0 +1,187 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Streaming HTTP
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Streaming%20HTTP&In-Reply-To=%3CA2A03AEB-F3E5-48FD-9A44-4DCF9AE3D527%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="029917.html">
+   <LINK REL="Next"  HREF="029943.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Streaming HTTP</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Streaming%20HTTP&In-Reply-To=%3CA2A03AEB-F3E5-48FD-9A44-4DCF9AE3D527%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Streaming HTTP">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Wed Nov 18 05:18:13 MST 2015</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="029917.html">[Twisted-Python] Streaming HTTP
+</A></li>
+        <LI>Next message: <A HREF="029943.html">[Twisted-Python] Streaming HTTP
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29938">[ date ]</a>
+              <a href="thread.html#29938">[ thread ]</a>
+              <a href="subject.html#29938">[ subject ]</a>
+              <a href="author.html#29938">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Nov 13, 2015, at 4:36 AM, Cory Benfield &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">cory at lukasa.co.uk</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Folks,
+</I>&gt;<i> 
+</I>&gt;<i> # Problem Statement
+</I>&gt;<i> 
+</I>&gt;<i> Thanks for your feedback on my HTTP/2 questions. I&#8217;ve started work implementing a spike of a HTTP/2 protocol for twisted.web. I&#8217;m aiming to have something that works in at least some cases by the end of the day.
+</I>
+Hooray!
+
+&gt;<i> As part of my dive into twisted.web, I noticed something that surprised me: it seems to have no support for &#8216;streaming&#8217; request bodies. By this I mean that the Request.requestReceived() method is not actually called until the complete request body has been received. This is a somewhat unexpected limitation for Twisted: why should I have to wait until the entire body has been uploaded to start doing things with it?
+</I>
+This is exactly what &lt;<A HREF="https://twistedmatrix.com/trac/ticket/288">https://twistedmatrix.com/trac/ticket/288</A>&gt; is about (as you note).
+
+&gt;<i> This problem is thrown into sharp relief with HTTP/2, which essentially always chunks the body, even if a content-length is provided. This means that it is now very easy to receive data in delimited chunks, which an implementation may want to have semantic meaning. However, the request is unable to access this data in this way. It also makes it impossible to use a HTTP/2 request/response pair as a long-running communication channel, as we cannot safely call requestReceived until the response is terminated (which also terminates the HTTP/2 stream).
+</I>&gt;<i> 
+</I>&gt;<i> Adi pointed me at a related issue, #6928[0], which itself points at what appears to be an issue tracking exactly this request. That issue is issue #288[1], which is 12 years old(!). This has clearly been a pain point for quite some time.
+</I>&gt;<i> 
+</I>&gt;<i> Issue #6928 has glyph suggesting that we come to the mailing list to discuss this, but the last time it was raised no responses were received[2]. I believe that with HTTP/2 on the horizon, this issue is more acute than it was before, and needs solving if Twisted is going to continue to remain relevant for the web. It should also allow people to build more performant web applications, as they should be able to handle how the data queues up in their apps.
+</I>&gt;<i> 
+</I>&gt;<i> This does not immediately block my HTTP/2 work, so we can take some time and get this right.
+</I>
+I'm very glad to hear you say this, because:
+
+(A) we should absolutely make progress on this ticket now that there is some impetus to do so, but,
+(B) we should absolutely NOT let this new API block any purely protocol-level HTTP2 work that needs to proceed (I say &quot;protocol level&quot; as a contrast to &quot;feature level&quot; because we could totally implement a thing that speaks HTTP 2 against the current API, although it might be awkward to expose the advantageous parts of the protocol as API features until we do some cleanup)
+
+&gt;<i> # Proposed Solution
+</I>&gt;<i> 
+</I>&gt;<i> To help us move forward, I&#8217;m providing a proposal for how I&#8217;d solve this problem. This is not necessarily going to be the final approach, but is instead a straw-man we can use to form the basis of a discussion about what the correct fix should be.
+</I>&gt;<i> 
+</I>&gt;<i> My proposal is to deprecate the current Request/Resource model. It currently functions and should continue to function, but as of this point we should consider it a bad way to do things, and we should push people to move to a fully asynchronous model.
+</I>
+We have considered it a bad way to do things for a long time.  There have been several attempts to rewrite it (Nevow's request model, web2) but none of them have really been the comprehensive re-design we need.
+
+&gt;<i> We should then move to an API that is much more like the one used by Go: specifically, that by default all requests/responses are streamed. Request objects (and, logically, any other object that handles requests/responses, such as Resource) should be extended to have a chunkReceived method that can be overridden by users.
+</I>
+No.
+
+Let me elaborate :-).
+
+First of all, this is already the case (sort of).
+
+twisted.web.server.Request inherits from twisted.web.http.Request; as you can see in http.Request, there is already a method called handleContentChunk, which is called by HTTPChannel. By overriding this method, you can already handle request data streaming in from off the wire.  This is one of the reasons that #288 is so interminable: using Twisted's public API, today, you can totally write an HTTP-based application that happily streams data from the wire.  The only problem is that this API does not propagate up to Resource objects, because Resource objects can expect the (still, as of this writing, undocumented) &quot;content&quot; attribute to have been filled out in getChild.  Mostly, they don't, actually!  But it's impossible to tell if they might in the general case.
+
+You can (and many applications have) just broken the technical compatibility contract with Resource, and written a subclass of twisted.web.server.Site that has a custom requestFactory method that returns a 'streamed' resource.
+
+So, if we're already doing this, why &quot;no&quot;?
+
+Superclasses with overridable methods are a terrible mechanism for exposing extensibility.  These are used extensively throughout Twisted, the older the API the more inheritance it uses.  Newer code, you may notice, is generally written much more in a pattern of delegation to formal interfaces.  So we have tried to learn our lesson here.
+
+&gt;<i> If a user chooses not to override that method, the default implementation would continue to do what is done now (save to a buffer). Once the request/response is complete (marked by receipt of a zero-length chunk, or a frame with END_STREAM set, or when the remaining content-length is 0),
+</I>
+For what it's worth, I hope that all of these will be exposed as the same event to applications, since the fact that these differ on the wire is entirely an implementation detail?
+
+&gt;<i> request/responseComplete would be called. For users that did not override chunkReceived can now safely access the content buffer: other users can do whatever they see fit. We&#8217;d also update requestReceived to ensure that it&#8217;s called when all the *headers* are received, rather than waiting for the body.
+</I>
+Again, this is very similar to what already happens, at the layer of the HTTP protocol.  The question is, how do you indicate that you're delegating to a Resource object which may expect the .content attribute to already be populated during .getChild?
+
+&gt;<i> A similar approach should be taken with sending data: we should assume that users want to chunk it if they do not provide a content-length. An extreme position to take (and I do) is that this should be sufficiently easy that most users actually *accidentally* end up chunking their data: that is, we do not provide special helpers to set content-length, instead just checking whether that&#8217;s a header users actually send, and if they don&#8217;t we chunk the data.
+</I>
+request.write() already basically does this, I think?  Here, at least, we have lots of opportunity to make the implementation do smarter things (better error checking regarding content-length, for example) without changing the interface at all.
+
+&gt;<i> This logic would make it much easier to work with HTTP/2 *and* with WebSockets, requiring substantially less special-case code to handle the WebSocket upgrade (when the headers are complete, we can spot the upgrade easily).
+</I>&gt;<i> 
+</I>&gt;<i> What do people think of this approach?
+</I>
+So I think you're roughly on the right track but there are probably some Twisted-level gaps to fill in.
+
+I've already gestured in the direction of Tubes (as have others) and it's something to think about.  But before we get to that, let's talk about a much more basic deficiency in the API: although there's an &quot;IRequest&quot;, and an &quot;IResource&quot;, there's no such thing as an &quot;IResponse&quot;.  Instead, &quot;IRequest&quot; stands in for both the request and the response, because you write directly to a request (implicitly filling out its response as you do so).
+
+Luckily we have an existing interface that might point the way to a better solution, both for requests and responses: specifically, the client IResponse: <A HREF="https://twistedmatrix.com/documents/15.4.0/api/twisted.web.iweb.IResponse.html.">https://twistedmatrix.com/documents/15.4.0/api/twisted.web.iweb.IResponse.html.</A>
+
+This interface is actually pretty close to what we want for a server IResponse as well.  Perhaps even identical.  Its static data is all exposed as attributes which can be relatively simply inspected, and the way it delivers a streaming response is that it delivers its body to an IProtocol implementation (via .deliverBody(aProtocol)).  This is not quite as graceful as having a .bodyFount() method that returns an IFount from the tubes package; however, the tubes package is still not exactly mature software, so we may not want to block on depending on it.  Importantly though, this delivers all the events you need as a primitive for interfacing with such a high-level interface; it would definitely be better to add this sort of interface Real Soon Now, because then the tubes package could simply have a method, responseToFount (which it will need anyway to work with Agent) that calls deliverBody internally.
+
+This works as a primitive because you have all the hooks you need for flow-control.  This protocol receives, to its 'makeConnection' method, an ITransport which can provide the IProducer <A HREF="https://twistedmatrix.com/documents/15.4.0/api/twisted.internet.interfaces.IProducer.html">https://twistedmatrix.com/documents/15.4.0/api/twisted.internet.interfaces.IProducer.html</A> and IConsumer <A HREF="https://twistedmatrix.com/documents/15.4.0/api/twisted.internet.interfaces.IConsumer.html">https://twistedmatrix.com/documents/15.4.0/api/twisted.internet.interfaces.IConsumer.html</A> interfaces for flow-control.  It receives dataReceived to tell it a chunk has arrived and connectionLost to tell it the stream has terminated.
+
+Unfortunately the client IRequest <A HREF="https://twistedmatrix.com/documents/15.4.0/api/twisted.web.iweb.IClientRequest.html">https://twistedmatrix.com/documents/15.4.0/api/twisted.web.iweb.IClientRequest.html</A> isn't quite as useful (although its relative minimalism should be an inspiration to anyone designing a next-generation IRequest more than the current IRequest's sprawling kitchen-sink aesthetic).  However, IResponse.deliverBody could be applied to IGoodRequest as well.  If we have a very similar-to-IResponse shaped IRequest object, say with 'method', 'uri' and 'headers', and then a 'deliverBody' that delivers the request body in much the same way, we could get a gracefully structured streaming request with works with a lot of existing code within Twisted.
+
+Then the question is: what to do with IResource?
+
+Right now the flow of processing a request is, roughly:
+
+-&gt; wait for full request to arrive
+  -&gt; have HTTPChannel fill out IRequest object
+-&gt; look at request.site.resource for the root
+ *-&gt; call getChildWithDefault repeatedly, mutating &quot;cursor&quot; state on the IRequest as you move (specifically: &quot;prepath&quot; and &quot;postpath&quot; attributes)
+  -&gt; eventually reach the leaf Resource, or one with 'isLeaf' set on it, and delegate producing the response to that resource
+*-&gt; call resource.render(request)
+-&gt; examine the return value; if it's bytes, deliver them and close the connection; NOT_DONE_YET, just leave the connection open, 
+
+Instead, I think a good flow would be:
+
+-&gt; receive method/headers from request
+-&gt; recurse down from request.site.resource, calling something like nevow's or web2's locateChild, but not modifying 'request' at each stage; instead, pass a &quot;cursor&quot; object - perhaps indeed just a twisted.python.url.URL - indicating where we are in the resource traversal hierarchy.  the reason the request.prepath and request.postpath attributes exist is mainly for Resource objects to be able to orient themselves within a resource tree and generate links.
+
+also, it probably bears some explanation; the signature of the current &quot;get the next resource&quot; call is resource.getChildWithDefault(onePathSegment, request) -&gt; resource. This is somewhat limiting as it requires you to consume only an individual path segment at a time, which can be highly awkward for implementing sites that have a URL structure that is, for example, /YYYY/MM/DD/HH/MM/index.html.  
+
+Instead, locateChild took the entire remaining path, and returned a 2-tuple of a resource, and the _still_ remaining path.  So for the above, you could do:
+
+def locateChild(self, request, path):
+    y, m, d = path[:3]
+    return ymdresource(y, m, d), path[3:]
+
+that 2-tuple instructs the traversal machinery, &quot;keep going&quot;.  One alternative that we toyed with for this was to make consuming the path destructive, since that made it a lot easier to tell what resource you were &quot;looking at&quot;:
+
+def locateChild(self, request, path):
+    y, m, d = path.consume(3)
+    return ymdresource(y, m, d)
+
+Either of these approaches also let you implement 'isLeaf' attribute without special support from the framework; you simply return leaf(), () or path.consume(path.length)
+
+-&gt; finally, call .responseForRequest(request) -&gt; IResponse on the final Resource and deliver the IResponse to the network.
+
+The way compatibility could be achieved here is to write a wrapper that would implement .responseForRequest to first collect the entire body, then synthesize a gross old-style-IRequest-like object out of the combination of that body and the other information about the resource, then call .getChildWithDefault on it a few times, then call the old-style .render_GET, et. al.  The IResponse returned from this compatibility .responseForRequest would wrap up calls like request.write and turn them into write() calls.
+
+This is long and increasingly rambly, so I should probably stop now, send it, and get your feedback.  Does the strategy I'm proposing make sense?  I'm sure I'm leaving a ton out so feel free to ask for clarification.  Hopefully I didn't leave too many incomplete sentences in the middle.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20151118/b361c1b5/attachment-0001.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20151118/b361c1b5/attachment-0001.html</A>&gt;
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="029917.html">[Twisted-Python] Streaming HTTP
+</A></li>
+	<LI>Next message: <A HREF="029943.html">[Twisted-Python] Streaming HTTP
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29938">[ date ]</a>
+              <a href="thread.html#29938">[ thread ]</a>
+              <a href="subject.html#29938">[ subject ]</a>
+              <a href="author.html#29938">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

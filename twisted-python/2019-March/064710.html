@@ -1,0 +1,147 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20stop/start%20client%20connections%20with%0A%20loseConnection%20in%20ReconnectingClientFactory&In-Reply-To=%3C002b01d4e3d8%24aa6369f0%24ff2a3dd0%24%40cmsconstruct.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="064707.html">
+   <LINK REL="Next"  HREF="064674.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory</H1>
+    <B>Chris Satterthwaite</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20stop/start%20client%20connections%20with%0A%20loseConnection%20in%20ReconnectingClientFactory&In-Reply-To=%3C002b01d4e3d8%24aa6369f0%24ff2a3dd0%24%40cmsconstruct.com%3E"
+       TITLE="[Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory">chris at cmsconstruct.com
+       </A><BR>
+    <I>Tue Mar 26 07:34:40 MDT 2019</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="064707.html">[Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory
+</A></li>
+        <LI>Next message (by thread): <A HREF="064674.html">[Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64710">[ date ]</a>
+              <a href="thread.html#64710">[ thread ]</a>
+              <a href="subject.html#64710">[ subject ]</a>
+              <a href="author.html#64710">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi Chris,
+
+The print and sleep statements are just my efforts at converting something big down to something small for a test case.  In the actual client I'm using twisted.logger for FilteringLogObserver's and Logger's.  The looping call for system health was also a shorted version; I wasn't sure if looping calls were the culprit at the start.  I appologise for the fluff and if I introduced confusion.  I just figured that posting multiple classes and thousands of lines would get less response than an attempted short test sample.
+
+
+&gt;<i> when you say &quot;When the client hits a problem, it calls transport.loseConnection()&quot;, where is that call to transport.loseConnection?
+</I>
+The transport.loseConnection call is on line 82 of the test client code; it's inside the cleanup() function.
+
+
+&gt;<i> Now, as to what your problem is, I suspect it's this call to stopTrying:
+</I>&gt;<i> <A HREF="https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519f#file-testclient-py-L87">https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519f#file-testclient-py-L87</A>
+</I>
+I may be missing this from the Twisted side, but I understood that stopFactory was only called when the reactor was cleaning up.  So I added stopTrying in there for the ReconnectingClientFactory portion, amongst many other lines (that I removed for the example) for stopping external dependencies.  All that seemed to work fine.
+
+
+When I called loseConnection with just a single established connection, stopFactory was called and ReconnectingClientFactory was not restarted or reconnected.  Seemed like ReconnectingClientFactory was not expecting a new connection attempt after the loseConnection call.  Additionally, it seemed like the factory expected to clean up and stop the reactor whenever loseConnection was called with that single connection.  And of course in most use-cases, that makes sense.  But my goal was to hang on to the factory after loseConnection, and continue work after external dependencies came back online.
+
+
+&gt;<i> when you noticed some Twisted source code that works off factory.numPorts, where is that code?
+</I>
+To troubleshoot, I used __dict__ to start investigating variable values with the factory and client.  And I used that to start searching through the twisted code in site-packages.  I noticed at least one function which conditionally worked off numPorts in order to shut things down (twisted.internet.protocol.AbstractDatagramProtocol.doStop).  Here's the code:
+        assert self.numPorts &gt; 0
+        self.numPorts = self.numPorts - 1
+        self.transport = None
+        if not self.numPorts:
+            if self.noisy:
+                log.msg(&quot;Stopping protocol %s&quot; % self)
+            self.stopProtocol()
+
+And so the work around I implemented was to conditionally increase this number while I controlled the disconnect/reconnect.  Seemed to work fine in practice.
+
+
+Thanks again for the responses.  Given all the benefits Glyph mentioned of ClientService - I've added that migration into my roadmap.
+
+-Chris
+
+
+-----Original Message-----
+From: Twisted-Python &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A>&gt; On Behalf Of Chris Withers
+Sent: Tuesday, March 26, 2019 2:28 AM
+To: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python at twistedmatrix.com</A>
+Subject: Re: [Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory
+
+On 22/03/2019 23:26, Chris Satterthwaite wrote:
+&gt;<i> Hi Chris,
+</I>&gt;<i> 
+</I>&gt;<i> The files I attached (with the full classes) made it through to my email, but I wondered if they would they go through to everyone.
+</I>&gt;<i> 
+</I>&gt;<i> Here's a gist with the same scripts:
+</I>&gt;<i> <A HREF="https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519">https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519</A>
+</I>&gt;<i> f
+</I>&gt;<i> 
+</I>&gt;<i> And yep, as you mentioned, a 'sleep' is definitely blocking.  That's not in the production version; I just dropped it in here for the test script to simulate something.
+</I>
+Observations:
+
+- Your super call at
+<A HREF="https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519f#file-testclient-py-L46,">https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519f#file-testclient-py-L46,</A>
+I'd expect that to be super(ServiceClientFactory, self).__init__(), but your spelling may be a python 3 only thing that works?
+
+- Those sleeps are going to cause you more problems than they solve.
+
+- What does this seek to achieve? 
+<A HREF="https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519f#file-testclient-py-L88-L89">https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519f#file-testclient-py-L88-L89</A>
+
+- Why not use twisted logging instead of print? By setting it to debug, you'll get lots of into about what twisted is doing, and by using logging you won't need to do all that manual traceback printing.
+
+- when you say &quot;When the client hits a problem, it calls transport.loseConnection()&quot;, where is that call to transport.loseConnection?
+
+- when you noticed some Twisted source code that works off factory.numPorts, where is that code? Can you provide a link? This doesn't sound right...
+
+Now, as to what your problem is, I suspect it's this call to stopTrying:
+<A HREF="https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519f#file-testclient-py-L87">https://gist.github.com/codingadvocate/f732da79ddf6cef4b7a0b6b3679f519f#file-testclient-py-L87</A>
+
+The factory is stopped and started again by ReconnectingClientFactory, so you don't want that there as it means you stop trying every time there's a disconnection.
+
+cheers,
+
+Chris
+
+_______________________________________________
+Twisted-Python mailing list
+<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="064707.html">[Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory
+</A></li>
+	<LI>Next message (by thread): <A HREF="064674.html">[Twisted-Python] stop/start client connections with loseConnection in ReconnectingClientFactory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64710">[ date ]</a>
+              <a href="thread.html#64710">[ thread ]</a>
+              <a href="subject.html#64710">[ subject ]</a>
+              <a href="author.html#64710">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

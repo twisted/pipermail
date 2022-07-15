@@ -1,0 +1,172 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Integrating Twisted with ZeroMQ
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Integrating%20Twisted%20with%20ZeroMQ&In-Reply-To=%3CAANLkTil3NsZFp4fKBbspDTN7yPpPTF_jyVwZbo1-W2__%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="054934.html">
+   <LINK REL="Next"  HREF="054799.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Integrating Twisted with ZeroMQ</H1>
+    <B>Laurens Van Houtven</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Integrating%20Twisted%20with%20ZeroMQ&In-Reply-To=%3CAANLkTil3NsZFp4fKBbspDTN7yPpPTF_jyVwZbo1-W2__%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Integrating Twisted with ZeroMQ">lvh at laurensvh.be
+       </A><BR>
+    <I>Sun Jun  6 13:59:19 MDT 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="054934.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+        <LI>Next message (by thread): <A HREF="054799.html">[Twisted-Python] Integrating Twisted with ZeroMQ
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#54798">[ date ]</a>
+              <a href="thread.html#54798">[ thread ]</a>
+              <a href="subject.html#54798">[ subject ]</a>
+              <a href="author.html#54798">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hey,
+
+
+For the Twisted folks: this thing has been reviewed by the ZeroMQ
+folks first because I wanted to be sure I got the technical details
+right on the their side of things.
+
+I'd like to open up a discussion from a while back regarding the
+integration of ZeroMQ (a messaging system: similar to AMQP but with
+the intent to be simpler) into Twisted.
+
+The interested ZeroMQ people and the interested Twisted people (names
+withheld to protect the guilty) disagreed on what it should look like.
+I think that's mostly because neither party really understood what the
+other's software wanted to do. So, I'll try to give everyone a basic
+explanation without going too deep into either Twisted or ZeroMQ: my
+apologies if I spell out the basics of your thing too much and it gets
+boring :)
+
+ZeroMQ aims to be a thin layer above TCP, behaving like TCP but
+'better'. That sounds like a vague marketing statement, but it helps
+to understand some of the terminology if you keep that in the back of
+your head. (What exactly 'better' means is way beyond the current
+scope: basically, ZeroMQ wants to help socket programmers to stop
+reinventing the wheel by implementing common behavior such as pub/sub,
+request/reply...). Essentially AMQP but much simpler, and brokerless
+in most cases. This email is already going to go way over the sane
+character count, thankfully the ZeroMQ webpage does a great job at
+explaining stuff :-)
+
+I think this highlights the main problem people had. There a partial
+overlap between Twisted and ZeroMQ. The ZeroMQ implementation does
+things Twisted does too: it implements a bunch of low level networking
+stuff using eg epoll. It deals with real sockets, and Twisted wants to
+do that as well.
+
+ZeroMQ uses things called Sockets. They're similar but not the same
+thing as TCP sockets (instead delegating work to TCP eventually), so
+you can't use traditional methods like select or epoll with them,
+because, for example, they don't have file descriptors. Some
+underlying thing probably does have fds; but ZeroMQ worries about that
+for you under the hood, just like Twisted does for other TCP traffic.
+
+There are a couple of options for making ZeroMQ work with Twisted:
+
+1) implement everything in Python, using Twisted's TCP stuff. I think
+this is mostly a bad idea and the ZeroMQ people seem to agree: _lots_
+of work, ZeroMQ libs are stupidly fast already, Python not being the
+best tool for binary protocols...
+2) write a thin wrapper around the C(++) libs: great, as long as it
+never has to go into the Twisted trunk
+3) use pyzmq's thin wrapper around the C(++) libs: sounds like the
+best idea to me, again with reservations wrt the Twisted trunk
+
+Originally there was a fourth idea, which considered libzmq as a new
+mechanism: like epoll, so you'd have a ZMQ-specific reactor. A bunch
+of people didn't like this, and I can somewhat see the point: hard to
+integrate with other event loops like GUIs, for example.
+
+pyzmq offers something called select, which works just like select
+except it works on both file descriptors and ZeroMQ Sockets. It just
+delegates all of the work to libzmq. We could use
+ThreadedSelectReactor and have it use ZMQ's select. I'm not sure if it
+should use &quot;normal&quot; select everywhere else: because zmq's select is in
+fact much better than select.select (it just behaves like
+select.select in the sense that you give it three sets of fds and an
+optional timeout; under the hood it's actually epoll or kqueue or
+whatever) and it can handle plain old file descriptors just fine. So,
+you'd have a TRS with either 1 zmq.select running on everything or 1
+zmq.select running over Sockets and 1 select.select running over your
+classic fds. Personally I kind of like the idea of zmq's select taking
+over, but I don't know how well that works in practice.
+
+A potential option for Twisted, which some people don't quite like,
+would be to have a listenZMQ and connectZMQ, analogous to
+listenTCP/listenUDP/listenSSL and the respective connect*s. I think
+this makes more sense to the ZeroMQ people (who think of ZeroMQ as a
+layer &quot;next to&quot; TCP which happens to be implemented on top of TCP, on
+top of which you build your stuff) than the Twisted people (who think
+of ZeroMQ's protocol as yet another TCP-using protocol just like HTTP
+for example). Having worked with both pieces of software, the more I
+play with ZeroMQ the more I think listenZMQ/connectZMQ make sense.
+ZeroMQ really tries to be one of those things and it shows. What
+ZeroMQ wants to do is semantically much closer to the existing
+connects and listens. I'm not just making this up: the ZeroMQ people
+have reviewed this and this is really what ZeroMQ wants to be.
+
+Another argument for making ZMQ special is that TCP is just one of the
+things ZeroMQ works with. UNIX domain pipes, PGM reliable multicast,
+UDP PGM encapsulation, and even inter-thread communication.
+
+I know some Twisted people way smarter than me basically thought the
+connectZMQ/listenZMQ thing was a mistake, but I'm not sure to what
+extent that is because they were right and to what extent that was
+because they didn't really know very much about ZeroMQ and just went
+&quot;it works on top of TCP so that's not where it goes&quot;. To Twisted folks
+that disagree: would you change your opinion of ZMQ was *really*
+something that's side-by-side with TCP instead of being implemented on
+top of it? Like, say, SCTP is? Does the fact that it can work on top
+of a bunch of stuff that isn't TCP change that?
+
+Talking with the ZeroMQ people has been a positive experience: they
+were very accessible and cooperative, and really just want a bigger
+market for their software (who doesn't?) so I hope something useful
+comes out of this :-)
+
+
+
+tia
+lvh
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="054934.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+	<LI>Next message (by thread): <A HREF="054799.html">[Twisted-Python] Integrating Twisted with ZeroMQ
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#54798">[ date ]</a>
+              <a href="thread.html#54798">[ thread ]</a>
+              <a href="subject.html#54798">[ subject ]</a>
+              <a href="author.html#54798">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

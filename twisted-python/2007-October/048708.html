@@ -1,0 +1,201 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Content Encoding : gzip ?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Content%20Encoding%20%3A%20gzip%20%3F&In-Reply-To=%3C403326.95639.qm%40web37314.mail.mud.yahoo.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="048705.html">
+   <LINK REL="Next"  HREF="048710.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Content Encoding : gzip ?</H1>
+    <B>anurag uniyal</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Content%20Encoding%20%3A%20gzip%20%3F&In-Reply-To=%3C403326.95639.qm%40web37314.mail.mud.yahoo.com%3E"
+       TITLE="[Twisted-Python] Re: Content Encoding : gzip ?">anuraguniyal at yahoo.com
+       </A><BR>
+    <I>Thu Oct 18 23:40:04 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="048705.html">[Twisted-Python] Re: Content Encoding : gzip ?
+</A></li>
+        <LI>Next message (by thread): <A HREF="048710.html">[Twisted-Python] Re: Content Encoding : gzip ?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48708">[ date ]</a>
+              <a href="thread.html#48708">[ thread ]</a>
+              <a href="subject.html#48708">[ subject ]</a>
+              <a href="author.html#48708">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thanks.
+
+So it seems I have to write my own code, there in nothing like I can set some flag.
+
+So if that is the case shouldn't I just be gzipping and unzipping data write and read to request object.
+
+rgds
+anurag
+
+
+----- Original Message ----
+From: David Bolen &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">db3l.net at gmail.com</A>&gt;
+To: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python at twistedmatrix.com</A>
+Sent: Friday, October 19, 2007 1:02:21 AM
+Subject: [Twisted-Python] Re: Content Encoding : gzip ?
+
+
+anurag uniyal &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">anuraguniyal at yahoo.com</A>&gt; writes:
+
+&gt;<i> Is it possible to send and recieve compressed content using twisted.web?
+</I>&gt;<i>
+</I>&gt;<i> I have set Accept-encoding to gzip but it doesn't make any difference.
+</I>&gt;<i> Will I have to cater for this myself?
+</I>
+Yes, in twisted.web.  In twisted.web2, there's a filter that supports it.
+
+Here's a small wrapper class I wrote recently that I've used to handle
+this in twisted.web, with the goal of minimal changes to existing
+resource code.  I use it by noticing, in the original request handler,
+the ability to handle gzip encodings, and then wrap the original
+request in this class (since there's no built-in filtering of the
+output stream in twisted.web).
+
+It's worked fine in my tests to date, and in limited production use,
+but to be honest it hasn't seen large scale, long term use because my
+original use case only yielded ~15% compression (multimedia files) and
+using this negates the ability to know the full length in advance,
+thus clients can't give projected download times.  (My files are large
+enough that compressing twice is high overhead, and it wouldn't play
+well with the wrapper approach anyway).
+
+In any event, hopefully it'll be a useful starting point for you.
+
+Here's the wrapper:
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+import struct
+import zlib
+
+class GzipRequest(object):
+    &quot;&quot;&quot;Wrapper for a request that applies a gzip content encoding&quot;&quot;&quot;
+
+    def __init__(self, request, compressLevel=6):
+        self.request = request
+        self.request.setHeader('Content-Encoding', 'gzip')
+        # Borrowed from twisted.web2 gzip filter
+        self.compress = zlib.compressobj(compressLevel, zlib.DEFLATED,
+                                         -zlib.MAX_WBITS, zlib.DEF_MEM_LEVEL,0)
+
+    def __getattr__(self, attr):
+        if 'request' in self.__dict__:
+            return getattr(self.request, attr)
+        else:
+            raise AttributeError, attr
+
+    def __setattr__(self, attr, value):
+        if 'request' in self.__dict__:
+            return setattr(self.request, attr, value)
+        else:
+            self.__dict__[attr] = value
+
+    def write(self, data):
+        if not self.request.startedWriting:
+            self.crc = zlib.crc32('')
+            self.size = self.csize = 0
+            # XXX: Zap any length for now since we don't know final size
+            if 'content-length' in self.request.headers:
+                del self.request.headers['content-length']
+            # Borrow header information from twisted.web2 gzip filter
+            self.request.write('\037\213\010\000' '\0\0\0\0' '\002\377')
+
+        self.crc = zlib.crc32(data, self.crc)
+        self.size += len(data)
+        cdata = self.compress.compress(data)
+        self.csize += len(cdata)
+        if cdata:
+            self.request.write(cdata)
+        elif self.request.producer:
+            # Simulate another pull even though it hasn't really made it
+            # out to the consumer yet.
+            self.request.producer.resumeProducing()
+
+    def finish(self):
+        remain = self.compress.flush()
+        self.csize += len(remain)
+        if remain:
+            self.request.write(remain)
+        self.request.write(struct.pack('&lt;LL',
+                                       self.crc &amp; 0xFFFFFFFFL,
+                                       self.size &amp; 0xFFFFFFFFL))
+        self.request.finish()
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+and here's a sample of using it.  This code is from one of my Resource
+objects - if I were to use it more generally in my site I'd extract that
+into a mix-in class of some sort - currently there was only one specific
+resource (the multimedia files) I wanted to support it for:
+
+    def render_GET(self, request):
+
+        # (... argument validation ...)
+        
+        accept_encoding = request.getHeader('accept-encoding')
+        if accept_encoding:
+            encodings = accept_encoding.split(',')
+            for encoding in encodings:
+                name = encoding.split(';')[0].strip()
+                if name == 'gzip':
+                    request = GzipRequest(request)
+                    break
+
+        # At this point, use 'request' as normal
+
+
+-- David
+
+
+_______________________________________________
+Twisted-Python mailing list
+<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+
+__________________________________________________
+Do You Yahoo!?
+Tired of spam?  Yahoo! Mail has the best spam protection around 
+<A HREF="http://mail.yahoo.com">http://mail.yahoo.com</A> 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20071018/0b7a197b/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="048705.html">[Twisted-Python] Re: Content Encoding : gzip ?
+</A></li>
+	<LI>Next message (by thread): <A HREF="048710.html">[Twisted-Python] Re: Content Encoding : gzip ?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48708">[ date ]</a>
+              <a href="thread.html#48708">[ thread ]</a>
+              <a href="subject.html#48708">[ subject ]</a>
+              <a href="author.html#48708">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

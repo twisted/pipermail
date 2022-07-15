@@ -1,0 +1,241 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] More Questions about Custom Reactors
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20More%20Questions%20about%20Custom%20Reactors&In-Reply-To=276245.14642.qm%40web34203.mail.mud.yahoo.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="014692.html">
+   <LINK REL="Next"  HREF="014695.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] More Questions about Custom Reactors</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20More%20Questions%20about%20Custom%20Reactors&In-Reply-To=276245.14642.qm%40web34203.mail.mud.yahoo.com"
+       TITLE="[Twisted-Python] More Questions about Custom Reactors">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Sun Jan 21 19:32:16 EST 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="014692.html">[Twisted-Python] More Questions about Custom Reactors 
+</A></li>
+        <LI>Next message: <A HREF="014695.html">[Twisted-Python] How to set host/IP Address for reactor.listenTcp()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14693">[ date ]</a>
+              <a href="thread.html#14693">[ thread ]</a>
+              <a href="subject.html#14693">[ subject ]</a>
+              <a href="author.html#14693">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Andrew Francis wrote:
+&gt;<i> Hello Colleagues :
+</I>&gt;<i> 
+</I>&gt;<i> I am trying to write a reactor for Stackless Python. I
+</I>&gt;<i> posted previously here and in the Stackless mailing
+</I>&gt;<i> list but I am still stuck.  My problems are in the
+</I>&gt;<i> following areas :
+</I>
+Perhaps you could explain what you're actually trying to achieve, rather 
+than the solution you have decided on? An indeed, why you want to use 
+stackless at all - Twisted is predicated around the assumption of a 
+stackful i.e. single-threaded Python.
+
+Since you're using stackless, I assume you want to use the 
+microthreading capabilities to make async code look synchronous?
+
+Alternatively you might be wanting long-running jobs to be interleaved 
+with other code transparently but without using real threads?
+
+If you're proposing using queues to communicate between a Twisted thread 
+running the reactor and a stackless thread running your micro-threads, I 
+don't see why you need to modify Twisted at all. You can just run the 
+stackless microthreads from one &quot;real&quot; thread (started via 
+callInThread), pass jobs from Twisted to the &quot;real&quot; thread and probably 
+a stackless uthread, and pass the replies back to the twisted thread 
+with a callFromThread.
+
+So, can you not just do this?:
+
+stacklessJobs = threading.deque()
+stacklessReplies = {}
+
+def queueToStackless(job):
+     &quot;&quot;&quot;returns a deferred which is fired with the job result&quot;&quot;&quot;
+     while True:
+         # generate a unused ID
+         i = random.randint()
+         if not i in stacklessReplies:
+             d = stacklessReplies[i] = defer.Deferred()
+             break
+     stacklessJobs.append((job, i))
+     return d
+
+def replyFromStackless(idx, result):
+     &quot;&quot;&quot;Called in the reactor thread by the stackless thread&quot;&quot;&quot;
+     d = stacklessReplies.pop(idx)
+     d.callback(result)
+
+def workfunc(job, idx):
+     &quot;&quot;&quot;Called via some kind of stackless uthread scheduler&quot;&quot;&quot;
+
+     # do some stuff
+     for thing in job:
+         pass
+     result = 'foo'
+
+     # this is the ONLY THREAD SAFE reactor call...
+     reactor.callFromThread(replyFromStackless, idx, result)
+
+def emptyQueue(sched):
+     &quot;&quot;&quot;a stackless uthread, runs forever, empties the job pool&quot;&quot;&quot;
+     while True:
+         # replace with a stackless equivalent?
+         job, i = stacklessJobs.pop()
+         sched.add(workfunc, job, i)
+
+def stacklessWork():
+     &quot;&quot;&quot;The stackless scheduler, runs in the 2nd thread&quot;&quot;&quot;
+     sched = stacklessUthreadScheduler()
+     sched.add(emptyQueue, sched)
+     while True:
+         sched.doThing()
+
+# On startup, begin the stackless scheduler
+reactor.callInThread(stacklessWork)
+
+
+
+&gt;<i> 
+</I>&gt;<i> 1. How does the custom reactor drive Twisted?
+</I>&gt;<i> 2. How does self.interleave() work?
+</I>&gt;<i> 3. How to use deferreds if Twisted is running in a
+</I>&gt;<i> seperate thread. Is callFromThread() used?
+</I>&gt;<i> 4. Some custom reactor implementations  inherit and
+</I>&gt;<i> some reactors simply install say
+</I>&gt;<i> threadedselectorreactor? Which technique is
+</I>&gt;<i> recommended?
+</I>&gt;<i>  
+</I>&gt;<i> For now, I am operating under the assumption that
+</I>&gt;<i> Stackless Python and Twisted ought to be executed  in
+</I>&gt;<i> seperate threads. This is because if Twisted blocks
+</I>&gt;<i> then Stackless blocks. Since I am taking this
+</I>&gt;<i> approach, I am assuming I will have to use
+</I>&gt;<i> threadedselectorreactor.
+</I>&gt;<i> 
+</I>&gt;<i> I want my Stackless Python application to do two
+</I>&gt;<i> things :
+</I>&gt;<i> 
+</I>&gt;<i> 1. Process HTTP based SOAP server requests
+</I>&gt;<i> 2. From the Stackless thread, make client.getPage()
+</I>&gt;<i> calls and use a deferred to process the result.
+</I>&gt;<i> 
+</I>&gt;<i> To promote decoupling, I want Twisted and Stackless to
+</I>&gt;<i> communicate via queues. So my code looks as follows -
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> def processResponse(self, httpServer):
+</I>&gt;<i>      reply = self.myQueue.get()
+</I>&gt;<i>      httpServer.write(reply.toxml().encode(&quot;utf-8&quot;))  
+</I>&gt;<i>             
+</I>&gt;<i>      httpServer.finish()
+</I>&gt;<i>      return
+</I>&gt;<i> 
+</I>&gt;<i> example 2.
+</I>&gt;<i> 
+</I>&gt;<i> postRequest = client.getPage(self.address, method =
+</I>&gt;<i> 'POST', headers = self.headers, postdata =
+</I>&gt;<i> self.body)postRequest.addCallback(self.__handleResponse__).addErrback(self.__handleError__)
+</I>&gt;<i>     
+</I>&gt;<i> 
+</I>&gt;<i> def __handleResponse__(self, pageData):
+</I>&gt;<i>          self.queue.put(pageData)
+</I>&gt;<i> 
+</I>&gt;<i> I have looked at the reactors included in the
+</I>&gt;<i> twisted.internet. I also looked at Blockingdemo.py. I
+</I>&gt;<i> find BlockingDemo.py confusing (i.e., where is poll()
+</I>&gt;<i> called? It does not seem to do anything.)
+</I>&gt;<i> 
+</I>&gt;<i> Question about interleave():
+</I>&gt;<i> 
+</I>&gt;<i> &quot;&quot;&quot;
+</I>&gt;<i> Taken from threadedselectorreactor  
+</I>&gt;<i> 
+</I>&gt;<i> In order for Twisted to do its work in the main thread
+</I>&gt;<i> (the thread that interleave is called from), a waker
+</I>&gt;<i> function is necessary.  The waker function will be
+</I>&gt;<i> called from a &quot;background&quot; thread with one argument:
+</I>&gt;<i> func. The waker function's purpose is to call func()
+</I>&gt;<i> from the main thread. Many GUI toolkits ship with
+</I>&gt;<i> appropriate waker functions.
+</I>&gt;<i> &quot;&quot;&quot;
+</I>&gt;<i> 
+</I>&gt;<i> Using wxReactor as a basis, if the following is my
+</I>&gt;<i> custom Stackless reactor's run method
+</I>&gt;<i> 
+</I>&gt;<i> def run(self):
+</I>&gt;<i>       self.startRunning(...)
+</I>&gt;<i>       self.interleave(some_waker_function)
+</I>&gt;<i>       self.stacklessApplication.Loop()    
+</I>&gt;<i> 
+</I>&gt;<i> 1. How does this drive Twisted (in wxReactor there
+</I>&gt;<i> seems to be a second loop that sleeps every
+</I>&gt;<i> millisecond)? .
+</I>&gt;<i> 2. What should the &quot;some_waker_function&quot; be doing? Is
+</I>&gt;<i> the interleave() method always necessary?
+</I>&gt;<i> 3. What is the background thread? Twisted? A
+</I>&gt;<i> workerThread in threadedselectorreactor?
+</I>&gt;<i> 4. To use client.getPage() and callbacks from
+</I>&gt;<i> Stackless to a Twisted reactor running in a thread,
+</I>&gt;<i> must I use callFromThread? Will the Stackless thread
+</I>&gt;<i> block?
+</I>&gt;<i> 
+</I>&gt;<i> Once again, any advice would be appreciated. I will
+</I>&gt;<i> happily summarise on the Stackless Wiki. Sorry for
+</I>&gt;<i> the long message.
+</I>&gt;<i> 
+</I>&gt;<i> Thank you,
+</I>&gt;<i> Andrew 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i>     
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i>  
+</I>&gt;<i> ____________________________________________________________________________________
+</I>&gt;<i> Do you Yahoo!?
+</I>&gt;<i> Everyone is raving about the all-new Yahoo! Mail beta.
+</I>&gt;<i> <A HREF="http://new.mail.yahoo.com">http://new.mail.yahoo.com</A>
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="014692.html">[Twisted-Python] More Questions about Custom Reactors 
+</A></li>
+	<LI>Next message: <A HREF="014695.html">[Twisted-Python] How to set host/IP Address for reactor.listenTcp()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14693">[ date ]</a>
+              <a href="thread.html#14693">[ thread ]</a>
+              <a href="subject.html#14693">[ subject ]</a>
+              <a href="author.html#14693">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

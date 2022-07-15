@@ -1,0 +1,188 @@
+Index: twisted/protocols/irc.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/protocols/irc.py,v
+retrieving revision 1.59
+diff -u -r1.59 irc.py
+--- twisted/protocols/irc.py	1 Oct 2002 21:11:10 -0000	1.59
++++ twisted/protocols/irc.py	13 Oct 2002 14:15:24 -0000
+@@ -280,6 +280,8 @@
+     ###
+     ### You'll want to override these.
+ 
++    ### Methods involving me directly
++
+     def privmsg(self, user, channel, message):
+         """Called when I have a message from a user to me or a channel.
+         """
+@@ -292,6 +294,13 @@
+         """
+         pass
+ 
++    def left(self, channel):
++        """Called when I have left a channel.
++
++        channel has the starting character (# or &) intact.
++        """
++        pass
++
+     def noticed(self, user, channel, message):
+         """Called when I have a notice from a user to me or a channel.
+ 
+@@ -307,11 +316,6 @@
+         """
+         self.privmsg(user, channel, message)
+ 
+-    def action(self, user, channel, data):
+-        """Called when I see a user perform an ACTION on a channel.
+-        """
+-        pass
+-
+     def pong(self, user, secs):
+         """Called with the results of a CTCP PING query.
+         """
+@@ -327,7 +331,52 @@
+         """
+         pass
+ 
++    ### Things I observe other people doing in a channel.
++
++    def userJoined(self, user, channel):
++        """Called when I see another user joining a channel.
++        """
++        pass
++
++    def userLeft(self, user, channel):
++        """Called when I see another user leaving a channel.
++        """
++        pass
++
+     def userKicked(self, kickee, channel, kicker, message):
++        """Called when I observe someone else being kicked from a channel.
++        """
++        pass
++
++    def action(self, user, channel, data):
++        """Called when I see a user perform an ACTION on a channel.
++        """
++        pass
++
++    def topicUpdated(self, user, channel, newTopic):
++        """In channel, user changed the topic to newTopic.
++
++        Also called when first joining a channel.
++        """
++        pass
++
++    def userRenamed(self, oldname, newname):
++        """A user changed their name from oldname to newname.
++        """
++        pass
++
++    ### Information from the server.
++
++    def receivedMOTD(self, motd):
++        """I recieved a message-of-the-day banner from the server.
++
++        motd is a list of strings, where each string was sent as a seperate
++        message from the server. To display, you might want to use
++            
++            string.join(motd, '\n')
++
++        to get a nicely formatted string.
++        """
+         pass
+ 
+     ### user input commands, client->server
+@@ -349,10 +398,19 @@
+ 
+     part = leave
+ 
+-    def topic(self, channel, topic):
++    def topic(self, channel, topic=None):
++        """Attempt to set the topic of the given channel, or ask what it is.
++        
++        If topic is None, then I sent a topic query instead of trying to set
++        the topic. The server should respond with a TOPIC message containing
++        the current topic of the given channel.
++        """
+         # << TOPIC #xtestx :fff
+         if channel[0] not in '&#!+': channel = '#' + channel
+-        self.sendLine("TOPIC %s :%s" % (channel, topic))
++        if topic != None:
++            self.sendLine("TOPIC %s :%s" % (channel, topic))
++        else:
++            self.sendLine("TOPIC %s" % (channel,))
+ 
+     def say(self, channel, message, length = None):
+         if channel[0] not in '&#!+': channel = '#' + channel
+@@ -461,8 +519,19 @@
+ 
+     def irc_JOIN(self, prefix, params):
+         nick = string.split(prefix,'!')[0]
++        channel = params[-1]
++        if nick == self.nickname:
++            self.joined(channel)
++        else:
++            self.userJoined(nick, channel)
++
++    def irc_PART(self, prefix, params):
++        nick = string.split(prefix,'!')[0]
++        channel = params[-1]
+         if nick == self.nickname:
+-            self.joined(params[-1])
++            self.left(channel)
++        else:
++            self.userLeft(nick, channel)
+ 
+     def irc_PING(self, prefix, params):
+         self.sendLine("PONG %s" % params[-1])
+@@ -505,7 +574,10 @@
+ 
+     def irc_NICK(self, prefix, params):
+         nick = string.split(prefix,'!',0)[0]
+-        if nick == self.nickname: self.nickname = params[0]
++        if nick == self.nickname: 
++            self.nickname = params[0]
++        else:
++            self.userRenamed(nick, params[0])
+ 
+ 
+     def irc_KICK(self, prefix, params):
+@@ -520,6 +592,37 @@
+             self.kickedFrom(channel, kicker, message)
+         else:
+             self.userKicked(kicked, channel, kicker, message)
++
++    def irc_TOPIC(self, prefix, params):
++        """Someone in the channel set the topic.
++        """
++        user = string.split(prefix, '!')[0]
++        channel = params[0]
++        newtopic = params[1]
++        self.topicUpdated(user, channel, newtopic)
++
++    def irc_RPL_TOPIC(self, prefix, params):
++        """I just joined the channel, and the server is telling me the current topic.
++        """
++        user = string.split(prefix, '!')[0]
++        channel = params[1]
++        newtopic = params[2]
++        self.topicUpdated(user, channel, newtopic)
++
++    def irc_RPL_NOTOPIC(self, prefix, params):
++        user = string.split(prefix, '!')[0]
++        channel = params[1]
++        newtopic = ""
++        self.topicUpdated(user, channel, newtopic)
++
++    def irc_RPL_MOTDSTART(self, prefix, params):
++        self.motd = [params[-1]]
++
++    def irc_RPL_MOTD(self, prefix, params):
++        self.motd.append(params[-1])
++
++    def irc_RPL_ENDOFMOTD(self, prefix, params):
++        self.receivedMOTD(self.motd)
+ 
+     def irc_unknown(self, prefix, command, params):
+         pass

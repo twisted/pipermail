@@ -1,0 +1,316 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Long patch: Win32 Shortcuts
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Long%20patch%3A%20Win32%20Shortcuts&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002379.html">
+   <LINK REL="Next"  HREF="002385.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Long patch: Win32 Shortcuts</H1>
+    <B>Cory Dodt</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Long%20patch%3A%20Win32%20Shortcuts&In-Reply-To="
+       TITLE="[Twisted-Python] Long patch: Win32 Shortcuts">cdodt at fcoe.k12.ca.us
+       </A><BR>
+    <I>Fri Dec  6 13:58:18 EST 2002</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002379.html">[Twisted-Python] (no subject)
+</A></li>
+        <LI>Next message: <A HREF="002385.html">[Twisted-Python] Re: Long patch: Win32 Shortcuts
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2383">[ date ]</a>
+              <a href="thread.html#2383">[ thread ]</a>
+              <a href="subject.html#2383">[ subject ]</a>
+              <a href="author.html#2383">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Description
+-----------
+This patch establishes the beginning stages of creating shortcut Icons
+on Win32.  It uses a new feature in distutils 1.03(CVS) which allows
+post-installation code to run by specifying --install-script on the
+command line.
+
+The patch is fully backward compatible with distutils 1.02 if you don't
+want the new features.
+
+Instructions
+------------
+1. Apply the patch.
+2. Get and install CVS distutils.
+3. python setup.py build --compiler=(mingw|cygwin)
+(It helps if you have python22/libs/python22.a, so you can get a
+complete build.)
+4. python setup.py bdist_wininst --install-script=twisted-post-install
+
+Will this work if you're building on Unix? I don't know.
+
+
+Functionality
+-------------
+The installer creates a folder under Start Menu&gt;Programs&gt;Twisted
+{version} for all users (so the installer needs admin privileges to run,
+but this is pretty much the norm for Windows people).
+
+The first icon in that folder launches a command prompt with an
+environment set such that twisted scripts can be run from the command
+line without tinkering with paths, pathext's, etc.
+
+An uninstall icon is also added.
+
+Next Steps
+----------
+* icons for the tk* scripts can be added (once those work in Windows)
+* script to turn create icons from taps should also be pretty easy
+* doc icon should be trivial to add
+
+Another script to turn a tap into a service is also well within reason
+(although not directly related to this effort).
+
+Known Bugs
+----------
+The shortcuts are not removed when Twisted is uninstalled from
+Add/Remove Programs.  The post-install script also gets run
+post-uninstallation so, in theory, twisted-post-install could detect
+whether installation or uninstallation was taking place and decide
+whether to add or remove icons on that basis.  In practice, the only way
+to detect this is to see if the icons are already there, and this method
+will create havoc if you're installing over an existing installation.
+
+The PyShortcut class in t.scripts.postinstall should have a home
+somewhere else. Any suggestions on where to put it?
+
+Patch:
+_______ snip _______
+diff -x '*CVS*' -Nabur Twisted/setup.py Twisted-win/setup.py
+--- Twisted/setup.py	2002-12-04 23:59:26.000000000 -0800
++++ Twisted-win/setup.py	2002-12-06 10:15:39.000000000 -0800
+@@ -223,6 +223,7 @@
+         'bin/coil', 'bin/tapconvert', 'bin/websetroot',
+         'bin/generatelore', 'bin/html2latex', 'bin/hlint',
+         'bin/tkmktap', 'bin/conch',
++        'twisted-post-install'
+     ],
+     'cmdclass': {
+         'install_scripts': install_scripts_twisted,
+@@ -239,7 +240,8 @@
+ 
+ imPath = os.path.join('twisted', 'im')
+ setup_args['data_files'] = [(imPath, [os.path.join(imPath,
+'instancemessenger.glade')]),
+-                            ('twisted', [os.path.join('twisted',
+'plugins.tml')])]
++                            ('twisted', [os.path.join('twisted',
+'plugins.tml')]),
++                            ('twisted', [os.path.join('twisted',
+'twistenv.bat')])]
+ 
+ # always define WIN32 under Windows
+ if os.name == 'nt':
+diff -x '*CVS*' -Nabur Twisted/twisted/scripts/postinstall.py
+Twisted-win/twisted/scripts/postinstall.py
+--- Twisted/twisted/scripts/postinstall.py	1969-12-31
+16:00:00.000000000 -0800
++++ Twisted-win/twisted/scripts/postinstall.py	2002-12-06
+10:53:01.000000000 -0800
+@@ -0,0 +1,111 @@
++import sys
++import os.path
++from distutils import sysconfig
++import twisted.copyright
++from twisted.python.runtime import platform
++import win32api
++import win32con
++
++from win32com.shell import shell
++import pythoncom, os, sys
++
++class PyShortcut: # this definitely belongs somewhere else
++  def __init__(self, 
++               path=None,
++               arguments=None, 
++               description=None,
++               workingdir=None):
++    self._base = pythoncom.CoCreateInstance(
++      shell.CLSID_ShellLink, None,
++      pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink
++    )
++    data = map(None, 
++               [path, arguments, description, workingdir], 
++               (&quot;SetPath&quot;, &quot;SetArguments&quot;, &quot;SetDescription&quot;,
+&quot;SetWorkingDirectory&quot;) )
++    for value, function in data:
++      if value and function:
++        # call function on each non-null value
++        getattr(self, function)(value)
++
++  def load( self, filename ):
++    # Get an IPersist interface
++    # which allows save/restore of object to/from files
++    self._base.QueryInterface( pythoncom.IID_IPersistFile ).Load(
+filename )
++  def save( self, filename ):
++    self._base.QueryInterface( pythoncom.IID_IPersistFile ).Save(
+filename,
++0 )
++  def __getattr__( self, name ):
++    if name != &quot;_base&quot;:
++      return getattr( self._base, name )
++
++
++def getProgramsMenuPath():
++  &quot;&quot;&quot;getStartMenuPath() -&gt; String|None
++  Return the filesystem location of the common Start Menu.
++  &quot;&quot;&quot;
++  if not platform.isWinNT:
++    return &quot;C:\\Windows\\Start Menu\\Programs&quot;
++  hShellFolders=win32api.RegOpenKeyEx(win32con.HKEY_LOCAL_MACHINE,
++      'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell
+Folders',
++                                      0, 
++                                      win32con.KEY_READ)
++  common_start_menu=win32api.RegQueryValueEx(hShellFolders, 'Common
+Start Menu')[0]
++  return os.path.join(common_start_menu, &quot;Programs&quot;)
++
++def getBatFilename():
++  &quot;&quot;&quot;getBatFilename() -&gt; String|None
++  Return the location of the environment setup script.
++  &quot;&quot;&quot;
++  python_dir=sysconfig.get_config_var(&quot;prefix&quot;)
++  return os.path.join(python_dir,
++                      'lib', 'site-packages', 'twisted',
+'twistenv.bat')
++
++def run():
++    if platform.type != &quot;win32&quot;:
++      pass
++    else:
++      print &quot;Installing environment script...&quot;,
++      scripts_dir=os.path.join(sysconfig.get_config_var(&quot;prefix&quot;),
+&quot;scripts&quot;)
++      # FIXME - this list needs some work
++      twisted_scripts=&quot; &quot;.join([&quot;twistd&quot;, &quot;mktap&quot;, &quot;im&quot;,
+&quot;generatelore&quot;,
++                                &quot;hlint&quot;, &quot;manhole&quot;, &quot;t-im&quot;,
+&quot;tapconvert&quot;,
++                                &quot;html2latex&quot;])
++      batch_script=&quot;&quot;&quot;@echo off
++set PATHEXT=%%PATHEXT%%;.py
++set PATH=%(scripts_dir)s;%%PATH%%
++set PATH
++echo -:- -:- -:- -:- -:--:- -:- -:- -:- -:--:- -:- -:- -:- -:-
++echo Commands available in twisted: %(twisted_scripts)s
++echo -:- -:- -:- -:- -:--:- -:- -:- -:- -:--:- -:- -:- -:- -:-
++&quot;&quot;&quot; % locals()
++      bat_location=getBatFilename()
++      bat_file=open(bat_location, 'w')
++      bat_file.write(batch_script)
++      bat_file.close()
++
++      print &quot;Done.&quot;
++      print 'Installing Icons for Twisted...',
++      sys.stdout.flush()
++      menu_path=os.path.join(getProgramsMenuPath(),
++                             &quot;Twisted %s&quot; %twisted.copyright.version)
++      try:
++        os.mkdir(menu_path)
++      except OSError:
++        pass
++
++      shortcut=PyShortcut(os.getenv(&quot;ComSpec&quot;),
++                          &quot;/k %s&quot; % bat_location,
++                          workingdir=&quot;C:\\&quot;)
++      shortcut.save(os.path.join(menu_path, &quot;Twisted Command
+Prompt.lnk&quot;))
++      python_dir=sysconfig.get_config_var(&quot;prefix&quot;)
++      remove_exe=os.path.join(python_dir, &quot;RemoveTwisted.exe&quot;)
++      remove_log=os.path.join(python_dir, &quot;Twisted-wininst.log&quot;)
++      shortcut=PyShortcut(remove_exe, '-u &quot;%s&quot;' % remove_log)
++      shortcut.save(os.path.join(menu_path, &quot;Uninstall Twisted.lnk&quot;))
++
++      print &quot;Done.&quot;
++      print &quot;Post-install successful!&quot;
++
++if __name__=='__main__':
++  run()
++
+diff -x '*CVS*' -Nabur Twisted/twisted/twistenv.bat
+Twisted-win/twisted/twistenv.bat
+--- Twisted/twisted/twistenv.bat	1969-12-31 16:00:00.000000000
+-0800
++++ Twisted-win/twisted/twistenv.bat	2002-12-03 17:27:40.000000000
+-0800
+@@ -0,0 +1,2 @@
+<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">+ at echo</A> Twisted was not correctly installed! +pause diff -x '*CVS*'
+-Nabur Twisted/twisted-post-install Twisted-win/twisted-post-install
+--- Twisted/twisted-post-install	1969-12-31 16:00:00.000000000
+-0800
++++ Twisted-win/twisted-post-install	2002-12-04 07:41:12.000000000
+-0800
+@@ -0,0 +1,29 @@
++#!/usr/bin/env python
++
++# Twisted, the Framework of Your Internet
++# Copyright (C) 2001 Matthew W. Lefkowitz
++#
++# This library is free software; you can redistribute it and/or
++# modify it under the terms of version 2.1 of the GNU Lesser General
+Public
++# License as published by the Free Software Foundation.
++#
++# This library is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++# Lesser General Public License for more details.
++#
++# You should have received a copy of the GNU Lesser General Public
++# License along with this library; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
+USA
++
++### Twisted Preamble
++# This makes sure that users don't have to set up their environment
++# specially in order to run these programs from bin/.
++import sys, os, string
++if string.find(os.path.abspath(sys.argv[0]), os.sep+'Twisted') != -1:
++    sys.path.insert(0,
+os.path.normpath(os.path.join(os.path.abspath(sys.argv[0]), os.pardir,
+os.pardir)))
++sys.path.insert(0, os.curdir)
++### end of preamble
++
++from twisted.scripts import postinstall
++postinstall.run()
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002379.html">[Twisted-Python] (no subject)
+</A></li>
+	<LI>Next message: <A HREF="002385.html">[Twisted-Python] Re: Long patch: Win32 Shortcuts
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2383">[ date ]</a>
+              <a href="thread.html#2383">[ thread ]</a>
+              <a href="subject.html#2383">[ subject ]</a>
+              <a href="author.html#2383">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

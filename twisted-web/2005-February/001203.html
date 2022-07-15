@@ -1,0 +1,185 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] caching branch
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20caching%20branch&In-Reply-To=20050218041557.GT2071%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001202.html">
+   <LINK REL="Next"  HREF="001204.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] caching branch</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20caching%20branch&In-Reply-To=20050218041557.GT2071%40opteron.random"
+       TITLE="[Twisted-web] caching branch">andrea at cpushare.com
+       </A><BR>
+    <I>Thu Feb 17 22:37:35 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001202.html">[Twisted-web] caching branch
+</A></li>
+        <LI>Next message: <A HREF="001204.html">[Twisted-web] caching branch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1203">[ date ]</a>
+              <a href="thread.html#1203">[ thread ]</a>
+              <a href="subject.html#1203">[ subject ]</a>
+              <a href="author.html#1203">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I ported the html caching on top of ICache and I left the tags.cached
+part unchanged and as expcted the ICache generates a significant
+slowdown, -20%. I get around 180 req/sec while I was getting 220 (never
+less than 200) req per second with my previous patch that avoided the
+ICache adapters from compy.
+
+I really don't want this ICache abstraction slowdown that hurts
+performance in the core html caching.
+
+This below is the code that I benchmarked (against trunk + caching
+branch).
+
+The ICache is a nice abstraction for lower-performance caches like
+tags.cache to keep code clean, but the html caching has to run raw w/o
+slowdowns. So I'll resurrect my original code to get that bit of
+performance back. I exclude I'll switch over to the the current caching
+branch for the global rand.Page caching even if it would work, since
+that one will be even slower than the below patch that only gets
+disturbed by a single ICache lookup without even taking into account all
+the flattener (I never run the flattener).
+
+BTW, this confirms my theory that compy is the worst offender
+performance-wise.
+
+I'll post an updated patch suitable for merging with the
+high-performance code as soon as I finish to port it and test it.
+
+--- Nevow/nevow/rend.py.~1~	2005-02-18 04:39:54.208615490 +0100
++++ Nevow/nevow/rend.py	2005-02-18 06:29:54.440482008 +0100
+@@ -30,6 +30,7 @@ from nevow import tags
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -387,11 +388,41 @@ class Page(Fragment, ConfigurableFactory
+     beforeRender = None
+     afterRender = None
+     addSlash = None
++
+     cache = False
+     lifetime = -1
+ 
+     flattenFactory = flat.flattenFactory
+ 
++    def hasCache(self, ctx):
++        if not self.cache:
++            return
++
++        c = self.lookupCache(ctx)
++        if c:
++            return c
++
++        from twisted.internet.defer import Deferred
++        d = Deferred()
++        # do only this rendering, others will wait the deferred
++        self.storeCache(ctx, d)
++    def chainDeferredCache(self, ctx, d):
++        if not self.cache:
++            return d
++
++        from twisted.internet.defer import Deferred
++        c = self.lookupCache(ctx)
++        if isinstance(c, Deferred):
++            # we're the thread that went ahead to refresh the cache
++            d.chainDeferred(c)
++        return d
++    def storeCache(self, ctx, c):
++        inevow.ICache(ctx).set(c, self.cacheIDX(ctx))
++    def lookupCache(self, ctx):
++        return inevow.ICache(ctx).get(self.cacheIDX(ctx), self.lifetime)
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++
+     def renderHTTP(self, ctx):
+         ## XXX request is really ctx now, change the name here
+         request = inevow.IRequest(ctx)
+@@ -413,11 +444,18 @@ class Page(Fragment, ConfigurableFactory
+             if self.afterRender is not None:
+                 self.afterRender(ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c:
++            finishRequest()
++            return c
++
++        if self.buffered or self.cache:
+             io = StringIO()
+             writer = io.write
+-            def finisher(result):                
+-                request.write(io.getvalue())
++            def finisher(result):
++                c = io.getvalue()
++                self.storeCache(ctx, c)
++                request.write(c)
+                 finishRequest()
+                 return result
+         else:
+@@ -427,12 +465,9 @@ class Page(Fragment, ConfigurableFactory
+                 return result
+ 
+         doc = self.docFactory.load()
+-        if self.cache:
+-            name = url.URL.fromContext(ctx).path
+-            doc = tags.cached(name, self.lifetime)[doc]
+         ctx =  WovenContext(ctx, tags.invisible[doc])
+ 
+-        return self.flattenFactory(doc, ctx, writer, finisher)
++        return self.chainDeferredCache(ctx, self.flattenFactory(doc, ctx, writer, finisher))
+ 
+     def rememberStuff(self, ctx):
+         Fragment.rememberStuff(self, ctx)
+@@ -504,7 +539,6 @@ class Page(Fragment, ConfigurableFactory
+             else:
+                 ## Use the redirectAfterPost url
+                 ref = str(redirectAfterPost)
+-            from nevow import url
+             refpath = url.URL.fromString(ref)
+             magicCookie = str(now())
+             refpath = refpath.replace('_nevow_carryover_', magicCookie)
+
+</PRE>
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001202.html">[Twisted-web] caching branch
+</A></li>
+	<LI>Next message: <A HREF="001204.html">[Twisted-web] caching branch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1203">[ date ]</a>
+              <a href="thread.html#1203">[ thread ]</a>
+              <a href="subject.html#1203">[ subject ]</a>
+              <a href="author.html#1203">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

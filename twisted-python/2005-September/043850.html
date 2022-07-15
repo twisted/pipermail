@@ -1,0 +1,187 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Disabling PB (de)serialization
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Disabling%20PB%20%28de%29serialization&In-Reply-To=%3C20050906.122012.15040166.warner%40lothar.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="043863.html">
+   <LINK REL="Next"  HREF="043853.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Disabling PB (de)serialization</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Disabling%20PB%20%28de%29serialization&In-Reply-To=%3C20050906.122012.15040166.warner%40lothar.com%3E"
+       TITLE="[Twisted-Python] Re: Disabling PB (de)serialization">warner at lothar.com
+       </A><BR>
+    <I>Tue Sep  6 13:20:12 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="043863.html">[Twisted-Python] Re: Disabling PB (de)serialization
+</A></li>
+        <LI>Next message (by thread): <A HREF="043853.html">[Twisted-Python] Re: Disabling PB (de)serialization
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#43850">[ date ]</a>
+              <a href="thread.html#43850">[ thread ]</a>
+              <a href="subject.html#43850">[ subject ]</a>
+              <a href="author.html#43850">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&gt;&gt;<i> In TP1, the business data should be serialized, and wrapped in an outer
+</I>&gt;&gt;<i> layer, containing the destination coordinates. PX1 and PX2 should be able
+</I>&gt;&gt;<i> to only unwrap and deserialize the outer layer only, while trasparently
+</I>&gt;&gt;<i> forwarding the serialized business data.
+</I>&gt;<i>
+</I>&gt;<i> At a guess you'd need to write your own Unjellier class or something. I
+</I>&gt;<i> suspect this will be much easier in newpb, but I'm not *sure*. Brian?
+</I>
+Hm, tricky.
+
+In oldpb, yeah, you need to get your hands dirty with Jelly. When you invoke
+rref.callRemote(methname, *args, **kwargs), what really happens is:
+
+ the RemoteReference is turned into a per-connection objid
+ a pending-call slot is allocated, assigned a unique number 'callid'
+ the following tuple is serialized and sent over the wire:
+  (&quot;call&quot;, objid, callid, methname, args, kwargs)
+
+at the far end, the tuple is fully unserialized, then examined. The &quot;call&quot;
+token triggers a lookup of 'objid' to find the target Referenceable, which
+then gets its remoteMessageReceived method invoked. This method receives the
+(methname, args, kwargs) values and is responsible for calling the final
+remote_foo method. The (args,kwargs) received by remoteMessageReceived have
+been unbananaed but not yet unjellied (see below), so most of the
+deserialization work has already been spent.
+
+There is no clean place in this sequence to tell the underlying Protocol
+instance to switch from the banana-unserializing dataReceived() mode to some
+just-copy-the-data mode: in general, everything gets unserialized before you
+even find out what the target object is.
+
+So the way I'd do what you're trying to do is to serialize the arguments
+myself, then pass the resulting blob to the method that knows about the
+dispatch/forwarding rules.
+
+Terminology: &quot;Jelly&quot; is the layer that turns arbitrary object graphs into
+s-expressions (nested lists of primitive types like strings), while &quot;Banana&quot;
+is the layer that serializes these s-expressions into a series of bytes.
+There is a Protocol subclass named Banana which is attached to the wire and
+emits sexps as they arrive, then the Broker is a subclass of Banana which
+interprets these sexps as commands. When these commands require sexps to be
+turned into objects, it uses Jelly.
+
+To jelly arbitrary data, you just do this:
+
+from twisted.spread import banana, jelly
+def encode(o):
+    sexp = jelly.jelly(o, taster=jelly.globalSecurity)
+    return banana.encode(sexp)
+def decode(s):
+    sexp = banana.decode(s)
+    return jelly.unjelly(sexp, taster=jelly.globalSecurity)
+
+The sending side would then look like:
+
+def callThroughDispatcher(methname, *args, **kwargs):
+    allargs = encode((methname, args, kwargs))
+    d = target.callRemote(&quot;dispatch&quot;, methname, allargs)
+    return d
+
+the dispatch side could look like:
+
+def remote_dispatch(self, methname, allargs):
+    return self.targets[methname].callRemote(&quot;doit&quot;, allargs)
+
+and the final target could look like:
+
+def remote_doit(self, allargs):
+    methname, args, kwargs = decode(allargs)
+    m = getattr(self, &quot;remote_%s&quot; % methname)
+    return m(*args, **kwargs)
+
+
+The downsides of this approach:
+
+ the &quot;serialization domain&quot; is rather small, and does not include the
+ established connection, so this will fail if your arguments include
+ Referenceables or RemoteReferences. (normally you would be able to pass new
+ references through to the other side, but our encode() method does not know
+ about the connection and therefore cannot manipulate the reference tables
+ that would enable this)
+
+ there is some overhead to encode()/decode(): it must create a new Banana
+ instance, attach it to a dummy (StringIO) transport, then iterate it until
+ all the serialized data is accumulated. This overhead is probably small in
+ comparison to the time it takes to serialize a large/complicated object
+ graph, but there will definitely be a break-even point somewhere, below
+ which is makes more sense to let the existing Brokers do their own
+ serialization.
+
+
+
+In newpb, you'll have more options, but this use-case won't necessarily be
+all that that much easier. The most useful new feature would be the pluggable
+Slicers/Unslicers, which give you more control over serialization and
+unserialization. It might be possible to write a faster serialization layer
+(in C).. I suppose that might help something.
+
+The fundamental problem is layer-mixing: you want to change the behavior of
+the very lowest-layer code (serialization/unserialization) based upon
+decisions made at much higher layers (target object or method name). This is
+sort of what dual-mode protocols like SMTP and HTTP do, where they switch
+between LineReceiver and RawDataReceiver depending upon protocol state, but
+in SMTP the transition is simple enough to implement at a very low level
+(just wait for a blank line). In both oldpb and newpb, the transition is
+indicated at a much much higher protocol level.
+
+A related problem is that serialization is closely tied to a context, in this
+case some state in the per-connection Broker object. Most of the advanced
+serialization features (being able to handle arbitrary object graphs, shared
+objects, pointing at remote Referenceables, etc) depend upon this context.
+The &quot;Dispatcher&quot; thing you want to do drags some of this deserialization into
+a second context, one which may not share enough state with the first one, so
+it may be infeasible to serialize anything but simple self-contained
+datatypes this way.
+
+
+I'm curious, what does your takes-a-long-time-to-serialize data look like? I
+need some performance-test-cases to benchmark newpb serialization code with,
+and if my test data looks more like your actual data, then newpb will be that
+much faster for your application. Are there a lot of large strings? Long
+lists? densely-connected graphs?
+
+hope that's useful..
+ -Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="043863.html">[Twisted-Python] Re: Disabling PB (de)serialization
+</A></li>
+	<LI>Next message (by thread): <A HREF="043853.html">[Twisted-Python] Re: Disabling PB (de)serialization
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#43850">[ date ]</a>
+              <a href="thread.html#43850">[ thread ]</a>
+              <a href="subject.html#43850">[ subject ]</a>
+              <a href="author.html#43850">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

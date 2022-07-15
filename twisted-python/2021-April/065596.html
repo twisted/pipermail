@@ -1,0 +1,102 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] startTLS errors not propagating to Factory
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20startTLS%20errors%20not%20propagating%20to%20Factory&In-Reply-To=%3C0CEA3A62-4EBC-4FDF-AC6D-20C038FD7855%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="065584.html">
+   <LINK REL="Next"  HREF="065600.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] startTLS errors not propagating to Factory</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20startTLS%20errors%20not%20propagating%20to%20Factory&In-Reply-To=%3C0CEA3A62-4EBC-4FDF-AC6D-20C038FD7855%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] startTLS errors not propagating to Factory">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Wed Apr 28 00:06:01 MDT 2021</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="065584.html">[Twisted-Python] startTLS errors not propagating to Factory
+</A></li>
+        <LI>Next message (by thread): <A HREF="065600.html">[Twisted-Python] startTLS errors not propagating to Factory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65596">[ date ]</a>
+              <a href="thread.html#65596">[ thread ]</a>
+              <a href="subject.html#65596">[ subject ]</a>
+              <a href="author.html#65596">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On Apr 9, 2021, at 4:07 PM, Richard van der Hoff &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">richard at matrix.org</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> Hi folks,
+</I>&gt;<i> 
+</I>&gt;<i> I've been investigating <A HREF="https://github.com/matrix-org/synapse/issues/9566,">https://github.com/matrix-org/synapse/issues/9566,</A> which amounts to: &quot;when there is a TLS error connecting to the SMTP server, the resultant exception is unreadable&quot;.
+</I>&gt;<i> 
+</I>&gt;<i> I think I've traced the problem to the fact that SMTPSenderFactory.clientConnectionFailed is being called with an unhelpful ConnectionAborted rather than anything more descriptive.
+</I>&gt;<i> 
+</I>&gt;<i> I've then reproduced that with a simpler test case: see <A HREF="https://gist.github.com/richvdh/909761ff5dab23f0873eeddd7936a740.">https://gist.github.com/richvdh/909761ff5dab23f0873eeddd7936a740.</A> As you can see, the output is: &quot;Factory lost connection. Reason: Connection was aborted locally using ITCPTransport.abortConnection.&quot;
+</I>&gt;<i> 
+</I>&gt;<i> This seems to be thanks to TLSMemoryBIOProtocol.failVerification, which stashes the error and calls abortConnection(): <A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/protocols/tls.py#L427.">https://github.com/twisted/twisted/blob/trunk/src/twisted/protocols/tls.py#L427.</A>
+</I>&gt;<i> 
+</I>&gt;<i> At this point I'm struggling. Is the SMTP code holding the Factory wrong? Or is it reasonable to expect the verification error to propagate into clientConnectionFailed - in which case, how could this work?
+</I>&gt;<i> 
+</I>&gt;<i> Thanks for your thoughts!
+</I>
+Hi Richard,
+
+Sorry for the delayed response here.
+
+This is a bug in Twisted, and I think it boils down to this line: <A HREF="https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/protocols/tls.py#L391">https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/protocols/tls.py#L391</A> &lt;<A HREF="https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/protocols/tls.py#L391">https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/protocols/tls.py#L391</A>&gt; 
+
+The code as written here appears to be expecting this sequence:
+
+failVerification is called with a reason containing a helpful OpenSSL verification error
+we save that reason as `self._reason` for reporting later, calling abortConnection()
+since the connection got aborted, we expect our underlying transport to call loseConnection on us
+we will then get a falsey reason [?!?!] and as such we will use self._reason instead
+
+Assumption 4 is nonsense and has never been true within Twisted as far as I know; connectionLost always gets a Failure, Failures are never falsey, so we will never use self._reason.  To fix this we need to actually honor self._reason under the conditions we expect, i.e. it's a ConnectionAborted <A HREF="https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/internet/error.py#L209">https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/internet/error.py#L209</A> &lt;<A HREF="https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/internet/error.py#L209">https://github.com/twisted/twisted/blob/3c868ac11786eef7ea269caa3056f00854128957/src/twisted/internet/error.py#L209</A>&gt; 
+
+Does this make sense?  (Will you be able to file / fix this bug?)
+
+Thanks for the report,
+
+-g
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20210427/2a6b9a01/attachment.htm&gt;
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="065584.html">[Twisted-Python] startTLS errors not propagating to Factory
+</A></li>
+	<LI>Next message (by thread): <A HREF="065600.html">[Twisted-Python] startTLS errors not propagating to Factory
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65596">[ date ]</a>
+              <a href="thread.html#65596">[ thread ]</a>
+              <a href="subject.html#65596">[ subject ]</a>
+              <a href="author.html#65596">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

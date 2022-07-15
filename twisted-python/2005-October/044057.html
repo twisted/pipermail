@@ -1,0 +1,222 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] passClient for	ReverseProxyResource/VHostMonsterResource
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20passClient%20for%0A%09ReverseProxyResource/VHostMonsterResource&In-Reply-To=%3C20051002152505.GC16345%40opteron.random%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="044069.html">
+   <LINK REL="Next"  HREF="044060.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] passClient for	ReverseProxyResource/VHostMonsterResource</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20passClient%20for%0A%09ReverseProxyResource/VHostMonsterResource&In-Reply-To=%3C20051002152505.GC16345%40opteron.random%3E"
+       TITLE="[Twisted-Python] passClient for	ReverseProxyResource/VHostMonsterResource">andrea at cpushare.com
+       </A><BR>
+    <I>Sun Oct  2 09:25:05 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="044069.html">[Twisted-Python] TCP KeepAlive
+</A></li>
+        <LI>Next message (by thread): <A HREF="044060.html">[Twisted-Python] threadedselctreactor and releases
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44057">[ date ]</a>
+              <a href="thread.html#44057">[ thread ]</a>
+              <a href="subject.html#44057">[ subject ]</a>
+              <a href="author.html#44057">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+
+I need a new (optional) feature in the
+ReverseProxyResource/VHostMonsterResource protocol. It's optional
+because I doubt the reverse proxy of other packages could support it
+without upgrades. I only had to add &quot;passClient = True&quot; as parameter to
+ReverseProxyResource and VHostMonsterResource to enable it (two liner
+patch to my code).
+
+In short this passes the client ip and port from the reverse proxy
+server to the vmonster resource, this way the nevow server that receives
+the proxy connection knows who has connected to the proxy and it can
+react accordingly. This is needed to really allow putting more nevow
+servers transparently behind the same port, one of my nevow apps really
+needed to know the ip of the connecting client.
+
+Cross posting to both lists because it has two different parts, the
+first is the Nevow part and the second is the Twisted part.  This code
+is online right now and no problems so far (if you see any problem let
+me know ;).
+
+Here the Nevow part:
+
+Index: Nevow/nevow/vhost.py
+===================================================================
+--- Nevow/nevow/vhost.py	(revision 1788)
++++ Nevow/nevow/vhost.py	(working copy)
+@@ -134,13 +134,15 @@
+     *after* it returns the (resource,segments) tuple.
+     &quot;&quot;&quot;
+     implements(inevow.IResource)
++
++    def __init__(self, vhost_segments):
++        self.prepath_segments = vhost_segments+1 # +1 is for /vhost
++
+     def locateChild(self, ctx, segments):
+         request = inevow.IRequest(ctx)
+-        request.prepath = request.prepath[3:]
++        request.prepath = request.prepath[self.prepath_segments:]
+         return request.site.resource, segments
+ 
+-_prepathCleaner = _VHostMonsterResourcePrepathCleaner()
+-
+ class VHostMonsterResource:
+     &quot;&quot;&quot;VHostMonster resource that helps to deploy a Nevow site behind a proxy.
+     
+@@ -173,14 +175,27 @@
+ 
+     This also means your private server should serve the real content at
+     /foo/bar, and not at the root of the tree.
++
++    If passClient is set to True it expects the client to be passed by the
++    proxy (see ReverseProxyResource passClient parameter for details). When
++    passClient is True this page should not be reacheable directly from the
++    internet if logging the IP address and port securely is needed.
+     &quot;&quot;&quot;
+     implements(inevow.IResource)
+ 
++    vhost_segments = 2
++
++    def __init__(self, passClient = False):
++        self.passClient = passClient
++        if passClient:
++            self.vhost_segments = 3
++        self._prepathCleaner = _VHostMonsterResourcePrepathCleaner(self.vhost_segments)
++
+     def locateChild(self, ctx, segments):
+ 
+         request = inevow.IRequest(ctx)
+ 
+-        if len(segments) &lt; 2:
++        if len(segments) &lt; self.vhost_segments:
+             return rend.NotFound
+         else:
+             if segments[0] == 'http':
+@@ -193,13 +208,18 @@
+                 port = int(port)
+             else:
+                 host, port = segments[1], 80
+-           
+             request.setHost(host, port)
+ 
+-            prefixLen = len('/'+'/'.join(request.prepath)+'/'+'/'.join(segments[:2]))
+-            request.path = '/'+'/'.join(segments[2:])
++            if self.passClient:
++                if ':' not in segments[2]:
++                    return rend.NotFound
++                host, port = segments[2].split(':')
++                request.setClient(host, port)
++
++            prefixLen = len('/'+'/'.join(request.prepath)+'/'+'/'.join(segments[:self.vhost_segments]))
++            request.path = '/'+'/'.join(segments[self.vhost_segments:])
+             request.uri = request.uri[prefixLen:]
+ 
+-            return _prepathCleaner, segments[2:]
++            return self._prepathCleaner, segments[self.vhost_segments:]
+         
+ compy.backwardsCompatImplements(VHostMonsterResource)
+
+
+
+Here the twisted part:
+
+Index: Twisted/twisted/web/http.py
+===================================================================
+--- Twisted/twisted/web/http.py	(revision 14534)
++++ Twisted/twisted/web/http.py	(working copy)
+@@ -876,6 +876,10 @@
+         self.received_headers[&quot;host&quot;] = host
+         self.host = address.IPv4Address(&quot;TCP&quot;, host, port)
+ 
++    def setClient(self, host, port):
++        &quot;&quot;&quot;Same as setHost but for the client address&quot;&quot;&quot;
++        self.client = address.IPv4Address(&quot;TCP&quot;, host, port)
++
+     def getClientIP(self):
+         if isinstance(self.client, address.IPv4Address):
+             return self.client.host
+Index: Twisted/twisted/web/proxy.py
+===================================================================
+--- Twisted/twisted/web/proxy.py	(revision 14534)
++++ Twisted/twisted/web/proxy.py	(working copy)
+@@ -160,23 +160,33 @@
+     to a different server.
+     &quot;&quot;&quot;
+ 
+-    def __init__(self, host, port, path):
++    def __init__(self, host, port, path, passClient = False):
+         resource.Resource.__init__(self)
+         self.host = host
+         self.port = port
+         self.path = path
++        self.passClient = passClient
+ 
++    def getPath(self, request):
++        path = self.path
++        if self.passClient:
++            path += '/%s:%d' % (request.client.host, request.client.port)
++        return path
++
+     def getChild(self, path, request):
+-        return ReverseProxyResource(self.host, self.port, self.path+'/'+path)
++        return ReverseProxyResource(self.host, self.port, self.getPath(request)+'/'+path, False)
+ 
+     def render(self, request):
+         request.received_headers['host'] = self.host
+         request.content.seek(0, 0)
++
++        path = self.getPath(request)
++
+         qs = urlparse.urlparse(request.uri)[4]
+         if qs:
+-            rest = self.path + '?' + qs
++            rest = path + '?' + qs
+         else:
+-            rest = self.path
++            rest = path
+         clientFactory = ProxyClientFactory(request.method, rest, 
+                                      request.clientproto, 
+                                      request.getAllHeaders(),
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="044069.html">[Twisted-Python] TCP KeepAlive
+</A></li>
+	<LI>Next message (by thread): <A HREF="044060.html">[Twisted-Python] threadedselctreactor and releases
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44057">[ date ]</a>
+              <a href="thread.html#44057">[ thread ]</a>
+              <a href="subject.html#44057">[ subject ]</a>
+              <a href="author.html#44057">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

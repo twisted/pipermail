@@ -1,0 +1,182 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: [Web-SIG] WSGI woes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BWeb-SIG%5D%20WSGI%20woes&In-Reply-To=414A088B.7040601%40xhaus.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000664.html">
+   <LINK REL="Next"  HREF="000666.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: [Web-SIG] WSGI woes</H1>
+    <B>Phillip J. Eby</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BWeb-SIG%5D%20WSGI%20woes&In-Reply-To=414A088B.7040601%40xhaus.com"
+       TITLE="[Twisted-web] Re: [Web-SIG] WSGI woes">pje at telecommunity.com
+       </A><BR>
+    <I>Thu Sep 16 16:37:39 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000664.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+        <LI>Next message: <A HREF="000666.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#665">[ date ]</a>
+              <a href="thread.html#665">[ thread ]</a>
+              <a href="subject.html#665">[ subject ]</a>
+              <a href="author.html#665">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>At 10:41 PM 9/16/04 +0100, Alan Kennedy wrote:
+
+&gt;<i>In this way, there could be a middleware component below the 
+</I>&gt;<i>rot13_streamer in the stack that, say, does chunked_transfer encoding and 
+</I>&gt;<i>decoding. It would be the same in form as the above, except that it would
+</I>
+FYI, middleware and apps are now banned from dealing in any kind of 
+transfer-encodings, per James' very valuable input on that subject.  Like 
+connection properties, these should be the exclusive province of the actual 
+web server.
+
+
+&gt;<i>1. Change the environ entry for 'wsgi.async_input_handler' to be its own 
+</I>&gt;<i>callable that records the callback for the next layer up in the stack, the 
+</I>&gt;<i>rot13_streamer.input_handler.
+</I>
+This would lead to the unacceptable situation of every middleware component 
+having to know in principle about extensions.  The &quot;Server Extension APIs&quot; 
+section of the PEP demands that any &quot;bypass&quot; API verify replacement for 
+this very reason.
+
+
+&gt;<i>I think that this proposed approach is clean, and not overly complex for 
+</I>&gt;<i>async or blocking programmers to handle.
+</I>
+Unless of course they're writing middleware that does something with the input.
+
+
+&gt;<i>But I think we do have to cleanly separate the two. I think there are 
+</I>&gt;<i>problems associated with trying to run *all* components seamlessly across 
+</I>&gt;<i>async or blocking servers. I think that middleware components that are 
+</I>&gt;<i>always going to behave correctly in an async situation will have to be 
+</I>&gt;<i>designed like that from the ground up. It's dangerous to take components 
+</I>&gt;<i>written in a blocking environment and run them in an async environment.
+</I>
+It is a non-goal for WSGI to support running multiple requests 
+simultaneously in a single-threaded asynchronous server, so the issue 
+doesn't really come up.  A WSGI server *must* allow for the fact that WSGI 
+apps use up a thread while they're running or producing a value: that's the 
+price of being able to run &quot;traditional&quot; web applications under WSGI.
+
+
+&gt;<i>And lastly, if it is desired to spin jobs into a different thread, e.g. 
+</I>&gt;<i>the rot-13 job above, then that should be a middleware concern, not the 
+</I>&gt;<i>WSGI server's.
+</I>
+I agree with you -- for *asynchronous* applications.  Synchronous web 
+applications are the default case in WSGI and the world in general, so 
+servers *must* use a thread pool to start applications and to run 'next()' 
+calls, if they are asynchronous.  But, asynchronous applications wish to 
+yield control, to avoid hogging resources in that thread pool, so they need 
+to delegate the work to their I/O thread, and then yield an empty string to 
+pause output, freeing up that thread for another iterable next(), or 
+application start.
+
+Notice, however, that if the server is *synchronous* (e.g. CGI, 
+single-threaded FastCGI containers, mod_python under Apache 1.x, etc., ), 
+then this is a complete waste of time, because you'll only be running one 
+simultaneous request in this process anyway, so you're spinning off a 
+second thread to keep from tying up the first thread, but all the first 
+thread is doing is waiting for the second thread to finish!  This is 
+wasteful, to say the least.
+
+The only case where pausing output (whether for unrelated network I/O, or 
+because of a need to read from the input stream) is actually useful is when 
+the server is *also* asynchronous -- hence the value of making such pausing 
+an optional extension API.  The application can then detect when it's 
+*useful* to pause, and synchronous applications needn't worry about it.
+
+Of course, even if the server and application are *both* asynchronous, 
+that's no guarantee that they're using compatible event loops!  If you try 
+to run a Twisted app under asyncore or vice versa, you're going to be 
+spinning off an extra thread to run a second event loop, so there's a bit 
+of a trade-off to determining whether your asynchrony is going to actually 
+*gain* anything.  But that's a separate question.  WSGI will allow you to 
+be asynchronous if you really want to, no matter how bad an idea it might 
+be in some cases.  :)
+
+
+&gt;<i>The twisted rot-13 component would then have very thin methods (run from 
+</I>&gt;<i>the server's main thread) which interact with the twisted space i.e. 
+</I>&gt;<i>transferring data and receiving data back through queues, and layer WSGI 
+</I>&gt;<i>semantics on those interactions, i.e. pause_output, yield result, yield 
+</I>&gt;<i>empty_string, etc.
+</I>
+You're pretty much describing what I suggested earlier: that async app 
+frameworks like Twisted may want to have a model whereby a generic &quot;thin 
+wrapper&quot; WSGI application object is used to communicate with an application 
+that's written using the underlying framework's async idioms.  So, for 
+example, one might perhaps design a Twisted &quot;Transport&quot; that was 
+implemented as a WSGI application.  (I don't know if &quot;Transport&quot; is really 
+the correct abstraction to use, I'm just giving an example here.)
+
+Anyway, for such a thing to really work, I think you might need 
+server-specific reactor plugins, to integrate Twisted's event loop with 
+that of the server.
+
+
+&gt;<i>When I described your approach as &quot;pulling data up the stack&quot;, I saw a 
+</I>&gt;<i>bigger difference between the two approaches. I'm thinking now that there 
+</I>&gt;<i>is little difference between our proposals, except that in mine it's the 
+</I>&gt;<i>bottom component that gets notified of the input by the server, and in 
+</I>&gt;<i>yours it's the top component. Though I suppose having the top component 
+</I>&gt;<i>pulling input from an iterator chain mirrors nicely the situation where 
+</I>&gt;<i>the server pulls output from an iterator chain.
+</I>
+Actually, I'm saying you pull data *down* the stack.  The bottom-most 
+application iterator calls 'read()' on an input stream provided by a parent 
+middleware component, which then calls read on a higher-level component, 
+and so on.
+
+
+&gt;<i>And my approach basically entails a bunch of nested calls, which might be 
+</I>&gt;<i>less efficient elegant than if, say, generators were used in an input 
+</I>&gt;<i>processing chain.
+</I>&gt;<i>
+</I>&gt;<i>You're right again Phillip :-)
+</I>
+Not entirely, actually.  For my approach to really work, the middleware 
+would have to be guaranteed to return something from read(), as long as the 
+parent's read() returns something.  Otherwise, the resumption would block, 
+unless the middleware were much smarter.  I've got to think about it some 
+more, because right now I'm still not happy with the specifics of any of 
+the proposals for pausing and resuming output.
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000664.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+	<LI>Next message: <A HREF="000666.html">[Twisted-web] Re: [Web-SIG] WSGI woes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#665">[ date ]</a>
+              <a href="thread.html#665">[ thread ]</a>
+              <a href="subject.html#665">[ subject ]</a>
+              <a href="author.html#665">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

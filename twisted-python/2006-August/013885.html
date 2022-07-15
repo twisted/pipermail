@@ -1,0 +1,146 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Multicast XMLRPC
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Multicast%20XMLRPC&In-Reply-To=44EF44DF.8030401%40gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="013882.html">
+   <LINK REL="Next"  HREF="013887.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Multicast XMLRPC</H1>
+    <B>glyph at divmod.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Multicast%20XMLRPC&In-Reply-To=44EF44DF.8030401%40gmail.com"
+       TITLE="[Twisted-Python] Multicast XMLRPC">glyph at divmod.com
+       </A><BR>
+    <I>Fri Aug 25 15:48:34 EDT 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="013882.html">[Twisted-Python] Multicast XMLRPC
+</A></li>
+        <LI>Next message: <A HREF="013887.html">[Twisted-Python] Multicast XMLRPC
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#13885">[ date ]</a>
+              <a href="thread.html#13885">[ thread ]</a>
+              <a href="subject.html#13885">[ subject ]</a>
+              <a href="author.html#13885">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, 25 Aug 2006 14:43:43 -0400, &quot;Chaz.&quot; &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">eprparadocs at gmail.com</A>&gt; wrote:
+&gt;<i>Perhaps the simple way to say this is that I need to do group communications 
+</I>&gt;<i>that support RPC semantics with minimal overhead.
+</I>
+I'm still not really clear on what the application is.
+
+&gt;<i>You ask about the network topology; all I can say is that it supports the 
+</I>&gt;<i>normal communication means: unicast, broadcast and maybe multicast.
+</I>
+Heh.  &quot;Normal&quot; communication means?  After writing a P2P layer and working on a SIP implementation, I have come to understand that the only &quot;normal&quot; communication available is an *outgoing*, *unencrypted* HTTP request on port 80... ;-)
+
+More seriously, if you're writing an application for distributing compute nodes to home computers, multicast is a non-starter.  If it's an intranet, then maybe it's feasible.  Or, if you're on Internet 2 for some reason.  (Is anybody actually on internet 2 these days?)
+
+At any rate, producing a functioning multiunicast prototype with, e.g. PB, would be the easiest way to get started if you need to fall back to that sort of topology anyway in the case where a multicast solution doesn't work.  Then you can collect data and determine how much bandwidth is going to be saved in a realistic scenario...
+
+&gt;<i>I am being intentionally vague since I don't want to have any specific network 
+</I>&gt;<i>architecture.
+</I>
+If you want to support arbitrary network architecture, you _definitely_ can't use multicast, at all.  Even determining if *unicast* datagrams work on an arbitrary network is a hard problem.
+
+&gt;<i>I don't want to use overlay networks, if at all possible. While they are 
+</I>&gt;<i>nice, I would prefer something a little more direct (though that might not 
+</I>&gt;<i>be possible). The reason? Direct operations are faster.
+</I>
+Sometimes.  If your topology involves an extremely well-connected overlay hub peer and a bunch of intermittently or poorly connected edge peers, direct operations can be significantly slower.  While I'm not a big fan of IRC's network architecture, the math on what happens if every client is responsible for all of their own messages on a channel of 1000 people is really eye-opening.
+
+&gt;<i>I don't particular care if it is PB, XML-RPC or SOAP as the marshalling 
+</I>&gt;<i>mechanism. I mention them since they allow me to solve one problem at a 
+</I>&gt;<i>time. I would like to build the solution a piece at a time to do some 
+</I>&gt;<i>measurements and testing. Today the underlying transport and tomorrow the 
+</I>&gt;<i>marshallings.
+</I>
+It still seems to me like this is backwards.
+
+The application can be complete, end-to-end, if you start marshalling data and sending it over a simplistic (but possibly too-expensive) mechanism.  Then, you can replace the transport as necessary later.  Preserving the semantics of the marshalling between things as radically different as XMLRPC and PB would be very hard; but as you've said, the semantics of your transport must remain identical.
+
+&gt;<i>Now let me address the issue of TCP. It is a pretty heavy protocol to use. 
+</I>&gt;<i>It takes a lot of resources on the sender and target and can take some time 
+</I>&gt;<i>to establish a connection. Opening a 1000 or more sockets consumes a lot of 
+</I>&gt;<i>resources in the underlying OS and in the Twisted client!
+</I>
+I still don't know what you mean by &quot;resources&quot;, and as compared to what.  In my experience all the alternatives to TCP end up consuming an equivalent amount of RAM and CPU time... although in some cases you might save on bandwidth.
+
+&gt;<i>If I use TCP and stick to the serial, synchronized semantics of RPC, doing 
+</I>&gt;<i>one call at a time, I have only a few ways to solve the problem. Do one call 
+</I>&gt;<i>at a time, repeat N times, and that could take quite a while.
+</I>
+I'm not sure what you mean by &quot;at a time&quot;.  The operations can be quite effectively parallelized, both by TCP and by Twisted talking to the OS: if you keep a list of all your open connections and do the naive thing, i.e., for each heartbeat:
+
+    for connection in connections:
+        connection.sendPing(timeout=30).addErrback(connection.uhOh)
+
+the initial loop will not take very long even with a very large number of connections, and Twisted will send out traffic as network conditions permit.
+
+Most importantly, you do not need to wait for any of the calls to complete to issue more calls, regardless of whether they're unicast or multicast.  This same API could be refactored internally to group together peers in the same multicast group and coalesce their pings; but you still need to do the same complexity order of work, because you have to track each peer's response individually.
+
+Finally, if all you're concerned with is clients dying, you can remove Python from the equation entirely and let the TCP stack do its thing: set SO_KEEPALIVE on all your sockets [in Twisted-ese: self.transport.setTcpKeepAlive(True)] and just wait for connectionLost to be called when a ping fails.  No user-space work _at all_, and probably pretty minimal bandwidth usage.
+
+&gt;<i>I could do M spawnProcesses and have each do N/M RPC calls.
+</I>
+Yow.  That definitely doesn't make sense unless you have a massively SMP box.
+
+&gt;<i>Or I could use M threads and do it that way.
+</I>
+... and that would basically _never_ make sense, under any conditions.  Python's GIL negates any SMP benefits, Twisted won't send network messages from threads anyway, and it would be substantially more complex.
+
+&gt;<i>Granted I have M sockets open at a time, it is possible for 
+</I>&gt;<i>this to take quite a while to execute. Performance would be terrible (and 
+</I>&gt;<i>yes I want an approach that has good to very good performance. After all who 
+</I>&gt;<i>would want poor to terrible performance?)
+</I>
+&quot;performance 'would be' terrible&quot; sounds like premature optimization to me.  At least, I have lots of experience with systems where this performance was more than good enough.  Huge massively multiplayer games use such systems and manage to deal with tens of thousands of concurrent clients per game node with (relative) ease, over the public internet, with good performance, and without breaking the bank on bandwidth.
+
+&gt;<i>So I divided the problem down to two parts. One, can I reduce the amount of 
+</I>&gt;<i>traffic on the invoking side of the RPC request? Second, is how to deal with 
+</I>&gt;<i>the response. Obviously I have to deal with the issue of failure, since RPC 
+</I>&gt;<i>semantics require EXACTLY-ONCE.
+</I>
+If you're concerned about bandwidth *as a resource of its own* then this is perhaps a legitimate concern.  But if you're concerned about reducing bandwidth as a means to increase the real-time performance of the system I don't think that it's actually going to save you a lot.  You save some bandwidth, but then you move a bunch of request/response tracking out of hardware and into Python.  Unless your new algorithm is more efficient by a large margin, and N is very big indeed (100,000 is not &quot;big&quot;, especially when you can partition it using techniques like overlay networks).
+
+&gt;<i>That leads me to the observation that on an uncongested ethernet (...)
+</I>
+&quot;uncongested ethernet&quot; implies something very concrete about your network topology.  Certainly it implies that you have enough spare bandwith that you don't need to be compressing every byte.  Want to expound? :)
+
+&gt;<i>Hope this helps cast the problem...I didn't mean to sound terse before I 
+</I>&gt;<i>just figured everyone had already thought about the problem and knew the 
+</I>&gt;<i>issues.
+</I>
+I still really don't know what the problem at hand is.  I gather it has something to do with sending a lot of traffic to a lot of peers but that is still a description of an implementation technique, not a problem.  Are you making toast?  Doing distributed testing?  Sequencing genomes?  Cracking encryption?  Writing some kind of monster distributed enterprise calendar server?  (I'm still not sure what you meant by &quot;communicating groups&quot;, above.)  Is the &quot;problem&quot; in this case to develop a generic infrastructure for some wider set of problems, like an open-source implementation of a MapReduce daemon?  If so, what are the initial problems it's expected to be applied to?  What does all this data, other than hearbteats, that you're slinging around *represent*?
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="013882.html">[Twisted-Python] Multicast XMLRPC
+</A></li>
+	<LI>Next message: <A HREF="013887.html">[Twisted-Python] Multicast XMLRPC
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#13885">[ date ]</a>
+              <a href="thread.html#13885">[ thread ]</a>
+              <a href="subject.html#13885">[ subject ]</a>
+              <a href="author.html#13885">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

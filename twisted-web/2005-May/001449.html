@@ -1,0 +1,217 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] NamedAnyError
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20NamedAnyError&In-Reply-To=427BBEDF.2040702%40divmod.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001448.html">
+   <LINK REL="Next"  HREF="001455.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] NamedAnyError</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20NamedAnyError&In-Reply-To=427BBEDF.2040702%40divmod.com"
+       TITLE="[Twisted-web] NamedAnyError">andrea at cpushare.com
+       </A><BR>
+    <I>Fri May  6 21:58:00 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001448.html">[Twisted-web] NamedAnyError
+</A></li>
+        <LI>Next message: <A HREF="001455.html">[Twisted-web] Re: NamedAnyError
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1449">[ date ]</a>
+              <a href="thread.html#1449">[ thread ]</a>
+              <a href="subject.html#1449">[ subject ]</a>
+              <a href="author.html#1449">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, May 06, 2005 at 09:00:47PM +0200, Valentino Volonghi wrote:
+&gt;<i> Stackless is a patched version of CPython that has support for
+</I>&gt;<i> microthreads, done with tasklets and greenlets.
+</I>&gt;<i> you can simulate continuations for example.
+</I>
+Ok, since this is not the official python, I wonder why it warns then,
+what I advantage would I get if I would patch python with stackless when
+using it with twisted/nevow?
+
+&gt;<i> usually stackless is used in games where there are tons of threads that
+</I>&gt;<i> it can handle without much hassles. :)
+</I>
+But still it won't scale at all in HT/multicore/smp ;). What about the
+syscalls, will they block hanging the whole thing like it would happen
+with twisted?
+
+BTW, this is my whole patch against SVN, it also switch off the warning
+in production with -W ingore, plus it adds caching and it removes the
+annoying __start_* that breaks wget. Feel free to pick whatever you find
+good enough for merging into SVN. thanks!
+
+Index: Nevow/nevow/flat/ten.py
+===================================================================
+--- Nevow/nevow/flat/ten.py	(revision 1502)
++++ Nevow/nevow/flat/ten.py	(working copy)
+@@ -37,7 +37,7 @@
+             flattener = util._namedAnyWithBuiltinTranslation(flattener)
+             forType = util._namedAnyWithBuiltinTranslation(forType)
+         except util._NamedAnyError:
+-            print &quot;NamedAnyError:&quot;, flattener, forType
++            warnings.warn('NamedAnyError: %r %r' % (flattener, forType))
+ 
+     if not isinstance(forType, interface.InterfaceClass):
+         # fix up __implements__ if it's old style
+Index: Nevow/nevow/compy.py
+===================================================================
+--- Nevow/nevow/compy.py	(revision 1502)
++++ Nevow/nevow/compy.py	(working copy)
+@@ -32,7 +32,7 @@
+             origInterface = _namedAnyWithBuiltinTranslation(origInterface)
+             interfaceClasses = [_namedAnyWithBuiltinTranslation(x) for x in interfaceClasses]
+         except _NamedAnyError, nae:
+-            print 'NamedAnyError:', nae
++            warnings.warn('NamedAnyError: %r' % nae)
+             return
+         # print &quot;_registerAdapter:&quot;,adapterFactory, origInterface, interfaceClasses
+     if 'nevow.inevow.ISerializable' in interfaceClasses or filter(
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 1502)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -31,6 +31,7 @@
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -402,6 +403,8 @@
+         self.children[name] = child
+     
+ 
++_CACHE = {}
++
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+     via the document factory (docFactory).
+@@ -415,8 +418,37 @@
+     afterRender = None
+     addSlash = None
+ 
++    cache = False
++    lifetime = -1
++    __lastCacheRendering = 0
++
+     flattenFactory = lambda self, *args: flat.flattenFactory(*args)
+ 
++    def hasCache(self, ctx):
++        if not self.cache:
++            return
++
++        _now = now() # run gettimeofday only once
++        timeout = _now &gt; self.__lastCacheRendering + self.lifetime and \
++                  self.lifetime &gt;= 0
++        c = self.lookupCache(ctx)
++        if timeout or c is None:
++            # stop other renders
++            self.__lastCacheRendering = _now
++            c = None
++        return c
++    def cacheRendered(self, ctx, c):
++        if not self.cache:
++            return
++        # overwrite the deferred with the data
++        self.storeCache(ctx, c)
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def storeCache(self, ctx, c):
++        _CACHE[self.cacheIDX(ctx)] = c
++    def lookupCache(self, ctx):
++        return _CACHE.get(self.cacheIDX(ctx))
++
+     def renderHTTP(self, ctx):
+         if self.beforeRender is not None:
+             return util.maybeDeferred(self.beforeRender,ctx).addCallback(
+@@ -441,11 +473,18 @@
+             if self.afterRender is not None:
+                 return util.maybeDeferred(self.afterRender,ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c is not None:
++            finishRequest()
++            return c
++
++        if self.buffered or self.cache:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = io.getvalue()
++                self.cacheRendered(ctx, c)
++                request.write(c)
+                 return util.maybeDeferred(finishRequest).addCallback(lambda r: result)
+         else:
+             writer = request.write
+@@ -529,7 +568,6 @@
+             else:
+                 ## Use the redirectAfterPost url
+                 ref = str(redirectAfterPost)
+-            from nevow import url
+             refpath = url.URL.fromString(ref)
+             magicCookie = '%s%s%s' % (now(),request.getClientIP(),random.random())
+             refpath = refpath.replace('_nevow_carryover_', magicCookie)
+Index: Nevow/nevow/guard.py
+===================================================================
+--- Nevow/nevow/guard.py	(revision 1502)
++++ Nevow/nevow/guard.py	(working copy)
+@@ -263,7 +263,8 @@
+         if path.startswith(SESSION_KEY):
+             key = path[len(SESSION_KEY):]
+             if key not in self.sessions:
+-                return urlToChild(request, *segments[1:], **{'__start_session__':1}), ()
++                #return urlToChild(request, *segments[1:], **{'__start_session__':1}), ()
++                return urlToChild(request, *segments[1:]), ()
+             self.sessions[key].setLifetime(self.sessionLifetime)
+             if cookie == key:
+                 # /sessionized-url/${SESSION_KEY}aef9c34aecc3d9148/foo
+@@ -271,7 +272,8 @@
+                 #                  we are this getChild
+                 # with a matching cookie
+                 self.sessions[key].sessionJustStarted = True
+-                return urlToChild(request, *segments[1:], **{'__session_just_started__':1}), ()
++                #return urlToChild(request, *segments[1:], **{'__session_just_started__':1}), ()
++                return urlToChild(request, *segments[1:]), ()
+             else:
+                 # We attempted to negotiate the session but failed (the user
+                 # probably has cookies disabled): now we're going to return the
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001448.html">[Twisted-web] NamedAnyError
+</A></li>
+	<LI>Next message: <A HREF="001455.html">[Twisted-web] Re: NamedAnyError
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1449">[ date ]</a>
+              <a href="thread.html#1449">[ thread ]</a>
+              <a href="subject.html#1449">[ subject ]</a>
+              <a href="author.html#1449">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

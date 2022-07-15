@@ -1,0 +1,167 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Should I use asynchronous programming in my	own	modules?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Should%20I%20use%20asynchronous%20programming%20in%20my%0A%09own%09modules%3F&In-Reply-To=%3C4717A01D.8040909%40gmx.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="048697.html">
+   <LINK REL="Next"  HREF="048698.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Should I use asynchronous programming in my	own	modules?</H1>
+    <B>Jürgen Strass</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Should%20I%20use%20asynchronous%20programming%20in%20my%0A%09own%09modules%3F&In-Reply-To=%3C4717A01D.8040909%40gmx.net%3E"
+       TITLE="[Twisted-Python] Should I use asynchronous programming in my	own	modules?">jrg718 at gmx.net
+       </A><BR>
+    <I>Thu Oct 18 12:04:13 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="048697.html">[Twisted-Python] Should I use asynchronous programming in my own	modules?
+</A></li>
+        <LI>Next message (by thread): <A HREF="048698.html">[Twisted-Python] Should I use asynchronous programming in my own	modules?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48703">[ date ]</a>
+              <a href="thread.html#48703">[ thread ]</a>
+              <a href="subject.html#48703">[ subject ]</a>
+              <a href="author.html#48703">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Christopher Armstrong wrote:
+&gt;<i> You don't need to make the module depend on Twisted, but you also
+</I>&gt;<i> don't need to force users to use a thread. Just make sure the library
+</I>&gt;<i> knows how to parse and process incrementally; then your asynchronous
+</I>&gt;<i> users can pass in chunks of data as they receive them and your other
+</I>&gt;<i> users can pass in everything at once. Basically, it's a matter of
+</I>&gt;<i> inverting your library's loop that would otherwise go &quot;read; process;&quot;
+</I>&gt;<i> to &quot;when process_more_data is called, process that data&quot;.
+</I>&gt;<i>   
+</I>As I already explained in my replies to Jean-Paul Calderone and Itamar 
+Shtull-Trauring, I'm not sure if I have fully understood how this works 
+in particular. The example of a parser probably wasn't well chosen, 
+because in all replies to my original posting people seem to assume that 
+I need to do something in response to an external event (e.g. I/O 
+events). Please, better think of a long running CPU bound algorithm 
+perhaps. From twisted, I'd like to start that algorithm in the 
+background and get notified when it has finished. It shouldn't ever 
+block the application for too long. In other applications, I'd like to 
+call the algorithm in a synchronous way.
+
+It is most likely that my difficulty in understanding results from the 
+fact that in such a case there is no external event that could trigger 
+the processing of the individual steps the algorithm has. The best I've 
+come up with so far uses a wrapper around a synchronous interface that 
+provides methods for calling the next step of the algorithm and for 
+testing if the algorithm has finished. What I'd like to know is if this 
+solution basically is the style one has to use when writing algorithms 
+divided into chunks and if the approach to integrate it into twisted is 
+well chosen. Also, I don't fully understand the implications this 
+programming style has on long running loops. I have the impression that 
+I would need to divide loops into several methods: loopInit, 
+loopCondition, loopNextStep and loopFinished. Is this correct?
+
+Following is my code for a counter class which also uses the wrapper 
+class I've described above. Using the wrapper class, it is possibly to 
+run several counters concurrently. The Counter class is already 
+decoupled from twisted. In case I want to use the synchronous version, 
+I'd use Counter, in case I want to use the asynchronous version with 
+deferreds, I'd use TwistedCounter.
+
+----
+
+from twisted.internet import reactor, defer
+
+class Counter:
+   def __init__( self, id, limit ):
+      self.id = id
+      self.limit = limit
+      self.count = 0
+   def limitNotReached( self ):
+      return self.count &lt; self.limit
+   def increment( self ):
+      if self.limitNotReached():
+         print &quot;Counter %d: %d&quot; % ( self.id, self.count )
+         self.count = self.count + 1
+   def run( self ):
+      while self.limitNotReached():
+         self.increment()
+        
+class TwistedCounter:
+   def __init__( self, counter ):
+      self.counter = counter
+   def run( self ):
+      self.d = defer.Deferred()
+      self.increment()
+      return self.d
+   def increment( self ):
+      if self.counter.limitNotReached():
+         self.counter.increment()
+         reactor.callLater( 0, self.increment )
+      else:
+         self.d.callback( &quot;finished&quot; )
+        
+def counters_finished( result ):
+   print &quot;  traditional counters finished.&quot;
+   reactor.stop()
+
+print &quot;-- Run traditional counter:\n&quot;
+
+traditional_c = Counter( 1, 130 )
+traditional_c.run()
+
+print &quot;\n-- Run twisted counters concurrently:\n&quot;
+
+c1 = TwistedCounter( Counter( 2, 100 ) )
+c2 = TwistedCounter( Counter( 3, 150 ) )
+d1 = c1.run()
+d2 = c2.run()
+d = defer.DeferredList( [ d1, d2 ] )
+d.addCallback( counters_finished )
+
+reactor.run()
+
+----
+
+What I can't fully imagine is if I can use this technique in all 
+possible cases. In case I need to nest calls or algorithms, I'll run 
+into the problem of not being able to call any of the asynchronous 
+wrappers from the synchronous parts of my library, because those 
+wrappers return deferreds which are part of twisted. So I'd end up with 
+two versions of my library again.
+
+Jürgen
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="048697.html">[Twisted-Python] Should I use asynchronous programming in my own	modules?
+</A></li>
+	<LI>Next message (by thread): <A HREF="048698.html">[Twisted-Python] Should I use asynchronous programming in my own	modules?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48703">[ date ]</a>
+              <a href="thread.html#48703">[ thread ]</a>
+              <a href="subject.html#48703">[ subject ]</a>
+              <a href="author.html#48703">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

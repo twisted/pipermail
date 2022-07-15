@@ -1,0 +1,176 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] SNMP support
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20SNMP%20support&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002448.html">
+   <LINK REL="Next"  HREF="002451.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] SNMP support</H1>
+    <B>Neil Blakey-Milner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20SNMP%20support&In-Reply-To="
+       TITLE="[Twisted-Python] SNMP support">nbm at mithrandr.moria.org
+       </A><BR>
+    <I>Mon Dec 23 10:26:58 EST 2002</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002448.html">[Twisted-Python] Letting me (or the list) know about stuff
+</A></li>
+        <LI>Next message: <A HREF="002451.html">[Twisted-Python] SNMP support
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2450">[ date ]</a>
+              <a href="thread.html#2450">[ thread ]</a>
+              <a href="subject.html#2450">[ subject ]</a>
+              <a href="author.html#2450">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi again,
+
+I needed SNMP (client) support for something I'm writing, and managed to
+hack my way to something that seems to work this aftenoon, based loosely
+on the DNS Boss system that was in 1.0.0.  It uses the pure-python
+pysnmp (<A HREF="http://pysnmp.sourceforge.net/">http://pysnmp.sourceforge.net/</A>) for message encoding/decoding.
+
+I don't know whether this is the best way to organise this sort of
+thing, but it seemed to be about the only way to handle UDP effectively.
+I have no idea if I should be relying on transport.getHost() to return
+the same value at send time and receive time, and different from every
+other queries.  There doesn't seem to be a way to request an ID for the
+SNMP request, but that may just be me not knowing how things work.
+
+Anyway, I'd like to know how people would like this reworked, especially
+if they can tell me how to think about it in a more twisted and/or
+pythonic way.
+
+Neil
+-- 
+Neil Blakey-Milner
+<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at mithrandr.moria.org</A>
+-------------- next part --------------
+#!/usr/local/bin/python
+#
+# Copyright (c) 2002 Neil Blakey-Milner
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+#
+
+from twisted.internet import defer, protocol, reactor, udp
+
+from pysnmp.proto import v1, v2c
+
+class SNMPBoss:
+    def __init__(self, server, version = &quot;1&quot;, community = &quot;public&quot;):
+        try:
+            snmp = eval('v' + version)
+        except (NameError, AttributeError):
+            print 'Unsupported SNMP protocol version: %s\n%s' % (version, usage)
+
+        self.snmp = snmp
+        self.community = community
+
+        self.queries = {}
+        self.server = server
+
+        self.factory = protocol.Factory()
+        self.factory.protocol = SNMPRequest
+        self.factory.boss = self
+        
+    def gotResponse(self, peerinfo, data):
+        (snmp, deferred) = self.queries[peerinfo]
+        rsp = snmp.GetResponse()
+        rsp.decode(data)
+        deferred.callback(rsp)
+
+    def makeRequest(self, oid):
+        d = defer.Deferred()
+        t = udp.Port(0, self.factory)
+        t.startListening()
+        transport = t.createConnection(self.server)
+        self.queries[t.getHost()] = (self.snmp, d)
+        transport.protocol.query(self.snmp, self.community, oid)
+        return d
+
+class SNMPRequest(protocol.Protocol):
+    def query(self, snmp, community, oid):
+        self.snmp = snmp
+        self.req = snmp.GetRequest()
+        self.req['community'].set(community)
+        self.req['pdu']['get_request']['variable_bindings'].append(snmp.VarBind(name=snmp.ObjectName(oid)))
+        self.transport.write(self.req.encode())
+
+    def dataReceived(self, answer):
+        self.factory.boss.gotResponse(self.transport.getHost(), answer)
+        self.transport.loseConnection()
+
+def success(rsp):
+    oids = map(lambda x: x['name'].get(), \
+        rsp['pdu'].values()[0]['variable_bindings'])
+    vals = map(lambda x: x['value'], \
+        rsp['pdu'].values()[0]['variable_bindings'])
+    # Print out results
+    for (oid, val) in map(None, oids, vals):
+        print oid, ' ---&gt; ', val.values()[0]
+
+def makeQuery(boss):
+    d = boss.makeRequest(&quot;1.3.6.1.2.1.2.2.1.10.2&quot;)
+    d2 = boss.makeRequest(&quot;1.3.6.1.2.1.2.2.1.10.3&quot;)
+    d.addCallback(success)
+    d2.addCallback(success)
+    reactor.callLater(5, makeQuery, (boss))
+
+def main():
+    boss = SNMPBoss((&quot;archive&quot;,161), &quot;2c&quot; )
+    reactor.callLater(1, makeQuery, (boss))
+    reactor.run()
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002448.html">[Twisted-Python] Letting me (or the list) know about stuff
+</A></li>
+	<LI>Next message: <A HREF="002451.html">[Twisted-Python] SNMP support
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2450">[ date ]</a>
+              <a href="thread.html#2450">[ thread ]</a>
+              <a href="subject.html#2450">[ subject ]</a>
+              <a href="author.html#2450">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

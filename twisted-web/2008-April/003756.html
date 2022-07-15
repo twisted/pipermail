@@ -1,0 +1,250 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: how to serve static files?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20how%20to%20serve%20static%20files%3F&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003751.html">
+   <LINK REL="Next"  HREF="003763.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: how to serve static files?</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20how%20to%20serve%20static%20files%3F&In-Reply-To="
+       TITLE="[Twisted-web] Re: how to serve static files?">db3l.net at gmail.com
+       </A><BR>
+    <I>Sat Apr 26 12:37:18 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003751.html">[Twisted-web] how to serve static files?
+</A></li>
+        <LI>Next message: <A HREF="003763.html">[Twisted-web] socket error: 22, 'Invalid argument'
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3756">[ date ]</a>
+              <a href="thread.html#3756">[ thread ]</a>
+              <a href="subject.html#3756">[ subject ]</a>
+              <a href="author.html#3756">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>inhahe &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">inhahe at gmail.com</A>&gt; writes:
+
+&gt;<i> If I want my static .html/whatever files to be gzip'd when the client
+</I>&gt;<i> supports it, does that mean I have to serve them myself and can't use
+</I>&gt;<i> static.File?
+</I>
+Not necessarily, since you can handle the gzip operation above the
+level of the static.File resource, though you may need to get slightly
+more involved in handling the request than you would otherwise.
+
+Here's what I created for one of my servers that uses twisted.web in
+order to support the gzip encoding (note some debugging prints are
+still present).  First, I have a wrapper for a Request object that
+will handle gzipping any data generated for the client that the
+Request object generates, including with a producer/consumer model
+such as that used by static.File.
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+import struct
+import zlib
+
+class GzipRequest(object):
+    &quot;&quot;&quot;Wrapper for a request that applies a gzip content encoding&quot;&quot;&quot;
+
+    def __init__(self, request, compressLevel=6):
+        self.request = request
+        self.request.setHeader('Content-Encoding', 'gzip')
+        # Borrowed from twisted.web2 gzip filter
+        self.compress = zlib.compressobj(compressLevel, zlib.DEFLATED,
+                                         -zlib.MAX_WBITS, zlib.DEF_MEM_LEVEL,0)
+
+    def __getattr__(self, attr):
+        if 'request' in self.__dict__:
+            return getattr(self.request, attr)
+        else:
+            raise AttributeError, attr
+
+    def __setattr__(self, attr, value):
+        if 'request' in self.__dict__:
+            return setattr(self.request, attr, value)
+        else:
+            self.__dict__[attr] = value
+
+    def write(self, data):
+        if not self.request.startedWriting:
+            print 'GzipRequest: Initializing'
+            self.crc = zlib.crc32('')
+            self.size = self.csize = 0
+            # XXX: Zap any length for now since we don't know final size
+            if 'content-length' in self.request.headers:
+                del self.request.headers['content-length']
+            # Borrow header information from twisted.web2 gzip filter
+            self.request.write('\037\213\010\000' '\0\0\0\0' '\002\377')
+
+        self.crc = zlib.crc32(data, self.crc)
+        self.size += len(data)
+        cdata = self.compress.compress(data)
+        self.csize += len(cdata)
+        print 'GzipRequest: ' \
+              'Writing %d bytes, %d total (%d compressed, %d total)' % \
+              (len(data),self.size,len(cdata),self.csize)
+        if cdata:
+            self.request.write(cdata)
+        elif self.request.producer:
+            # Simulate another pull even though it hasn't really made it
+            # out to the consumer yet.
+            self.request.producer.resumeProducing()
+
+    def finish(self):
+        remain = self.compress.flush()
+        self.csize += len(remain)
+        print 'GzipRequest: Finishing (size %d, compressed %d)' % (self.size,
+                                                                   self.csize)
+        if remain:
+            self.request.write(remain)
+        self.request.write(struct.pack('&lt;LL',
+                                       self.crc &amp; 0xFFFFFFFFL,
+                                       self.size &amp; 0xFFFFFFFFL))
+        self.request.finish()
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Then, when processing a request for the relevant resource, wrap the
+request in GzipRequest before any further processing in the case where
+the client headers show it can handle the gzip response (coupled with
+any logic you may wish to apply as to when you would listen to that
+client capability).
+
+For example, here's a main file retrieval resource of mine that will
+return a static file from the filesystem.  The &quot;if 0&quot; block shows how to
+apply the gzip wrapper object, and the very end shows handing control
+off to static.File to actually process the file.
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+class JobFile(Resource):
+    &quot;&quot;&quot;Return contents of a single job file, either as an attachment or
+    inline depending on the download argument at instance construction time.
+    Expects a single file_uuid on the URL.
+
+    Templates used: None
+    Cacheability: Filesystem timestamp on file
+    &quot;&quot;&quot;
+
+    # XXX: Fix so timestamp on this resource is the uploaded date from
+    #      the database and not the timestamp in the filesystem
+
+    isLeaf = True
+
+    def __init__(self, db, options, download=False):
+        self.file_root = os.path.join(options['data_root'], 'files')
+        self.download = download
+        self.wrap_aiff = options['config'].get('wrap_aiff', False)
+
+    def render_GET(self, request):
+        try:
+            job_uuid = uuid.UUID(request.postpath[0])
+        except:
+            return _Unavailable.render(request)
+
+        path = os.path.join(self.file_root, job_uuid.hex[:2], job_uuid.hex)
+
+        if self.download:
+            request.setHeader('Content-Disposition', 'attachment')
+        else:
+            request.setHeader('Content-Disposition', 'inline')
+
+        if 0:
+            # Check for a permissable gzip encoding on output and wrap the
+            # the request to use it if present
+            accept_encoding = request.getHeader('accept-encoding')
+            if accept_encoding:
+                encodings = accept_encoding.split(',')
+                for encoding in encodings:
+                    name = encoding.split(';')[0].strip()
+                    if name == 'gzip':
+                        print 'USING GZIP WRAPPER'
+                        request = GzipRequest(request)
+                        break
+
+        fname = request.postpath[-1].lower()
+        if (self.wrap_aiff and not self.download and
+            (fname.endswith('.aiff') or fname.endswith('.aif'))):
+            print 'Wrapping AIFF (%s) as MOV' % fname
+            mov_gen = aiffmov.DynamicMov(path)
+            request.setHeader('Content-Type', 'application/octet-stream')
+            
+            if setLastModified(request, os.path.getmtime(path)):
+                print '  Not processing (not modified)'
+                return ''
+
+            # Set proper size so other end can give progress (and since
+            # the FileTransfer class needs it)
+            size = mov_gen.total_size()
+            request.setHeader('Content-Length', size)
+            static.FileTransfer(mov_gen, size, request)
+            return NOT_DONE_YET
+        else:
+            file_r = static.File(path, defaultType='application/octet-stream')
+            return file_r.render(request)
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Now in this case, the file itself is served by the resource object
+above and thus I already know the direct location of the file, so I
+only wrapped the request at the point of rendering the final URL
+resource.
+
+Though I haven't done it myself yet, if you want to cover an entire
+tree of resources (so for example, you can apply it to a single
+static.File at the root directory) I would probably use my own root
+resource, and apply the gzip wrapper object in the getChild method
+rather than any of the render methods.  That way, once any request
+flows through that resource, any subsequent resource children will be
+handed the wrapped request object.  In such a case, you'd just have a
+normal static.File resource as a child to the main resource that was
+handling the wrapping.
+
+In the end, I have the wrapper disabled because my files are large
+audio/video files (thus already pretty compressed) and with the gzip
+output the client can't track the percentage completion of the
+download since the content length isn't known.  You could fix that by
+compressing it twice on the server, the first time to get the eventual
+length, or by storing a temporary compressed copy first on the server
+and then sending that, but both were resource prohibitive to me due to
+file sizes.
+
+Hopefully this may give you some hints on how to apply to your own
+case.
+
+-- David
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003751.html">[Twisted-web] how to serve static files?
+</A></li>
+	<LI>Next message: <A HREF="003763.html">[Twisted-web] socket error: 22, 'Invalid argument'
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3756">[ date ]</a>
+              <a href="thread.html#3756">[ thread ]</a>
+              <a href="subject.html#3756">[ subject ]</a>
+              <a href="author.html#3756">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

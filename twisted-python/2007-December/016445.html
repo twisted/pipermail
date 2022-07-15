@@ -1,0 +1,277 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] MultiService puzzler
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20MultiService%20puzzler&In-Reply-To=cd8fa6f90712120816u1327c60fv17df3250d8d03257%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="016444.html">
+   <LINK REL="Next"  HREF="016450.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] MultiService puzzler</H1>
+    <B>Don Smith</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20MultiService%20puzzler&In-Reply-To=cd8fa6f90712120816u1327c60fv17df3250d8d03257%40mail.gmail.com"
+       TITLE="[Twisted-Python] MultiService puzzler">donwsmith at gmail.com
+       </A><BR>
+    <I>Wed Dec 12 12:10:31 EST 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="016444.html">[Twisted-Python] MultiService puzzler
+</A></li>
+        <LI>Next message: <A HREF="016450.html">[Twisted-Python] MultiService puzzler
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16445">[ date ]</a>
+              <a href="thread.html#16445">[ thread ]</a>
+              <a href="subject.html#16445">[ subject ]</a>
+              <a href="author.html#16445">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thanks for your response, Christian!
+
+However, this still does not work and I think it is related to the
+StompClientFactory and the StompProtocol I'm using. I'm including those at
+the end of this email so you can see what they do.
+
+I changed my GetUDP class to this:
+
+class GetUDP(DatagramProtocol):
+
+    def datagramReceived(self, datagram, address):
+        print datagram,address
+        #Send datagram to the queue server
+        stompclient.send(datagram)
+
+And I changed the instantiation to what you gave me, but I get this error
+when I get a UDP packet:
+
+        File &quot;Agent_service_test.py&quot;, line 103, in datagramReceived
+          stompclient.send(datagram)
+      exceptions.NameError: global name 'stompclient' is not defined
+
+
+Here are my stomp classes:
+
+class StompProtocol(Protocol, stomper.Engine):
+
+    def __init__(self, username='', password='', queue=''):
+        stomper.Engine.__init__(self)
+        self.username = username
+        self.password = password
+        self.counter = 1
+        self.log = logging.getLogger(&quot;sender&quot;)
+        self.queue = queue
+
+    def connected(self, msg):
+        &quot;&quot;&quot;Once I've connected I want to subscribe to the message queue.
+        &quot;&quot;&quot;
+        stomper.Engine.connected(self, msg)
+
+        #self.log.info(&quot;Connected: session %s. Begining say hello.&quot; %
+msg['headers']['session'])
+        #lc = LoopingCall(self.send)
+        #lc.start(1)
+
+        f = stomper.Frame()
+        f.unpack(stomper.subscribe(self.queue))
+
+        # ActiveMQ specific headers:
+        #
+        # prevent the messages we send comming back to us.
+        f.headers['activemq.noLocal'] = 'true'
+
+        return f.pack()
+
+
+    def ack(self, msg):
+        &quot;&quot;&quot;Processes the received message. I don't need to
+        generate an ack message.
+
+        &quot;&quot;&quot;
+        self.log.info(&quot;SENDER - received: %s &quot; % msg['body'])
+        return stomper.NO_REPONSE_NEEDED
+
+
+    def send(self):
+        &quot;&quot;&quot;Send out a hello message periodically.
+        &quot;&quot;&quot;
+        self.log.info(&quot;Saying hello (%d).&quot; % self.counter)
+        self.counter += 1
+
+        f = stomper.Frame()
+        f.unpack(stomper.send(self.queue, 'hello there (%d)' % self.counter
+))
+
+        # ActiveMQ specific headers:
+        #
+        f.headers['persistent'] = 'true'
+
+        self.transport.write(f.pack())
+
+
+    def connectionMade(self):
+        &quot;&quot;&quot;Register with stomp server.
+        &quot;&quot;&quot;
+        cmd = stomper.connect(self.username, self.password)
+        self.transport.write(cmd)
+
+
+    def dataReceived(self, data):
+        &quot;&quot;&quot;Data received, react to it and respond if needed.
+        &quot;&quot;&quot;
+        msg = stomper.unpack_frame(data)
+
+        returned = self.react(msg)
+
+        if returned:
+            self.transport.write(returned)
+
+class StompClientFactory(ReconnectingClientFactory):
+    def __init__(self, username='', password='',
+queue='',queue_type='',config=''):
+        self.username=username
+        self.password=password
+        self.queue=queue
+        self.queue_type=queue_type
+        self.config_file=config
+
+
+    def buildProtocol(self, addr):
+        if self.queue_type =='config':
+            return ConfigurationProtocol(self.queue,self.config_file,
+self.username, self.password)
+        else:
+            return StompProtocol(self.username, self.password, self.queue)
+
+    def clientConnectionLost(self, connector, reason):
+        &quot;&quot;&quot;Lost connection
+        &quot;&quot;&quot;
+        print 'Lost connection.  Reason:', reason
+
+
+    def clientConnectionFailed(self, connector, reason):
+        &quot;&quot;&quot;Connection failed
+        &quot;&quot;&quot;
+        print 'Connection failed. Reason:', reason
+        ReconnectingClientFactory.clientConnectionFailed(self, connector,
+reason)
+
+On Dec 12, 2007 8:16 AM, Christian Simms &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">christian.simms at gmail.com</A>&gt; wrote:
+
+&gt;<i> On Dec 12, 2007 12:08 AM, Don Smith &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">donwsmith at gmail.com</A>&gt; wrote:
+</I>&gt;<i> &gt; Hi all,
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I'm trying to build an app using MultiService. I need to have 2
+</I>&gt;<i> services,
+</I>&gt;<i> &gt; one that listens for UDP datagrams and another that can send those
+</I>&gt;<i> datagrams
+</I>&gt;<i> &gt; to an ActiveMQ server via a Stomp client.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I can set up the two services just fine, but I'm stuck with how to call
+</I>&gt;<i> the
+</I>&gt;<i> &gt; MQ service send method from the UDPServer instance.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Some code to illustrate:
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; class GetUDP(DatagramProtocol):
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;     def datagramReceived(self, datagram, address):
+</I>&gt;<i> &gt;         print datagram,address
+</I>&gt;<i> &gt;         #Send datagram to the queue server
+</I>&gt;<i> &gt;         # I don't know how to access the send method for the Stomp
+</I>&gt;<i> client
+</I>&gt;<i> &gt; service!
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; testq = internet.TCPClient(APPVARIABLES['queue_server'],
+</I>&gt;<i> &gt; int(APPVARIABLES['queue_port']), connections.StompClientFactory
+</I>&gt;<i> &gt; (username='',password='',queue='/queue/test'))
+</I>&gt;<i> &gt; testq.setName('Testq')
+</I>&gt;<i> &gt; testq.setServiceParent(MQService)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; #create a UDP listener
+</I>&gt;<i> &gt; #TODO: this should be driven by the config file
+</I>&gt;<i> &gt; #reactor.listenUDP(42000, GetUDP())
+</I>&gt;<i> &gt; internet.UDPServer(42000,GetUDP()).setServiceParent(MQService)
+</I>&gt;<i> &gt; # Create an application as normal
+</I>&gt;<i> &gt; application = service.Application(&quot;MQExample&quot;)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; # Connect our MultiService to the application, just like a normal
+</I>&gt;<i> service.
+</I>&gt;<i> &gt; MQService.setServiceParent(application)
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Note: this is won't run exactly as is, but should give an idea of my
+</I>&gt;<i> &gt; problem. I've setup the ActiveMQ Stomp client as 'testq'. I've setup the
+</I>&gt;<i> &gt; UDPServer service to listen for UDP packets. I can get the UDP packets
+</I>&gt;<i> and
+</I>&gt;<i> &gt; print them, but I can't figure out how to hand them to my Stomp client's
+</I>&gt;<i> &gt; send() method. This is possible, right?
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Thanks,
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Don
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; _______________________________________________
+</I>&gt;<i> &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i>
+</I>&gt;<i> The answer is really easy -- you don't need any twisted magic to do
+</I>&gt;<i> this, you just need to use standard Python mechanisms.  Your UDP
+</I>&gt;<i> listener, when it receives some data, just needs a Python reference to
+</I>&gt;<i> your Stomp client. You could have stuffed a reference to the Stomp
+</I>&gt;<i> client in a module global variable (naughty!), or better, you could
+</I>&gt;<i> have stuffed it in an attribute of your GetUDP object. So you could
+</I>&gt;<i> change this line:
+</I>&gt;<i>
+</I>&gt;<i>   internet.UDPServer(42000,GetUDP()).setServiceParent(MQService)
+</I>&gt;<i>
+</I>&gt;<i> to these lines:
+</I>&gt;<i>
+</I>&gt;<i>   udpService = GetUDP()
+</I>&gt;<i>   udpService.stompClient = testq  # stuff it in!
+</I>&gt;<i>   internet.UDPServer(42000,udpService).setServiceParent(MQService)
+</I>&gt;<i>
+</I>&gt;<i> Cheers,
+</I>&gt;<i> Christian
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20071212/6d88ac3d/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20071212/6d88ac3d/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="016444.html">[Twisted-Python] MultiService puzzler
+</A></li>
+	<LI>Next message: <A HREF="016450.html">[Twisted-Python] MultiService puzzler
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16445">[ date ]</a>
+              <a href="thread.html#16445">[ thread ]</a>
+              <a href="subject.html#16445">[ subject ]</a>
+              <a href="author.html#16445">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

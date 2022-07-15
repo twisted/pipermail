@@ -1,0 +1,127 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] logging
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20logging&In-Reply-To=%3C8741E998-D2B2-4F65-BB42-6D61779E7A8B%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] logging</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20logging&In-Reply-To=%3C8741E998-D2B2-4F65-BB42-6D61779E7A8B%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] logging">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Thu Jun 13 16:14:36 MDT 2013</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59516">[ date ]</a>
+              <a href="thread.html#59516">[ thread ]</a>
+              <a href="subject.html#59516">[ subject ]</a>
+              <a href="author.html#59516">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello everybody. Today I'd like to talk about everyone's favorite subsystem within Twisted: logging.
+
+There are a number of problems with Twisted's logging system.
+
+The general theme of these problems is that Twisted log system was designed with some intended use-cases in mind, but its implementation was stopped halfway through and none of those use-cases were really well satisfied.
+
+At various conferences, and in person at various times, we've gotten together to express frustration at the logging system, but I don't think that the problems with it have ever been really thoroughly written down.
+
+Wilfredo has been working on logging here: <A HREF="http://trac.calendarserver.org/browser/CalendarServer/trunk/twext/python/log.py.">http://trac.calendarserver.org/browser/CalendarServer/trunk/twext/python/log.py.</A> This began as an attempt to just address some issues with our own logging wrappers, but has been growing into a design that is more fully capable of replacing logging within Twisted wholesale. I hope one of us can contribute it to Twisted soon, but in the meanwhile, please feel free to provide feedback - hopefully if some people can provide a bit of informal feedback now, the formal review process can be shorter and more pleasant :).
+
+Now, back to some explanation of the current problems.
+
+The main intended use-case for Twisted's logging system is to avoid doing unnecessary work in the case where it is not required. One of the reasons we even still have our own logging system is that the stdlib logging module is notorious for doing too much work per log message, and doing it too prematurely.
+
+One aspect of this is that logging would just use the existing 'kwargs' dictionary as its message type, and not actually do any formatting; that is, string-copying, until the message was logged. On Python 1.5.2, that meant no need to allocate anything since the interpreter needed a dict for the kwargs anyway! Woohoo premature optimization! Obviously, at least on PyPy, that optimization is no longer relevant (and we don't have performance tests for logging anyway). But, I don't think we should change that because a dict is still a good object for the sort of extensibility that log messages need.
+
+But, we have never written any filtering logic, nor have we instrumented any of our existing log messages with formatting stuff. Every message with a format string just goes to the log.
+
+For a long time, there's been consensus among at least a few core Twisted developers that log messages ought to be specified in terms of a format message and several relevant keyword arguments, so that tools can extract the values of the keyword arguments without parsing ad-hoc messages or using regexes. In other words, like this:
+
+log.msg(format=&quot;Foo happened. Relevant information includes: &quot;
+                &quot;bar=%(bar)s baz=%(baz)s boz=%(boz)s&quot;,
+                bar=bar, baz=baz, boz=boz)
+
+Yet, nothing within Twisted itself does this. There's a bit of a chicken and egg problem: since we have no tools for filtering log messages based on their structured values, there's no obvious motivation to break the structured contents of a message out into those values. And since no messages break out their values into nice structured fields, there's no motivation to write filtering tools that inspect those fields.
+
+And, even if we did have filtering, we don't have a facility to easily defer work. You could, of course, just do something like this:
+
+class GenerateOnlyIfNeeded(object):
+    def __str__(self):
+        return doSomethingExpensiveToGenerateAString()
+log.msg(format=&quot;debugging: %(expensive)s&quot;,
+        logLevel=debug, expensive=GenerateOnlyIfNeeded())
+
+But that's an awful lot of thinking for a single log message, not to mention the temporary class and the method you needed to allocate. Such deferral of work should be easy.
+
+And, speaking of the things that one might filter on, log messages don't typically include information about what module and class they're from; or, for that matter, what object is logging them. This information should be included by default in idiomatic usage of the API, so that a filtering system can inspect them.
+
+Another reason that we - both Twisted itself and Twisted users - don't typically pass keyword arguments and a format string, is that the default argument to msg is, simply, a &quot;message&quot;. (It also does a dumb thing where it tries to emulate the argument-passing convention of 'print' and stringify its arguments and join them with spaces; we should get rid of that.) Instead, that argument always ought to be a format string.
+
+We should also have a log writer within Twisted that preserves structure, and dumps the logs using JSON (or similar, perhaps more than one of these; AMP would be another good thing).
+
+It's also not possible to use format strings when you are writing an error log message in Twisted; instead, 'why' is treated completely differently than 'message'. The 'why' argument to 'err', which should be mandatory (what were you doing when you tried to log a message?) is optional, which means that error messages are even more inscrutable.
+
+The portions of the dictionary used by the logging system are not namespaced in any way, even by convention. Therefore it's easy for a user to conflict with the keys used by the system. If users of Twisted actually used the system as intended more pervasively, I'm pretty sure that we would end up seeing people conflict with 'time' and 'system' arguments often.
+
+Speaking of those keys: the 'time' key is unconditionally overwritten by log.msg, which means that re-publishing an event that happened previously is destructive; there's no way to track historical time.
+
+Messages logged before the logging system starts are just lost. It would be good for the initial log observer to keep a (limited-size, of course) buffer of log messages which could be dumped upon failing. This would make it easier, for example, to debug tap plugins that use the log system to report something about their state during makeService. (And, as the maintainer of a phenomenally complex makeService, I can tell you that this would definitely be helpful.)
+
+The naming of methods is bad and confusing. msg? err? Easy to type, but hard to understand. We could have equally short names that are not confusing.
+
+The contract between parts of the system is poorly specified. For example, trial -j has a hard time with log output that includes any non-bytes keys. I imagine this will only become worse when trial actually supports Python 3.
+
+And speaking of encoding, the log system is written in terms of bytes instead of in terms of unicode. Now, there's good reason to be particularly permissive of garbage data in the logging system (logging a message should never provoke an error), but at some point - probably before the data gets to user-written observers - everything should be normalized into a structure that has enough properties that the user can depend on it.
+
+On that note, when presented with unicode encoding errors, Twisted's logger will directly raise an exception back to application code, something that it will otherwise only do when presented with KeyboardInterrupt. That I just don't understand.
+
+We use old, semi-deprecated '%' formatting style. If we're going to introduce a new API, we should use PEP 3101 formatting; in addition to being new and improved instead of old and inferior, it's a lot easier to type {foo} correctly than to type %(foo)s without forgetting the s.
+
+The whole LogContext thing is poorly designed. Mea culpa; this was entirely my fault. One problem with its design was that it was somewhat poorly explained, and so its intent has not carried over years of maintenance. The idea was supposed to be that every event-source within Twisted would provide a useful system key, which would indicate what event-source object (TCP connection, listening port, timed event, UDP port) was being activated when the given message was logged. However, a lot of factors conspire to make this information less than useful. For one thing, especially in database-backed applications, or those that are careful about rate-limiting or flow-control, nothing ever happens except in response to a callFromThread or a callLater; this means that the system argument is always &quot;-&quot;. I think that the feature this is trying to support needs to be fundamentally re-thought (and in the intervening decade I've had a lot of ideas about how it might work better). Maybe we can build on some of Chris Armstrong's recent work on Deferred debugging in tracking asynchronous context in Deferreds to help identify the real cause(s) of work being executed.
+
+OK, I think that's it for now.
+
+(NB: The implementation linked above doesn't address all of the issues I've enumerated in this message, and I don't think that it should address every single one of them before being added to Twisted; writing this one message took me long enough, but we should possibly also discuss which ones are fundamental issues with the logging system and which are features that should be considered separately.)
+
+-glyph
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20130613/508ef7ee/attachment-0002.html&gt;
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59516">[ date ]</a>
+              <a href="thread.html#59516">[ thread ]</a>
+              <a href="subject.html#59516">[ subject ]</a>
+              <a href="author.html#59516">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

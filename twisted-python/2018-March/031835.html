@@ -1,0 +1,172 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Waiting for a contended resource
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Waiting%20for%20a%20contended%20resource&In-Reply-To=%3C910511f9-cd97-203e-561f-bd8a6542032e%40matrix.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="031834.html">
+   <LINK REL="Next"  HREF="031842.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Waiting for a contended resource</H1>
+    <B>Richard van der Hoff</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Waiting%20for%20a%20contended%20resource&In-Reply-To=%3C910511f9-cd97-203e-561f-bd8a6542032e%40matrix.org%3E"
+       TITLE="[Twisted-Python] Waiting for a contended resource">richard at matrix.org
+       </A><BR>
+    <I>Mon Mar 12 16:56:42 MDT 2018</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="031834.html">[Twisted-Python] Waiting for a contended resource
+</A></li>
+        <LI>Next message (by thread): <A HREF="031842.html">[Twisted-Python] New member of the twisted/twisted-contributors	team.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#31835">[ date ]</a>
+              <a href="thread.html#31835">[ thread ]</a>
+              <a href="subject.html#31835">[ subject ]</a>
+              <a href="author.html#31835">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thank you for all for all the answers so far, particularly to Ilya and 
+Jean-Paul who provided some very helpful code samples.
+
+It's interesting to realise that, by avoiding locking, we can end up 
+with a much more efficient implementation. I'll have to figure out how 
+widely we can apply this technique - and how often it's going to be 
+worth rewriting things to allow that. Thanks for some useful pointers!
+
+Richard
+
+
+On 12/03/18 20:00, Jean-Paul Calderone wrote:
+&gt;<i> On Mon, Mar 12, 2018 at 3:52 PM, Ilya Skriblovsky 
+</I>&gt;<i> &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ilyaskriblovsky at gmail.com</A> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ilyaskriblovsky at gmail.com</A>&gt;&gt; wrote:
+</I>&gt;<i>
+</I>&gt;<i>     Hi, Richard,
+</I>&gt;<i>
+</I>&gt;<i>     I've used class like this to cache the result of Expensive
+</I>&gt;<i>     Calculation:
+</I>&gt;<i>
+</I>&gt;<i>     class DeferredCache:
+</I>&gt;<i>     pending = None
+</I>&gt;<i>     result = None
+</I>&gt;<i>     failure = None
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self, expensive_func):
+</I>&gt;<i>       self.expensive_func = expensive_func
+</I>&gt;<i>
+</I>&gt;<i>     def __call__(self):
+</I>&gt;<i>       if self.pending is None:
+</I>&gt;<i>           def on_ready(result):
+</I>&gt;<i>               self.result = result
+</I>&gt;<i>           def on_fail(failure):
+</I>&gt;<i>               self.failure = failure
+</I>&gt;<i>
+</I>&gt;<i>           self.pending =
+</I>&gt;<i>     defer.maybeDeferred(self.expensive_func).addCallbacks(on_ready,
+</I>&gt;<i>     on_fail)
+</I>&gt;<i>
+</I>&gt;<i>       return self.pending.addCallback(self._return_result)
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> This seems like basically a correct answer to me. However, I suggest 
+</I>&gt;<i> one small change.
+</I>&gt;<i>
+</I>&gt;<i> You probably want to create and return a new Deferred for each 
+</I>&gt;<i> result.  If you don't, then your internal `pending` Deferred is now 
+</I>&gt;<i> reachable by application code.
+</I>&gt;<i>
+</I>&gt;<i> As written, an application might (very, very reasonably):
+</I>&gt;<i>
+</I>&gt;<i>     d = getResource()
+</I>&gt;<i>     d.addCallback(long_async_operation)
+</I>&gt;<i>
+</I>&gt;<i> Now `pending` has `long_async_operation` as a callback on its chain.  
+</I>&gt;<i> This will prevent anyone else from getting a result until 
+</I>&gt;<i> `long_async_operation` is done.
+</I>&gt;<i>
+</I>&gt;<i> You can fix this by:
+</I>&gt;<i>
+</I>&gt;<i>     result = Deferred()
+</I>&gt;<i> self.pending.addCallback(self._return_result).chainDeferred(result)
+</I>&gt;<i>     return result
+</I>&gt;<i>
+</I>&gt;<i> Now the application can only reach `result`.  Nothing they do to 
+</I>&gt;<i> `result` will make much difference to `pending` because 
+</I>&gt;<i> `chainDeferred` only puts `callback` (and `errback`) onto `pending`'s 
+</I>&gt;<i> callback chain.  `callback` and `errback` don't wait on anything.
+</I>&gt;<i>
+</I>&gt;<i> You have to be a little careful with `chainDeferred` because it 
+</I>&gt;<i> doesn't have the recursion-avoidance logic that implicit chaining 
+</I>&gt;<i> has.  However, that doesn't matter in this particular case because the 
+</I>&gt;<i> chain depth is fixed at two (`pending` and `result`).  The problems 
+</I>&gt;<i> only arise if you extend the chain out in this direction without bound.
+</I>&gt;<i>
+</I>&gt;<i> Jean-Paul
+</I>&gt;<i>
+</I>&gt;<i>     def _return_result(self, _):
+</I>&gt;<i>       return self.failure or self.result
+</I>&gt;<i>
+</I>&gt;<i>     Using it you can get rid of DeferredLocks:
+</I>&gt;<i>
+</I>&gt;<i>         deferred_cache = DeferredCache(do_expensive_calculation)
+</I>&gt;<i>
+</I>&gt;<i>         def getResource():
+</I>&gt;<i>             return deferred_cache()
+</I>&gt;<i>
+</I>&gt;<i>     It will start `expensive_func` on the first call. The second and
+</I>&gt;<i>     consequtive calls will return deferreds that resolves with the
+</I>&gt;<i>     result when expensive_func is done. If you call it when result is
+</I>&gt;<i>     already here, it will return alread-fired deferred.
+</I>&gt;<i>
+</I>&gt;<i>     Of course, it will require some more work if you need to pass
+</I>&gt;<i>     arguments to `expensive_func` and memoize results per arguments
+</I>&gt;<i>     values.
+</I>&gt;<i>
+</I>&gt;<i>     -- ilya
+</I>&gt;<i>
+</I>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20180312/7d6bca68/attachment.html&gt;
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="031834.html">[Twisted-Python] Waiting for a contended resource
+</A></li>
+	<LI>Next message (by thread): <A HREF="031842.html">[Twisted-Python] New member of the twisted/twisted-contributors	team.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#31835">[ date ]</a>
+              <a href="thread.html#31835">[ thread ]</a>
+              <a href="subject.html#31835">[ subject ]</a>
+              <a href="author.html#31835">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

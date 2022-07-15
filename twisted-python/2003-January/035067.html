@@ -1,0 +1,197 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] cReactor fixes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20cReactor%20fixes&In-Reply-To=%3C20030105.143410.28796355.warner%40lothar.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035063.html">
+   <LINK REL="Next"  HREF="035068.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] cReactor fixes</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20cReactor%20fixes&In-Reply-To=%3C20030105.143410.28796355.warner%40lothar.com%3E"
+       TITLE="[Twisted-Python] cReactor fixes">warner at lothar.com
+       </A><BR>
+    <I>Sun Jan  5 15:34:10 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035063.html">[Twisted-Python] stale link
+</A></li>
+        <LI>Next message (by thread): <A HREF="035068.html">[Twisted-Python] cReactor fixes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35067">[ date ]</a>
+              <a href="thread.html#35067">[ thread ]</a>
+              <a href="subject.html#35067">[ subject ]</a>
+              <a href="author.html#35067">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi all..
+
+For some reason not yet entirely clear to me, I started to put some time
+into bringing cReactor up to date. My hope was to make it functional enough
+to pass the full test suite. At the moment, it fails 120 of the 413 tests in
+the suite (that doesn't include test_threads, which I had to disable to
+prevent the test suite from hanging forever).
+
+In tracking down the reasons for these failures, I've come across a number
+of places where the reactor interface (as defined by IReactorCore and
+friends in twisted.internet.interfaces) was ambiguous about something, and
+the default reactor has implemented different functionality than the
+cReactor. Several tests have come to rely upon default.py's implementation,
+and fail when run under cReactor even though it appears to implement the
+same interface.
+
+To resolve these, we need to nail down the ambiguities in the Interface, so
+that all reactors can implement the same thing. The two issues I've
+encountered so far:
+
+ IReactorCore.addSystemEventTrigger()   [1 test failure]
+
+  The interface mentions three (startup, shutdown, persist) as examples of
+  &quot;system events&quot;, and says they will be fired internally by the Reactor. It
+  also says:
+
+        An implementor of this interface must only implement those events
+        described here.
+
+  The cReactor implements this literally, and refuses to accept calls to
+  addSystemEventTrigger or fireSystemEvent with event names outside of
+  ['startup', 'shutdown', 'persist']. The default reactor (and the ones that
+  inherit system event code from it, which is all of them except cReactor)
+  use a dict for the events, and therefore accept any string as a system
+  event type. test_internet.InterfaceTestCase.testTriggerSystemEvent creates
+  several new event types (&quot;test&quot;, &quot;defer&quot;, &quot;remove&quot;) and runs tests with
+  them. This test thus fails under cReactor.
+
+  RESOLUTION: I think we decided that cReactor should accept arbitrary event
+  names, and I'm working on code to implement that. That restrictive
+  sentence should be removed from the docs. I'd also like to see a better
+  explanation of what event types will be fired by whom: if the API allows
+  an arbitrary string, but the Reactor will only fire &quot;startup&quot; and
+  &quot;shutdown&quot; for you, then you have to know that it is your own
+  responsibility to fire the new triggers that you've added.
+
+
+ IReactorCore.stop() [38 test failures]
+
+  The interface description for .stop and .crash make the claim that once
+  the Reactor is shut down with .stop(), it may not be restarted with
+  .run(). Reactors which have been stopped with .crash() *may* be restarted.
+
+  cReactor implements this literally. Once reactor.stop() has been called,
+  the reactor is moved into a state from which .run() and .iterate() raise a
+  RuntimeError &quot;the reactor is shut down!&quot; exception. The default reactor
+  does not enforce this: .run and .stop may be called as many times as you
+  like.
+
+  All tests in a given invocation of bin/trial or admin/runtests are
+  executed with the same Reactor instance. Indeed everything done by a
+  single python process is performed with the same Reactor instance. Normal
+  apps don't care: they start the reactor in main() or under twistd, and it
+  runs until the app shuts down. The tests, however, start and stop the
+  reactor all the time, generally once per test case.
+
+  Under cReactor, the first test to do reactor.stop() will terminate the
+  reactor permanently, causing failures of all later tests that attempt
+  reactor.run() or reactor.iterate(). This also tends to kill tests which
+  re-bind to the same port multiple times, as the reactor.iterate() needed
+  to release the port fails, leaving the port bound, causing a &quot;Address
+  already in use&quot; error on the second test.
+
+  POTENTIAL RESOLUTION: We need to decide whether the default reactor should
+  obey the restriction defined by IReactorCore, or whether the interface
+  (and cReactor) should be changed to match the behavior of the default
+  reactor.
+
+  Another possibility which might be easier to implement would be to enforce
+  the no-restart restriction, but also create IReactorCore.reset(), and
+  declare that it will return the reactor to the state it had at boot time,
+  allowing .run() to be called on it once again. This method would also
+  remove all DelayedCall events, remove any TCP/UDP sockets or listening
+  ports, delete any systemEventTriggers that were added, and generally get
+  rid of any other state which might have accumulated since startup. We
+  could have the test suite use this to reset the reactor just after each
+  test.
+
+
+The other test failures are the result of functionality that is missing from
+cReactor. In general, cReactor has not been maintained as new features were
+added to the other reactors. Here is a summary of all the failures. (note
+that some tests fail for multiple reasons).
+
+ IReactorTCP.connectTCP [8 failures]
+  client support (outbound sockets) is missing
+
+ IListeningPort.getHost [22 failures]
+  simple missing function, mostly used to determine the port number of a
+  system-selected listening port
+
+ IReactorProcess [9 failures]
+  launching child processes is unimplemented 
+
+ rebuild attempts: missing __dict__ [5 failures]
+  twisted.python.rebuild attempts to rebuild a C module with no .__dict__
+
+ IReactorMulticast [5 failures]
+  multicast support is not implemented
+
+ IReactorUDP [23 failures]
+  UDP support is unimplemented
+
+ IReactorCore.addSystemEventTrigger()   [1 test failure]
+
+ IReactorCore.stop() [38 test failures]
+
+
+Some of these aren't hard to fix: IListeningPort.getHost should only take a
+few lines, connectTCP is pretty straightforward, and IReactorUDP should be a
+fairly easy cut-and-paste job from the TCP code. But others are tricky:
+IReactorProcess is fairly high-level, and IReactorMulticast might be relying
+upon some portability code in the python socket module that wouldn't be
+available at the C layer.
+
+I think it is now pretty clear what work needs to be done. Everyone is
+welcome to take a crack at it :). I will probably finish the getDelayedCall
+and addSystemEventTrigger changes I'm working on, commit them, and then let
+others pursue the pieces that are useful to them. (the default reactor is
+currently good enough for my needs; I only put this much time into cReactor
+because I wanted to understand the test failures well enough to know that my
+changes weren't the cause).
+
+cheers,
+ -Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035063.html">[Twisted-Python] stale link
+</A></li>
+	<LI>Next message (by thread): <A HREF="035068.html">[Twisted-Python] cReactor fixes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35067">[ date ]</a>
+              <a href="thread.html#35067">[ thread ]</a>
+              <a href="subject.html#35067">[ subject ]</a>
+              <a href="author.html#35067">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,130 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: [Twisted-commits] Today is screw with twisted's guts day.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20%5BTwisted-commits%5D%20Today%20is%20screw%20with%20twisted%27s%20guts%20day.&In-Reply-To=%3C20031120005319.GM32299%40frobozz%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="039003.html">
+   <LINK REL="Next"  HREF="039008.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: [Twisted-commits] Today is screw with twisted's guts day.</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20%5BTwisted-commits%5D%20Today%20is%20screw%20with%20twisted%27s%20guts%20day.&In-Reply-To=%3C20031120005319.GM32299%40frobozz%3E"
+       TITLE="[Twisted-Python] Re: [Twisted-commits] Today is screw with twisted's guts day.">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Wed Nov 19 17:53:19 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="039003.html">[Twisted-Python] Re: Browser oddities and Woven... (Thomas Raschbacher)
+</A></li>
+        <LI>Next message (by thread): <A HREF="039008.html">[Twisted-Python] Re: [Twisted-commits] Today is screw with twisted's guts day.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39007">[ date ]</a>
+              <a href="thread.html#39007">[ thread ]</a>
+              <a href="subject.html#39007">[ subject ]</a>
+              <a href="author.html#39007">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, Nov 19, 2003 at 02:07:39PM -0700, exarkun CVS wrote:
+&gt;<i> Index: Twisted/twisted/internet/base.py
+</I>&gt;<i> diff -u Twisted/twisted/internet/base.py:1.67 Twisted/twisted/internet/base.py:1.68
+</I>&gt;<i> --- Twisted/twisted/internet/base.py:1.67	Fri Oct 24 12:45:58 2003
+</I>&gt;<i> +++ Twisted/twisted/internet/base.py	Wed Nov 19 14:07:38 2003
+</I>&gt;<i> @@ -400,12 +400,12 @@
+</I>&gt;<i>          &quot;&quot;&quot;Run all pending timed calls.
+</I>&gt;<i>          &quot;&quot;&quot;
+</I>&gt;<i>          if self.threadCallQueue:
+</I>&gt;<i> -            for i in range(len(self.threadCallQueue)):
+</I>&gt;<i> -                callable, args, kw = self.threadCallQueue.pop(0)
+</I>&gt;<i> +            for (f, a, kw) in self.threadCallQueue:
+</I>&gt;<i>                  try:
+</I>&gt;<i> -                    callable(*args, **kw)
+</I>&gt;<i> +                    f(*a, **kw)
+</I>&gt;<i>                  except:
+</I>&gt;<i> -                    log.deferr()
+</I>&gt;<i> +                    log.err()
+</I>&gt;<i> +            del self.threadCallQueue[:]
+</I>&gt;<i>          now = time()
+</I>&gt;<i>          while self._pendingTimedCalls and (self._pendingTimedCalls[-1].time &lt;= now):
+</I>&gt;<i>              call = self._pendingTimedCalls.pop()
+</I>
+I think this change introduces a race condition.  It's possible for a thread
+to call callFromThread between the end of the for loop and the del
+statement.
+
+(callFromThread is defined as:
+    def callFromThread(self, f, *args, **kw):
+        &quot;&quot;&quot;See twisted.internet.interfaces.IReactorThreads.callFromThread.
+        &quot;&quot;&quot;
+        assert callable(f), &quot;%s is not callable&quot; % f
+        if threadable.isInIOThread():
+            self.callLater(0, f, *args, **kw)
+        else:
+            # lists are thread-safe in CPython, but not in Jython
+            # this is probably a bug in Jython, but until fixed this code
+            # won't work in Jython.
+            self.threadCallQueue.append((f, args, kw))
+            self.wakeUp()
+)
+
+So I think it's possible to lose thread calls.  I *think* this patch will
+fix it, but more eyeballs are always welcome with threaded code:
+
+diff -u -r1.68 base.py
+--- twisted/internet/base.py    19 Nov 2003 21:07:38 -0000      1.68
++++ twisted/internet/base.py    20 Nov 2003 00:52:08 -0000
+@@ -400,12 +400,14 @@
+         &quot;&quot;&quot;Run all pending timed calls.
+         &quot;&quot;&quot;
+         if self.threadCallQueue:
++            count = 0
+             for (f, a, kw) in self.threadCallQueue:
+                 try:
+                     f(*a, **kw)
+                 except:
+                     log.err()
+-            del self.threadCallQueue[:]
++                count += 1
++            del self.threadCallQueue[:count]
+         now = time()
+         while self._pendingTimedCalls and (self._pendingTimedCalls[-1].time &lt;= now):
+             call = self._pendingTimedCalls.pop()
+
+
+-Andrew.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="039003.html">[Twisted-Python] Re: Browser oddities and Woven... (Thomas Raschbacher)
+</A></li>
+	<LI>Next message (by thread): <A HREF="039008.html">[Twisted-Python] Re: [Twisted-commits] Today is screw with twisted's guts day.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39007">[ date ]</a>
+              <a href="thread.html#39007">[ thread ]</a>
+              <a href="subject.html#39007">[ subject ]</a>
+              <a href="author.html#39007">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

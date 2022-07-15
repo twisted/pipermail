@@ -1,0 +1,214 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Application Design help - Concurrent but not	Protocols based.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Application%20Design%20help%20-%20Concurrent%20but%20not%0A%09Protocols%20based.&In-Reply-To=20090603162527.GA15317%40ubuntu.ubuntu-domain">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="019757.html">
+   <LINK REL="Next"  HREF="019787.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Application Design help - Concurrent but not	Protocols based.</H1>
+    <B>John Santos</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Application%20Design%20help%20-%20Concurrent%20but%20not%0A%09Protocols%20based.&In-Reply-To=20090603162527.GA15317%40ubuntu.ubuntu-domain"
+       TITLE="[Twisted-Python] Application Design help - Concurrent but not	Protocols based.">JOHN at egh.com
+       </A><BR>
+    <I>Wed Jun  3 14:55:47 EDT 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="019757.html">[Twisted-Python] Application Design help - Concurrent but not	Protocols based.
+</A></li>
+        <LI>Next message: <A HREF="019787.html">[Twisted-Python] Application Design help - Concurrent but	not	Protocols based.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19758">[ date ]</a>
+              <a href="thread.html#19758">[ thread ]</a>
+              <a href="subject.html#19758">[ subject ]</a>
+              <a href="author.html#19758">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, 3 Jun 2009, Senthil Kumaran wrote:
+
+&gt;<i> Hello Twisted Developers/Users,
+</I>&gt;<i> 
+</I>&gt;<i> This is my first concurrent application design and my first trial with
+</I>&gt;<i> twisted. I have read the documentation and understand where twisted
+</I>&gt;<i> plays its part. Unfortunately, I could not directly relate it to my
+</I>&gt;<i> requirements and hence, could not go forward with designing and
+</I>&gt;<i> building on top using the examples as a reference.
+</I>&gt;<i> 
+</I>&gt;<i> I need your guidance in helping me design an application.
+</I>&gt;<i> 
+</I>&gt;<i> My Application Details:
+</I>&gt;<i> 
+</I>&gt;<i> 1) I need to constantly monitor a particular directory for new files.
+</I>&gt;<i> 2) Whenever a new file is dropped; I read that file and get
+</I>&gt;<i> information on where to collect data from that is a) another machine b)
+</I>&gt;<i> machine2-different method c) database.
+</I>&gt;<i> 3) I collect data from those machines and store it.
+</I>&gt;<i> 
+</I>&gt;<i> The data is huge and I need the three processes a, b, c to be
+</I>&gt;<i> non-blocking, and I can just do a function call like do_a(), do_b(),
+</I>&gt;<i> do_c() to perform them.
+</I>&gt;<i> 
+</I>&gt;<i> For 1) to constantly monitor a particular directory for new files, I
+</I>&gt;<i> am doing something like this:
+</I>&gt;<i> 
+</I>&gt;<i> while True:
+</I>&gt;<i>         check_for_new_files()
+</I>&gt;<i> 
+</I>
+This is not an issue specifically related to Python or Twisted, but
+there is a very serious synchronization issue that needs to be
+addressed with this application design.  (Trust me, I've seen this
+issue come up dozens of times in over 30 years of experience...)
+
+Creating a file and loading it with data is not an atomic operation.
+It takes a significant amount of time, and if the process attempting
+to read the file is faster than the process writing it, it won't see
+all (or any of) the data.
+
+It can work great while testing and then fall over the first time it
+is used in production, or it can work fine for years before mysteriously
+breaking.
+
+There are several ways to cope with this situation:
+
+1) If the system allows you to create temporary invisible files and
+then only makes the file visible when it is cleanly closed, you can
+use this method.  However, this is often not portable.  Not all operating
+systems, languages, FTP or SFTP servers, etc. support such a facility.
+
+2) Create the file using a method that disallows reading of the file
+while it is still open by the creator.  Make the reader process wait
+until it can get read access to the file before processing it.  (Sometimes
+this can be done by making the reader process request exclusive write
+access to the file, even though it doesn't intend to write to it.)
+This is also not particularly portable, and may require the reading
+process to spin or wait-loop, either wasting resources or delaying
+processing by half the wait time on average.
+
+3) Create the file in another directory and then move it to the target
+directory when it is complete.  The reading process will only see it
+after the move is complete.  However, such an operation isn't always
+atomic, or even possible.  I think &quot;mv&quot; on most Unix systems is atomic
+if both directories are on the same physical disk, but if the directories
+are on different disks, it copies the file and then deletes the
+original file.  This could work fine for years and then break when
+someone decides to move directories around for some reason.
+
+4) Create the file with a temporary file name, for example
+&quot;foo-YYYYMMDD-SEQ.tmp&quot; and then after it is created and fully
+populated, rename it to &quot;foo-YYYYMMDD-SEQ.dat&quot;.  Make the reading
+process only look for files named &quot;*.dat&quot;, ignoring the &quot;*.tmp&quot;
+files.  I don't know of any operating system where renaming a
+file is not an atomic operation, but I suppose such might exist.
+There could concievably be a small window when the file system
+could have created a directory entry for the .dat filename, but
+hasn't yet linked the filename to the file.  Though if this is
+possible, one could argue that this is an O/S bug and demand the
+O/S vendor fix it.  (Or fix it yourself if it's a self-maintained
+O/S or file system...)
+
+5) After creating the file, create a flag file (empty or with
+minimal, unimportant contents.)  For example, if the data file is
+named &quot;foo-YYYYMMDD-SEQ#.dat&quot;, after creating it, create a flag
+file name &quot;foo-YYYYMMDD-SEQ#.flag&quot;.  Have the reading process
+look only for flag files (they could even be in a separate directory
+to avoid clutter.)  When a flag file appears, process the
+corresponding data file.  This method is very portable and is
+*almost* bullet proof.  The exceptions I have seen have almost
+all been when someone didn't understand the importance of the
+flag file and created it first.  Aside from just doing it in the
+wrong order, I've seen cases where they triggered two parallel
+processes to create the files, and the flag file being much
+smaller, got created first, and where they created all the
+files in a local directory (on another system), and then FTP'ed
+them to the target system/directory, using a wild-card file name,
+which unfortunately caused the flag file to get sent first.
+(It may have had an alphabetically earlier name than the data
+file, or the FTP client may have transfered files in a random
+order or one based on the inode or file ID or other non-obvious
+file attribute.)  In these cases, the cure was to explicitly
+transfer the data file and then the flag file in the correct
+order.
+
+(We once encountered an issue where an FTP client may have been
+&quot;optimizing&quot; transfers either by doing them in parallel, or by
+sending small files first, and broke this scheme, but that was
+only a theory we had while trying to diagnose the problem, and
+may not have been what was actually happening.)
+
+
+I don't know of any scheme that is absolutely foolproof unless
+you control both the file creation and file reading sides of
+things, but scheme 5 (flag files) seems to work best in practice.
+
+Sorry I can't help with the Python/Twisted specifics, but I'm
+too much of a newbie to be very useful with that.
+
+&gt;<i> <A HREF="http://paste.pocoo.org/show/120824/">http://paste.pocoo.org/show/120824/</A>
+</I>&gt;<i> 
+</I>&gt;<i> My Question: Can this be designed in way that looking for new files is
+</I>&gt;<i> also asynchronous activity? 
+</I>&gt;<i> 
+</I>&gt;<i> What will be the deferred in this case?
+</I>&gt;<i> 
+</I>&gt;<i> # my ideas:
+</I>&gt;<i> 
+</I>&gt;<i> - I might define a deferred as, whenever the contents of the directory
+</I>&gt;<i>   is not matching the previous contents, return the new file which was
+</I>&gt;<i>   added.
+</I>&gt;<i> - I can then add a callback to read the newfile.
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> Now, after reading the contents, I will have to do a non-blocking call
+</I>&gt;<i> to fetch data, either using fun_a, fun_b or fun_b. How should I
+</I>&gt;<i> associate this requirement to deferred/callback pattern?
+</I>&gt;<i> 
+</I>&gt;<i> Any guidance would be helpful.
+</I>&gt;<i> 
+</I>&gt;<i> Thanks,
+</I>&gt;<i> Senthil
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>
+-- 
+John Santos
+Evans Griffiths &amp; Hart, Inc.
+781-861-0670 ext 539
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="019757.html">[Twisted-Python] Application Design help - Concurrent but not	Protocols based.
+</A></li>
+	<LI>Next message: <A HREF="019787.html">[Twisted-Python] Application Design help - Concurrent but	not	Protocols based.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19758">[ date ]</a>
+              <a href="thread.html#19758">[ thread ]</a>
+              <a href="subject.html#19758">[ subject ]</a>
+              <a href="author.html#19758">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

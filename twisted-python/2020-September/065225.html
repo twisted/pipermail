@@ -1,0 +1,245 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] doWrite on twisted.internet.tcp.Port
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20doWrite%20on%20twisted.internet.tcp.Port&In-Reply-To=%3C3324875.iIbC2pHGDl%40fpbarry%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="065265.html">
+   <LINK REL="Next"  HREF="065227.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] doWrite on twisted.internet.tcp.Port</H1>
+    <B>Barry Scott</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20doWrite%20on%20twisted.internet.tcp.Port&In-Reply-To=%3C3324875.iIbC2pHGDl%40fpbarry%3E"
+       TITLE="[Twisted-Python] doWrite on twisted.internet.tcp.Port">barry.scott at forcepoint.com
+       </A><BR>
+    <I>Tue Sep 15 11:05:47 MDT 2020</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="065265.html">[Twisted-Python] doWrite on twisted.internet.tcp.Port
+</A></li>
+        <LI>Next message (by thread): <A HREF="065227.html">[Twisted-Python] doWrite on twisted.internet.tcp.Port
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65225">[ date ]</a>
+              <a href="thread.html#65225">[ thread ]</a>
+              <a href="subject.html#65225">[ subject ]</a>
+              <a href="author.html#65225">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Friday, 11 September 2020 19:28:13 BST Jean-Paul Calderone wrote:
+&gt;<i> On Fri, Sep 11, 2020 at 1:34 PM &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">chris at cmsconstruct.com</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> &gt; Hey guys,
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Last year I hit a condition discussed in this ticket:
+</I>&gt;<i> &gt; <A HREF="https://twistedmatrix.com/trac/ticket/4759">https://twistedmatrix.com/trac/ticket/4759</A> for doWrite called on a
+</I>&gt;<i> &gt; twisted.internet.tcp.Port.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I ignored it at the time since it was just on Linux, and my main platform
+</I>&gt;<i> &gt; was Windows.  Now I’m coming back to it.  I’ll add context on the problem
+</I>&gt;<i> &gt; below, but first I want to ask a high-level, design-type question with
+</I>&gt;<i> &gt; multiprocessing and Twisted:
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Referencing Jean-Paul’s comment at the end of ticket 4759, I read you
+</I>&gt;<i> &gt; shouldn’t fork a process (multiprocessing module) that already has a
+</I>&gt;<i> &gt; Twisted reactor.  Understood.  But what about a parent process (not doing
+</I>&gt;<i> &gt; anything Twisted) forking child processes, where each child process starts
+</I>&gt;<i> &gt; their own Twisted reactor?  Is that intended to work from the Twisted
+</I>&gt;<i> &gt; perspective?
+</I>&gt;<i> &gt;
+</I>&gt;<i> 
+</I>&gt;<i> To answer the asked question, I don't think there is rigorous (or even
+</I>&gt;<i> casual) testing of very much of Twisted in the context of &quot;some Twisted
+</I>&gt;<i> code has been loaded into memory and then the process forked&quot;.  So while it
+</I>&gt;<i> seems like a reasonable thing, I wouldn't say there's currently much effort
+</I>&gt;<i> being put towards making it a *supported* usage of Twisted.  Of course this
+</I>&gt;<i> can change at almost any moment if someone decides to commit the effort.
+</I>&gt;<i> 
+</I>&gt;<i> To dig a bit further into the specific problem, even if you only *import* the
+</I>&gt;<i> reactor in the parent process and then fork a child and try to start the
+</I>&gt;<i> reactor in the child, I strongly suspect epollreactor will break.  This is
+</I>&gt;<i> because the epoll object is created by reactor instantiation (as opposed to
+</I>&gt;<i> being delayed until the reactor is run).  epoll objects have a lot of weird
+</I>&gt;<i> behavior.  See the *Questions and Answers* section of the epoll(7) man page.
+</I>
+Suspect no longer. It breaks very badly.
+
+I guess by weird you mean that the epoll uses an FD, sounds
+like a great feature to me, the state is managed in the kernel.
+Of course you have to be aware of this and that the FD is inherited
+into children where the reactor will fail in various ways.
+
+You now have each child that adds and removes FD's is doing it on
+one shared epoll FD, but events get delivered to all the children.
+
+What we did is use the PollReactor not the EPollReactor.
+And before we fork we call reactor.removeReader on each of
+the ports (sockets) we setup in the parent.
+
+Then in the children we add the ports back in with reactor.addReader.
+After that the children run just fine.
+
+We do this so that we can open priv'ed ports that the children will share.
+We drop priv's after the priv'ed ports are opened.
+
+If you do not need to listen on sockets in the parent then simply
+avoid importing reactor before you fork.
+
+Barry
+
+
+&gt;<i> 
+</I>&gt;<i> I don't know if this is the cause of your particular expression of these
+</I>&gt;<i> symptoms (it certainly doesn't apply to the *original* bug report which is
+</I>&gt;<i> on FreeBSD where there is no epoll) but it's at least *a possible* cause.
+</I>&gt;<i> 
+</I>&gt;<i> This could probably be fixed in Twisted by only creating the epoll object
+</I>&gt;<i> when run is called.  There's nothing particularly difficult about that
+</I>&gt;<i> change but it does involve touching a lot of the book-keeping logic since
+</I>&gt;<i> that all assumes it can register file descriptors before the reactor is
+</I>&gt;<i> started (think reactor.listenTCP(...); reactor.run()).
+</I>&gt;<i> 
+</I>&gt;<i> I'm not sure but it may also be the case that only delaying creation of the
+</I>&gt;<i> *waker* until the reactor starts would also fix this.  This is because as
+</I>&gt;<i> long as the epoll object remains empty a lot of the weird behavior is
+</I>&gt;<i> avoided and the waker is probably the only thing that actually gets added
+</I>&gt;<i> to it if you're just *importing* the reactor but not *running* it before
+</I>&gt;<i> forking.
+</I>&gt;<i> 
+</I>&gt;<i> Alternatively, your application *should* be able to fix it by studiously
+</I>&gt;<i> avoiding the import of twisted.internet.reactor (directly or transitively,
+</I>&gt;<i> of course).  You could add some kind of assertion about the state of
+</I>&gt;<i> sys.modules immediately before your forking code to develop some confidence
+</I>&gt;<i> you've managed this.
+</I>&gt;<i> 
+</I>&gt;<i> And if this is really an epoll problem then switching to poll or select
+</I>&gt;<i> reactor would also presumably get rid of the issue.
+</I>&gt;<i> 
+</I>&gt;<i> Jean-Paul
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Context:
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I only hit this problem on Linux, not Windows.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; The software project (github.com/opencontentplatform/ocp) has been a lot
+</I>&gt;<i> &gt; of fun, especially with walking the tight rope in using multi-processing,
+</I>&gt;<i> &gt; multi-threading, and Twisted reactors.  The main controller process kicks
+</I>&gt;<i> &gt; off about 10 child processes, each doing different types of work.  In
+</I>&gt;<i> &gt; general though, the child processes individually start a Twisted reactor,
+</I>&gt;<i> &gt; connect to Kafka, connect to a database, use a shared REST API, and some
+</I>&gt;<i> &gt; listen for connecting clients to accomplish work.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I test on Linux about once a year, so too many changes to rollback and
+</I>&gt;<i> &gt; figure out that way.  It was working on Linux 2 years ago, but last year’s
+</I>&gt;<i> &gt; testing and current testing, receive the doWrite error.  It continues
+</I>&gt;<i> &gt; running fine on Windows.  I’ve gone back about 2 years of versions with
+</I>&gt;<i> &gt; Python3, Twisted, and dependent libs… on both Windows and Linux.  Every
+</I>&gt;<i> &gt; version change yields the same result - continues to work on Windows and
+</I>&gt;<i> &gt; continues to hit the error on Linux.  So something I added has caused Linux
+</I>&gt;<i> &gt; to throw that error.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I’m not explicitly sharing much between the main process and the sub
+</I>&gt;<i> &gt; processes.  They are spun up with (1) a shared multiprocessing.Event() - to
+</I>&gt;<i> &gt; have the main process shut the children down, (2) their own unique
+</I>&gt;<i> &gt; multiprocessing.Event() - to have the child processes notify back to the
+</I>&gt;<i> &gt; parent, and (3) a deep copy of a dictionary (containing a bunch of settings
+</I>&gt;<i> &gt; that remain constant).  The main process uses twisted.logger, but for
+</I>&gt;<i> &gt; testing I strip that out to remove any twisted imports in the main
+</I>&gt;<i> &gt; process.  So I’m not importing anything Twisted in the main process, and I
+</I>&gt;<i> &gt; don’t believe I’m explicitly sharing something I shouldn’t.  Seems like
+</I>&gt;<i> &gt; something is implicitly being exposed/shared across Linux child processes,
+</I>&gt;<i> &gt; that aren’t on Windows.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; The tracebacks come through on Linux (sometimes randomly), on the console
+</I>&gt;<i> &gt; of the parent controller process.  No need to paste here, since it’s the
+</I>&gt;<i> &gt; same as the ticket shows.  I can’t reliably reproduce the problem, but I
+</I>&gt;<i> &gt; know if I stop/start client connections
+</I>&gt;<i> &gt; (ServerFactory/twisted.internet.interfaces.IReactorTCP and
+</I>&gt;<i> &gt; twisted.internet.protocol.ReconnectingClientFactory) then it will
+</I>&gt;<i> &gt; eventually happen.  I need to devote time at whittling down the code and
+</I>&gt;<i> &gt; attempting to create a reliable test case… if even possible.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; The error is slightly different when running HTTP vs HTTPS, but the story
+</I>&gt;<i> &gt; is the same.  It cripples whatever child process that hits it, from doing
+</I>&gt;<i> &gt; much of anything thereafter.  Not much luck with troubleshooting.  The
+</I>&gt;<i> &gt; tracebacks do not include a calling function from my code, to tell me where
+</I>&gt;<i> &gt; to start. And it happens across different child process types, so not the
+</I>&gt;<i> &gt; same one each time.  When I throw debuggers on the child processes, the
+</I>&gt;<i> &gt; problem seems to mask itself.  Well, at least I didn’t hit the problem over
+</I>&gt;<i> &gt; the last 3 days using pudb and stepping through code at breakpoints.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; I’m absolutely open to suggestions for troubleshooting, but first wanted
+</I>&gt;<i> &gt; to take a HUGE step back and ask a design question regarding Twisted and
+</I>&gt;<i> &gt; multiprocessing.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Thanks!
+</I>&gt;<i> &gt; _______________________________________________
+</I>&gt;<i> &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i> 
+</I>
+
+
+
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="065265.html">[Twisted-Python] doWrite on twisted.internet.tcp.Port
+</A></li>
+	<LI>Next message (by thread): <A HREF="065227.html">[Twisted-Python] doWrite on twisted.internet.tcp.Port
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65225">[ date ]</a>
+              <a href="thread.html#65225">[ thread ]</a>
+              <a href="subject.html#65225">[ subject ]</a>
+              <a href="author.html#65225">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

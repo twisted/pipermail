@@ -1,0 +1,290 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Thread Cancelled
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Thread%20Cancelled&In-Reply-To=%3CCAEeXt4MNwDQCicqSBs-uLNCXMJjNxAd9Q0mCprFiz97NTK_Jzw%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="065423.html">
+   <LINK REL="Next"  HREF="065425.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Thread Cancelled</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Thread%20Cancelled&In-Reply-To=%3CCAEeXt4MNwDQCicqSBs-uLNCXMJjNxAd9Q0mCprFiz97NTK_Jzw%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Thread Cancelled">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Mon Jan 25 16:50:19 MST 2021</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="065423.html">[Twisted-Python] Thread Cancelled
+</A></li>
+        <LI>Next message (by thread): <A HREF="065425.html">[Twisted-Python] Thread Cancelled
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65424">[ date ]</a>
+              <a href="thread.html#65424">[ thread ]</a>
+              <a href="subject.html#65424">[ subject ]</a>
+              <a href="author.html#65424">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, Jan 25, 2021 at 5:14 PM Robert DiFalco &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert.difalco at gmail.com</A>&gt;
+wrote:
+
+&gt;<i> So I have a simple question from all this. Is there a twisted idiom I can
+</I>&gt;<i> use so that deferred returned from a Klein route are not canceled if the
+</I>&gt;<i> client resets the connection? It's fine if it's before I've gotten the
+</I>&gt;<i> request body, but once I've gotten the request body I want all deferreds to
+</I>&gt;<i> succeed. I only wan't the streaming of the final result to fail.
+</I>&gt;<i>
+</I>
+As far as I know, you can't make Klein not cancel that Deferred.  However,
+you can return a different Deferred.
+
+def ignore_cancellation(d):
+
+    ignore_d = Deferred()
+
+    d.chainDeferred(ignore_d)
+
+    return ignore_d
+
+
+Wherever you're returning a Deferred to Klein now, if you return
+ignore_cancellation(that_deferred) instead then either:
+
+   - it will run to completion and deliver its result to ignore_d which
+   will deliver it to Klein; or
+   - Klein will cancel it and the cancellation will not propagate to the
+   original Deferred so that operation can complete (when it does, it will
+   deliver the result to the cancelled Deferred which will drop it on the
+   floor)
+
+The documentation for Deferred cancellation could be a little bit clearer
+on how cancellation works for Deferreds that are related in various ways,
+including this way.  I'm not sure how you would discover this behavior
+except for reading the implementation or doing experiments.  The way that
+might make sense to think about it, though, is that results only propagate
+in one direction down the chain - from d to ignore_d - they never flow the
+other way.  So anything that happens to ignore_d cannot affect d.
+
+Jean-Paul
+
+
+
+&gt;<i> On Sun, Jan 24, 2021 at 7:40 PM Robert DiFalco &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert.difalco at gmail.com</A>&gt;
+</I>&gt;<i> wrote:
+</I>&gt;<i>
+</I>&gt;&gt;<i> Well, I've dealt with this issue with other languages. Not sure how to
+</I>&gt;&gt;<i> deal with it in Klein/Twisted. This operation is idempotent so I suppose
+</I>&gt;&gt;<i> what I'd like to happen is have the whole chain of deferred's succeed but
+</I>&gt;&gt;<i> then just not be able to write the response to the socket -- but not
+</I>&gt;&gt;<i> interrupt the chain. Unfortunately, what I really need is my operations to
+</I>&gt;&gt;<i> be atomic -- introduce a two phase commit or some such. But that's too big
+</I>&gt;&gt;<i> of a job on this legacy code base for now. Right now I'd be content if I
+</I>&gt;&gt;<i> could save the database record and then send the SQS message to AWS and not
+</I>&gt;&gt;<i> have that SQS send interrupted if the client closed the socket.. Is there a
+</I>&gt;&gt;<i> simple way to achieve that? If I got the request body I'm good, I don't
+</I>&gt;&gt;<i> care if I can't write the response.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> One other thing that would be nice is to know why a deferred was
+</I>&gt;&gt;<i> canceled. If the client close a connection I might like to ignore the
+</I>&gt;&gt;<i> cancel, but I think what is happening is that Twisted is pretty smart. So
+</I>&gt;&gt;<i> it either knows I'm going to make a write to SQS using Boto that is
+</I>&gt;&gt;<i> inbound, so it is somehow able to cancel that operation -- perhaps more
+</I>&gt;&gt;<i> likely the client closed the connection and the connection canceled defers
+</I>&gt;&gt;<i> after I called deferToThread but before a thread was available to run on.
+</I>&gt;&gt;<i> Either way, I'd like them all to run, and just fail to write the final
+</I>&gt;&gt;<i> response from the end of the chain.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Sorry, too many words.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> On Sun, Jan 24, 2021 at 3:22 PM Glyph &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; wrote:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> If you're dealing with lots of clients on the public internet, sometimes
+</I>&gt;&gt;&gt;<i> this is just gonna happen, for a variety of reasons; it's normal.  We would
+</I>&gt;&gt;&gt;<i> welcome better error reporting for this scenario so it doesn't require the
+</I>&gt;&gt;&gt;<i> kind of debugging you just did :-).
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> -g
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> On Jan 24, 2021, at 2:58 PM, Robert DiFalco &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert.difalco at gmail.com</A>&gt;
+</I>&gt;&gt;&gt;<i> wrote:
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> That makes sense, thank you. A timeout seems unlikely but maybe the
+</I>&gt;&gt;&gt;<i> client is closing the connection due to a network issue. This is an
+</I>&gt;&gt;&gt;<i> extremely rare occurrence.
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> On Sun, Jan 24, 2021 at 2:41 PM Glyph &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; wrote:
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> While a socket is open and receiving data, recv() will either give you
+</I>&gt;&gt;&gt;&gt;<i> a non-zero number of bytes if bytes are ready, or an EWOULDBLOCK (AKA
+</I>&gt;&gt;&gt;&gt;<i> EAGAIN) if no bytes are ready.  A result of zero bytes (the empty string)
+</I>&gt;&gt;&gt;&gt;<i> means &quot;end of file&quot; - the other end has closed the socket.
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> So what's happening here is your client is timing out or otherwise
+</I>&gt;&gt;&gt;&gt;<i> canceling its request by closing the socket, and this is the correct,
+</I>&gt;&gt;&gt;&gt;<i> intentional response to that scenario.
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> -g
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> On Jan 24, 2021, at 11:57 AM, Robert DiFalco &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert.difalco at gmail.com</A>&gt;
+</I>&gt;&gt;&gt;&gt;<i> wrote:
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> You're absolutely right, I meant &quot;cancel the deferred&quot;. I don't grok
+</I>&gt;&gt;&gt;&gt;<i> server sockets very well so maybe someone can help. But apparently, klein
+</I>&gt;&gt;&gt;&gt;<i> does a .doRead from our server socket (getting the request from the
+</I>&gt;&gt;&gt;&gt;<i> client?). This returns a &quot;why&quot; of &quot;connection done&quot; so that closes the
+</I>&gt;&gt;&gt;&gt;<i> connection before we have written our response to the client, and that
+</I>&gt;&gt;&gt;&gt;<i> cancels the deferred SQS write.
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> <A HREF="https://github.com/racker/python-twisted-core/blob/master/twisted/internet/selectreactor.py#L148-L155">https://github.com/racker/python-twisted-core/blob/master/twisted/internet/selectreactor.py#L148-L155</A>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> The method above is &quot;doRead&quot;. Which calls this:
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> <A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/tcp.py#L239">https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/tcp.py#L239</A>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> I guess if If socket.rcv() returns an empty string it simply closes the
+</I>&gt;&gt;&gt;&gt;<i> connection.
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> <A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/tcp.py#L249-L250">https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/tcp.py#L249-L250</A>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> Is that normal? I mean I guess it must be but then why is the read
+</I>&gt;&gt;&gt;&gt;<i> getting an empty string and closing the connection? I can't really account
+</I>&gt;&gt;&gt;&gt;<i> for it? Some kind of back pressure due to load?
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> Thanks for any thoughts.
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> On Sun, Jan 24, 2021 at 11:32 AM Colin Dunklau &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">colin.dunklau at gmail.com</A>&gt;
+</I>&gt;&gt;&gt;&gt;<i> wrote:
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;<i> On Sun, Jan 24, 2021 at 11:45 AM Robert DiFalco &lt;
+</I>&gt;&gt;&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">robert.difalco at gmail.com</A>&gt; wrote:
+</I>&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> Hi, I apologize this question is a little vague. I'm looking for
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> pointers. I have a klein route that makes an underlying deferToThread call
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> with a simple single thread (an IO based sync call I can't change, a boto3
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> sqs write). The thread pool is simple, just a couple of threads, nothing
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> fancy.
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> VERY rarely it appears that Klein cancels the thread. What techniques
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> can I use to figure out why my thread is being Canceled? There's nothing in
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> the failure to tell me &quot;who, why, or where&quot; it was canceled. Also, I cannot
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> get this down to a reproducible case, but here's the boto3 sqs wrapper,
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> this fall back works fine, but it's a band-aide for an error I can't track
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> down.:
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> def write(self, payload):
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>     &quot;&quot;&quot;
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>     Write message to SQS async from thread pool. If twisted cancels the
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>     thread, instead write synchronously.
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>     def _retrySynchronously(error):
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>         if error.type != CancelledError:
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>             return error
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>         log.warn(&quot;Async SQS write cancelled. Calling synchronously.&quot;)
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>         return defer.succeed(self._writeSyncFallback(payload))
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>     deferredCall = self._deferToThread(self.sqs.write, payload)
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>     deferredCall.addErrback(_retrySynchronously)
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>     return deferredCall
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> def _writeSyncFallback(self, payload):
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>     return self.sqs.write(payload)
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> The _deferToThread call just uses my own thread pool with 2 threads,
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> but is otherwise stock.
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> Is there a level of logging I'm missing or some other thing that
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> would tell me why the thread is being canceled? The retry works great and
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> Klein does not return an error from the route.
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i> Thanks in advance.
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;<i> I think we'll need to see more code for this, specifically the caller
+</I>&gt;&gt;&gt;&gt;&gt;<i> of that `write` method, and its callers, etc. Note that the thread itself
+</I>&gt;&gt;&gt;&gt;&gt;<i> isn't being cancelled, the Deferred you get from _deferToThread is... so
+</I>&gt;&gt;&gt;&gt;&gt;<i> you'll most likely need to find out what code interacts with that object to
+</I>&gt;&gt;&gt;&gt;&gt;<i> progress in isolating this.
+</I>&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;&gt;<i> In my quick skim of the deferToThread and ThreadPool source, I can't
+</I>&gt;&gt;&gt;&gt;&gt;<i> find any explicit cancellations. While that certainly doesn't rule it out,
+</I>&gt;&gt;&gt;&gt;&gt;<i> it does make me think you're more likely to find the issue by inspecting
+</I>&gt;&gt;&gt;&gt;&gt;<i> the callers involved.
+</I>&gt;&gt;&gt;&gt;&gt;<i> _______________________________________________
+</I>&gt;&gt;&gt;&gt;&gt;<i> Twisted-Python mailing list
+</I>&gt;&gt;&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;&gt;&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> _______________________________________________
+</I>&gt;&gt;&gt;&gt;<i> Twisted-Python mailing list
+</I>&gt;&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;&gt;<i> _______________________________________________
+</I>&gt;&gt;&gt;&gt;<i> Twisted-Python mailing list
+</I>&gt;&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> _______________________________________________
+</I>&gt;&gt;&gt;<i> Twisted-Python mailing list
+</I>&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> _______________________________________________
+</I>&gt;&gt;&gt;<i> Twisted-Python mailing list
+</I>&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20210125/1c4bdbc0/attachment-0001.htm&gt;
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="065423.html">[Twisted-Python] Thread Cancelled
+</A></li>
+	<LI>Next message (by thread): <A HREF="065425.html">[Twisted-Python] Thread Cancelled
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#65424">[ date ]</a>
+              <a href="thread.html#65424">[ thread ]</a>
+              <a href="subject.html#65424">[ subject ]</a>
+              <a href="author.html#65424">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

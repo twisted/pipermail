@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.0 (GNU/Linux)
+
+iD8DBQA9tfv+vVGR4uSOE2wRApWFAJ4wO0mBe4XejDy4qaYM03Xrjgkk3QCdFWwQ
+abHEYkXxEpJ7DZ2Yq8QFvAc=
+=05Zy
+-----END PGP SIGNATURE-----

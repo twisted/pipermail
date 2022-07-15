@@ -1,0 +1,4599 @@
+From glyph at twistedmatrix.com  Thu Nov  1 01:43:57 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Thu, 1 Nov 2018 00:43:57 -0700
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+Message-ID: <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+
+Hi Jeff,
+
+Thanks for using Twisted.
+
+Here's a version with some small changes that works, and is self-contained.
+
+import sys
+
+from twisted.internet import reactor, endpoints
+from twisted.web import server
+from twisted.web.resource import Resource
+from twisted.web.static import Data
+
+sys.path.append('lib')
+
+content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="/static/test.css" type="text/css" />
+</head>
+<body>
+    <span class='twistedTest'>This</span> is a test
+</body>
+</html>
+"""
+
+class tServer(Resource):
+    def render_GET(self, request):
+        return bytes(content, "utf-8")
+
+if __name__ == "__main__":
+    root = Resource()
+    static_collection = Resource()
+    static_collection.putChild(b"test.css", Data(b".twistedTest {color: red;}", "text/css"))
+    root.putChild(b"static", static_collection)
+    root.putChild(b"", tServer())
+
+    site = server.Site(root)
+    endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+    endpoint.listen(site)
+
+    reactor.run()
+    print("Shutting down!")
+
+The problem with your first version was 'isLeaf', as Donal suggested.  However, the problem was not simply that the flag was set, but rather what the flag means, and why it works that way.
+
+The root resource in any web server is a collection.  Which is to say, under normal circumstances, the root resource never has render_* invoked on it; you can't render it, because it's impossible, in the HTTP protocol, to spell a URL that doesn't start with "/".
+
+isLeaf changes this, and says "this resource is responsible for rendering all of its children; traversal stops here".  That means that it starts invoking render_GET to render "/", but also to render every other path on the server, including (unfortunately for you) /static/test.css.
+
+The modified example above instead uses a Resource() as the collection, and inserts a '' child for the index, and a separate 'static' child for the static index.  You can use a static.File for a directory here instead of a static resource, and anywhere you see putChild, you could also use a dynamic resource which overrides getChild to return the object rather than inserting it in advance.
+
+Of course, you might wonder what the point of 'isLeaf' is if it short circuits this stuff and makes it impossible to tell the difference between resources.
+
+Given that you have a directory, you want to use a static.File child resource and almost certainly don't want to set isLeaf; however, you might be wondering how one would even use isLeaf if it just cuts off the ability to tell the difference between resources.  The documentation on this is not great - it doesn't even appear as an attribute in the API reference, just an oblique reference in the docstring for https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild <https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild>.  But, the 'prepath' and 'postpath' attributes, lists of bytes, will tell you about where in the request traversal cycle you are, and allow you to distinguish which content to render directly within the body of render_*, rather than having to route to the right object using Twisted APIs.  So here's a working version with isLeaf=True:
+
+import sys
+
+from twisted.internet import reactor, endpoints
+from twisted.web import server
+from twisted.web.resource import Resource
+
+content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="/static/test.css" type="text/css" />
+</head>
+<body>
+    <span class='twistedTest'>This</span> is a test
+</body>
+</html>
+"""
+
+css = """
+.twistedTest {
+    color: red;
+}
+"""
+
+class tServer(Resource):
+    isLeaf = True
+    def render_GET(self, request):
+        if request.postpath == [b'']:
+            request.setHeader("content-type", "text/html")
+            return bytes(content, "utf-8")
+        elif request.postpath == [b'static', b'test.css']:
+            request.setHeader("content-type", "text/css")
+            return bytes(css, 'utf-8')
+        else:
+            request.setResponseCode(404)
+            return b'not found'
+
+if __name__ == "__main__":
+    site = server.Site(tServer())
+    endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+    endpoint.listen(site)
+
+    reactor.run()
+    print("Shutting down!")
+
+I hope this clears up the request traversal model a little bit.
+
+-glyph
+
+
+> On Oct 31, 2018, at 2:15 PM, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+> 
+> Tried that, I get a big 
+> 
+> No Such Resource
+> 
+> No such child resource.
+> 
+> back.  Watching it in FF's development panel, I see a 404 come back for /.  /static doesn't get served at all, of course.
+> 
+> This, however, DID work.
+> 
+> class tServer(Resource):
+>     isLeaf = False
+> 
+>     def getChild(self, path, request):
+>         print('You know what you doing.')
+> 
+>         if path == b'':
+>             print("Rendering /")
+>             return self
+> 
+>         return Resource.getChild(self, path, request)
+> 
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+> 
+> (ignore my printf debugging plz)
+> 
+> So, Thanks! :)
+> 
+> Regards,
+> 
+> Jeff 
+> 
+> 
+> On Tue, Oct 30, 2018 at 6:42 PM Donal McMullan <donal.mcmullan at gmail.com <mailto:donal.mcmullan at gmail.com>> wrote:
+> Try replacing:
+> isLeaf = True
+> with
+> isLeaf = False
+> 
+> 
+> On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett <grimmtooth at gmail.com <mailto:grimmtooth at gmail.com>> wrote:
+> I'm sure I'm overlooking something obvious here but I just can't get my head around it.
+> 
+> Here's the setup: twisted.web server that generates dynamic content. Child that serves up static content, e.g. css and favoicon.  However, the static content isn't making it. Instead, any hit to localhost/static actually yields up a copy of / again.  
+> 
+> Here's the server code
+> 
+> import sys
+> 
+> from twisted.internet import reactor, endpoints
+> from twisted.web import server
+> from twisted.web.resource import Resource
+> from twisted.web.static import File
+> 
+> sys.path.append('lib')
+> 
+> content = """
+> <!DOCTYPE html>
+> <html lang="en">
+> <head>
+>     <meta charset="UTF-8">
+>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+> </head>
+> <body>
+>     <span class='twistedTest'>This</span> is a test
+> </body>
+> </html>
+> """
+> 
+> 
+> class tServer(Resource):
+>     isLeaf = True
+> 
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+> 
+> 
+> if __name__ == "__main__":
+>     root = tServer()
+>     root.putChild(b"static", File("static"))
+> 
+>     site = server.Site(root)
+>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>     endpoint.listen(site)
+> 
+>     reactor.run()
+>     print("Shutting down!")
+> 
+> It's run with the command 'python tserver.py'.  The expectation is that what is inside the custom <span> will be red.
+> 
+> In the same dir as the script is a subdir 'static' with the css file inside it.
+> 
+> If I replace 'root' with     root = Resource() then / doesn't serve up anything, but /static is a directory listing of the static directory.
+> 
+> The dynamic server is basically a copy of several tutorials cooked down to something that I could use to demonstrate the problem.
+> 
+> What am I missing here? /headscratch
+> 
+> Regards,
+> 
+> Jeff 
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com <mailto:Twisted-Python at twistedmatrix.com>
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python <https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com <mailto:Twisted-Python at twistedmatrix.com>
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python <https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181101/04f3b6f6/attachment-0001.html>
+
+From trac at twistedmatrix.com  Sun Nov  4 00:05:20 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 04 Nov 2018 06:05:20 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1541311520.55.3599772443101086231@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181104/1e9ea960/attachment.html>
+
+From chris at simplistix.co.uk  Mon Nov  5 10:07:52 2018
+From: chris at simplistix.co.uk (Chris Withers)
+Date: Mon, 5 Nov 2018 17:07:52 +0000
+Subject: [Twisted-Python] automated tests for a server application
+Message-ID: <640b15d6-1706-e3b5-02ec-2fe45c27561f@simplistix.co.uk>
+
+Hi All,
+
+(copying in Moshe as he expressed an interest!)
+
+I've inherited a twisted app for which I'd like to add some changes but 
+want to improve the automated test coverage before I do.
+
+The app itself listens on a web socket (autobahn), an rpc port (RPyC) 
+and also connects to a mysql database.
+So, for the automated tests, I want to check what happens when I send 
+various messages to the websocket or rpc port, and then check what ends 
+up in the db and what other state changes happen in the app itself.
+
+What's the best/correct way to write automated tests for this kind of 
+situation? I'm using pytest and would happily use pytest-twisted too. 
+Not keen to use trial...
+
+Any help is good help, pointers to nice existing examples would be 
+fantastic!
+
+cheers,
+
+Chris
+
+
+From chris at simplistix.co.uk  Mon Nov  5 10:08:03 2018
+From: chris at simplistix.co.uk (Chris Withers)
+Date: Mon, 5 Nov 2018 17:08:03 +0000
+Subject: [Twisted-Python] "blocking" on a response to a client
+Message-ID: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+
+Hi Again,
+
+So, separate question: I have a client that's making a connection to a 
+websocket from a server. The client needs to send an "auth" message once 
+the websocket is up, and the client code shouldn't progress until it 
+receives an affirmative response. How do I do this in a non-blocking way 
+when using twisted? (inside an inlineDeferred method in this case!)
+
+Similarly, how do I get this dance to happen again if the websocket 
+drops? How would I do some kind of backoff on he connection retries?
+
+And, icing on the cake, where can I find good examples of how to write 
+automated tests for all of the above?
+
+cheers,
+
+Chris
+
+
+From meejah at meejah.ca  Mon Nov  5 11:32:38 2018
+From: meejah at meejah.ca (meejah)
+Date: Mon, 05 Nov 2018 22:32:38 +0400
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk> (Chris
+ Withers's message of "Mon, 5 Nov 2018 17:08:03 +0000")
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+Message-ID: <86in1bwf21.fsf@atlantis.meejah.ca>
+
+Chris Withers <chris at simplistix.co.uk> writes:
+
+> So, separate question: I have a client that's making a connection to a
+> websocket from a server. The client needs to send an "auth" message
+> once the websocket is up, and the client code shouldn't progress until
+> it receives an affirmative response. How do I do this in a
+> non-blocking way when using twisted? (inside an inlineDeferred method
+> in this case!)
+
+There's nothing really special about an @inlineCallbacks method -- it
+just returns a Deferred so you can handle it like any other
+Deferred-returning method.
+
+> Similarly, how do I get this dance to happen again if the websocket
+> drops? How would I do some kind of backoff on he connection retries?
+
+The "Autobahn" Python libraries support all the above. They might not be
+great as "examples" per se (because these libraries also support asyncio
+so use a compatibility layer called txaio), but a connecting (+
+reconnecting) client starts here:
+
+   https://github.com/crossbario/autobahn-python/blob/master/autobahn/wamp/component.py#L494
+
+You could also use the built-in Twisted "ClientService" to keep a
+protocol connected (the above doesn't because it's also doing asyncio)
+but see:
+
+   https://twistedmatrix.com/documents/current/api/twisted.application.internet.ClientService.html
+
+> And, icing on the cake, where can I find good examples of how to write
+> automated tests for all of the above?
+
+It's kind of well-hidden :/ but the "most modern" way is to use
+something based on twisted.test.iosim.IOPump as I understand it. I
+haven't used this, though so maybe someone else can explain. It's of
+course possible to use more-traditional mocking and fakes to write
+tests.
+
+Essentially one way is to "drive" your protocol to the correct state
+(e.g. right before an auth is required) and then do the various tests on
+authentication. You can also do unit-tests of the actual authentication
+methods themselves (e.g. "does it parse stuff properly", etc). Again
+there's *some* examples in the Autobahn repository above.
+
+Here are some "not IOPump" examples using the Twisted "StringTransport"
+helper (this isn't WebSocket but should give some ideas):
+
+   https://github.com/meejah/txtorcon/blob/master/test/test_torcontrolprotocol.py#L80
+
+-- 
+meejah
+
+
+From chris at simplistix.co.uk  Tue Nov  6 04:41:23 2018
+From: chris at simplistix.co.uk (Chris Withers)
+Date: Tue, 6 Nov 2018 11:41:23 +0000
+Subject: [Twisted-Python] automated tests for a server application
+In-Reply-To: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+References: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+Message-ID: <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+
+On 06/11/2018 05:43, Moshe Zadka wrote:
+>
+> Some of the best advice depends on details of the application. One 
+> trick that is sometimes useful is passing in a "fake" reactor object. 
+> This, of course, is only useful if the application is structured in a 
+> way that functions/classes expect to get a reactor, instead of 
+> reaching for the global one. However, usually *that's* not a 
+> complicated refactoring to do.
+
+Cool, do you have any example tests that do this?
+Interesting, looks like pytest-twisted does away for the need for this 
+by showing how to install a fake reactor globally:
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L129-L142
+
+> You can look at 
+> https://twistedmatrix.com/documents/current/api/twisted.test.proto_helpers.MemoryReactor.html for 
+> inspiration although, as all code under `twisted.test`, it is not 
+> intended as end-user functionality, so using it directly is problematic. 
+
+Not sure I fully understand this, why is the MemoryReactor bad to use? 
+Where is it used?
+
+> It would be nice to have externally-useful reactors along the lines of 
+> Clock 
+> (https://twistedmatrix.com/documents/current/api/twisted.internet.task.Clock.html ) 
+> but, unfortunately, we do not have that yet.
+
+So, clock is just a clock, right? How would that get worked into a 
+"real" reactor for testing?
+
+> You can, of course, use a real reactor and a real client to pump data. 
+> However, in that case, you probably do want to switch to trial so that 
+> you can return a deferred from a test function and have the reactor 
+> run until the deferred fires. This is not great, but can work in a pinch.
+
+pytest-twisted looks like it supports this pattern too, allowing test 
+functions to return deferreds...
+
+I guess I'm still really looking to see examples of all of this...
+
+Chris
+
+
+From chris at simplistix.co.uk  Tue Nov  6 04:42:00 2018
+From: chris at simplistix.co.uk (Chris Withers)
+Date: Tue, 6 Nov 2018 11:42:00 +0000
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <86in1bwf21.fsf@atlantis.meejah.ca>
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+ <86in1bwf21.fsf@atlantis.meejah.ca>
+Message-ID: <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+
+On 05/11/2018 18:32, meejah wrote:
+> Chris Withers <chris at simplistix.co.uk> writes:
+>
+>> So, separate question: I have a client that's making a connection to a
+>> websocket from a server. The client needs to send an "auth" message
+>> once the websocket is up, and the client code shouldn't progress until
+>> it receives an affirmative response. How do I do this in a
+>> non-blocking way when using twisted? (inside an inlineDeferred method
+>> in this case!)
+>
+> There's nothing really special about an @inlineCallbacks method -- it
+> just returns a Deferred so you can handle it like any other
+> Deferred-returning method.
+
+Thanks, but the special bit I was asking about is having my 
+application's logical flow pause until the websocket is successfully up 
+and a successful response has been received, all without blocking the 
+reactor.
+
+How do I do that?
+
+Chris
+
+
+From sda at fstab.net  Tue Nov  6 05:14:57 2018
+From: sda at fstab.net (Kyle Altendorf)
+Date: Tue, 06 Nov 2018 07:14:57 -0500
+Subject: [Twisted-Python] automated tests for a server application
+In-Reply-To: <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+References: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+ <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+Message-ID: <8200D3D0-CF7A-4909-933E-929980D1DABC@fstab.net>
+
+
+
+On November 6, 2018 6:41:23 AM EST, Chris Withers <chris at simplistix.co.uk> wrote:
+>On 06/11/2018 05:43, Moshe Zadka wrote:
+>>
+>> Some of the best advice depends on details of the application. One 
+>> trick that is sometimes useful is passing in a "fake" reactor object.
+>
+>> This, of course, is only useful if the application is structured in a
+>
+>> way that functions/classes expect to get a reactor, instead of 
+>> reaching for the global one. However, usually *that's* not a 
+>> complicated refactoring to do.
+>
+>Cool, do you have any example tests that do this?
+>Interesting, looks like pytest-twisted does away for the need for this 
+>by showing how to install a fake reactor globally:
+>https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L129-L142
+
+What is 'fake' about this globally installed normally-the-default reactor?  (Otherwise the qt5reactor if chosen)
+
+>> You can, of course, use a real reactor and a real client to pump
+>data. 
+>> However, in that case, you probably do want to switch to trial so
+>that 
+>> you can return a deferred from a test function and have the reactor 
+>> run until the deferred fires. This is not great, but can work in a
+>pinch.
+>
+>pytest-twisted looks like it supports this pattern too, allowing test 
+>functions to return deferreds...
+
+I use @pytest_twisted.inlineCallbacks anyways, yes.
+
+Overall I'm not clear what was recommended here.  Why fake the reactor?  Even if not using a 'real client' wouldn't you just fake the data going through the connections rather than faking the entire reactor?
+
+Cheers,
+-kyle
+
+
+From exarkun at twistedmatrix.com  Tue Nov  6 06:47:59 2018
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Tue, 6 Nov 2018 08:47:59 -0500
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+ <86in1bwf21.fsf@atlantis.meejah.ca>
+ <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+Message-ID: <CAEeXt4OJmF04sNKZA9JXWaKyX1=h9ixsLbLzk4YOPaJ-C99cyA@mail.gmail.com>
+
+On Tue, Nov 6, 2018 at 6:42 AM Chris Withers <chris at simplistix.co.uk> wrote:
+
+> On 05/11/2018 18:32, meejah wrote:
+> > Chris Withers <chris at simplistix.co.uk> writes:
+> >
+> >> So, separate question: I have a client that's making a connection to a
+> >> websocket from a server. The client needs to send an "auth" message
+> >> once the websocket is up, and the client code shouldn't progress until
+> >> it receives an affirmative response. How do I do this in a
+> >> non-blocking way when using twisted? (inside an inlineDeferred method
+> >> in this case!)
+> >
+> > There's nothing really special about an @inlineCallbacks method -- it
+> > just returns a Deferred so you can handle it like any other
+> > Deferred-returning method.
+>
+> Thanks, but the special bit I was asking about is having my
+> application's logical flow pause until the websocket is successfully up
+> and a successful response has been received, all without blocking the
+> reactor.
+>
+> How do I do that?
+>
+>
+Put the rest of your code in a callback on a Deferred that fires when the
+event you're interested in happens.  When using inlineCallbacks, that's
+like:
+
+    yield the_event_youre_interested_in
+    # ... more code
+
+At least, this is the extremely-localized solution to the problem.  There
+are many possible ways to structure such a thing.  It's easy to describe
+this one because you said you're using inlineCallbacks and didn't say
+anything else about how your code is organized.
+
+Jean-Paul
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181106/f6e17eee/attachment.html>
+
+From sda at fstab.net  Tue Nov  6 09:43:29 2018
+From: sda at fstab.net (Kyle Altendorf)
+Date: Tue, 06 Nov 2018 11:43:29 -0500
+Subject: [Twisted-Python] automated tests for a server application
+In-Reply-To: <7fe6c4f4-530c-f394-4d2e-bd2a6a322b94@simplistix.co.uk>
+References: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+ <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+ <8200D3D0-CF7A-4909-933E-929980D1DABC@fstab.net>
+ <7fe6c4f4-530c-f394-4d2e-bd2a6a322b94@simplistix.co.uk>
+Message-ID: <9895d6b91aaf879af09ad47c5dd09537@fstab.net>
+
+
+
+On 2018-11-06 11:28, Chris Withers wrote:
+> On 06/11/2018 12:14, Kyle Altendorf wrote:
+>> 
+>> 
+>> On November 6, 2018 6:41:23 AM EST, Chris Withers 
+>> <chris at simplistix.co.uk> wrote:
+>>> Cool, do you have any example tests that do this?
+>>> Interesting, looks like pytest-twisted does away for the need for 
+>>> this
+>>> by showing how to install a fake reactor globally:
+>>> https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L129-L142
+>> 
+>> What is 'fake' about this globally installed normally-the-default 
+>> reactor?  (Otherwise the qt5reactor if chosen)
+
+I guess I'm still not clear on what the point of using a 'fake' reactor 
+over a 'real' one is.  Not that I'm an expert here...
+
+> Nothing, but the technique could be used to install a fake reactor
+> rather than having to change all the existing code to accept an
+> optional reactor parameter.
+> 
+>> I use @pytest_twisted.inlineCallbacks anyways, yes.
+>> 
+>> Overall I'm not clear what was recommended here.  Why fake the 
+>> reactor?  Even if not using a 'real client' wouldn't you just fake the 
+>> data going through the connections rather than faking the entire 
+>> reactor?
+> 
+> I'd love to see some good example of faking the data going through the
+> connections, can you point me at some?
+
+
+I would assume you would just write a 'client' in the test of whatever 
+complexity (could just write hardcoded byte sequences) which opens a 
+connection to the server and transmits the bytes and then asserts things 
+about the response.  But no, I don't have any code.  I can't say I have 
+a good test suite myself and I also don't actually use Twisted for 
+internet stuff (canbus and serial).  Sorry.  I would expect the servers 
+provided by Twisted would have their own tests you could look at though.
+
+Cheers,
+-kyle
+
+
+From chris at withers.org  Tue Nov  6 09:51:58 2018
+From: chris at withers.org (Chris Withers)
+Date: Tue, 6 Nov 2018 16:51:58 +0000
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <CAEeXt4OJmF04sNKZA9JXWaKyX1=h9ixsLbLzk4YOPaJ-C99cyA@mail.gmail.com>
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+ <86in1bwf21.fsf@atlantis.meejah.ca>
+ <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+ <CAEeXt4OJmF04sNKZA9JXWaKyX1=h9ixsLbLzk4YOPaJ-C99cyA@mail.gmail.com>
+Message-ID: <4674adf2-7ca2-83f5-2cb4-aaf2d60e2d45@withers.org>
+
+On 06/11/2018 13:47, Jean-Paul Calderone wrote:
+>     Thanks, but the special bit I was asking about is having my
+>     application's logical flow pause until the websocket is successfully up
+>     and a successful response has been received, all without blocking the
+>     reactor.
+> 
+>     How do I do that?
+> 
+> 
+> Put the rest of your code in a callback on a Deferred that fires when 
+> the event you're interested in happens.  When using inlineCallbacks, 
+> that's like:
+> 
+>      yield the_event_youre_interested_in
+>      # ... more code
+> 
+> At least, this is the extremely-localized solution to the problem.  
+> There are many possible ways to structure such a thing.  It's easy to 
+> describe this one because you said you're using inlineCallbacks and 
+> didn't say anything else about how your code is organized.
+
+Right, but I'm still too stupid to join the dots :-(
+
+More concretely, I want to spin up an autobahn websocket client, have it 
+connect, send a login message, confirm that worked, send a 'create' 
+message, confirm that worked, and *then* let the rest of my code progress...
+
+I'm surprised there don't appear to be any example of this floating 
+around, and disappointed at the lack of examples of good tests for these 
+things.
+
+Chris
+
+
+From johnaherne at rocs.co.uk  Tue Nov  6 10:37:09 2018
+From: johnaherne at rocs.co.uk (John Aherne)
+Date: Tue, 6 Nov 2018 17:37:09 +0000
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <4674adf2-7ca2-83f5-2cb4-aaf2d60e2d45@withers.org>
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+ <86in1bwf21.fsf@atlantis.meejah.ca>
+ <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+ <CAEeXt4OJmF04sNKZA9JXWaKyX1=h9ixsLbLzk4YOPaJ-C99cyA@mail.gmail.com>
+ <4674adf2-7ca2-83f5-2cb4-aaf2d60e2d45@withers.org>
+Message-ID: <CAKmUHjZqb9Q-Jqzr3QK+45UqHWO+vVW-OJRdSb-p_oUEvNwZdw@mail.gmail.com>
+
+On Tue, Nov 6, 2018 at 4:51 PM, Chris Withers <chris at withers.org> wrote:
+
+> On 06/11/2018 13:47, Jean-Paul Calderone wrote:
+>
+>>     Thanks, but the special bit I was asking about is having my
+>>     application's logical flow pause until the websocket is successfully
+>> up
+>>     and a successful response has been received, all without blocking the
+>>     reactor.
+>>
+>>     How do I do that?
+>>
+>>
+>> Put the rest of your code in a callback on a Deferred that fires when the
+>> event you're interested in happens.  When using inlineCallbacks, that's
+>> like:
+>>
+>>      yield the_event_youre_interested_in
+>>      # ... more code
+>>
+>> At least, this is the extremely-localized solution to the problem.  There
+>> are many possible ways to structure such a thing.  It's easy to describe
+>> this one because you said you're using inlineCallbacks and didn't say
+>> anything else about how your code is organized.
+>>
+>
+> Right, but I'm still too stupid to join the dots :-(
+>
+> More concretely, I want to spin up an autobahn websocket client, have it
+> connect, send a login message, confirm that worked, send a 'create'
+> message, confirm that worked, and *then* let the rest of my code progress...
+>
+> I'm surprised there don't appear to be any example of this floating
+> around, and disappointed at the lack of examples of good tests for these
+> things.
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+
+
+If you have not yet looked at the AutoBahn site, then I would do so. I
+think you will find some good examples of dealing with web sockets and
+twisted.
+
+I don't know anything much about web sockets so can't offer much more that
+this.
+
+Here is a link
+
+https://github.com/crossbario/autobahn-python/tree/master/examples/twisted/websocket/echo
+
+Regards
+
+John Aherne
+
+
+-- 
+*John Aherne*
+
+
+
+
+*www.rocs.co.uk <http://www.rocs.co.uk>*
+020 7223 7567
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181106/ba528770/attachment.html>
+
+From chris at withers.org  Wed Nov  7 09:14:14 2018
+From: chris at withers.org (Chris Withers)
+Date: Wed, 7 Nov 2018 16:14:14 +0000
+Subject: [Twisted-Python] probably stupid question about automated testing
+ and reactor.run
+Message-ID: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+
+Hi All,
+
+Sorry, the silly questions about testing keep coming...
+
+Is it legit for a unit testable piece of an application's code to call 
+reactor.run()?
+
+How do you feed a reactor.stop() into such a test? Would that be a sane 
+thing to try and do?
+
+How do people deal with this kind of testing?
+
+cheers,
+
+Chris
+
+
+From chris.norman2 at googlemail.com  Wed Nov  7 09:17:26 2018
+From: chris.norman2 at googlemail.com (Chris Norman)
+Date: Wed, 7 Nov 2018 16:17:26 +0000
+Subject: [Twisted-Python] probably stupid question about automated
+ testing and reactor.run
+In-Reply-To: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+References: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+Message-ID: <CANjhqb-g6-039OqoOVxYqqLPEN5iXKSsUXoLwseFYtuyKG0spA@mail.gmail.com>
+
+Hi,
+First of all please take what I'm about to say with a pinch of salt, as I
+really don't know what I'm talking about half the time.
+
+As reactors can only be started once, I would imagine calling it from a
+test function would be largely pointless.
+
+Depending on what test suite you're using there should be a way of calling
+reactor.stop() at the end though... or something.
+
+HTH,
+
+On Wed, 7 Nov 2018 at 16:14, Chris Withers <chris at withers.org> wrote:
+
+> Hi All,
+>
+> Sorry, the silly questions about testing keep coming...
+>
+> Is it legit for a unit testable piece of an application's code to call
+> reactor.run()?
+>
+> How do you feed a reactor.stop() into such a test? Would that be a sane
+> thing to try and do?
+>
+> How do people deal with this kind of testing?
+>
+> cheers,
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+
+
+-- 
+
+Take care,
+
+Chris Norman
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181107/3572bd70/attachment.html>
+
+From exarkun at twistedmatrix.com  Wed Nov  7 10:37:38 2018
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Wed, 7 Nov 2018 12:37:38 -0500
+Subject: [Twisted-Python] probably stupid question about automated
+ testing and reactor.run
+In-Reply-To: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+References: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+Message-ID: <CAEeXt4MeEumbdLVJPALVDLdgAUnXUe=pZ2CaNDFc48drWoB2bA@mail.gmail.com>
+
+`reactor` is global mutable state.  So all of the usual tragedies of such a
+thing apply when you consider how unit tests will interact with it.
+
+Twisted has some APIs that will jump through some hoops for you to try to
+mitigate the damage done by this early design mistake.  For example,
+there's a context manager that will swap out the current reactor with a new
+object specified by you.  *If* the code under test doesn't import the
+reactor until it is invoked, this can help (this is just one reason a lot
+of modern Twisted code avoids importing the reactor until it absolutely
+needs it - of course, another thing modern Twisted code often does is
+accept the reactor as an argument instead of importing it and if you do
+this then you can escape some of the "global" part of the problem).
+
+But you still may not want to have `reactor.run` in your application code.
+There are other problems - such as the fact that it's common for the
+*failure* mode of tests for such code to be to hang indefinitely.  Or for
+test failures to be obscure in other ways due to the fact that you're
+invoking pretty much your *whole* stack at once - not so much a "unit" test
+- and so finding the cause of the problem is a challenge. Or for tests to
+work on one run but fail on another due to non-determinism in event
+delivery/dispatch.  Or for tests to work on one platform but fail on
+another for similar reasons.
+
+So, think about the goals you have for the tests you want to write.  You
+may indeed want *some* tests for reactor.run-calling code but my guess is
+that you want the majority to be for "pure" (in the functional sense) code
+that stays pretty far from the reactor.  Of course, if you're using a
+Twisted-based library that hasn't thought out the testing story for
+application code, you may have some roadblocks in your way.
+
+Personally, the most recent Twisted-using application I wrote, I factored
+all of my "start up Twisted and configure the process and such" code into
+one re-usable component and manually verified it works, then wrote
+automated tests (mostly unit) for everything *else*.  In some ways, this is
+what `IService` gives you, though if you find yourself wanting to go beyond
+what it offers you may have to write something like what I did.
+
+Finally, Twisted has a bunch of blackbox tests *for reactor
+implementations* which
+essentially must call reactor.run.  It's not clear how applicable the
+strategies used by these tests might be to tests for application code
+(rather than reactor implementation code) but it might be worth looking
+at.  These tests are mostly in twisted/internet/test/ - eg test_tcp.py in
+that directory.
+
+Jean-Paul
+
+On Wed, Nov 7, 2018 at 11:14 AM Chris Withers <chris at withers.org> wrote:
+
+> Hi All,
+>
+> Sorry, the silly questions about testing keep coming...
+>
+> Is it legit for a unit testable piece of an application's code to call
+> reactor.run()?
+>
+> How do you feed a reactor.stop() into such a test? Would that be a sane
+> thing to try and do?
+>
+> How do people deal with this kind of testing?
+>
+> cheers,
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181107/9363059c/attachment.html>
+
+From twm at freecog.net  Thu Nov  8 01:24:41 2018
+From: twm at freecog.net (Tom Most)
+Date: Thu, 08 Nov 2018 00:24:41 -0800
+Subject: [Twisted-Python] automated tests for a server application
+In-Reply-To: <9895d6b91aaf879af09ad47c5dd09537@fstab.net>
+References: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+ <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+ <8200D3D0-CF7A-4909-933E-929980D1DABC@fstab.net>
+ <7fe6c4f4-530c-f394-4d2e-bd2a6a322b94@simplistix.co.uk>
+ <9895d6b91aaf879af09ad47c5dd09537@fstab.net>
+Message-ID: <1541665481.3290104.1569622656.5245EBF9@webmail.messagingengine.com>
+
+On Tue, Nov 6, 2018, at 8:43 AM, Kyle Altendorf wrote:
+> On 2018-11-06 11:28, Chris Withers wrote:
+> I guess I'm still not clear on what the point of using a 'fake' reactor 
+> over a 'real' one is.  Not that I'm an expert here...
+
+There are a bunch of advantages! Including:
+
+1. Your tests become more deterministic --- even *fully* deterministic.
+2. Fake I/O is way faster --- no syscalls!
+3. Fake I/O is more reliable --- no worries about failing to allocate a port.
+4. You gain full control over time. This makes it easy to test behaviors like timeouts and backoff timers.
+5. You can run multiple fake reactors. Great for testing distributed systems!
+
+At an extreme, you can make the whole suite synchronous (meaning, Deferreds fire immediately). treq.testing[1] can be used like this. [2] is an example of a suite in this style (this suite is actually run under the Django test runner, which knows nothing of reactors or Deferreds, though I don't recommend doing that).
+
+There are some potential pitfalls:
+
+1. As with any test double, you can trick yourself. I find faking I/O in this way is less prone to these problems than tools like unittest.mock, though.
+2. Manually controlling time can harm composability. Application-level Twisted tends to eventually require some sort of time-related behavior, if only the humble reactor.callLater(0, ...) to avoid stack overflow. (Use of the cooperator from twisted.internet.task is another common one.)
+3. Some (old) bits of Twisted don't allow passing a reactor or use the one passed in all code paths[3].
+
+You can combine fake I/O with techniques like generative testing, too, though I don't have any public examples to point at. And of course you can also combine with other forms of dependency injection, like passing in an endpoint.
+
+FWIW twisted.test.proto_helpers and twisted.test.iosim *are* public API, despite their presence in the test package. They could certainly use docs, and there is a ticket to move them somewhere more appropriate. For the moment the best way to learn to read them is to look at Twisted's own test suite. I found reading the tests for HostnameEndpoint helpful [4].
+
+---Tom
+
+[1]: https://treq.readthedocs.io/en/latest/testing.html
+[2]: https://github.com/twm/yarrharr/blob/e31a488f8884fb82f1dba733585bef4a7ad86968/yarrharr/tests/test_fetch.py#L282
+[3]: https://github.com/twm/yarrharr/pull/277/commits/1a5b5832edbf1fb1b1f45e9d99b65dad51ada566#diff-29ffe25b52ad7bddee9f2f08544e899cR98
+[4]: https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/test/test_endpoints.py
+
+
+From trac at twistedmatrix.com  Sun Nov 11 00:05:17 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 11 Nov 2018 07:05:17 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1541919917.8.4671563782642548818@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181111/f7a72543/attachment.html>
+
+From chris at withers.org  Tue Nov 13 15:37:24 2018
+From: chris at withers.org (Chris Withers)
+Date: Tue, 13 Nov 2018 22:37:24 +0000
+Subject: [Twisted-Python] pytest-twisted questions
+In-Reply-To: <51285f8be0f35b436b29d154a3193b0b@fstab.net>
+References: <75701075-ea31-834c-df29-0dc0e875a468@withers.org>
+ <51285f8be0f35b436b29d154a3193b0b@fstab.net>
+Message-ID: <5bbbf139-12ad-d294-342e-71b53077498c@withers.org>
+
+On 13/11/2018 20:31, Kyle Altendorf wrote:
+> I would just open an issue on GitHub.  Feel free to copy this in as the 
+> first message to keep the initial context.
+
+Well, there's no specific issue to log here, so let's keep on going with 
+email for now :-)
+
+(in fact, copying in the twisted mailing list, as that's probably the 
+right place for this)
+
+> On 2018-11-13 12:35, Chris Withers wrote:
+>> - What's the intention of the plugin? Should all tests still subclass
+>> twisted.trial.unittest.TestCase or should they *never* do so if using
+>> this plugin?
+> 
+> I don't know what _should_ be done, 
+
+Victor, what was your intention with the project?
+
+> but I know that I mostly don't have 
+> test classes and, for the class I do have, I didn't inherit.  Mostly I 
+> just @pytest.inlineCallbacks (I still don't like the namespace squashing 
+> into pytest though :] ) and I suppose in the probably-not-too-distant 
+> future I'll instead be using more @pytest_twisted.async_await  (ala 
+> #31/#34).
+
+Okay, but twisted.trial.unittest.TestCase does a bunch of reactor 
+management stuff, most notable making you aware when you've left the 
+reactor in a bad state. As far as I can see from the code, 
+pytest-twisted does not do that, correct?
+
+>> - What's with the greenlet mentions? Is this plugin okay to use when
+>> I'm just using a normal Twisted epoll reactor?
+
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L4
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L36-L46
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L68-L83
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L123-L126
+
+What does greenlet have to do with twisted in this context? Would be 
+great to have it as an optional thing, unless I'm missing something?
+
+>> - What does pytest provide *without* this plugin, when it comes to
+>> testing with Twisted?
+> 
+> I am not aware of anything twisted/pytest specific that is outside 
+> pytest-twisted, 
+
+https://docs.pytest.org/en/latest/faq.html#how-does-pytest-relate-to-twisted-s-trial
+
+So, my guess is that twisted.trial.unittest.TestCase subclasses 
+unittest.TestCase and so pytest treats it in the same way. That means 
+you get the management and checking of the reactor, along with the handy 
+methods it provides, when you put your tests in class-based suites that 
+subclass twisted.trial.unittest.TestCase.
+
+Ronny, does pytest do anything else that's twisted-specific?
+
+> If you are just trying to get started with something that works, I'd 
+> skip the classes and inheritance and just let the reactor take care of 
+> itself. 
+
+My experience with Twisted over the last 10 years or so is that this is 
+an exceedingly dangerous approach to take...
+
+cheers,
+
+Chris
+
+
+From sda at fstab.net  Tue Nov 13 17:47:10 2018
+From: sda at fstab.net (Kyle Altendorf)
+Date: Tue, 13 Nov 2018 19:47:10 -0500
+Subject: [Twisted-Python] pytest-twisted questions
+In-Reply-To: <5bbbf139-12ad-d294-342e-71b53077498c@withers.org>
+References: <75701075-ea31-834c-df29-0dc0e875a468@withers.org>
+ <51285f8be0f35b436b29d154a3193b0b@fstab.net>
+ <5bbbf139-12ad-d294-342e-71b53077498c@withers.org>
+Message-ID: <43848ef31d1be6acd1b5d73cafd687ff@fstab.net>
+
+
+
+On 2018-11-13 17:37, Chris Withers wrote:
+> On 13/11/2018 20:31, Kyle Altendorf wrote:
+>> but I know that I mostly don't have test classes and, for the class I 
+>> do have, I didn't inherit.  Mostly I just @pytest.inlineCallbacks (I 
+>> still don't like the namespace squashing into pytest though :] ) and I 
+>> suppose in the probably-not-too-distant future I'll instead be using 
+>> more @pytest_twisted.async_await  (ala #31/#34).
+> 
+> Okay, but twisted.trial.unittest.TestCase does a bunch of reactor
+> management stuff, most notable making you aware when you've left the
+> reactor in a bad state. As far as I can see from the code,
+> pytest-twisted does not do that, correct?
+
+I don't believe so.  It sounds like I should review 
+twisted.trial.unittest.TestCase and consider implementing a fixture to 
+provide the checks.  Perhaps default it to autouse with a cli parameter 
+to disable it.
+
+Perhaps #4 is relevant though.
+
+https://github.com/pytest-dev/pytest-twisted/issues/4
+https://github.com/altendky/stlib/blob/b34796cbba959d9cb2cb843f3cc5fc815c7cb6c6/epyqlib/tests/utils/test_twisted.py#L65-L93
+
+Cheers,
+-kyle
+
+
+From chris at withers.org  Wed Nov 14 01:50:04 2018
+From: chris at withers.org (Chris Withers)
+Date: Wed, 14 Nov 2018 08:50:04 +0000
+Subject: [Twisted-Python] "disconnecting properly" in tests still hangs on
+ macOS
+Message-ID: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+
+Right, so, I've been trying to get the technique in 
+https://jml.io/pages/how-to-disconnect-in-twisted-really.html to work 
+for me.
+
+No hating please, most of my testing in the past has involved hitting a 
+relational database, so there's already a TCP connection flying around, 
+one more won't make any difference.
+
+jml's example, exactly as-is on that page, hangs around 30-40% of the 
+time when running on my macOS laptop. From changing the teardown to look 
+like this:
+
+     def tearDown(self):
+         ds = defer.maybeDeferred(self.serverPort.stopListening)
+         dc = defer.maybeDeferred(self.clientConnection.disconnect)
+         print()
+
+         ds.addCallback(lambda _: print('serverPort.stopListening'))
+         dc.addCallback(lambda _: print('self.clientConnection.disconnect'))
+         self.clientDisconnected.addCallback(lambda _: 
+print('self.clientDisconnected'))
+         self.serverDisconnected.addCallback(lambda _: 
+print('self.serverDisconnected'))
+         self.serverDisconnected.addErrback(lambda _: 
+print('self.serverDisconnected:', _))
+         return defer.gatherResults([ds, dc, self.clientDisconnected, 
+self.serverDisconnected])
+
+...it appears that it's the serverDisconnected deferred that's failing 
+to fire. I can't reproduce this on Linux as of yet, so I'm guessing this 
+is a difference between the SelectReactor used on macOS and the 
+EPollReactor used on Linux.
+
+What's the best way to go about debugging a non-firing deferred like this?
+
+Anyone know what this might be?
+
+cheers,
+
+Chris
+
+
+From exarkun at twistedmatrix.com  Wed Nov 14 06:40:00 2018
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Wed, 14 Nov 2018 08:40:00 -0500
+Subject: [Twisted-Python] "disconnecting properly" in tests still hangs
+ on macOS
+In-Reply-To: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+References: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+Message-ID: <CAEeXt4N6whe_mXc6W19HptqH1BxtgeSfJJd0W=VhHRU81Zsu0w@mail.gmail.com>
+
+On Wed, Nov 14, 2018 at 3:50 AM Chris Withers <chris at withers.org> wrote:
+
+> Right, so, I've been trying to get the technique in
+> https://jml.io/pages/how-to-disconnect-in-twisted-really.html to work
+> for me.
+>
+> No hating please, most of my testing in the past has involved hitting a
+> relational database, so there's already a TCP connection flying around,
+> one more won't make any difference.
+>
+> jml's example, exactly as-is on that page, hangs around 30-40% of the
+> time when running on my macOS laptop. From changing the teardown to look
+> like this:
+>
+>      def tearDown(self):
+>          ds = defer.maybeDeferred(self.serverPort.stopListening)
+>          dc = defer.maybeDeferred(self.clientConnection.disconnect)
+>          print()
+>
+>          ds.addCallback(lambda _: print('serverPort.stopListening'))
+>          dc.addCallback(lambda _:
+> print('self.clientConnection.disconnect'))
+>          self.clientDisconnected.addCallback(lambda _:
+> print('self.clientDisconnected'))
+>          self.serverDisconnected.addCallback(lambda _:
+> print('self.serverDisconnected'))
+>          self.serverDisconnected.addErrback(lambda _:
+> print('self.serverDisconnected:', _))
+>          return defer.gatherResults([ds, dc, self.clientDisconnected,
+> self.serverDisconnected])
+>
+> ...it appears that it's the serverDisconnected deferred that's failing
+> to fire. I can't reproduce this on Linux as of yet, so I'm guessing this
+> is a difference between the SelectReactor used on macOS and the
+> EPollReactor used on Linux.
+>
+> What's the best way to go about debugging a non-firing deferred like this?
+>
+
+Track it backwards towards the earliest/lowest possible source of the
+event.  You've already started this: you noticed that the result of
+`gatherResults` doesn't fire and you investigate somehow and learned that
+this is because `serverDisconnected` didn't fire.  Now keep going.  Why
+didn't `serverDisconnected` fire?  It looks like it should be fired by
+`ServerProtocol.connectionLost`.  Does that method ever get called?  If so,
+you've now identified the break in the chain and you just have to figure
+out why `connectionLost` doesn't manage to make `serverDisconnected` fire.
+If not, keep going.  What code calls `ServerProtocol.connectionLost` - does
+that run, etc.  Repeat until you find the break.
+
+
+>
+> Anyone know what this might be?
+>
+
+I know that macOS often delivers events in a different order compared to
+Linux.  This has sometimes caused problems, particularly in the test
+suite.  I can't quite see how that would explain this behavior though so
+maybe it's something else.  It might be useful to share your version of
+Python, Twisted, macOS, and the reactor you're using, in case anyone wants
+to try to replicate.
+
+Jean-Paul
+
+
+>
+> cheers,
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181114/d1f96ee0/attachment.html>
+
+From ex.vitorino at gmail.com  Wed Nov 14 06:41:14 2018
+From: ex.vitorino at gmail.com (exvito here)
+Date: Wed, 14 Nov 2018 13:41:14 +0000
+Subject: [Twisted-Python] "disconnecting properly" in tests still hangs
+ on macOS
+In-Reply-To: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+References: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+Message-ID: <4E281641-12C4-44B6-BA50-95D39D69C622@gmail.com>
+
+
+> On 14 Nov 2018, at 08:50, Chris Withers <chris at withers.org> wrote:
+> 
+> Right, so, I've been trying to get the technique in https://jml.io/pages/how-to-disconnect-in-twisted-really.html to work for me.
+> 
+> No hating please, most of my testing in the past has involved hitting a relational database, so there's already a TCP connection flying around, one more won't make any difference.
+> 
+> jml's example, exactly as-is on that page, hangs around 30-40% of the time when running on my macOS laptop. From changing the teardown to look like this:
+> 
+>     def tearDown(self):
+>         ds = defer.maybeDeferred(self.serverPort.stopListening)
+>         dc = defer.maybeDeferred(self.clientConnection.disconnect)
+>         print()
+> 
+>         ds.addCallback(lambda _: print('serverPort.stopListening'))
+>         dc.addCallback(lambda _: print('self.clientConnection.disconnect'))
+>         self.clientDisconnected.addCallback(lambda _: print('self.clientDisconnected'))
+>         self.serverDisconnected.addCallback(lambda _: print('self.serverDisconnected'))
+>         self.serverDisconnected.addErrback(lambda _: print('self.serverDisconnected:', _))
+>         return defer.gatherResults([ds, dc, self.clientDisconnected, self.serverDisconnected])
+> 
+> ...it appears that it's the serverDisconnected deferred that's failing to fire. I can't reproduce this on Linux as of yet, so I'm guessing this is a difference between the SelectReactor used on macOS and the EPollReactor used on Linux.
+> 
+> What's the best way to go about debugging a non-firing deferred like this?
+> 
+> Anyone know what this might be?
+
+
+Chris,
+
+I played with this for a bit and quickly reproduced the "server side disconnect never seems to happen" behaviour you described, on my system running macOS 10.12.6 and Twisted 18.9.0 using the SelectReactor.
+
+Suspecting of an eventual race condition between "server stop listen" and "server disconnect", I tried this variation of tearDown which seems to work reliably:
+
+    @defer.inlineCallbacks
+    def tearDown(self):
+        self.clientConnection.disconnect()
+        yield defer.gatherResults([self.clientDisconnected, self.serverDisconnected])
+        yield defer.maybeDeferred(self.serverPort.stopListening)
+
+Do I have any motive to suspect such race condition? No, but after ensuring "disconnect first, stop listening later", things work much better here.
+
+Also tested the CFReactor and KQueueReactor: CFReactor seems to exhibit a similar behaviour (original code hangs every now and then on cleanup, my code works); KQueueReactor always hangs on cleanup with the original code, and works reliably with my code.
+
+My 2c.,
+--
+exvito
+
+
+
+From chris at withers.org  Fri Nov 16 02:17:47 2018
+From: chris at withers.org (Chris Withers)
+Date: Fri, 16 Nov 2018 09:17:47 +0000
+Subject: [Twisted-Python] "disconnecting properly" in tests still hangs
+ on macOS
+In-Reply-To: <4E281641-12C4-44B6-BA50-95D39D69C622@gmail.com>
+References: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+ <4E281641-12C4-44B6-BA50-95D39D69C622@gmail.com>
+Message-ID: <2fa03e7a-e069-319f-4b68-705ebc31b62c@withers.org>
+
+On 14/11/2018 13:41, exvito here wrote:
+> 
+> Chris,
+> 
+> I played with this for a bit and quickly reproduced the "server side disconnect never seems to happen" behaviour you described, on my system running macOS 10.12.6 and Twisted 18.9.0 using the SelectReactor.
+> 
+> Suspecting of an eventual race condition between "server stop listen" and "server disconnect", I tried this variation of tearDown which seems to work reliably:
+> 
+>      @defer.inlineCallbacks
+>      def tearDown(self):
+>          self.clientConnection.disconnect()
+>          yield defer.gatherResults([self.clientDisconnected, self.serverDisconnected])
+>          yield defer.maybeDeferred(self.serverPort.stopListening)
+> 
+> Do I have any motive to suspect such race condition? No, but after ensuring "disconnect first, stop listening later", things work much better here.
+> 
+> Also tested the CFReactor and KQueueReactor: CFReactor seems to exhibit a similar behaviour (original code hangs every now and then on cleanup, my code works); KQueueReactor always hangs on cleanup with the original code, and works reliably with my code.
+
+Thanks, this has worked flawlessly!
+
+cheers,
+
+Chris
+
+
+From chris at withers.org  Fri Nov 16 08:07:56 2018
+From: chris at withers.org (Chris Withers)
+Date: Fri, 16 Nov 2018 15:07:56 +0000
+Subject: [Twisted-Python] carly: a tool for testing twisted protocols with
+ real networking
+Message-ID: <8185bda3-69ab-0ff9-e5b4-4f014d65bd50@withers.org>
+
+Hi All,
+
+Okay, so, I've started working jml's "really disconnecting" blog post 
+into a more generic set of tooling for testing protocols talking to each 
+other over real networking like this:
+
+https://github.com/cjw296/carly/blob/master/tests/test_line_receiver_server.py
+
+Very interested in peoples thoughts, and especially if you can spot any 
+bugs in these two:
+
+https://github.com/cjw296/carly/blob/master/carly/hook.py
+https://github.com/cjw296/carly/blob/master/carly/context.py
+
+Thanks for all the help so far, it's certainly helping me get my head 
+around this all :-)
+
+Chris
+
+PS: Real networking is bad, yes, I know: slow, unreliable, etc ;-) 
+However, in most of the testing I do, I end up having to hit a real 
+database server to check my code works with it, so a few more tcp 
+connections to localhost is not the end of the world!
+
+
+From trac at twistedmatrix.com  Sun Nov 18 00:05:18 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 18 Nov 2018 07:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1542524718.5.6736088333325157041@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181118/013fa243/attachment.html>
+
+From darrenuspto at gmail.com  Mon Nov 19 04:40:20 2018
+From: darrenuspto at gmail.com (Darren Govoni)
+Date: Mon, 19 Nov 2018 06:40:20 -0500
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+Message-ID: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+
+Hi,
+  I am using twisted to run my Flask app via WSGI like so.
+
+twistd --pidfile $PORT/pidfile -l $PORT/logfile  -n web --port tcp:$PORT
+--wsgi my.app
+
+Naturally, I have functions representing routes that enter and exit just
+fine.
+
+However, I notice the twisted daemon process is :"gathering threads".
+Eventually system runs out of them.
+
+ Here's a full status for one twisted server. 504 threads???
+
+Name:   twistd
+Umask:  0077
+State:  S (sleeping)
+Tgid:   54855
+Ngid:   35415
+Pid:    54855
+PPid:   1
+TracerPid:      0
+Uid:    4052    4052    4052    4052
+Gid:    4052    4052    4052    4052
+FDSize: 256
+Groups: 4052
+VmPeak: 34240104 kB
+VmSize: 34239336 kB
+VmLck:         0 kB
+VmPin:         0 kB
+VmHWM:   1942708 kB
+VmRSS:   1871884 kB
+RssAnon:         1834800 kB
+RssFile:           37080 kB
+RssShmem:              4 kB
+VmData: 33310576 kB
+VmStk:       284 kB
+VmExe:         4 kB
+VmLib:    234176 kB
+VmPTE:      8876 kB
+VmSwap:        0 kB
+Threads:        504
+SigQ:   1/1546652
+SigPnd: 0000000000000000
+ShdPnd: 0000000000000000
+SigBlk: 0000000000000000
+SigIgn: 0000000001001007
+SigCgt: 00000001800146e8
+CapInh: 0000000000000000
+CapPrm: 0000000000000000
+CapEff: 0000000000000000
+CapBnd: 0000001fffffffff
+CapAmb: 0000000000000000
+Seccomp:        0
+Speculation_Store_Bypass:       thread vulnerable
+Cpus_allowed:   ffffff,ffffffff
+Cpus_allowed_list:      0-55
+Mems_allowed:
+ 00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000003
+Mems_allowed_list:      0-1
+voluntary_ctxt_switches:        358534596
+nonvoluntary_ctxt_switches:     31738
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181119/f328135d/attachment.html>
+
+From maarten at treewalker.org  Mon Nov 19 06:25:45 2018
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Mon, 19 Nov 2018 14:25:45 +0100
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+Message-ID: <2136683.UiEFGJyh1W@hyperion>
+
+On maandag 19 november 2018 12:40:20 CET Darren Govoni wrote:
+> Hi,
+>   I am using twisted to run my Flask app via WSGI like so.
+> 
+> twistd --pidfile $PORT/pidfile -l $PORT/logfile  -n web --port
+> tcp:$PORT --wsgi my.app
+> 
+> Naturally, I have functions representing routes that enter and exit
+> just fine.
+> 
+> However, I notice the twisted daemon process is :"gathering threads".
+> Eventually system runs out of them.
+> 
+>  Here's a full status for one twisted server. 504 threads???
+
+I have a server running inside twistd which uses exactly 1 thread after 
+running for a few weeks, so the problem may not be in twistd itself.
+
+I'm using a reverse-proxy HTTP setup though, not WSGI. Maybe the problem 
+is specific to WSGI, Flask or your application?
+
+Bye,
+		Maarten
+
+
+
+
+From exarkun at twistedmatrix.com  Mon Nov 19 06:29:03 2018
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Mon, 19 Nov 2018 08:29:03 -0500
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <2136683.UiEFGJyh1W@hyperion>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+Message-ID: <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+
+On Mon, Nov 19, 2018 at 8:26 AM Maarten ter Huurne <maarten at treewalker.org>
+wrote:
+
+> On maandag 19 november 2018 12:40:20 CET Darren Govoni wrote:
+> > Hi,
+> >   I am using twisted to run my Flask app via WSGI like so.
+> >
+> > twistd --pidfile $PORT/pidfile -l $PORT/logfile  -n web --port
+> > tcp:$PORT --wsgi my.app
+> >
+> > Naturally, I have functions representing routes that enter and exit
+> > just fine.
+> >
+> > However, I notice the twisted daemon process is :"gathering threads".
+> > Eventually system runs out of them.
+> >
+> >  Here's a full status for one twisted server. 504 threads???
+>
+> I have a server running inside twistd which uses exactly 1 thread after
+> running for a few weeks, so the problem may not be in twistd itself.
+>
+> I'm using a reverse-proxy HTTP setup though, not WSGI. Maybe the problem
+> is specific to WSGI, Flask or your application?
+>
+
+
+Twisted's WSGI support definitely uses threads (as this is essentially a
+requirement of WSGI).  It uses the reactor thread pool (if you launch it
+from the CLI with twistd) which used to be limited to 10 threads.  I don't
+know if the same limit is in place these days.
+
+Jean-Paul
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181119/cd4e6b7b/attachment.html>
+
+From darrenuspto at gmail.com  Mon Nov 19 07:16:48 2018
+From: darrenuspto at gmail.com (Darren Govoni)
+Date: Mon, 19 Nov 2018 09:16:48 -0500
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+ <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+Message-ID: <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+
+I tried to find out if there is a way to limit the thread pool size from
+command line for twisted web and found nothing. Does it exist?
+
+On Mon, Nov 19, 2018 at 8:30 AM Jean-Paul Calderone <
+exarkun at twistedmatrix.com> wrote:
+
+> On Mon, Nov 19, 2018 at 8:26 AM Maarten ter Huurne <maarten at treewalker.org>
+> wrote:
+>
+>> On maandag 19 november 2018 12:40:20 CET Darren Govoni wrote:
+>> > Hi,
+>> >   I am using twisted to run my Flask app via WSGI like so.
+>> >
+>> > twistd --pidfile $PORT/pidfile -l $PORT/logfile  -n web --port
+>> > tcp:$PORT --wsgi my.app
+>> >
+>> > Naturally, I have functions representing routes that enter and exit
+>> > just fine.
+>> >
+>> > However, I notice the twisted daemon process is :"gathering threads".
+>> > Eventually system runs out of them.
+>> >
+>> >  Here's a full status for one twisted server. 504 threads???
+>>
+>> I have a server running inside twistd which uses exactly 1 thread after
+>> running for a few weeks, so the problem may not be in twistd itself.
+>>
+>> I'm using a reverse-proxy HTTP setup though, not WSGI. Maybe the problem
+>> is specific to WSGI, Flask or your application?
+>>
+>
+>
+> Twisted's WSGI support definitely uses threads (as this is essentially a
+> requirement of WSGI).  It uses the reactor thread pool (if you launch it
+> from the CLI with twistd) which used to be limited to 10 threads.  I don't
+> know if the same limit is in place these days.
+>
+> Jean-Paul
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181119/7ee9aeb7/attachment.html>
+
+From grimmtooth at gmail.com  Mon Nov 19 16:06:49 2018
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Mon, 19 Nov 2018 18:06:49 -0500
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+ <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+Message-ID: <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+
+Glyph,
+
+Belated (I was in the thick of a few unrelated crises) thanks - it helps to
+understand a little bit of the background on the way it works.  I have made
+adjustments and everything works the way I was hoping for now.
+
+I wish I understood it a little better, if for no other reason than to
+contribute some documentation tweaks.  Just how would that work, anyway?
+The contribution model for Twisted is a little opaque from where I am
+sitting. I'd love to help in areas where I am actually capable of doing :)
+
+Regards,
+
+Jeff
+
+
+On Thu, Nov 1, 2018 at 3:44 AM Glyph <glyph at twistedmatrix.com> wrote:
+
+> Hi Jeff,
+>
+> Thanks for using Twisted.
+>
+> Here's a version with some small changes that works, and is self-contained.
+>
+> import sys
+>
+> from twisted.internet import reactor, endpoints
+> from twisted.web import server
+> from twisted.web.resource import Resource
+> from twisted.web.static import Data
+>
+> sys.path.append('lib')
+>
+> content = """
+> <!DOCTYPE html>
+> <html lang="en">
+> <head>
+>     <meta charset="UTF-8">
+>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+> </head>
+> <body>
+>     <span class='twistedTest'>This</span> is a test
+> </body>
+> </html>
+> """
+>
+> class tServer(Resource):
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+>
+> if __name__ == "__main__":
+>     root = Resource()
+>     static_collection = Resource()
+>     static_collection.putChild(b"test.css", Data(b".twistedTest {color:
+> red;}", "text/css"))
+>     root.putChild(b"static", static_collection)
+>     root.putChild(b"", tServer())
+>
+>     site = server.Site(root)
+>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>     endpoint.listen(site)
+>
+>     reactor.run()
+>     print("Shutting down!")
+>
+>
+> The problem with your first version was 'isLeaf', as Donal suggested.
+> However, the problem was not simply that the flag was set, but rather what
+> the flag means, and why it works that way.
+>
+> The root resource in any web server is a *collection*.  Which is to say,
+> under normal circumstances, the root resource never has render_* invoked on
+> it; you can't render it, because it's impossible, in the HTTP protocol, to
+> spell a URL that doesn't start with "/".
+>
+> isLeaf changes this, and says "this resource is responsible for rendering
+> all of its children; traversal stops here".  That means that it starts
+> invoking render_GET to render "/", but also to render *every other path
+> on the server*, including (unfortunately for you) /static/test.css.
+>
+> The modified example above instead uses a Resource() as the collection,
+> and inserts a '' child for the index, and a separate 'static' child for the
+> static index.  You can use a static.File for a directory here instead of a
+> static resource, and anywhere you see putChild, you could also use a
+> dynamic resource which overrides getChild to return the object rather than
+> inserting it in advance.
+>
+> Of course, you might wonder what the point of 'isLeaf' is if it short
+> circuits this stuff and makes it impossible to tell the difference between
+> resources.
+>
+> Given that you have a directory, you want to use a static.File child
+> resource and almost certainly *don't* want to set isLeaf; however, you
+> might be wondering how one would even use isLeaf if it just cuts off the
+> ability to tell the difference between resources.  The documentation on
+> this is not great - it doesn't even appear as an attribute in the API
+> reference, just an oblique reference in the docstring for
+> https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild.
+> But, the 'prepath' and 'postpath' attributes, lists of bytes, will tell you
+> about where in the request traversal cycle you are, and allow you to
+> distinguish which content to render directly within the body of render_*,
+> rather than having to route to the right object using Twisted APIs.  So
+> here's a working version with isLeaf=True:
+>
+> import sys
+>
+> from twisted.internet import reactor, endpoints
+> from twisted.web import server
+> from twisted.web.resource import Resource
+>
+> content = """
+> <!DOCTYPE html>
+> <html lang="en">
+> <head>
+>     <meta charset="UTF-8">
+>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+> </head>
+> <body>
+>     <span class='twistedTest'>This</span> is a test
+> </body>
+> </html>
+> """
+>
+> css = """
+> .twistedTest {
+>     color: red;
+> }
+> """
+>
+> class tServer(Resource):
+>     isLeaf = True
+>     def render_GET(self, request):
+>         if request.postpath == [b'']:
+>             request.setHeader("content-type", "text/html")
+>             return bytes(content, "utf-8")
+>         elif request.postpath == [b'static', b'test.css']:
+>             request.setHeader("content-type", "text/css")
+>             return bytes(css, 'utf-8')
+>         else:
+>             request.setResponseCode(404)
+>             return b'not found'
+>
+> if __name__ == "__main__":
+>     site = server.Site(tServer())
+>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>     endpoint.listen(site)
+>
+>     reactor.run()
+>     print("Shutting down!")
+>
+>
+> I hope this clears up the request traversal model a little bit.
+>
+> -glyph
+>
+>
+> On Oct 31, 2018, at 2:15 PM, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+>
+> Tried that, I get a big
+>
+> No Such Resource
+>
+> No such child resource.
+> back.  Watching it in FF's development panel, I see a 404 come back for
+> /.  /static doesn't get served at all, of course.
+>
+> This, however, DID work.
+>
+> class tServer(Resource):
+>     isLeaf = False
+>
+>     def getChild(self, path, request):
+>         print('You know what you doing.')
+>
+>         if path == b'':
+>             print("Rendering /")
+>             return self
+>
+>         return Resource.getChild(self, path, request)
+>
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+>
+> (ignore my printf debugging plz)
+>
+> So, Thanks! :)
+>
+> Regards,
+>
+> Jeff
+>
+>
+> On Tue, Oct 30, 2018 at 6:42 PM Donal McMullan <donal.mcmullan at gmail.com>
+> wrote:
+>
+>> Try replacing:
+>> isLeaf = True
+>> with
+>> isLeaf = False
+>>
+>>
+>> On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+>>
+>>> I'm sure I'm overlooking something obvious here but I just can't get my
+>>> head around it.
+>>>
+>>> Here's the setup: twisted.web server that generates dynamic content.
+>>> Child that serves up static content, e.g. css and favoicon.  However, the
+>>> static content isn't making it. Instead, any hit to localhost/static
+>>> actually yields up a copy of / again.
+>>>
+>>> Here's the server code
+>>>
+>>> import sys
+>>>
+>>> from twisted.internet import reactor, endpoints
+>>> from twisted.web import server
+>>> from twisted.web.resource import Resource
+>>> from twisted.web.static import File
+>>>
+>>> sys.path.append('lib')
+>>>
+>>> content = """
+>>> <!DOCTYPE html>
+>>> <html lang="en">
+>>> <head>
+>>>     <meta charset="UTF-8">
+>>>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+>>> </head>
+>>> <body>
+>>>     <span class='twistedTest'>This</span> is a test
+>>> </body>
+>>> </html>
+>>> """
+>>>
+>>>
+>>> class tServer(Resource):
+>>>     isLeaf = True
+>>>
+>>>     def render_GET(self, request):
+>>>         return bytes(content, "utf-8")
+>>>
+>>>
+>>> if __name__ == "__main__":
+>>>     root = tServer()
+>>>     root.putChild(b"static", File("static"))
+>>>
+>>>     site = server.Site(root)
+>>>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>>>     endpoint.listen(site)
+>>>
+>>>     reactor.run()
+>>>     print("Shutting down!")
+>>>
+>>> It's run with the command 'python tserver.py'.  The expectation is that
+>>> what is inside the custom <span> will be red.
+>>>
+>>> In the same dir as the script is a subdir 'static' with the css file
+>>> inside it.
+>>>
+>>> If I replace 'root' with     root = Resource() then / doesn't serve up
+>>> anything, but /static is a directory listing of the static directory.
+>>>
+>>> The dynamic server is basically a copy of several tutorials cooked down
+>>> to something that I could use to demonstrate the problem.
+>>>
+>>> What am I missing here? /headscratch
+>>>
+>>> Regards,
+>>>
+>>> Jeff
+>>> _______________________________________________
+>>> Twisted-Python mailing list
+>>> Twisted-Python at twistedmatrix.com
+>>> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>>>
+>> _______________________________________________
+>> Twisted-Python mailing list
+>> Twisted-Python at twistedmatrix.com
+>> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181119/ca14c90a/attachment.html>
+
+From twm at freecog.net  Tue Nov 20 23:30:45 2018
+From: twm at freecog.net (Tom Most)
+Date: Tue, 20 Nov 2018 22:30:45 -0800
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+ <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+ <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+Message-ID: <1542781845.2303374.1583601416.531133B4@webmail.messagingengine.com>
+
+On Mon, Nov 19, 2018, at 3:06 PM, Jeff Grimmett wrote:
+> Glyph,
+> 
+> Belated (I was in the thick of a few unrelated crises) thanks - it
+> helps to understand a little bit of the background on the way it
+> works.  I have made adjustments and everything works the way I was
+> hoping for now.> 
+> I wish I understood it a little better, if for no other reason than to
+> contribute some documentation tweaks.  Just how would that work,
+> anyway? The contribution model for Twisted is a little opaque from
+> where I am sitting. I'd love to help in areas where I am actually
+> capable of doing :)> 
+> Regards,
+> 
+> Jeff 
+
+Hi Jeff,
+
+The Twisted development process is documented here on the wiki[1]. It
+boils down to:
+1. Create a ticket[2] (on Trac)
+2. Create a pull request (on GitHub)
+3. Wait for a review (and address any feedback the reviewer gives)
+
+There is more on the wiki. The same process applies to code and
+documentation.
+Documentation changes are really helpful, especially because it is
+difficult for the experienced to see the rough edges that catch new
+users. Your confusion is a bug, and particularly with respect to the
+Resource model, a not uncommon one. Let's fix it!
+---Tom
+
+
+
+
+Links:
+
+  1. https://twistedmatrix.com/trac/wiki/TwistedDevelopment#GettingYourPatchAccepted
+  2. https://twistedmatrix.com/trac/newticket
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181120/9bab4b52/attachment.html>
+
+From glyph at twistedmatrix.com  Wed Nov 21 19:30:43 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Wed, 21 Nov 2018 18:30:43 -0800
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+ <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+ <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+Message-ID: <23558335-1E4A-47EF-91D3-F5F323F4DABF@twistedmatrix.com>
+
+
+> On Nov 19, 2018, at 6:16 AM, Darren Govoni <darrenuspto at gmail.com> wrote:
+> 
+> I tried to find out if there is a way to limit the thread pool size from command line for twisted web and found nothing. Does it exist?
+
+The thread pool is limited to 10. While this is configurable via the API, no command line option is exposed to tune it.  (This would be a great contribution if you were so inclined!)
+
+It seems likely to me that Flask is spawning background threads for some reason; given the way Twisted's threadpool works, leaks like this are not common.  However, anything is possible: you probably want to gather some information about what all those threads are doing.
+
+Can you add a route to your Flask application to call https://docs.python.org/3/library/faulthandler.html#dumping-the-traceback <https://docs.python.org/3/library/faulthandler.html#dumping-the-traceback> and then save the output somewhere?  That will at least give you a hint as to whether Twisted's threadpool is at fault, and if it is, what it is blocked doing.
+
+-g
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181121/e39767ec/attachment.html>
+
+From chris at withers.org  Thu Nov 22 04:43:09 2018
+From: chris at withers.org (Chris Withers)
+Date: Thu, 22 Nov 2018 11:43:09 +0000
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <23558335-1E4A-47EF-91D3-F5F323F4DABF@twistedmatrix.com>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+ <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+ <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+ <23558335-1E4A-47EF-91D3-F5F323F4DABF@twistedmatrix.com>
+Message-ID: <8ce1aac2-bed9-047f-d7b5-eac8f4249f2f@withers.org>
+
+On 22/11/2018 02:30, Glyph wrote:
+> 
+>> On Nov 19, 2018, at 6:16 AM, Darren Govoni <darrenuspto at gmail.com 
+>> <mailto:darrenuspto at gmail.com>> wrote:
+>>
+>> I tried to find out if there is a way to limit the thread pool size 
+>> from command line for twisted web and found nothing. Does it exist?
+> 
+> The thread pool is limited to 10. While this is configurable via the 
+> API, no command line option is exposed to tune it.  (This would be a 
+> great contribution if you were so inclined!)
+> 
+> It seems likely to me that Flask is spawning background threads for some 
+> reason; given the way Twisted's threadpool works, leaks like this are 
+> not common.  However, anything is possible: you probably want to gather 
+> some information about what all those threads are doing.
+
+Some ideas on this front:
+
+- pstree/ps and strace will tell you at a low level
+
+- http://pyrasite.com/ and then use Python's thread introspection stuff.
+
+cheers,
+
+Chris
+
+
+From darrenuspto at gmail.com  Fri Nov 23 07:11:25 2018
+From: darrenuspto at gmail.com (Darren Govoni)
+Date: Fri, 23 Nov 2018 09:11:25 -0500
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <8ce1aac2-bed9-047f-d7b5-eac8f4249f2f@withers.org>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+ <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+ <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+ <23558335-1E4A-47EF-91D3-F5F323F4DABF@twistedmatrix.com>
+ <8ce1aac2-bed9-047f-d7b5-eac8f4249f2f@withers.org>
+Message-ID: <CAN-ZBUfRj06Guam8N3kfLoZznwHBi9SBEUosu9D6B1CLS+u52w@mail.gmail.com>
+
+Thanks. I added Tipper to my program and will see what it shows when I ping
+the process.
+
+https://pypi.org/project/tipper/
+
+On Thu, Nov 22, 2018 at 6:43 AM Chris Withers <chris at withers.org> wrote:
+
+> On 22/11/2018 02:30, Glyph wrote:
+> >
+> >> On Nov 19, 2018, at 6:16 AM, Darren Govoni <darrenuspto at gmail.com
+> >> <mailto:darrenuspto at gmail.com>> wrote:
+> >>
+> >> I tried to find out if there is a way to limit the thread pool size
+> >> from command line for twisted web and found nothing. Does it exist?
+> >
+> > The thread pool is limited to 10. While this is configurable via the
+> > API, no command line option is exposed to tune it.  (This would be a
+> > great contribution if you were so inclined!)
+> >
+> > It seems likely to me that Flask is spawning background threads for some
+> > reason; given the way Twisted's threadpool works, leaks like this are
+> > not common.  However, anything is possible: you probably want to gather
+> > some information about what all those threads are doing.
+>
+> Some ideas on this front:
+>
+> - pstree/ps and strace will tell you at a low level
+>
+> - http://pyrasite.com/ and then use Python's thread introspection stuff.
+>
+> cheers,
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181123/4fb082d3/attachment.html>
+
+From chris at withers.org  Fri Nov 23 08:58:34 2018
+From: chris at withers.org (Chris Withers)
+Date: Fri, 23 Nov 2018 15:58:34 +0000
+Subject: [Twisted-Python] leakage between tests with trial when code under
+ test uses deferToThread
+Message-ID: <4eb74030-7d0b-253c-09c6-9144984df3a9@withers.org>
+
+Hi All,
+
+Does trial do anything to clean up stuff that's been passed to 
+deferToThread?
+
+I'm seeing what looks like leakage between tests where stuff that is 
+deferred to a thread from a LoopingCall is resulting in a DelayedCall 
+ending up in the reactor for the next test.
+Does that ring any bells?
+
+cheers,
+
+Chris
+
+
+From glyph at twistedmatrix.com  Fri Nov 23 15:22:54 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Fri, 23 Nov 2018 14:22:54 -0800
+Subject: [Twisted-Python] leakage between tests with trial when code
+ under test uses deferToThread
+In-Reply-To: <4eb74030-7d0b-253c-09c6-9144984df3a9@withers.org>
+References: <4eb74030-7d0b-253c-09c6-9144984df3a9@withers.org>
+Message-ID: <A4EA6D98-277E-4BE4-938E-4C828F3C2E6C@twistedmatrix.com>
+
+
+
+> On Nov 23, 2018, at 7:58 AM, Chris Withers <chris at withers.org> wrote:
+> 
+> Hi All,
+> 
+> Does trial do anything to clean up stuff that's been passed to deferToThread?
+
+Nope.  It does its best to clean up stuff that it knows is "in" the reactor (sockets, timers, and the like), but since threads can kind of do ~whatever~ there hasn't been support for that.
+
+deferToThread is a bit of a special case and you make a good point here: there should probably be special support for it in trial.
+
+> I'm seeing what looks like leakage between tests where stuff that is deferred to a thread from a LoopingCall is resulting in a DelayedCall ending up in the reactor for the next test.
+> Does that ring any bells?
+
+That can definitely happen.  For the time being you probably want to add your own deferToThread layer and have a testCase.addCleanup that makes sure all the relevant Deferreds have fired.
+
+-g
+
+From trac at twistedmatrix.com  Sun Nov 25 00:05:20 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 25 Nov 2018 07:05:20 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1543129520.71.7916789873956356551@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181125/f2215752/attachment.html>
+
+From chris at withers.org  Mon Nov 26 01:35:12 2018
+From: chris at withers.org (Chris Withers)
+Date: Mon, 26 Nov 2018 08:35:12 +0000
+Subject: [Twisted-Python] leakage between tests with trial when code
+ under test uses deferToThread
+In-Reply-To: <6f5af07a-8355-d6ed-f2a5-50db0e4ab42a@withers.org>
+References: <4eb74030-7d0b-253c-09c6-9144984df3a9@withers.org>
+ <A4EA6D98-277E-4BE4-938E-4C828F3C2E6C@twistedmatrix.com>
+ <6f5af07a-8355-d6ed-f2a5-50db0e4ab42a@withers.org>
+Message-ID: <6e796d19-5ff5-e3d7-39da-29cfeea71958@withers.org>
+
+Forgot to include the list in my reply...
+
+On 23/11/2018 22:27, Chris Withers wrote:
+> On 23/11/2018 22:22, Glyph wrote:
+>>
+>>
+>>> On Nov 23, 2018, at 7:58 AM, Chris Withers <chris at withers.org> wrote:
+>>>
+>>> Hi All,
+>>>
+>>> Does trial do anything to clean up stuff that's been passed to 
+>>> deferToThread?
+>>
+>> Nope.  It does its best to clean up stuff that it knows is "in" the 
+>> reactor (sockets, timers, and the like), but since threads can kind 
+>> of do ~whatever~ there hasn't been support for that.
+>
+> Actually, looks like there's stuff in trial's Janitor class, but it 
+> only kicks in after the suite is finished, and I'm seeing leakage 
+> between tests within a suite...
+>
+>> deferToThread is a bit of a special case and you make a good point 
+>> here: there should probably be special support for it in trial.
+>
+> ...which I plan to add in carly in the meantime: basically block with 
+> a timeout on everything in the threadpool finishing it's work.
+>
+> Speaking of which, I'm happy with how carly is turning out, but would 
+> still welcome feedback, particularly on how the tests suites feel:
+>
+> https://github.com/cjw296/carly/tree/master/tests
+>
+> Just don't read hook.py unless you like head-bendy code ;-)
+
+Okay, so here's what I came up with 
+<https://github.com/cjw296/carly/commit/71a1d2bfd501f5c561712c75253fc23c28c3bba7#diff-3670fb1f3b913f6c1ec584fa64302c2dR17>. 
+I'm not a fan of the sleep / busy loop pattern, but twisted makes it 
+prettymuch impossible to get hold of the ThreadWorkers queue, so that I 
+could block on them in this method. Any ideas on improvements would be 
+very welcome!
+
+cheers,
+
+Chris
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181126/d4d3681b/attachment.html>
+
+From grimmtooth at gmail.com  Tue Nov 27 15:37:27 2018
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Tue, 27 Nov 2018 17:37:27 -0500
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <1542781845.2303374.1583601416.531133B4@webmail.messagingengine.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+ <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+ <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+ <1542781845.2303374.1583601416.531133B4@webmail.messagingengine.com>
+Message-ID: <CA+1iZEcXWdyoYK8kCFDdps06DKF1mtZZjja03tTgPvW-g_3JWA@mail.gmail.com>
+
+Thanks, Tom.
+
+Is there a limit to the smallness of the proposed changes?  For example, if
+I had a possible two-line change to
+https://twistedmatrix.com/documents/current/api/twisted.internet.wxreactor.html
+(which looks like it would be done in the docstring), is it okay to just
+have a PR for that or does it need to be bundled with more changes?
+
+Thanks,
+
+Jeff
+
+
+On Wed, Nov 21, 2018 at 1:31 AM Tom Most <twm at freecog.net> wrote:
+
+> On Mon, Nov 19, 2018, at 3:06 PM, Jeff Grimmett wrote:
+>
+> Glyph,
+>
+> Belated (I was in the thick of a few unrelated crises) thanks - it helps
+> to understand a little bit of the background on the way it works.  I have
+> made adjustments and everything works the way I was hoping for now.
+>
+> I wish I understood it a little better, if for no other reason than to
+> contribute some documentation tweaks.  Just how would that work, anyway?
+> The contribution model for Twisted is a little opaque from where I am
+> sitting. I'd love to help in areas where I am actually capable of doing :)
+>
+> Regards,
+>
+> Jeff
+>
+>
+> Hi Jeff,
+>
+> The Twisted development process is documented here on the wiki
+> <https://twistedmatrix.com/trac/wiki/TwistedDevelopment#GettingYourPatchAccepted>.
+> It boils down to:
+>
+> 1. Create a ticket <https://twistedmatrix.com/trac/newticket> (on Trac)
+> 2. Create a pull request (on GitHub)
+> 3. Wait for a review (and address any feedback the reviewer gives)
+>
+> There is more on the wiki. The same process applies to code and
+> documentation.
+>
+> Documentation changes are really helpful, especially because it is
+> difficult for the experienced to see the rough edges that catch new users.
+> Your confusion is a bug, and particularly with respect to the Resource
+> model, a not uncommon one. Let's fix it!
+>
+> ---Tom
+>
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181127/55254948/attachment.html>
+
+From glyph at twistedmatrix.com  Tue Nov 27 22:53:13 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 27 Nov 2018 21:53:13 -0800
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CA+1iZEcXWdyoYK8kCFDdps06DKF1mtZZjja03tTgPvW-g_3JWA@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+ <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+ <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+ <1542781845.2303374.1583601416.531133B4@webmail.messagingengine.com>
+ <CA+1iZEcXWdyoYK8kCFDdps06DKF1mtZZjja03tTgPvW-g_3JWA@mail.gmail.com>
+Message-ID: <EFD6E663-61DB-4EE3-99A0-F37F77410C19@twistedmatrix.com>
+
+
+
+> On Nov 27, 2018, at 2:37 PM, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+> 
+> Thanks, Tom.  
+> 
+> Is there a limit to the smallness of the proposed changes?  For example, if I had a possible two-line change to https://twistedmatrix.com/documents/current/api/twisted.internet.wxreactor.html <https://twistedmatrix.com/documents/current/api/twisted.internet.wxreactor.html> (which looks like it would be done in the docstring), is it okay to just have a PR for that or does it need to be bundled with more changes?
+> 
+> Thanks,
+> 
+> Jeff 
+
+Smaller changes are always better!  Sometimes changes need to be larger and don't make sense when split up, so it's OK to propose large things, but a one-liner is the easiest possible thing to review, and will generally get integrated faster.
+
+-g
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181127/a3dc3748/attachment.html>
+
+From chris at withers.org  Thu Nov 29 06:10:41 2018
+From: chris at withers.org (Chris Withers)
+Date: Thu, 29 Nov 2018 13:10:41 +0000
+Subject: [Twisted-Python] code coverage when code executed in a twisted
+ worker thread
+Message-ID: <59c2cb9b-732d-3e01-0d96-4ef4fce13a78@withers.org>
+
+Hi All,
+
+I've noticed that code coverage doesn't appear to be recorded when code 
+is executed in something that has been deferToThread'ed.
+
+Is this a known issue? Does anyone have an explanation?
+
+cheers,
+
+Chris
+
+
+From glyph at twistedmatrix.com  Thu Nov  1 01:43:57 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Thu, 1 Nov 2018 00:43:57 -0700
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+Message-ID: <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+
+Hi Jeff,
+
+Thanks for using Twisted.
+
+Here's a version with some small changes that works, and is self-contained.
+
+import sys
+
+from twisted.internet import reactor, endpoints
+from twisted.web import server
+from twisted.web.resource import Resource
+from twisted.web.static import Data
+
+sys.path.append('lib')
+
+content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="/static/test.css" type="text/css" />
+</head>
+<body>
+    <span class='twistedTest'>This</span> is a test
+</body>
+</html>
+"""
+
+class tServer(Resource):
+    def render_GET(self, request):
+        return bytes(content, "utf-8")
+
+if __name__ == "__main__":
+    root = Resource()
+    static_collection = Resource()
+    static_collection.putChild(b"test.css", Data(b".twistedTest {color: red;}", "text/css"))
+    root.putChild(b"static", static_collection)
+    root.putChild(b"", tServer())
+
+    site = server.Site(root)
+    endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+    endpoint.listen(site)
+
+    reactor.run()
+    print("Shutting down!")
+
+The problem with your first version was 'isLeaf', as Donal suggested.  However, the problem was not simply that the flag was set, but rather what the flag means, and why it works that way.
+
+The root resource in any web server is a collection.  Which is to say, under normal circumstances, the root resource never has render_* invoked on it; you can't render it, because it's impossible, in the HTTP protocol, to spell a URL that doesn't start with "/".
+
+isLeaf changes this, and says "this resource is responsible for rendering all of its children; traversal stops here".  That means that it starts invoking render_GET to render "/", but also to render every other path on the server, including (unfortunately for you) /static/test.css.
+
+The modified example above instead uses a Resource() as the collection, and inserts a '' child for the index, and a separate 'static' child for the static index.  You can use a static.File for a directory here instead of a static resource, and anywhere you see putChild, you could also use a dynamic resource which overrides getChild to return the object rather than inserting it in advance.
+
+Of course, you might wonder what the point of 'isLeaf' is if it short circuits this stuff and makes it impossible to tell the difference between resources.
+
+Given that you have a directory, you want to use a static.File child resource and almost certainly don't want to set isLeaf; however, you might be wondering how one would even use isLeaf if it just cuts off the ability to tell the difference between resources.  The documentation on this is not great - it doesn't even appear as an attribute in the API reference, just an oblique reference in the docstring for https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild <https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild>.  But, the 'prepath' and 'postpath' attributes, lists of bytes, will tell you about where in the request traversal cycle you are, and allow you to distinguish which content to render directly within the body of render_*, rather than having to route to the right object using Twisted APIs.  So here's a working version with isLeaf=True:
+
+import sys
+
+from twisted.internet import reactor, endpoints
+from twisted.web import server
+from twisted.web.resource import Resource
+
+content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="/static/test.css" type="text/css" />
+</head>
+<body>
+    <span class='twistedTest'>This</span> is a test
+</body>
+</html>
+"""
+
+css = """
+.twistedTest {
+    color: red;
+}
+"""
+
+class tServer(Resource):
+    isLeaf = True
+    def render_GET(self, request):
+        if request.postpath == [b'']:
+            request.setHeader("content-type", "text/html")
+            return bytes(content, "utf-8")
+        elif request.postpath == [b'static', b'test.css']:
+            request.setHeader("content-type", "text/css")
+            return bytes(css, 'utf-8')
+        else:
+            request.setResponseCode(404)
+            return b'not found'
+
+if __name__ == "__main__":
+    site = server.Site(tServer())
+    endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+    endpoint.listen(site)
+
+    reactor.run()
+    print("Shutting down!")
+
+I hope this clears up the request traversal model a little bit.
+
+-glyph
+
+
+> On Oct 31, 2018, at 2:15 PM, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+> 
+> Tried that, I get a big 
+> 
+> No Such Resource
+> 
+> No such child resource.
+> 
+> back.  Watching it in FF's development panel, I see a 404 come back for /.  /static doesn't get served at all, of course.
+> 
+> This, however, DID work.
+> 
+> class tServer(Resource):
+>     isLeaf = False
+> 
+>     def getChild(self, path, request):
+>         print('You know what you doing.')
+> 
+>         if path == b'':
+>             print("Rendering /")
+>             return self
+> 
+>         return Resource.getChild(self, path, request)
+> 
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+> 
+> (ignore my printf debugging plz)
+> 
+> So, Thanks! :)
+> 
+> Regards,
+> 
+> Jeff 
+> 
+> 
+> On Tue, Oct 30, 2018 at 6:42 PM Donal McMullan <donal.mcmullan at gmail.com <mailto:donal.mcmullan at gmail.com>> wrote:
+> Try replacing:
+> isLeaf = True
+> with
+> isLeaf = False
+> 
+> 
+> On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett <grimmtooth at gmail.com <mailto:grimmtooth at gmail.com>> wrote:
+> I'm sure I'm overlooking something obvious here but I just can't get my head around it.
+> 
+> Here's the setup: twisted.web server that generates dynamic content. Child that serves up static content, e.g. css and favoicon.  However, the static content isn't making it. Instead, any hit to localhost/static actually yields up a copy of / again.  
+> 
+> Here's the server code
+> 
+> import sys
+> 
+> from twisted.internet import reactor, endpoints
+> from twisted.web import server
+> from twisted.web.resource import Resource
+> from twisted.web.static import File
+> 
+> sys.path.append('lib')
+> 
+> content = """
+> <!DOCTYPE html>
+> <html lang="en">
+> <head>
+>     <meta charset="UTF-8">
+>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+> </head>
+> <body>
+>     <span class='twistedTest'>This</span> is a test
+> </body>
+> </html>
+> """
+> 
+> 
+> class tServer(Resource):
+>     isLeaf = True
+> 
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+> 
+> 
+> if __name__ == "__main__":
+>     root = tServer()
+>     root.putChild(b"static", File("static"))
+> 
+>     site = server.Site(root)
+>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>     endpoint.listen(site)
+> 
+>     reactor.run()
+>     print("Shutting down!")
+> 
+> It's run with the command 'python tserver.py'.  The expectation is that what is inside the custom <span> will be red.
+> 
+> In the same dir as the script is a subdir 'static' with the css file inside it.
+> 
+> If I replace 'root' with     root = Resource() then / doesn't serve up anything, but /static is a directory listing of the static directory.
+> 
+> The dynamic server is basically a copy of several tutorials cooked down to something that I could use to demonstrate the problem.
+> 
+> What am I missing here? /headscratch
+> 
+> Regards,
+> 
+> Jeff 
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com <mailto:Twisted-Python at twistedmatrix.com>
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python <https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com <mailto:Twisted-Python at twistedmatrix.com>
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python <https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181101/04f3b6f6/attachment-0002.html>
+
+From trac at twistedmatrix.com  Sun Nov  4 00:05:20 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 04 Nov 2018 06:05:20 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1541311520.55.3599772443101086231@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181104/1e9ea960/attachment-0002.html>
+
+From chris at simplistix.co.uk  Mon Nov  5 10:07:52 2018
+From: chris at simplistix.co.uk (Chris Withers)
+Date: Mon, 5 Nov 2018 17:07:52 +0000
+Subject: [Twisted-Python] automated tests for a server application
+Message-ID: <640b15d6-1706-e3b5-02ec-2fe45c27561f@simplistix.co.uk>
+
+Hi All,
+
+(copying in Moshe as he expressed an interest!)
+
+I've inherited a twisted app for which I'd like to add some changes but 
+want to improve the automated test coverage before I do.
+
+The app itself listens on a web socket (autobahn), an rpc port (RPyC) 
+and also connects to a mysql database.
+So, for the automated tests, I want to check what happens when I send 
+various messages to the websocket or rpc port, and then check what ends 
+up in the db and what other state changes happen in the app itself.
+
+What's the best/correct way to write automated tests for this kind of 
+situation? I'm using pytest and would happily use pytest-twisted too. 
+Not keen to use trial...
+
+Any help is good help, pointers to nice existing examples would be 
+fantastic!
+
+cheers,
+
+Chris
+
+
+
+From chris at simplistix.co.uk  Mon Nov  5 10:08:03 2018
+From: chris at simplistix.co.uk (Chris Withers)
+Date: Mon, 5 Nov 2018 17:08:03 +0000
+Subject: [Twisted-Python] "blocking" on a response to a client
+Message-ID: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+
+Hi Again,
+
+So, separate question: I have a client that's making a connection to a 
+websocket from a server. The client needs to send an "auth" message once 
+the websocket is up, and the client code shouldn't progress until it 
+receives an affirmative response. How do I do this in a non-blocking way 
+when using twisted? (inside an inlineDeferred method in this case!)
+
+Similarly, how do I get this dance to happen again if the websocket 
+drops? How would I do some kind of backoff on he connection retries?
+
+And, icing on the cake, where can I find good examples of how to write 
+automated tests for all of the above?
+
+cheers,
+
+Chris
+
+
+
+From meejah at meejah.ca  Mon Nov  5 11:32:38 2018
+From: meejah at meejah.ca (meejah)
+Date: Mon, 05 Nov 2018 22:32:38 +0400
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk> (Chris
+ Withers's message of "Mon, 5 Nov 2018 17:08:03 +0000")
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+Message-ID: <86in1bwf21.fsf@atlantis.meejah.ca>
+
+Chris Withers <chris at simplistix.co.uk> writes:
+
+> So, separate question: I have a client that's making a connection to a
+> websocket from a server. The client needs to send an "auth" message
+> once the websocket is up, and the client code shouldn't progress until
+> it receives an affirmative response. How do I do this in a
+> non-blocking way when using twisted? (inside an inlineDeferred method
+> in this case!)
+
+There's nothing really special about an @inlineCallbacks method -- it
+just returns a Deferred so you can handle it like any other
+Deferred-returning method.
+
+> Similarly, how do I get this dance to happen again if the websocket
+> drops? How would I do some kind of backoff on he connection retries?
+
+The "Autobahn" Python libraries support all the above. They might not be
+great as "examples" per se (because these libraries also support asyncio
+so use a compatibility layer called txaio), but a connecting (+
+reconnecting) client starts here:
+
+   https://github.com/crossbario/autobahn-python/blob/master/autobahn/wamp/component.py#L494
+
+You could also use the built-in Twisted "ClientService" to keep a
+protocol connected (the above doesn't because it's also doing asyncio)
+but see:
+
+   https://twistedmatrix.com/documents/current/api/twisted.application.internet.ClientService.html
+
+> And, icing on the cake, where can I find good examples of how to write
+> automated tests for all of the above?
+
+It's kind of well-hidden :/ but the "most modern" way is to use
+something based on twisted.test.iosim.IOPump as I understand it. I
+haven't used this, though so maybe someone else can explain. It's of
+course possible to use more-traditional mocking and fakes to write
+tests.
+
+Essentially one way is to "drive" your protocol to the correct state
+(e.g. right before an auth is required) and then do the various tests on
+authentication. You can also do unit-tests of the actual authentication
+methods themselves (e.g. "does it parse stuff properly", etc). Again
+there's *some* examples in the Autobahn repository above.
+
+Here are some "not IOPump" examples using the Twisted "StringTransport"
+helper (this isn't WebSocket but should give some ideas):
+
+   https://github.com/meejah/txtorcon/blob/master/test/test_torcontrolprotocol.py#L80
+
+-- 
+meejah
+
+
+
+From chris at simplistix.co.uk  Tue Nov  6 04:41:23 2018
+From: chris at simplistix.co.uk (Chris Withers)
+Date: Tue, 6 Nov 2018 11:41:23 +0000
+Subject: [Twisted-Python] automated tests for a server application
+In-Reply-To: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+References: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+Message-ID: <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+
+On 06/11/2018 05:43, Moshe Zadka wrote:
+>
+> Some of the best advice depends on details of the application. One 
+> trick that is sometimes useful is passing in a "fake" reactor object. 
+> This, of course, is only useful if the application is structured in a 
+> way that functions/classes expect to get a reactor, instead of 
+> reaching for the global one. However, usually *that's* not a 
+> complicated refactoring to do.
+
+Cool, do you have any example tests that do this?
+Interesting, looks like pytest-twisted does away for the need for this 
+by showing how to install a fake reactor globally:
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L129-L142
+
+> You can look at 
+> https://twistedmatrix.com/documents/current/api/twisted.test.proto_helpers.MemoryReactor.html for 
+> inspiration although, as all code under `twisted.test`, it is not 
+> intended as end-user functionality, so using it directly is problematic. 
+
+Not sure I fully understand this, why is the MemoryReactor bad to use? 
+Where is it used?
+
+> It would be nice to have externally-useful reactors along the lines of 
+> Clock 
+> (https://twistedmatrix.com/documents/current/api/twisted.internet.task.Clock.html ) 
+> but, unfortunately, we do not have that yet.
+
+So, clock is just a clock, right? How would that get worked into a 
+"real" reactor for testing?
+
+> You can, of course, use a real reactor and a real client to pump data. 
+> However, in that case, you probably do want to switch to trial so that 
+> you can return a deferred from a test function and have the reactor 
+> run until the deferred fires. This is not great, but can work in a pinch.
+
+pytest-twisted looks like it supports this pattern too, allowing test 
+functions to return deferreds...
+
+I guess I'm still really looking to see examples of all of this...
+
+Chris
+
+
+
+From chris at simplistix.co.uk  Tue Nov  6 04:42:00 2018
+From: chris at simplistix.co.uk (Chris Withers)
+Date: Tue, 6 Nov 2018 11:42:00 +0000
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <86in1bwf21.fsf@atlantis.meejah.ca>
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+ <86in1bwf21.fsf@atlantis.meejah.ca>
+Message-ID: <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+
+On 05/11/2018 18:32, meejah wrote:
+> Chris Withers <chris at simplistix.co.uk> writes:
+>
+>> So, separate question: I have a client that's making a connection to a
+>> websocket from a server. The client needs to send an "auth" message
+>> once the websocket is up, and the client code shouldn't progress until
+>> it receives an affirmative response. How do I do this in a
+>> non-blocking way when using twisted? (inside an inlineDeferred method
+>> in this case!)
+>
+> There's nothing really special about an @inlineCallbacks method -- it
+> just returns a Deferred so you can handle it like any other
+> Deferred-returning method.
+
+Thanks, but the special bit I was asking about is having my 
+application's logical flow pause until the websocket is successfully up 
+and a successful response has been received, all without blocking the 
+reactor.
+
+How do I do that?
+
+Chris
+
+
+
+From sda at fstab.net  Tue Nov  6 05:14:57 2018
+From: sda at fstab.net (Kyle Altendorf)
+Date: Tue, 06 Nov 2018 07:14:57 -0500
+Subject: [Twisted-Python] automated tests for a server application
+In-Reply-To: <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+References: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+ <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+Message-ID: <8200D3D0-CF7A-4909-933E-929980D1DABC@fstab.net>
+
+
+
+On November 6, 2018 6:41:23 AM EST, Chris Withers <chris at simplistix.co.uk> wrote:
+>On 06/11/2018 05:43, Moshe Zadka wrote:
+>>
+>> Some of the best advice depends on details of the application. One 
+>> trick that is sometimes useful is passing in a "fake" reactor object.
+>
+>> This, of course, is only useful if the application is structured in a
+>
+>> way that functions/classes expect to get a reactor, instead of 
+>> reaching for the global one. However, usually *that's* not a 
+>> complicated refactoring to do.
+>
+>Cool, do you have any example tests that do this?
+>Interesting, looks like pytest-twisted does away for the need for this 
+>by showing how to install a fake reactor globally:
+>https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L129-L142
+
+What is 'fake' about this globally installed normally-the-default reactor?  (Otherwise the qt5reactor if chosen)
+
+>> You can, of course, use a real reactor and a real client to pump
+>data. 
+>> However, in that case, you probably do want to switch to trial so
+>that 
+>> you can return a deferred from a test function and have the reactor 
+>> run until the deferred fires. This is not great, but can work in a
+>pinch.
+>
+>pytest-twisted looks like it supports this pattern too, allowing test 
+>functions to return deferreds...
+
+I use @pytest_twisted.inlineCallbacks anyways, yes.
+
+Overall I'm not clear what was recommended here.  Why fake the reactor?  Even if not using a 'real client' wouldn't you just fake the data going through the connections rather than faking the entire reactor?
+
+Cheers,
+-kyle
+
+
+
+From exarkun at twistedmatrix.com  Tue Nov  6 06:47:59 2018
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Tue, 6 Nov 2018 08:47:59 -0500
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+ <86in1bwf21.fsf@atlantis.meejah.ca>
+ <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+Message-ID: <CAEeXt4OJmF04sNKZA9JXWaKyX1=h9ixsLbLzk4YOPaJ-C99cyA@mail.gmail.com>
+
+On Tue, Nov 6, 2018 at 6:42 AM Chris Withers <chris at simplistix.co.uk> wrote:
+
+> On 05/11/2018 18:32, meejah wrote:
+> > Chris Withers <chris at simplistix.co.uk> writes:
+> >
+> >> So, separate question: I have a client that's making a connection to a
+> >> websocket from a server. The client needs to send an "auth" message
+> >> once the websocket is up, and the client code shouldn't progress until
+> >> it receives an affirmative response. How do I do this in a
+> >> non-blocking way when using twisted? (inside an inlineDeferred method
+> >> in this case!)
+> >
+> > There's nothing really special about an @inlineCallbacks method -- it
+> > just returns a Deferred so you can handle it like any other
+> > Deferred-returning method.
+>
+> Thanks, but the special bit I was asking about is having my
+> application's logical flow pause until the websocket is successfully up
+> and a successful response has been received, all without blocking the
+> reactor.
+>
+> How do I do that?
+>
+>
+Put the rest of your code in a callback on a Deferred that fires when the
+event you're interested in happens.  When using inlineCallbacks, that's
+like:
+
+    yield the_event_youre_interested_in
+    # ... more code
+
+At least, this is the extremely-localized solution to the problem.  There
+are many possible ways to structure such a thing.  It's easy to describe
+this one because you said you're using inlineCallbacks and didn't say
+anything else about how your code is organized.
+
+Jean-Paul
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181106/f6e17eee/attachment-0002.html>
+
+From sda at fstab.net  Tue Nov  6 09:43:29 2018
+From: sda at fstab.net (Kyle Altendorf)
+Date: Tue, 06 Nov 2018 11:43:29 -0500
+Subject: [Twisted-Python] automated tests for a server application
+In-Reply-To: <7fe6c4f4-530c-f394-4d2e-bd2a6a322b94@simplistix.co.uk>
+References: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+ <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+ <8200D3D0-CF7A-4909-933E-929980D1DABC@fstab.net>
+ <7fe6c4f4-530c-f394-4d2e-bd2a6a322b94@simplistix.co.uk>
+Message-ID: <9895d6b91aaf879af09ad47c5dd09537@fstab.net>
+
+
+
+On 2018-11-06 11:28, Chris Withers wrote:
+> On 06/11/2018 12:14, Kyle Altendorf wrote:
+>> 
+>> 
+>> On November 6, 2018 6:41:23 AM EST, Chris Withers 
+>> <chris at simplistix.co.uk> wrote:
+>>> Cool, do you have any example tests that do this?
+>>> Interesting, looks like pytest-twisted does away for the need for 
+>>> this
+>>> by showing how to install a fake reactor globally:
+>>> https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L129-L142
+>> 
+>> What is 'fake' about this globally installed normally-the-default 
+>> reactor?  (Otherwise the qt5reactor if chosen)
+
+I guess I'm still not clear on what the point of using a 'fake' reactor 
+over a 'real' one is.  Not that I'm an expert here...
+
+> Nothing, but the technique could be used to install a fake reactor
+> rather than having to change all the existing code to accept an
+> optional reactor parameter.
+> 
+>> I use @pytest_twisted.inlineCallbacks anyways, yes.
+>> 
+>> Overall I'm not clear what was recommended here.  Why fake the 
+>> reactor?  Even if not using a 'real client' wouldn't you just fake the 
+>> data going through the connections rather than faking the entire 
+>> reactor?
+> 
+> I'd love to see some good example of faking the data going through the
+> connections, can you point me at some?
+
+
+I would assume you would just write a 'client' in the test of whatever 
+complexity (could just write hardcoded byte sequences) which opens a 
+connection to the server and transmits the bytes and then asserts things 
+about the response.  But no, I don't have any code.  I can't say I have 
+a good test suite myself and I also don't actually use Twisted for 
+internet stuff (canbus and serial).  Sorry.  I would expect the servers 
+provided by Twisted would have their own tests you could look at though.
+
+Cheers,
+-kyle
+
+
+
+From chris at withers.org  Tue Nov  6 09:51:58 2018
+From: chris at withers.org (Chris Withers)
+Date: Tue, 6 Nov 2018 16:51:58 +0000
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <CAEeXt4OJmF04sNKZA9JXWaKyX1=h9ixsLbLzk4YOPaJ-C99cyA@mail.gmail.com>
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+ <86in1bwf21.fsf@atlantis.meejah.ca>
+ <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+ <CAEeXt4OJmF04sNKZA9JXWaKyX1=h9ixsLbLzk4YOPaJ-C99cyA@mail.gmail.com>
+Message-ID: <4674adf2-7ca2-83f5-2cb4-aaf2d60e2d45@withers.org>
+
+On 06/11/2018 13:47, Jean-Paul Calderone wrote:
+>     Thanks, but the special bit I was asking about is having my
+>     application's logical flow pause until the websocket is successfully up
+>     and a successful response has been received, all without blocking the
+>     reactor.
+> 
+>     How do I do that?
+> 
+> 
+> Put the rest of your code in a callback on a Deferred that fires when 
+> the event you're interested in happens.  When using inlineCallbacks, 
+> that's like:
+> 
+>      yield the_event_youre_interested_in
+>      # ... more code
+> 
+> At least, this is the extremely-localized solution to the problem.  
+> There are many possible ways to structure such a thing.  It's easy to 
+> describe this one because you said you're using inlineCallbacks and 
+> didn't say anything else about how your code is organized.
+
+Right, but I'm still too stupid to join the dots :-(
+
+More concretely, I want to spin up an autobahn websocket client, have it 
+connect, send a login message, confirm that worked, send a 'create' 
+message, confirm that worked, and *then* let the rest of my code progress...
+
+I'm surprised there don't appear to be any example of this floating 
+around, and disappointed at the lack of examples of good tests for these 
+things.
+
+Chris
+
+
+
+From johnaherne at rocs.co.uk  Tue Nov  6 10:37:09 2018
+From: johnaherne at rocs.co.uk (John Aherne)
+Date: Tue, 6 Nov 2018 17:37:09 +0000
+Subject: [Twisted-Python] "blocking" on a response to a client
+In-Reply-To: <4674adf2-7ca2-83f5-2cb4-aaf2d60e2d45@withers.org>
+References: <19282448-b3f2-2818-4656-b52abb231566@simplistix.co.uk>
+ <86in1bwf21.fsf@atlantis.meejah.ca>
+ <530e13ec-d75a-6ce2-da3b-8f422351a9b9@simplistix.co.uk>
+ <CAEeXt4OJmF04sNKZA9JXWaKyX1=h9ixsLbLzk4YOPaJ-C99cyA@mail.gmail.com>
+ <4674adf2-7ca2-83f5-2cb4-aaf2d60e2d45@withers.org>
+Message-ID: <CAKmUHjZqb9Q-Jqzr3QK+45UqHWO+vVW-OJRdSb-p_oUEvNwZdw@mail.gmail.com>
+
+On Tue, Nov 6, 2018 at 4:51 PM, Chris Withers <chris at withers.org> wrote:
+
+> On 06/11/2018 13:47, Jean-Paul Calderone wrote:
+>
+>>     Thanks, but the special bit I was asking about is having my
+>>     application's logical flow pause until the websocket is successfully
+>> up
+>>     and a successful response has been received, all without blocking the
+>>     reactor.
+>>
+>>     How do I do that?
+>>
+>>
+>> Put the rest of your code in a callback on a Deferred that fires when the
+>> event you're interested in happens.  When using inlineCallbacks, that's
+>> like:
+>>
+>>      yield the_event_youre_interested_in
+>>      # ... more code
+>>
+>> At least, this is the extremely-localized solution to the problem.  There
+>> are many possible ways to structure such a thing.  It's easy to describe
+>> this one because you said you're using inlineCallbacks and didn't say
+>> anything else about how your code is organized.
+>>
+>
+> Right, but I'm still too stupid to join the dots :-(
+>
+> More concretely, I want to spin up an autobahn websocket client, have it
+> connect, send a login message, confirm that worked, send a 'create'
+> message, confirm that worked, and *then* let the rest of my code progress...
+>
+> I'm surprised there don't appear to be any example of this floating
+> around, and disappointed at the lack of examples of good tests for these
+> things.
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+
+
+If you have not yet looked at the AutoBahn site, then I would do so. I
+think you will find some good examples of dealing with web sockets and
+twisted.
+
+I don't know anything much about web sockets so can't offer much more that
+this.
+
+Here is a link
+
+https://github.com/crossbario/autobahn-python/tree/master/examples/twisted/websocket/echo
+
+Regards
+
+John Aherne
+
+
+-- 
+*John Aherne*
+
+
+
+
+*www.rocs.co.uk <http://www.rocs.co.uk>*
+020 7223 7567
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181106/ba528770/attachment-0002.html>
+
+From chris at withers.org  Wed Nov  7 09:14:14 2018
+From: chris at withers.org (Chris Withers)
+Date: Wed, 7 Nov 2018 16:14:14 +0000
+Subject: [Twisted-Python] probably stupid question about automated testing
+ and reactor.run
+Message-ID: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+
+Hi All,
+
+Sorry, the silly questions about testing keep coming...
+
+Is it legit for a unit testable piece of an application's code to call 
+reactor.run()?
+
+How do you feed a reactor.stop() into such a test? Would that be a sane 
+thing to try and do?
+
+How do people deal with this kind of testing?
+
+cheers,
+
+Chris
+
+
+
+From chris.norman2 at googlemail.com  Wed Nov  7 09:17:26 2018
+From: chris.norman2 at googlemail.com (Chris Norman)
+Date: Wed, 7 Nov 2018 16:17:26 +0000
+Subject: [Twisted-Python] probably stupid question about automated
+ testing and reactor.run
+In-Reply-To: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+References: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+Message-ID: <CANjhqb-g6-039OqoOVxYqqLPEN5iXKSsUXoLwseFYtuyKG0spA@mail.gmail.com>
+
+Hi,
+First of all please take what I'm about to say with a pinch of salt, as I
+really don't know what I'm talking about half the time.
+
+As reactors can only be started once, I would imagine calling it from a
+test function would be largely pointless.
+
+Depending on what test suite you're using there should be a way of calling
+reactor.stop() at the end though... or something.
+
+HTH,
+
+On Wed, 7 Nov 2018 at 16:14, Chris Withers <chris at withers.org> wrote:
+
+> Hi All,
+>
+> Sorry, the silly questions about testing keep coming...
+>
+> Is it legit for a unit testable piece of an application's code to call
+> reactor.run()?
+>
+> How do you feed a reactor.stop() into such a test? Would that be a sane
+> thing to try and do?
+>
+> How do people deal with this kind of testing?
+>
+> cheers,
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+
+
+-- 
+
+Take care,
+
+Chris Norman
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181107/3572bd70/attachment-0002.html>
+
+From exarkun at twistedmatrix.com  Wed Nov  7 10:37:38 2018
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Wed, 7 Nov 2018 12:37:38 -0500
+Subject: [Twisted-Python] probably stupid question about automated
+ testing and reactor.run
+In-Reply-To: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+References: <fb2f63ea-ce44-3ae6-6830-39767ac9fd48@withers.org>
+Message-ID: <CAEeXt4MeEumbdLVJPALVDLdgAUnXUe=pZ2CaNDFc48drWoB2bA@mail.gmail.com>
+
+`reactor` is global mutable state.  So all of the usual tragedies of such a
+thing apply when you consider how unit tests will interact with it.
+
+Twisted has some APIs that will jump through some hoops for you to try to
+mitigate the damage done by this early design mistake.  For example,
+there's a context manager that will swap out the current reactor with a new
+object specified by you.  *If* the code under test doesn't import the
+reactor until it is invoked, this can help (this is just one reason a lot
+of modern Twisted code avoids importing the reactor until it absolutely
+needs it - of course, another thing modern Twisted code often does is
+accept the reactor as an argument instead of importing it and if you do
+this then you can escape some of the "global" part of the problem).
+
+But you still may not want to have `reactor.run` in your application code.
+There are other problems - such as the fact that it's common for the
+*failure* mode of tests for such code to be to hang indefinitely.  Or for
+test failures to be obscure in other ways due to the fact that you're
+invoking pretty much your *whole* stack at once - not so much a "unit" test
+- and so finding the cause of the problem is a challenge. Or for tests to
+work on one run but fail on another due to non-determinism in event
+delivery/dispatch.  Or for tests to work on one platform but fail on
+another for similar reasons.
+
+So, think about the goals you have for the tests you want to write.  You
+may indeed want *some* tests for reactor.run-calling code but my guess is
+that you want the majority to be for "pure" (in the functional sense) code
+that stays pretty far from the reactor.  Of course, if you're using a
+Twisted-based library that hasn't thought out the testing story for
+application code, you may have some roadblocks in your way.
+
+Personally, the most recent Twisted-using application I wrote, I factored
+all of my "start up Twisted and configure the process and such" code into
+one re-usable component and manually verified it works, then wrote
+automated tests (mostly unit) for everything *else*.  In some ways, this is
+what `IService` gives you, though if you find yourself wanting to go beyond
+what it offers you may have to write something like what I did.
+
+Finally, Twisted has a bunch of blackbox tests *for reactor
+implementations* which
+essentially must call reactor.run.  It's not clear how applicable the
+strategies used by these tests might be to tests for application code
+(rather than reactor implementation code) but it might be worth looking
+at.  These tests are mostly in twisted/internet/test/ - eg test_tcp.py in
+that directory.
+
+Jean-Paul
+
+On Wed, Nov 7, 2018 at 11:14 AM Chris Withers <chris at withers.org> wrote:
+
+> Hi All,
+>
+> Sorry, the silly questions about testing keep coming...
+>
+> Is it legit for a unit testable piece of an application's code to call
+> reactor.run()?
+>
+> How do you feed a reactor.stop() into such a test? Would that be a sane
+> thing to try and do?
+>
+> How do people deal with this kind of testing?
+>
+> cheers,
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181107/9363059c/attachment-0002.html>
+
+From twm at freecog.net  Thu Nov  8 01:24:41 2018
+From: twm at freecog.net (Tom Most)
+Date: Thu, 08 Nov 2018 00:24:41 -0800
+Subject: [Twisted-Python] automated tests for a server application
+In-Reply-To: <9895d6b91aaf879af09ad47c5dd09537@fstab.net>
+References: <1541483017.3859793.1567016680.4ED3227C@webmail.messagingengine.com>
+ <175cc748-e346-a9c1-176c-9f38edd138a3@simplistix.co.uk>
+ <8200D3D0-CF7A-4909-933E-929980D1DABC@fstab.net>
+ <7fe6c4f4-530c-f394-4d2e-bd2a6a322b94@simplistix.co.uk>
+ <9895d6b91aaf879af09ad47c5dd09537@fstab.net>
+Message-ID: <1541665481.3290104.1569622656.5245EBF9@webmail.messagingengine.com>
+
+On Tue, Nov 6, 2018, at 8:43 AM, Kyle Altendorf wrote:
+> On 2018-11-06 11:28, Chris Withers wrote:
+> I guess I'm still not clear on what the point of using a 'fake' reactor 
+> over a 'real' one is.  Not that I'm an expert here...
+
+There are a bunch of advantages! Including:
+
+1. Your tests become more deterministic --- even *fully* deterministic.
+2. Fake I/O is way faster --- no syscalls!
+3. Fake I/O is more reliable --- no worries about failing to allocate a port.
+4. You gain full control over time. This makes it easy to test behaviors like timeouts and backoff timers.
+5. You can run multiple fake reactors. Great for testing distributed systems!
+
+At an extreme, you can make the whole suite synchronous (meaning, Deferreds fire immediately). treq.testing[1] can be used like this. [2] is an example of a suite in this style (this suite is actually run under the Django test runner, which knows nothing of reactors or Deferreds, though I don't recommend doing that).
+
+There are some potential pitfalls:
+
+1. As with any test double, you can trick yourself. I find faking I/O in this way is less prone to these problems than tools like unittest.mock, though.
+2. Manually controlling time can harm composability. Application-level Twisted tends to eventually require some sort of time-related behavior, if only the humble reactor.callLater(0, ...) to avoid stack overflow. (Use of the cooperator from twisted.internet.task is another common one.)
+3. Some (old) bits of Twisted don't allow passing a reactor or use the one passed in all code paths[3].
+
+You can combine fake I/O with techniques like generative testing, too, though I don't have any public examples to point at. And of course you can also combine with other forms of dependency injection, like passing in an endpoint.
+
+FWIW twisted.test.proto_helpers and twisted.test.iosim *are* public API, despite their presence in the test package. They could certainly use docs, and there is a ticket to move them somewhere more appropriate. For the moment the best way to learn to read them is to look at Twisted's own test suite. I found reading the tests for HostnameEndpoint helpful [4].
+
+---Tom
+
+[1]: https://treq.readthedocs.io/en/latest/testing.html
+[2]: https://github.com/twm/yarrharr/blob/e31a488f8884fb82f1dba733585bef4a7ad86968/yarrharr/tests/test_fetch.py#L282
+[3]: https://github.com/twm/yarrharr/pull/277/commits/1a5b5832edbf1fb1b1f45e9d99b65dad51ada566#diff-29ffe25b52ad7bddee9f2f08544e899cR98
+[4]: https://github.com/twisted/twisted/blob/trunk/src/twisted/internet/test/test_endpoints.py
+
+
+
+From trac at twistedmatrix.com  Sun Nov 11 00:05:17 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 11 Nov 2018 07:05:17 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1541919917.8.4671563782642548818@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181111/f7a72543/attachment-0002.html>
+
+From chris at withers.org  Tue Nov 13 15:37:24 2018
+From: chris at withers.org (Chris Withers)
+Date: Tue, 13 Nov 2018 22:37:24 +0000
+Subject: [Twisted-Python] pytest-twisted questions
+In-Reply-To: <51285f8be0f35b436b29d154a3193b0b@fstab.net>
+References: <75701075-ea31-834c-df29-0dc0e875a468@withers.org>
+ <51285f8be0f35b436b29d154a3193b0b@fstab.net>
+Message-ID: <5bbbf139-12ad-d294-342e-71b53077498c@withers.org>
+
+On 13/11/2018 20:31, Kyle Altendorf wrote:
+> I would just open an issue on GitHub.  Feel free to copy this in as the 
+> first message to keep the initial context.
+
+Well, there's no specific issue to log here, so let's keep on going with 
+email for now :-)
+
+(in fact, copying in the twisted mailing list, as that's probably the 
+right place for this)
+
+> On 2018-11-13 12:35, Chris Withers wrote:
+>> - What's the intention of the plugin? Should all tests still subclass
+>> twisted.trial.unittest.TestCase or should they *never* do so if using
+>> this plugin?
+> 
+> I don't know what _should_ be done, 
+
+Victor, what was your intention with the project?
+
+> but I know that I mostly don't have 
+> test classes and, for the class I do have, I didn't inherit.  Mostly I 
+> just @pytest.inlineCallbacks (I still don't like the namespace squashing 
+> into pytest though :] ) and I suppose in the probably-not-too-distant 
+> future I'll instead be using more @pytest_twisted.async_await  (ala 
+> #31/#34).
+
+Okay, but twisted.trial.unittest.TestCase does a bunch of reactor 
+management stuff, most notable making you aware when you've left the 
+reactor in a bad state. As far as I can see from the code, 
+pytest-twisted does not do that, correct?
+
+>> - What's with the greenlet mentions? Is this plugin okay to use when
+>> I'm just using a normal Twisted epoll reactor?
+
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L4
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L36-L46
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L68-L83
+https://github.com/pytest-dev/pytest-twisted/blob/master/pytest_twisted.py#L123-L126
+
+What does greenlet have to do with twisted in this context? Would be 
+great to have it as an optional thing, unless I'm missing something?
+
+>> - What does pytest provide *without* this plugin, when it comes to
+>> testing with Twisted?
+> 
+> I am not aware of anything twisted/pytest specific that is outside 
+> pytest-twisted, 
+
+https://docs.pytest.org/en/latest/faq.html#how-does-pytest-relate-to-twisted-s-trial
+
+So, my guess is that twisted.trial.unittest.TestCase subclasses 
+unittest.TestCase and so pytest treats it in the same way. That means 
+you get the management and checking of the reactor, along with the handy 
+methods it provides, when you put your tests in class-based suites that 
+subclass twisted.trial.unittest.TestCase.
+
+Ronny, does pytest do anything else that's twisted-specific?
+
+> If you are just trying to get started with something that works, I'd 
+> skip the classes and inheritance and just let the reactor take care of 
+> itself. 
+
+My experience with Twisted over the last 10 years or so is that this is 
+an exceedingly dangerous approach to take...
+
+cheers,
+
+Chris
+
+
+
+From sda at fstab.net  Tue Nov 13 17:47:10 2018
+From: sda at fstab.net (Kyle Altendorf)
+Date: Tue, 13 Nov 2018 19:47:10 -0500
+Subject: [Twisted-Python] pytest-twisted questions
+In-Reply-To: <5bbbf139-12ad-d294-342e-71b53077498c@withers.org>
+References: <75701075-ea31-834c-df29-0dc0e875a468@withers.org>
+ <51285f8be0f35b436b29d154a3193b0b@fstab.net>
+ <5bbbf139-12ad-d294-342e-71b53077498c@withers.org>
+Message-ID: <43848ef31d1be6acd1b5d73cafd687ff@fstab.net>
+
+
+
+On 2018-11-13 17:37, Chris Withers wrote:
+> On 13/11/2018 20:31, Kyle Altendorf wrote:
+>> but I know that I mostly don't have test classes and, for the class I 
+>> do have, I didn't inherit.  Mostly I just @pytest.inlineCallbacks (I 
+>> still don't like the namespace squashing into pytest though :] ) and I 
+>> suppose in the probably-not-too-distant future I'll instead be using 
+>> more @pytest_twisted.async_await  (ala #31/#34).
+> 
+> Okay, but twisted.trial.unittest.TestCase does a bunch of reactor
+> management stuff, most notable making you aware when you've left the
+> reactor in a bad state. As far as I can see from the code,
+> pytest-twisted does not do that, correct?
+
+I don't believe so.  It sounds like I should review 
+twisted.trial.unittest.TestCase and consider implementing a fixture to 
+provide the checks.  Perhaps default it to autouse with a cli parameter 
+to disable it.
+
+Perhaps #4 is relevant though.
+
+https://github.com/pytest-dev/pytest-twisted/issues/4
+https://github.com/altendky/stlib/blob/b34796cbba959d9cb2cb843f3cc5fc815c7cb6c6/epyqlib/tests/utils/test_twisted.py#L65-L93
+
+Cheers,
+-kyle
+
+
+
+From chris at withers.org  Wed Nov 14 01:50:04 2018
+From: chris at withers.org (Chris Withers)
+Date: Wed, 14 Nov 2018 08:50:04 +0000
+Subject: [Twisted-Python] "disconnecting properly" in tests still hangs on
+ macOS
+Message-ID: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+
+Right, so, I've been trying to get the technique in 
+https://jml.io/pages/how-to-disconnect-in-twisted-really.html to work 
+for me.
+
+No hating please, most of my testing in the past has involved hitting a 
+relational database, so there's already a TCP connection flying around, 
+one more won't make any difference.
+
+jml's example, exactly as-is on that page, hangs around 30-40% of the 
+time when running on my macOS laptop. From changing the teardown to look 
+like this:
+
+     def tearDown(self):
+         ds = defer.maybeDeferred(self.serverPort.stopListening)
+         dc = defer.maybeDeferred(self.clientConnection.disconnect)
+         print()
+
+         ds.addCallback(lambda _: print('serverPort.stopListening'))
+         dc.addCallback(lambda _: print('self.clientConnection.disconnect'))
+         self.clientDisconnected.addCallback(lambda _: 
+print('self.clientDisconnected'))
+         self.serverDisconnected.addCallback(lambda _: 
+print('self.serverDisconnected'))
+         self.serverDisconnected.addErrback(lambda _: 
+print('self.serverDisconnected:', _))
+         return defer.gatherResults([ds, dc, self.clientDisconnected, 
+self.serverDisconnected])
+
+...it appears that it's the serverDisconnected deferred that's failing 
+to fire. I can't reproduce this on Linux as of yet, so I'm guessing this 
+is a difference between the SelectReactor used on macOS and the 
+EPollReactor used on Linux.
+
+What's the best way to go about debugging a non-firing deferred like this?
+
+Anyone know what this might be?
+
+cheers,
+
+Chris
+
+
+
+From exarkun at twistedmatrix.com  Wed Nov 14 06:40:00 2018
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Wed, 14 Nov 2018 08:40:00 -0500
+Subject: [Twisted-Python] "disconnecting properly" in tests still hangs
+ on macOS
+In-Reply-To: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+References: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+Message-ID: <CAEeXt4N6whe_mXc6W19HptqH1BxtgeSfJJd0W=VhHRU81Zsu0w@mail.gmail.com>
+
+On Wed, Nov 14, 2018 at 3:50 AM Chris Withers <chris at withers.org> wrote:
+
+> Right, so, I've been trying to get the technique in
+> https://jml.io/pages/how-to-disconnect-in-twisted-really.html to work
+> for me.
+>
+> No hating please, most of my testing in the past has involved hitting a
+> relational database, so there's already a TCP connection flying around,
+> one more won't make any difference.
+>
+> jml's example, exactly as-is on that page, hangs around 30-40% of the
+> time when running on my macOS laptop. From changing the teardown to look
+> like this:
+>
+>      def tearDown(self):
+>          ds = defer.maybeDeferred(self.serverPort.stopListening)
+>          dc = defer.maybeDeferred(self.clientConnection.disconnect)
+>          print()
+>
+>          ds.addCallback(lambda _: print('serverPort.stopListening'))
+>          dc.addCallback(lambda _:
+> print('self.clientConnection.disconnect'))
+>          self.clientDisconnected.addCallback(lambda _:
+> print('self.clientDisconnected'))
+>          self.serverDisconnected.addCallback(lambda _:
+> print('self.serverDisconnected'))
+>          self.serverDisconnected.addErrback(lambda _:
+> print('self.serverDisconnected:', _))
+>          return defer.gatherResults([ds, dc, self.clientDisconnected,
+> self.serverDisconnected])
+>
+> ...it appears that it's the serverDisconnected deferred that's failing
+> to fire. I can't reproduce this on Linux as of yet, so I'm guessing this
+> is a difference between the SelectReactor used on macOS and the
+> EPollReactor used on Linux.
+>
+> What's the best way to go about debugging a non-firing deferred like this?
+>
+
+Track it backwards towards the earliest/lowest possible source of the
+event.  You've already started this: you noticed that the result of
+`gatherResults` doesn't fire and you investigate somehow and learned that
+this is because `serverDisconnected` didn't fire.  Now keep going.  Why
+didn't `serverDisconnected` fire?  It looks like it should be fired by
+`ServerProtocol.connectionLost`.  Does that method ever get called?  If so,
+you've now identified the break in the chain and you just have to figure
+out why `connectionLost` doesn't manage to make `serverDisconnected` fire.
+If not, keep going.  What code calls `ServerProtocol.connectionLost` - does
+that run, etc.  Repeat until you find the break.
+
+
+>
+> Anyone know what this might be?
+>
+
+I know that macOS often delivers events in a different order compared to
+Linux.  This has sometimes caused problems, particularly in the test
+suite.  I can't quite see how that would explain this behavior though so
+maybe it's something else.  It might be useful to share your version of
+Python, Twisted, macOS, and the reactor you're using, in case anyone wants
+to try to replicate.
+
+Jean-Paul
+
+
+>
+> cheers,
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181114/d1f96ee0/attachment-0002.html>
+
+From ex.vitorino at gmail.com  Wed Nov 14 06:41:14 2018
+From: ex.vitorino at gmail.com (exvito here)
+Date: Wed, 14 Nov 2018 13:41:14 +0000
+Subject: [Twisted-Python] "disconnecting properly" in tests still hangs
+ on macOS
+In-Reply-To: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+References: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+Message-ID: <4E281641-12C4-44B6-BA50-95D39D69C622@gmail.com>
+
+
+> On 14 Nov 2018, at 08:50, Chris Withers <chris at withers.org> wrote:
+> 
+> Right, so, I've been trying to get the technique in https://jml.io/pages/how-to-disconnect-in-twisted-really.html to work for me.
+> 
+> No hating please, most of my testing in the past has involved hitting a relational database, so there's already a TCP connection flying around, one more won't make any difference.
+> 
+> jml's example, exactly as-is on that page, hangs around 30-40% of the time when running on my macOS laptop. From changing the teardown to look like this:
+> 
+>     def tearDown(self):
+>         ds = defer.maybeDeferred(self.serverPort.stopListening)
+>         dc = defer.maybeDeferred(self.clientConnection.disconnect)
+>         print()
+> 
+>         ds.addCallback(lambda _: print('serverPort.stopListening'))
+>         dc.addCallback(lambda _: print('self.clientConnection.disconnect'))
+>         self.clientDisconnected.addCallback(lambda _: print('self.clientDisconnected'))
+>         self.serverDisconnected.addCallback(lambda _: print('self.serverDisconnected'))
+>         self.serverDisconnected.addErrback(lambda _: print('self.serverDisconnected:', _))
+>         return defer.gatherResults([ds, dc, self.clientDisconnected, self.serverDisconnected])
+> 
+> ...it appears that it's the serverDisconnected deferred that's failing to fire. I can't reproduce this on Linux as of yet, so I'm guessing this is a difference between the SelectReactor used on macOS and the EPollReactor used on Linux.
+> 
+> What's the best way to go about debugging a non-firing deferred like this?
+> 
+> Anyone know what this might be?
+
+
+Chris,
+
+I played with this for a bit and quickly reproduced the "server side disconnect never seems to happen" behaviour you described, on my system running macOS 10.12.6 and Twisted 18.9.0 using the SelectReactor.
+
+Suspecting of an eventual race condition between "server stop listen" and "server disconnect", I tried this variation of tearDown which seems to work reliably:
+
+    @defer.inlineCallbacks
+    def tearDown(self):
+        self.clientConnection.disconnect()
+        yield defer.gatherResults([self.clientDisconnected, self.serverDisconnected])
+        yield defer.maybeDeferred(self.serverPort.stopListening)
+
+Do I have any motive to suspect such race condition? No, but after ensuring "disconnect first, stop listening later", things work much better here.
+
+Also tested the CFReactor and KQueueReactor: CFReactor seems to exhibit a similar behaviour (original code hangs every now and then on cleanup, my code works); KQueueReactor always hangs on cleanup with the original code, and works reliably with my code.
+
+My 2c.,
+--
+exvito
+
+
+
+
+From chris at withers.org  Fri Nov 16 02:17:47 2018
+From: chris at withers.org (Chris Withers)
+Date: Fri, 16 Nov 2018 09:17:47 +0000
+Subject: [Twisted-Python] "disconnecting properly" in tests still hangs
+ on macOS
+In-Reply-To: <4E281641-12C4-44B6-BA50-95D39D69C622@gmail.com>
+References: <958f8de9-60cc-6864-9a15-20ccb9c72109@withers.org>
+ <4E281641-12C4-44B6-BA50-95D39D69C622@gmail.com>
+Message-ID: <2fa03e7a-e069-319f-4b68-705ebc31b62c@withers.org>
+
+On 14/11/2018 13:41, exvito here wrote:
+> 
+> Chris,
+> 
+> I played with this for a bit and quickly reproduced the "server side disconnect never seems to happen" behaviour you described, on my system running macOS 10.12.6 and Twisted 18.9.0 using the SelectReactor.
+> 
+> Suspecting of an eventual race condition between "server stop listen" and "server disconnect", I tried this variation of tearDown which seems to work reliably:
+> 
+>      @defer.inlineCallbacks
+>      def tearDown(self):
+>          self.clientConnection.disconnect()
+>          yield defer.gatherResults([self.clientDisconnected, self.serverDisconnected])
+>          yield defer.maybeDeferred(self.serverPort.stopListening)
+> 
+> Do I have any motive to suspect such race condition? No, but after ensuring "disconnect first, stop listening later", things work much better here.
+> 
+> Also tested the CFReactor and KQueueReactor: CFReactor seems to exhibit a similar behaviour (original code hangs every now and then on cleanup, my code works); KQueueReactor always hangs on cleanup with the original code, and works reliably with my code.
+
+Thanks, this has worked flawlessly!
+
+cheers,
+
+Chris
+
+
+
+From chris at withers.org  Fri Nov 16 08:07:56 2018
+From: chris at withers.org (Chris Withers)
+Date: Fri, 16 Nov 2018 15:07:56 +0000
+Subject: [Twisted-Python] carly: a tool for testing twisted protocols with
+ real networking
+Message-ID: <8185bda3-69ab-0ff9-e5b4-4f014d65bd50@withers.org>
+
+Hi All,
+
+Okay, so, I've started working jml's "really disconnecting" blog post 
+into a more generic set of tooling for testing protocols talking to each 
+other over real networking like this:
+
+https://github.com/cjw296/carly/blob/master/tests/test_line_receiver_server.py
+
+Very interested in peoples thoughts, and especially if you can spot any 
+bugs in these two:
+
+https://github.com/cjw296/carly/blob/master/carly/hook.py
+https://github.com/cjw296/carly/blob/master/carly/context.py
+
+Thanks for all the help so far, it's certainly helping me get my head 
+around this all :-)
+
+Chris
+
+PS: Real networking is bad, yes, I know: slow, unreliable, etc ;-) 
+However, in most of the testing I do, I end up having to hit a real 
+database server to check my code works with it, so a few more tcp 
+connections to localhost is not the end of the world!
+
+
+
+From trac at twistedmatrix.com  Sun Nov 18 00:05:18 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 18 Nov 2018 07:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1542524718.5.6736088333325157041@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181118/013fa243/attachment-0002.html>
+
+From darrenuspto at gmail.com  Mon Nov 19 04:40:20 2018
+From: darrenuspto at gmail.com (Darren Govoni)
+Date: Mon, 19 Nov 2018 06:40:20 -0500
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+Message-ID: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+
+Hi,
+  I am using twisted to run my Flask app via WSGI like so.
+
+twistd --pidfile $PORT/pidfile -l $PORT/logfile  -n web --port tcp:$PORT
+--wsgi my.app
+
+Naturally, I have functions representing routes that enter and exit just
+fine.
+
+However, I notice the twisted daemon process is :"gathering threads".
+Eventually system runs out of them.
+
+ Here's a full status for one twisted server. 504 threads???
+
+Name:   twistd
+Umask:  0077
+State:  S (sleeping)
+Tgid:   54855
+Ngid:   35415
+Pid:    54855
+PPid:   1
+TracerPid:      0
+Uid:    4052    4052    4052    4052
+Gid:    4052    4052    4052    4052
+FDSize: 256
+Groups: 4052
+VmPeak: 34240104 kB
+VmSize: 34239336 kB
+VmLck:         0 kB
+VmPin:         0 kB
+VmHWM:   1942708 kB
+VmRSS:   1871884 kB
+RssAnon:         1834800 kB
+RssFile:           37080 kB
+RssShmem:              4 kB
+VmData: 33310576 kB
+VmStk:       284 kB
+VmExe:         4 kB
+VmLib:    234176 kB
+VmPTE:      8876 kB
+VmSwap:        0 kB
+Threads:        504
+SigQ:   1/1546652
+SigPnd: 0000000000000000
+ShdPnd: 0000000000000000
+SigBlk: 0000000000000000
+SigIgn: 0000000001001007
+SigCgt: 00000001800146e8
+CapInh: 0000000000000000
+CapPrm: 0000000000000000
+CapEff: 0000000000000000
+CapBnd: 0000001fffffffff
+CapAmb: 0000000000000000
+Seccomp:        0
+Speculation_Store_Bypass:       thread vulnerable
+Cpus_allowed:   ffffff,ffffffff
+Cpus_allowed_list:      0-55
+Mems_allowed:
+ 00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000003
+Mems_allowed_list:      0-1
+voluntary_ctxt_switches:        358534596
+nonvoluntary_ctxt_switches:     31738
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181119/f328135d/attachment-0002.html>
+
+From maarten at treewalker.org  Mon Nov 19 06:25:45 2018
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Mon, 19 Nov 2018 14:25:45 +0100
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+Message-ID: <2136683.UiEFGJyh1W@hyperion>
+
+On maandag 19 november 2018 12:40:20 CET Darren Govoni wrote:
+> Hi,
+>   I am using twisted to run my Flask app via WSGI like so.
+> 
+> twistd --pidfile $PORT/pidfile -l $PORT/logfile  -n web --port
+> tcp:$PORT --wsgi my.app
+> 
+> Naturally, I have functions representing routes that enter and exit
+> just fine.
+> 
+> However, I notice the twisted daemon process is :"gathering threads".
+> Eventually system runs out of them.
+> 
+>  Here's a full status for one twisted server. 504 threads???
+
+I have a server running inside twistd which uses exactly 1 thread after 
+running for a few weeks, so the problem may not be in twistd itself.
+
+I'm using a reverse-proxy HTTP setup though, not WSGI. Maybe the problem 
+is specific to WSGI, Flask or your application?
+
+Bye,
+		Maarten
+
+
+
+
+
+From exarkun at twistedmatrix.com  Mon Nov 19 06:29:03 2018
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Mon, 19 Nov 2018 08:29:03 -0500
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <2136683.UiEFGJyh1W@hyperion>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+Message-ID: <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+
+On Mon, Nov 19, 2018 at 8:26 AM Maarten ter Huurne <maarten at treewalker.org>
+wrote:
+
+> On maandag 19 november 2018 12:40:20 CET Darren Govoni wrote:
+> > Hi,
+> >   I am using twisted to run my Flask app via WSGI like so.
+> >
+> > twistd --pidfile $PORT/pidfile -l $PORT/logfile  -n web --port
+> > tcp:$PORT --wsgi my.app
+> >
+> > Naturally, I have functions representing routes that enter and exit
+> > just fine.
+> >
+> > However, I notice the twisted daemon process is :"gathering threads".
+> > Eventually system runs out of them.
+> >
+> >  Here's a full status for one twisted server. 504 threads???
+>
+> I have a server running inside twistd which uses exactly 1 thread after
+> running for a few weeks, so the problem may not be in twistd itself.
+>
+> I'm using a reverse-proxy HTTP setup though, not WSGI. Maybe the problem
+> is specific to WSGI, Flask or your application?
+>
+
+
+Twisted's WSGI support definitely uses threads (as this is essentially a
+requirement of WSGI).  It uses the reactor thread pool (if you launch it
+from the CLI with twistd) which used to be limited to 10 threads.  I don't
+know if the same limit is in place these days.
+
+Jean-Paul
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181119/cd4e6b7b/attachment-0002.html>
+
+From darrenuspto at gmail.com  Mon Nov 19 07:16:48 2018
+From: darrenuspto at gmail.com (Darren Govoni)
+Date: Mon, 19 Nov 2018 09:16:48 -0500
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+ <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+Message-ID: <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+
+I tried to find out if there is a way to limit the thread pool size from
+command line for twisted web and found nothing. Does it exist?
+
+On Mon, Nov 19, 2018 at 8:30 AM Jean-Paul Calderone <
+exarkun at twistedmatrix.com> wrote:
+
+> On Mon, Nov 19, 2018 at 8:26 AM Maarten ter Huurne <maarten at treewalker.org>
+> wrote:
+>
+>> On maandag 19 november 2018 12:40:20 CET Darren Govoni wrote:
+>> > Hi,
+>> >   I am using twisted to run my Flask app via WSGI like so.
+>> >
+>> > twistd --pidfile $PORT/pidfile -l $PORT/logfile  -n web --port
+>> > tcp:$PORT --wsgi my.app
+>> >
+>> > Naturally, I have functions representing routes that enter and exit
+>> > just fine.
+>> >
+>> > However, I notice the twisted daemon process is :"gathering threads".
+>> > Eventually system runs out of them.
+>> >
+>> >  Here's a full status for one twisted server. 504 threads???
+>>
+>> I have a server running inside twistd which uses exactly 1 thread after
+>> running for a few weeks, so the problem may not be in twistd itself.
+>>
+>> I'm using a reverse-proxy HTTP setup though, not WSGI. Maybe the problem
+>> is specific to WSGI, Flask or your application?
+>>
+>
+>
+> Twisted's WSGI support definitely uses threads (as this is essentially a
+> requirement of WSGI).  It uses the reactor thread pool (if you launch it
+> from the CLI with twistd) which used to be limited to 10 threads.  I don't
+> know if the same limit is in place these days.
+>
+> Jean-Paul
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181119/7ee9aeb7/attachment-0002.html>
+
+From grimmtooth at gmail.com  Mon Nov 19 16:06:49 2018
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Mon, 19 Nov 2018 18:06:49 -0500
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+ <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+Message-ID: <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+
+Glyph,
+
+Belated (I was in the thick of a few unrelated crises) thanks - it helps to
+understand a little bit of the background on the way it works.  I have made
+adjustments and everything works the way I was hoping for now.
+
+I wish I understood it a little better, if for no other reason than to
+contribute some documentation tweaks.  Just how would that work, anyway?
+The contribution model for Twisted is a little opaque from where I am
+sitting. I'd love to help in areas where I am actually capable of doing :)
+
+Regards,
+
+Jeff
+
+
+On Thu, Nov 1, 2018 at 3:44 AM Glyph <glyph at twistedmatrix.com> wrote:
+
+> Hi Jeff,
+>
+> Thanks for using Twisted.
+>
+> Here's a version with some small changes that works, and is self-contained.
+>
+> import sys
+>
+> from twisted.internet import reactor, endpoints
+> from twisted.web import server
+> from twisted.web.resource import Resource
+> from twisted.web.static import Data
+>
+> sys.path.append('lib')
+>
+> content = """
+> <!DOCTYPE html>
+> <html lang="en">
+> <head>
+>     <meta charset="UTF-8">
+>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+> </head>
+> <body>
+>     <span class='twistedTest'>This</span> is a test
+> </body>
+> </html>
+> """
+>
+> class tServer(Resource):
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+>
+> if __name__ == "__main__":
+>     root = Resource()
+>     static_collection = Resource()
+>     static_collection.putChild(b"test.css", Data(b".twistedTest {color:
+> red;}", "text/css"))
+>     root.putChild(b"static", static_collection)
+>     root.putChild(b"", tServer())
+>
+>     site = server.Site(root)
+>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>     endpoint.listen(site)
+>
+>     reactor.run()
+>     print("Shutting down!")
+>
+>
+> The problem with your first version was 'isLeaf', as Donal suggested.
+> However, the problem was not simply that the flag was set, but rather what
+> the flag means, and why it works that way.
+>
+> The root resource in any web server is a *collection*.  Which is to say,
+> under normal circumstances, the root resource never has render_* invoked on
+> it; you can't render it, because it's impossible, in the HTTP protocol, to
+> spell a URL that doesn't start with "/".
+>
+> isLeaf changes this, and says "this resource is responsible for rendering
+> all of its children; traversal stops here".  That means that it starts
+> invoking render_GET to render "/", but also to render *every other path
+> on the server*, including (unfortunately for you) /static/test.css.
+>
+> The modified example above instead uses a Resource() as the collection,
+> and inserts a '' child for the index, and a separate 'static' child for the
+> static index.  You can use a static.File for a directory here instead of a
+> static resource, and anywhere you see putChild, you could also use a
+> dynamic resource which overrides getChild to return the object rather than
+> inserting it in advance.
+>
+> Of course, you might wonder what the point of 'isLeaf' is if it short
+> circuits this stuff and makes it impossible to tell the difference between
+> resources.
+>
+> Given that you have a directory, you want to use a static.File child
+> resource and almost certainly *don't* want to set isLeaf; however, you
+> might be wondering how one would even use isLeaf if it just cuts off the
+> ability to tell the difference between resources.  The documentation on
+> this is not great - it doesn't even appear as an attribute in the API
+> reference, just an oblique reference in the docstring for
+> https://twistedmatrix.com/documents/current/api/twisted.web.resource.Resource.html#getChild.
+> But, the 'prepath' and 'postpath' attributes, lists of bytes, will tell you
+> about where in the request traversal cycle you are, and allow you to
+> distinguish which content to render directly within the body of render_*,
+> rather than having to route to the right object using Twisted APIs.  So
+> here's a working version with isLeaf=True:
+>
+> import sys
+>
+> from twisted.internet import reactor, endpoints
+> from twisted.web import server
+> from twisted.web.resource import Resource
+>
+> content = """
+> <!DOCTYPE html>
+> <html lang="en">
+> <head>
+>     <meta charset="UTF-8">
+>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+> </head>
+> <body>
+>     <span class='twistedTest'>This</span> is a test
+> </body>
+> </html>
+> """
+>
+> css = """
+> .twistedTest {
+>     color: red;
+> }
+> """
+>
+> class tServer(Resource):
+>     isLeaf = True
+>     def render_GET(self, request):
+>         if request.postpath == [b'']:
+>             request.setHeader("content-type", "text/html")
+>             return bytes(content, "utf-8")
+>         elif request.postpath == [b'static', b'test.css']:
+>             request.setHeader("content-type", "text/css")
+>             return bytes(css, 'utf-8')
+>         else:
+>             request.setResponseCode(404)
+>             return b'not found'
+>
+> if __name__ == "__main__":
+>     site = server.Site(tServer())
+>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>     endpoint.listen(site)
+>
+>     reactor.run()
+>     print("Shutting down!")
+>
+>
+> I hope this clears up the request traversal model a little bit.
+>
+> -glyph
+>
+>
+> On Oct 31, 2018, at 2:15 PM, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+>
+> Tried that, I get a big
+>
+> No Such Resource
+>
+> No such child resource.
+> back.  Watching it in FF's development panel, I see a 404 come back for
+> /.  /static doesn't get served at all, of course.
+>
+> This, however, DID work.
+>
+> class tServer(Resource):
+>     isLeaf = False
+>
+>     def getChild(self, path, request):
+>         print('You know what you doing.')
+>
+>         if path == b'':
+>             print("Rendering /")
+>             return self
+>
+>         return Resource.getChild(self, path, request)
+>
+>     def render_GET(self, request):
+>         return bytes(content, "utf-8")
+>
+> (ignore my printf debugging plz)
+>
+> So, Thanks! :)
+>
+> Regards,
+>
+> Jeff
+>
+>
+> On Tue, Oct 30, 2018 at 6:42 PM Donal McMullan <donal.mcmullan at gmail.com>
+> wrote:
+>
+>> Try replacing:
+>> isLeaf = True
+>> with
+>> isLeaf = False
+>>
+>>
+>> On Tue, 30 Oct 2018 at 21:32, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+>>
+>>> I'm sure I'm overlooking something obvious here but I just can't get my
+>>> head around it.
+>>>
+>>> Here's the setup: twisted.web server that generates dynamic content.
+>>> Child that serves up static content, e.g. css and favoicon.  However, the
+>>> static content isn't making it. Instead, any hit to localhost/static
+>>> actually yields up a copy of / again.
+>>>
+>>> Here's the server code
+>>>
+>>> import sys
+>>>
+>>> from twisted.internet import reactor, endpoints
+>>> from twisted.web import server
+>>> from twisted.web.resource import Resource
+>>> from twisted.web.static import File
+>>>
+>>> sys.path.append('lib')
+>>>
+>>> content = """
+>>> <!DOCTYPE html>
+>>> <html lang="en">
+>>> <head>
+>>>     <meta charset="UTF-8">
+>>>     <link rel="stylesheet" href="/static/test.css" type="text/css" />
+>>> </head>
+>>> <body>
+>>>     <span class='twistedTest'>This</span> is a test
+>>> </body>
+>>> </html>
+>>> """
+>>>
+>>>
+>>> class tServer(Resource):
+>>>     isLeaf = True
+>>>
+>>>     def render_GET(self, request):
+>>>         return bytes(content, "utf-8")
+>>>
+>>>
+>>> if __name__ == "__main__":
+>>>     root = tServer()
+>>>     root.putChild(b"static", File("static"))
+>>>
+>>>     site = server.Site(root)
+>>>     endpoint = endpoints.TCP4ServerEndpoint(reactor, 8080)
+>>>     endpoint.listen(site)
+>>>
+>>>     reactor.run()
+>>>     print("Shutting down!")
+>>>
+>>> It's run with the command 'python tserver.py'.  The expectation is that
+>>> what is inside the custom <span> will be red.
+>>>
+>>> In the same dir as the script is a subdir 'static' with the css file
+>>> inside it.
+>>>
+>>> If I replace 'root' with     root = Resource() then / doesn't serve up
+>>> anything, but /static is a directory listing of the static directory.
+>>>
+>>> The dynamic server is basically a copy of several tutorials cooked down
+>>> to something that I could use to demonstrate the problem.
+>>>
+>>> What am I missing here? /headscratch
+>>>
+>>> Regards,
+>>>
+>>> Jeff
+>>> _______________________________________________
+>>> Twisted-Python mailing list
+>>> Twisted-Python at twistedmatrix.com
+>>> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>>>
+>> _______________________________________________
+>> Twisted-Python mailing list
+>> Twisted-Python at twistedmatrix.com
+>> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181119/ca14c90a/attachment-0002.html>
+
+From twm at freecog.net  Tue Nov 20 23:30:45 2018
+From: twm at freecog.net (Tom Most)
+Date: Tue, 20 Nov 2018 22:30:45 -0800
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+ <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+ <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+Message-ID: <1542781845.2303374.1583601416.531133B4@webmail.messagingengine.com>
+
+On Mon, Nov 19, 2018, at 3:06 PM, Jeff Grimmett wrote:
+> Glyph,
+> 
+> Belated (I was in the thick of a few unrelated crises) thanks - it
+> helps to understand a little bit of the background on the way it
+> works.  I have made adjustments and everything works the way I was
+> hoping for now.> 
+> I wish I understood it a little better, if for no other reason than to
+> contribute some documentation tweaks.  Just how would that work,
+> anyway? The contribution model for Twisted is a little opaque from
+> where I am sitting. I'd love to help in areas where I am actually
+> capable of doing :)> 
+> Regards,
+> 
+> Jeff 
+
+Hi Jeff,
+
+The Twisted development process is documented here on the wiki[1]. It
+boils down to:
+1. Create a ticket[2] (on Trac)
+2. Create a pull request (on GitHub)
+3. Wait for a review (and address any feedback the reviewer gives)
+
+There is more on the wiki. The same process applies to code and
+documentation.
+Documentation changes are really helpful, especially because it is
+difficult for the experienced to see the rough edges that catch new
+users. Your confusion is a bug, and particularly with respect to the
+Resource model, a not uncommon one. Let's fix it!
+---Tom
+
+
+
+
+Links:
+
+  1. https://twistedmatrix.com/trac/wiki/TwistedDevelopment#GettingYourPatchAccepted
+  2. https://twistedmatrix.com/trac/newticket
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181120/9bab4b52/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Wed Nov 21 19:30:43 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Wed, 21 Nov 2018 18:30:43 -0800
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+ <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+ <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+Message-ID: <23558335-1E4A-47EF-91D3-F5F323F4DABF@twistedmatrix.com>
+
+
+> On Nov 19, 2018, at 6:16 AM, Darren Govoni <darrenuspto at gmail.com> wrote:
+> 
+> I tried to find out if there is a way to limit the thread pool size from command line for twisted web and found nothing. Does it exist?
+
+The thread pool is limited to 10. While this is configurable via the API, no command line option is exposed to tune it.  (This would be a great contribution if you were so inclined!)
+
+It seems likely to me that Flask is spawning background threads for some reason; given the way Twisted's threadpool works, leaks like this are not common.  However, anything is possible: you probably want to gather some information about what all those threads are doing.
+
+Can you add a route to your Flask application to call https://docs.python.org/3/library/faulthandler.html#dumping-the-traceback <https://docs.python.org/3/library/faulthandler.html#dumping-the-traceback> and then save the output somewhere?  That will at least give you a hint as to whether Twisted's threadpool is at fault, and if it is, what it is blocked doing.
+
+-g
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181121/e39767ec/attachment-0002.html>
+
+From chris at withers.org  Thu Nov 22 04:43:09 2018
+From: chris at withers.org (Chris Withers)
+Date: Thu, 22 Nov 2018 11:43:09 +0000
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <23558335-1E4A-47EF-91D3-F5F323F4DABF@twistedmatrix.com>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+ <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+ <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+ <23558335-1E4A-47EF-91D3-F5F323F4DABF@twistedmatrix.com>
+Message-ID: <8ce1aac2-bed9-047f-d7b5-eac8f4249f2f@withers.org>
+
+On 22/11/2018 02:30, Glyph wrote:
+> 
+>> On Nov 19, 2018, at 6:16 AM, Darren Govoni <darrenuspto at gmail.com 
+>> <mailto:darrenuspto at gmail.com>> wrote:
+>>
+>> I tried to find out if there is a way to limit the thread pool size 
+>> from command line for twisted web and found nothing. Does it exist?
+> 
+> The thread pool is limited to 10. While this is configurable via the 
+> API, no command line option is exposed to tune it.  (This would be a 
+> great contribution if you were so inclined!)
+> 
+> It seems likely to me that Flask is spawning background threads for some 
+> reason; given the way Twisted's threadpool works, leaks like this are 
+> not common.  However, anything is possible: you probably want to gather 
+> some information about what all those threads are doing.
+
+Some ideas on this front:
+
+- pstree/ps and strace will tell you at a low level
+
+- http://pyrasite.com/ and then use Python's thread introspection stuff.
+
+cheers,
+
+Chris
+
+
+
+From darrenuspto at gmail.com  Fri Nov 23 07:11:25 2018
+From: darrenuspto at gmail.com (Darren Govoni)
+Date: Fri, 23 Nov 2018 09:11:25 -0500
+Subject: [Twisted-Python] Thread Consumption Problem in Daemon?
+In-Reply-To: <8ce1aac2-bed9-047f-d7b5-eac8f4249f2f@withers.org>
+References: <CAN-ZBUequCwrgWNCTYH9ruX_NzxOo7268Kt4W=o8wB5vQ_=RNQ@mail.gmail.com>
+ <2136683.UiEFGJyh1W@hyperion>
+ <CAEeXt4M=xt-DPmB7J-12HKTY5FOdCi71W_V5eDeLnoNiMMRBBA@mail.gmail.com>
+ <CAN-ZBUc6-X=Ve84kb7Xkrt3CRrj0mt25U-tkyZasaeKYGqUj5w@mail.gmail.com>
+ <23558335-1E4A-47EF-91D3-F5F323F4DABF@twistedmatrix.com>
+ <8ce1aac2-bed9-047f-d7b5-eac8f4249f2f@withers.org>
+Message-ID: <CAN-ZBUfRj06Guam8N3kfLoZznwHBi9SBEUosu9D6B1CLS+u52w@mail.gmail.com>
+
+Thanks. I added Tipper to my program and will see what it shows when I ping
+the process.
+
+https://pypi.org/project/tipper/
+
+On Thu, Nov 22, 2018 at 6:43 AM Chris Withers <chris at withers.org> wrote:
+
+> On 22/11/2018 02:30, Glyph wrote:
+> >
+> >> On Nov 19, 2018, at 6:16 AM, Darren Govoni <darrenuspto at gmail.com
+> >> <mailto:darrenuspto at gmail.com>> wrote:
+> >>
+> >> I tried to find out if there is a way to limit the thread pool size
+> >> from command line for twisted web and found nothing. Does it exist?
+> >
+> > The thread pool is limited to 10. While this is configurable via the
+> > API, no command line option is exposed to tune it.  (This would be a
+> > great contribution if you were so inclined!)
+> >
+> > It seems likely to me that Flask is spawning background threads for some
+> > reason; given the way Twisted's threadpool works, leaks like this are
+> > not common.  However, anything is possible: you probably want to gather
+> > some information about what all those threads are doing.
+>
+> Some ideas on this front:
+>
+> - pstree/ps and strace will tell you at a low level
+>
+> - http://pyrasite.com/ and then use Python's thread introspection stuff.
+>
+> cheers,
+>
+> Chris
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181123/4fb082d3/attachment-0002.html>
+
+From chris at withers.org  Fri Nov 23 08:58:34 2018
+From: chris at withers.org (Chris Withers)
+Date: Fri, 23 Nov 2018 15:58:34 +0000
+Subject: [Twisted-Python] leakage between tests with trial when code under
+ test uses deferToThread
+Message-ID: <4eb74030-7d0b-253c-09c6-9144984df3a9@withers.org>
+
+Hi All,
+
+Does trial do anything to clean up stuff that's been passed to 
+deferToThread?
+
+I'm seeing what looks like leakage between tests where stuff that is 
+deferred to a thread from a LoopingCall is resulting in a DelayedCall 
+ending up in the reactor for the next test.
+Does that ring any bells?
+
+cheers,
+
+Chris
+
+
+
+From glyph at twistedmatrix.com  Fri Nov 23 15:22:54 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Fri, 23 Nov 2018 14:22:54 -0800
+Subject: [Twisted-Python] leakage between tests with trial when code
+ under test uses deferToThread
+In-Reply-To: <4eb74030-7d0b-253c-09c6-9144984df3a9@withers.org>
+References: <4eb74030-7d0b-253c-09c6-9144984df3a9@withers.org>
+Message-ID: <A4EA6D98-277E-4BE4-938E-4C828F3C2E6C@twistedmatrix.com>
+
+
+
+> On Nov 23, 2018, at 7:58 AM, Chris Withers <chris at withers.org> wrote:
+> 
+> Hi All,
+> 
+> Does trial do anything to clean up stuff that's been passed to deferToThread?
+
+Nope.  It does its best to clean up stuff that it knows is "in" the reactor (sockets, timers, and the like), but since threads can kind of do ~whatever~ there hasn't been support for that.
+
+deferToThread is a bit of a special case and you make a good point here: there should probably be special support for it in trial.
+
+> I'm seeing what looks like leakage between tests where stuff that is deferred to a thread from a LoopingCall is resulting in a DelayedCall ending up in the reactor for the next test.
+> Does that ring any bells?
+
+That can definitely happen.  For the time being you probably want to add your own deferToThread layer and have a testCase.addCleanup that makes sure all the relevant Deferreds have fired.
+
+-g
+
+
+From trac at twistedmatrix.com  Sun Nov 25 00:05:20 2018
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 25 Nov 2018 07:05:20 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1543129520.71.7916789873956356551@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181125/f2215752/attachment-0002.html>
+
+From chris at withers.org  Mon Nov 26 01:35:12 2018
+From: chris at withers.org (Chris Withers)
+Date: Mon, 26 Nov 2018 08:35:12 +0000
+Subject: [Twisted-Python] leakage between tests with trial when code
+ under test uses deferToThread
+In-Reply-To: <6f5af07a-8355-d6ed-f2a5-50db0e4ab42a@withers.org>
+References: <4eb74030-7d0b-253c-09c6-9144984df3a9@withers.org>
+ <A4EA6D98-277E-4BE4-938E-4C828F3C2E6C@twistedmatrix.com>
+ <6f5af07a-8355-d6ed-f2a5-50db0e4ab42a@withers.org>
+Message-ID: <6e796d19-5ff5-e3d7-39da-29cfeea71958@withers.org>
+
+Forgot to include the list in my reply...
+
+On 23/11/2018 22:27, Chris Withers wrote:
+> On 23/11/2018 22:22, Glyph wrote:
+>>
+>>
+>>> On Nov 23, 2018, at 7:58 AM, Chris Withers <chris at withers.org> wrote:
+>>>
+>>> Hi All,
+>>>
+>>> Does trial do anything to clean up stuff that's been passed to 
+>>> deferToThread?
+>>
+>> Nope.  It does its best to clean up stuff that it knows is "in" the 
+>> reactor (sockets, timers, and the like), but since threads can kind 
+>> of do ~whatever~ there hasn't been support for that.
+>
+> Actually, looks like there's stuff in trial's Janitor class, but it 
+> only kicks in after the suite is finished, and I'm seeing leakage 
+> between tests within a suite...
+>
+>> deferToThread is a bit of a special case and you make a good point 
+>> here: there should probably be special support for it in trial.
+>
+> ...which I plan to add in carly in the meantime: basically block with 
+> a timeout on everything in the threadpool finishing it's work.
+>
+> Speaking of which, I'm happy with how carly is turning out, but would 
+> still welcome feedback, particularly on how the tests suites feel:
+>
+> https://github.com/cjw296/carly/tree/master/tests
+>
+> Just don't read hook.py unless you like head-bendy code ;-)
+
+Okay, so here's what I came up with 
+<https://github.com/cjw296/carly/commit/71a1d2bfd501f5c561712c75253fc23c28c3bba7#diff-3670fb1f3b913f6c1ec584fa64302c2dR17>. 
+I'm not a fan of the sleep / busy loop pattern, but twisted makes it 
+prettymuch impossible to get hold of the ThreadWorkers queue, so that I 
+could block on them in this method. Any ideas on improvements would be 
+very welcome!
+
+cheers,
+
+Chris
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181126/d4d3681b/attachment-0002.html>
+
+From grimmtooth at gmail.com  Tue Nov 27 15:37:27 2018
+From: grimmtooth at gmail.com (Jeff Grimmett)
+Date: Tue, 27 Nov 2018 17:37:27 -0500
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <1542781845.2303374.1583601416.531133B4@webmail.messagingengine.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+ <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+ <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+ <1542781845.2303374.1583601416.531133B4@webmail.messagingengine.com>
+Message-ID: <CA+1iZEcXWdyoYK8kCFDdps06DKF1mtZZjja03tTgPvW-g_3JWA@mail.gmail.com>
+
+Thanks, Tom.
+
+Is there a limit to the smallness of the proposed changes?  For example, if
+I had a possible two-line change to
+https://twistedmatrix.com/documents/current/api/twisted.internet.wxreactor.html
+(which looks like it would be done in the docstring), is it okay to just
+have a PR for that or does it need to be bundled with more changes?
+
+Thanks,
+
+Jeff
+
+
+On Wed, Nov 21, 2018 at 1:31 AM Tom Most <twm at freecog.net> wrote:
+
+> On Mon, Nov 19, 2018, at 3:06 PM, Jeff Grimmett wrote:
+>
+> Glyph,
+>
+> Belated (I was in the thick of a few unrelated crises) thanks - it helps
+> to understand a little bit of the background on the way it works.  I have
+> made adjustments and everything works the way I was hoping for now.
+>
+> I wish I understood it a little better, if for no other reason than to
+> contribute some documentation tweaks.  Just how would that work, anyway?
+> The contribution model for Twisted is a little opaque from where I am
+> sitting. I'd love to help in areas where I am actually capable of doing :)
+>
+> Regards,
+>
+> Jeff
+>
+>
+> Hi Jeff,
+>
+> The Twisted development process is documented here on the wiki
+> <https://twistedmatrix.com/trac/wiki/TwistedDevelopment#GettingYourPatchAccepted>.
+> It boils down to:
+>
+> 1. Create a ticket <https://twistedmatrix.com/trac/newticket> (on Trac)
+> 2. Create a pull request (on GitHub)
+> 3. Wait for a review (and address any feedback the reviewer gives)
+>
+> There is more on the wiki. The same process applies to code and
+> documentation.
+>
+> Documentation changes are really helpful, especially because it is
+> difficult for the experienced to see the rough edges that catch new users.
+> Your confusion is a bug, and particularly with respect to the Resource
+> model, a not uncommon one. Let's fix it!
+>
+> ---Tom
+>
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181127/55254948/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Tue Nov 27 22:53:13 2018
+From: glyph at twistedmatrix.com (Glyph)
+Date: Tue, 27 Nov 2018 21:53:13 -0800
+Subject: [Twisted-Python] twisted.web with dynamic + static content
+In-Reply-To: <CA+1iZEcXWdyoYK8kCFDdps06DKF1mtZZjja03tTgPvW-g_3JWA@mail.gmail.com>
+References: <CA+1iZEdO+AqawwfLs73V_bE426LoUUWuZ636cGPm+v3-pV1qOw@mail.gmail.com>
+ <CADf-aJGrWL46TMArOvjBjhiB9_A9ic7G3b0zE1bu5Jwrr5PXUg@mail.gmail.com>
+ <CA+1iZEcq7siJiAVD08B5vz-UygZzViUZQ_0koFUj+kXAAvf9vA@mail.gmail.com>
+ <82BD1D37-7644-4268-8B1B-D8E9ABAFBD95@twistedmatrix.com>
+ <CA+1iZEfN9AN-C4WyrrpkernVUo-9w=MxBMTmPN0X5efZP2QRgw@mail.gmail.com>
+ <1542781845.2303374.1583601416.531133B4@webmail.messagingengine.com>
+ <CA+1iZEcXWdyoYK8kCFDdps06DKF1mtZZjja03tTgPvW-g_3JWA@mail.gmail.com>
+Message-ID: <EFD6E663-61DB-4EE3-99A0-F37F77410C19@twistedmatrix.com>
+
+
+
+> On Nov 27, 2018, at 2:37 PM, Jeff Grimmett <grimmtooth at gmail.com> wrote:
+> 
+> Thanks, Tom.  
+> 
+> Is there a limit to the smallness of the proposed changes?  For example, if I had a possible two-line change to https://twistedmatrix.com/documents/current/api/twisted.internet.wxreactor.html <https://twistedmatrix.com/documents/current/api/twisted.internet.wxreactor.html> (which looks like it would be done in the docstring), is it okay to just have a PR for that or does it need to be bundled with more changes?
+> 
+> Thanks,
+> 
+> Jeff 
+
+Smaller changes are always better!  Sometimes changes need to be larger and don't make sense when split up, so it's OK to propose large things, but a one-liner is the easiest possible thing to review, and will generally get integrated faster.
+
+-g
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20181127/a3dc3748/attachment-0002.html>
+
+From chris at withers.org  Thu Nov 29 06:10:41 2018
+From: chris at withers.org (Chris Withers)
+Date: Thu, 29 Nov 2018 13:10:41 +0000
+Subject: [Twisted-Python] code coverage when code executed in a twisted
+ worker thread
+Message-ID: <59c2cb9b-732d-3e01-0d96-4ef4fce13a78@withers.org>
+
+Hi All,
+
+I've noticed that code coverage doesn't appear to be recorded when code 
+is executed in something that has been deferToThread'ed.
+
+Is this a known issue? Does anyone have an explanation?
+
+cheers,
+
+Chris
+
+
+

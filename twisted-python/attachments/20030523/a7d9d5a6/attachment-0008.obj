@@ -1,0 +1,41 @@
+from twisted.web.client import HTTPClientFactory, HTTPPageDownloader
+from twisted.python import failure
+from twisted.internet import error, defer
+from gzstream import GunzipStream
+
+class HTTPStreamer(HTTPClientFactory):
+ 
+    protocol = HTTPPageDownloader
+ 
+    def __init__(self, host, url, baseProtocol, method='GET', postdata=None, headers=None, agent="DAAPTastic"):
+        HTTPClientFactory.__init__(self, host, url, method=method, postdata=postdata, headers=headers, agent=agent)
+        self.deferred = defer.Deferred()
+        self.waiting = 1
+        self.protocols = [baseProtocol]
+ 
+    def gotHeaders(self, headers):
+        for encoding in headers.get('content-encoding', ()):
+            setup_fn = getattr(self, 'decode_' + encoding.lower().replace('/', '_').replace('-', '_'), None)
+            if setup_fn is not None:
+                self.protocols.append(setup_fn(self.protocols[-1]))
+
+    def decode_gzip(self, lastProtocol):
+        gzstream = GunzipStream()
+        gzstream.write = lastProtocol.dataReceived
+        return gzstream
+    
+    def pageStart(self):
+        if self.waiting:
+            self.waiting = 0
+            for protocol in self.protocols:
+                protocol.connectionMade()
+
+    def pageEnd(self):
+        done = failure.Failure(error.ConnectionDone('Page Complete'))
+        while self.protocols:
+            protocol = self.protocols.pop()
+            protocol.connectionLost(done)
+        self.deferred.callback(protocol)
+ 
+    def pagePart(self, data):
+        self.protocols[-1].dataReceived(data)

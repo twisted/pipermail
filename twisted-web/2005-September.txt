@@ -1,0 +1,3836 @@
+From eric.faurot at gmail.com  Thu Sep  1 06:15:57 2005
+From: eric.faurot at gmail.com (Eric Faurot)
+Date: Thu Sep  1 06:16:31 2005
+Subject: [Twisted-web] problem with missing data in nevow
+Message-ID: <e012d6b505090105155b6514cd@mail.gmail.com>
+
+The following example result in an endless (actually until python runs out
+of mem) loop. The problem is that the data passed to render_heading is
+actually a stan tree displaying an error message (from rend.DataFactory.child).
+If the data is not found, the render should not be called at all.
+
+8<-----------
+from nevow import rend, static, tags as t, loaders
+from nevow.appserver import NevowSite
+from twisted.application import service, internet
+
+class Page(rend.Page):
+
+     docFactory = loaders.stan(
+        t.html[
+          t.head[
+            t.title[ 'title' ]
+          ],
+          t.body[
+            t.h1(render=t.directive('heading'), data=t.directive('hdata'))
+          ]
+        ])
+
+     def render_heading(self, ctx, data):
+         return ctx.tag[data]
+     
+     #def data_hdata(self, ctx, data):
+     #    return 'Hey'
+     
+application = service.Application('Test')
+internet.TCPServer(8080,
+                   NevowSite(Page())
+).setServiceParent(application)
+From maoy+twisted at cis.upenn.edu  Thu Sep  1 20:54:12 2005
+From: maoy+twisted at cis.upenn.edu (Yun Mao)
+Date: Thu Sep  1 20:54:16 2005
+Subject: [Twisted-web] warning appears after upgrading Nevow
+Message-ID: <Pine.LNX.4.61.0509012253360.1029@codex-l.cis.upenn.edu>
+
+
+exceptions.UserWarning: All inevow.IResource APIs now take a Context object 
+instead of the Request; Please adapt the context to IRequest before attempting 
+to access attributes of the request
+
+The code looks like: view = request.args.get("view",[''])[0]
+
+How should I deal with the warning?  Thanks..
+
+Yun
+
+From matt at pollenation.net  Fri Sep  2 01:48:25 2005
+From: matt at pollenation.net (Matt Goodall)
+Date: Fri Sep  2 01:48:39 2005
+Subject: [Twisted-web] warning appears after upgrading Nevow
+In-Reply-To: <Pine.LNX.4.61.0509012253360.1029@codex-l.cis.upenn.edu>
+References: <Pine.LNX.4.61.0509012253360.1029@codex-l.cis.upenn.edu>
+Message-ID: <431803C9.80909@pollenation.net>
+
+Yun Mao wrote:
+> 
+> exceptions.UserWarning: All inevow.IResource APIs now take a Context
+> object instead of the Request; Please adapt the context to IRequest
+> before attempting to access attributes of the request
+
+Wow, you haven't upgraded Nevow for a *long* time! ;-)
+
+> 
+> The code looks like: view = request.args.get("view",[''])[0]
+> 
+> How should I deal with the warning?  Thanks..
+
+Firstly, if the argument to your method is still called 'request' then
+change it to 'context', 'ctx', or whatever you like to use.
+
+Then adapt that context to inevow.IRequest and use the adapter object
+from there on.
+
+For instance, if you currently have some code that looks like:
+
+    def locateChild(self, request, segments):
+        view = request.args.get("view",[''])[0]
+
+Then you should change it to:
+
+    def locateChild(self, context, segments):
+        request = inevow.IRequest(context)
+        view = request.args.get("view",[''])[0]
+
+Both IResource methods - locateChild and renderHTTP - now take a context
+instead of a request so those methods, and any methods called from them,
+will now take a context arg too.
+
+Hope this helps.
+
+Cheers, Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \	       Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+
+From tv at twistedmatrix.com  Fri Sep  2 07:56:10 2005
+From: tv at twistedmatrix.com (Tommi Virtanen)
+Date: Fri Sep  2 07:56:16 2005
+Subject: [Twisted-web] access control feature,
+ ctx removal from locateChild and renderHTTP, what's going on?
+Message-ID: <431859FA.8020606@twistedmatrix.com>
+
+Hi. As everyone seems to either asleep or leaving IRC _right_ _now_,
+and I do really want some review and answers, I'm pasting this bit
+from IRC here. Hopefully someone will have more time to reply in this
+more asynchronous medium..
+
+<Tv> Hey, I really want someone to review my access control thingie.
+...
+<Tv> Nevow/sandbox/tv/access, people!
+...
+<radix> anyway! good inght
+* radix flees to sleep.
+<exarkun> Tv: it'll break when ctx is removed as an argument to
+locateChild et al
+...
+<Tv> exarkun: err, wouldn't a _lot_ break with that change?
+<exarkun> Tv: yes!  but this, too.
+<Tv> well, I can make it give a wrapper resource from locateChild
+<Tv> that does the access checking at render time..
+<exarkun> ctx will be removed from renderHTTP at about the same time
+<Tv> so huh
+<Tv> 1) what's the reasoning behind that
+<Tv> 2) what, then?
+<exarkun> those questions are big and I have to catch a bus
+
+From andrea at cpushare.com  Fri Sep  2 19:37:40 2005
+From: andrea at cpushare.com (Andrea Arcangeli)
+Date: Fri Sep  2 19:37:51 2005
+Subject: [Twisted-web] fix nevow exception in args parsing
+Message-ID: <20050903013740.GU1614@g5.random>
+
+I noticed an exception in nevow, for example with divmod.com/?=x=x=x.
+
+This is the fix, please apply this (or an equivalent one) to SVN:
+
+Index: Nevow/nevow/url.py
+===================================================================
+--- Nevow/nevow/url.py	(revision 1748)
++++ Nevow/nevow/url.py	(working copy)
+@@ -21,7 +21,7 @@
+ def _uqf(query):
+     for x in query.split('&'):
+         if '=' in x:
+-            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')] )
++            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')[:2]] )
+         elif x:
+             yield (urllib.unquote_plus(x), None)
+ unquerify = lambda query: list(_uqf(query))
+
+
+And here again my latest version of the usual caching patches based on
+dialtone's stuff, that prevents high traffic pages to hurt.
+
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 1748)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -476,6 +476,8 @@
+         self.children[name] = child
+     
+ 
++_CACHE = {}
++
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     """A page is the main Nevow resource and renders a document loaded
+     via the document factory (docFactory).
+@@ -489,8 +491,46 @@
+     afterRender = None
+     addSlash = None
+ 
++    cache = False
++    lifetime = 0
++
+     flattenFactory = lambda self, *args: flat.flattenFactory(*args)
+ 
++    def hasCache(self, ctx):
++        if not self.cache:
++            return
++
++        c = self.lookupCache(ctx)
++
++        if c is None:
++            self.storeCache(ctx, [util.Deferred()])
++            return
++
++        if isinstance(c[0], util.Deferred):
++            d = util.Deferred()
++            c.append(d)
++            return d
++
++        if now() > c[1] + self.lifetime and self.lifetime > 0:
++            self.storeCache(ctx, [util.Deferred()])
++            return
++
++        return c[0]
++    def cacheRendered(self, ctx, data):
++        if self.cache:
++            defer_list = self.lookupCache(ctx)
++            assert(isinstance(defer_list[0], util.Deferred))
++            # overwrite the deferred with the data
++            self.storeCache(ctx, (data, now()))
++            for d in defer_list:
++                d.callback(data)
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def storeCache(self, ctx, c):
++        _CACHE[self.cacheIDX(ctx)] = c
++    def lookupCache(self, ctx):
++        return _CACHE.get(self.cacheIDX(ctx))
++
+     def renderHTTP(self, ctx):
+         if self.beforeRender is not None:
+             return util.maybeDeferred(self.beforeRender,ctx).addCallback(
+@@ -515,11 +555,18 @@
+             if self.afterRender is not None:
+                 return util.maybeDeferred(self.afterRender,ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c is not None:
++            finishRequest()
++            return c
++
++        if self.buffered or self.cache:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = io.getvalue()
++                self.cacheRendered(ctx, c)
++                request.write(c)
+                 return util.maybeDeferred(finishRequest).addCallback(lambda r: result)
+         else:
+             writer = request.write
+
+And here the fix to avoid wget to write garbage in filenames under
+the nevow guard (I suggest to merge it).
+
+Index: Nevow/nevow/guard.py
+===================================================================
+--- Nevow/nevow/guard.py	(revision 1748)
++++ Nevow/nevow/guard.py	(working copy)
+@@ -297,7 +297,8 @@
+         if path.startswith(SESSION_KEY):
+             key = path[len(SESSION_KEY):]
+             if key not in self.sessions:
+-                return urlToChild(request, *segments[1:], **{'__start_session__':1}), ()
++                #return urlToChild(request, *segments[1:], **{'__start_session__':1}), ()
++                return urlToChild(request, *segments[1:]), ()
+             self.sessions[key].setLifetime(self.sessionLifetime)
+             if cookie == key:
+                 # /sessionized-url/${SESSION_KEY}aef9c34aecc3d9148/foo
+@@ -305,7 +306,8 @@
+                 #                  we are this getChild
+                 # with a matching cookie
+                 self.sessions[key].sessionJustStarted = True
+-                return urlToChild(request, *segments[1:], **{'__session_just_started__':1}), ()
++                #return urlToChild(request, *segments[1:], **{'__session_just_started__':1}), ()
++                return urlToChild(request, *segments[1:]), ()
+             else:
+                 # We attempted to negotiate the session but failed (the user
+                 # probably has cookies disabled): now we're going to return the
+
+Keep up the great work, thanks!
+
+PS. While sending this email I take the opportunity to point you to the
+nevow sourcecode of a little GPL nevow appserver I developed last
+weekend, any suggestion for improvements is welcome ;).
+
+	http://klive.cpushare.com/downloads/
+
+From general at eepatents.com  Fri Sep  2 19:58:37 2005
+From: general at eepatents.com (Ed Suominen)
+Date: Fri Sep  2 19:58:48 2005
+Subject: [Twisted-web] fix nevow exception in args parsing
+In-Reply-To: <20050903013740.GU1614@g5.random>
+References: <20050903013740.GU1614@g5.random>
+Message-ID: <1125712718.18287.36.camel@207-118-81-111.dyn.centurytel.net>
+
+On Sat, 2005-09-03 at 03:37 +0200, Andrea Arcangeli wrote:
+> PS. While sending this email I take the opportunity to point you to the
+> nevow sourcecode of a little GPL nevow appserver I developed last
+> weekend, any suggestion for improvements is welcome ;).
+> 
+> 	http://klive.cpushare.com/downloads/
+
+Yes, here's a suggestion for a big improvement:
+
+DOCSTRINGS!!!!!  :-)
+
+Code is so much more readable (and easily documented with epydoc or
+something like it) when people include plenty of docstrings to explain
+what's going on.
+
+Best regards, Ed
+
+
+
+From matt at pollenation.net  Sat Sep  3 03:03:16 2005
+From: matt at pollenation.net (Matt Goodall)
+Date: Sat Sep  3 03:03:23 2005
+Subject: Possible removal of ctx from inevow.IResource (was Re: [Twisted-web]
+	access control feature, ctx removal from locateChild and renderHTTP,
+	what's going on?)
+In-Reply-To: <431859FA.8020606@twistedmatrix.com>
+References: <431859FA.8020606@twistedmatrix.com>
+Message-ID: <431966D4.8050603@pollenation.net>
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+Tommi Virtanen wrote:
+
+[snip]
+
+> <exarkun> Tv: it'll break when ctx is removed as an argument to
+> locateChild et al
+> ...
+> <Tv> exarkun: err, wouldn't a _lot_ break with that change?
+> <exarkun> Tv: yes!  but this, too.
+> <Tv> well, I can make it give a wrapper resource from locateChild
+> <Tv> that does the access checking at render time..
+> <exarkun> ctx will be removed from renderHTTP at about the same time
+> <Tv> so huh
+> <Tv> 1) what's the reasoning behind that
+> <Tv> 2) what, then?
+> <exarkun> those questions are big and I have to catch a bus
+
+Jp, I assume you caught you bus now ;-) so please could you post your
+ideas about removing the context arg from IResource.
+
+That is a *major* change that would affect every single Nevow
+application so it needs proper discussion, including how to handle
+backwards compatability.
+
+Thanks, Matt
+
+- --
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \	       Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.5 (GNU/Linux)
+Comment: Using GnuPG with Thunderbird - http://enigmail.mozdev.org
+
+iD8DBQFDGWbUPpOMbs6rEZERAi2iAKCZVlO0AvvWc2s5/dRRyzsPAHhxqgCeNvr+
+QztFrYP9whpitnMJXXua/qc=
+=aIrS
+-----END PGP SIGNATURE-----
+
+From matt at pollenation.net  Sat Sep  3 03:13:14 2005
+From: matt at pollenation.net (Matt Goodall)
+Date: Sat Sep  3 03:13:18 2005
+Subject: [Twisted-web] fix nevow exception in args parsing
+In-Reply-To: <20050903013740.GU1614@g5.random>
+References: <20050903013740.GU1614@g5.random>
+Message-ID: <4319692A.7000502@pollenation.net>
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+Andrea Arcangeli wrote:
+> I noticed an exception in nevow, for example with divmod.com/?=x=x=x.
+> 
+> This is the fix, please apply this (or an equivalent one) to SVN:
+> 
+> Index: Nevow/nevow/url.py
+> ===================================================================
+> --- Nevow/nevow/url.py	(revision 1748)
+> +++ Nevow/nevow/url.py	(working copy)
+> @@ -21,7 +21,7 @@
+>  def _uqf(query):
+>      for x in query.split('&'):
+>          if '=' in x:
+> -            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')] )
+> +            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')[:2]] )
+>          elif x:
+>              yield (urllib.unquote_plus(x), None)
+>  unquerify = lambda query: list(_uqf(query))
+
+I don't think that's correct - it throws away information. A better
+solution is probably:
+
+    yield tuple( [urllib.unquote_plus(s) for s in x.split('=', 1)] )
+
+Do you agree? If so, I'll apply this fix later.
+
+- - Matt
+
+- --
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \	       Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.5 (GNU/Linux)
+Comment: Using GnuPG with Thunderbird - http://enigmail.mozdev.org
+
+iD8DBQFDGWkqPpOMbs6rEZERAn7GAJ47QPgvkjdOS9SI5jLrZsdCnnwsXgCfbFwx
+ef8CSTRNYq2VGWo6hCoO0lI=
+=fUlK
+-----END PGP SIGNATURE-----
+
+From matt at pollenation.net  Sat Sep  3 05:11:58 2005
+From: matt at pollenation.net (Matt Goodall)
+Date: Sat Sep  3 05:12:05 2005
+Subject: [Twisted-web] fix nevow exception in args parsing
+In-Reply-To: <4319692A.7000502@pollenation.net>
+References: <20050903013740.GU1614@g5.random>
+	<4319692A.7000502@pollenation.net>
+Message-ID: <431984FE.5080503@pollenation.net>
+
+Matt Goodall wrote:
+> Andrea Arcangeli wrote:
+> 
+>>>I noticed an exception in nevow, for example with divmod.com/?=x=x=x.
+>>>
+>>>This is the fix, please apply this (or an equivalent one) to SVN:
+>>>
+>>>Index: Nevow/nevow/url.py
+>>>===================================================================
+>>>--- Nevow/nevow/url.py	(revision 1748)
+>>>+++ Nevow/nevow/url.py	(working copy)
+>>>@@ -21,7 +21,7 @@
+>>> def _uqf(query):
+>>>     for x in query.split('&'):
+>>>         if '=' in x:
+>>>-            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')] )
+>>>+            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')[:2]] )
+>>>         elif x:
+>>>             yield (urllib.unquote_plus(x), None)
+>>> unquerify = lambda query: list(_uqf(query))
+> 
+> 
+> I don't think that's correct - it throws away information. A better
+> solution is probably:
+> 
+>     yield tuple( [urllib.unquote_plus(s) for s in x.split('=', 1)] )
+> 
+> Do you agree? If so, I'll apply this fix later.
+
+cgi.parse_qs agrees with me so I just committed my version of Andrea's
+fix (with a test). Thanks for highlighting the error Andrea.
+
+- Matt
+
+-- 
+     __
+    /  \__     Matt Goodall, Pollenation Internet Ltd
+    \__/  \    w: http://www.pollenation.net
+  __/  \__/    e: matt@pollenation.net
+ /  \__/  \    t: +44 (0)113 2252500
+ \__/  \__/
+ /  \	       Any views expressed are my own and do not necessarily
+ \__/          reflect the views of my employer.
+
+From eric.faurot at gmail.com  Sun Sep  4 11:52:25 2005
+From: eric.faurot at gmail.com (Eric Faurot)
+Date: Sun Sep  4 11:52:59 2005
+Subject: [Twisted-web] small json improvements
+Message-ID: <e012d6b505090410524f2be462@mail.gmail.com>
+
+Hi,
+
+This patch improves json tests and allow strings to be serialized
+as strings (as one would expect). The raw class can be used to
+generate unquoted text (for token, statements, etc).
+
+Does it look ok?
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: json.diff
+Type: application/octet-stream
+Size: 3443 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20050904/6c96c851/json.obj
+From exarkun at divmod.com  Sun Sep  4 15:13:53 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Sun Sep  4 15:13:54 2005
+Subject: [Twisted-web] small json improvements
+In-Reply-To: 0
+Message-ID: <20050904211353.3914.1159402075.divmod.quotient.12197@ohm>
+
+On Sun, 4 Sep 2005 19:52:25 +0200, Eric Faurot <eric.faurot@gmail.com> wrote:
+>Hi,
+>
+>This patch improves json tests and allow strings to be serialized
+>as strings (as one would expect). 
+
+This will break for strings containing ASCII control bytes (pretty much anything with ordinal value less than 32).  It will also break for strings containing bytes above 127.  If Python byte strings are supported, it should be in an 8-bit clean manner.  The one possible alternative to this I'm considering is to treat them as ASCII-encoded character strings, decode them as such, and then apply the unicode serialization rules to the result.
+
+Unicode serialization support is, of course, incomplete.
+
+>The raw class can be used to generate unquoted text (for token, statements, 
+>etc).
+
+Why add support to json.serialize() for this?  Why not just not use json.serialize()?  The goal of json is to pass data around, not executable code.
+
+Jp
+
+From andrea at cpushare.com  Sun Sep  4 21:03:56 2005
+From: andrea at cpushare.com (Andrea Arcangeli)
+Date: Sun Sep  4 21:04:07 2005
+Subject: [Twisted-web] fix nevow exception in args parsing
+In-Reply-To: <431984FE.5080503@pollenation.net>
+References: <20050903013740.GU1614@g5.random>
+	<4319692A.7000502@pollenation.net>
+	<431984FE.5080503@pollenation.net>
+Message-ID: <20050905030356.GE17185@g5.random>
+
+On Sat, Sep 03, 2005 at 12:11:58PM +0100, Matt Goodall wrote:
+> Matt Goodall wrote:
+> > Andrea Arcangeli wrote:
+> > 
+> >>>I noticed an exception in nevow, for example with divmod.com/?=x=x=x.
+> >>>
+> >>>This is the fix, please apply this (or an equivalent one) to SVN:
+> >>>
+> >>>Index: Nevow/nevow/url.py
+> >>>===================================================================
+> >>>--- Nevow/nevow/url.py	(revision 1748)
+> >>>+++ Nevow/nevow/url.py	(working copy)
+> >>>@@ -21,7 +21,7 @@
+> >>> def _uqf(query):
+> >>>     for x in query.split('&'):
+> >>>         if '=' in x:
+> >>>-            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')] )
+> >>>+            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')[:2]] )
+> >>>         elif x:
+> >>>             yield (urllib.unquote_plus(x), None)
+> >>> unquerify = lambda query: list(_uqf(query))
+> > 
+> > 
+> > I don't think that's correct - it throws away information. A better
+> > solution is probably:
+> > 
+> >     yield tuple( [urllib.unquote_plus(s) for s in x.split('=', 1)] )
+> > 
+> > Do you agree? If so, I'll apply this fix later.
+> 
+> cgi.parse_qs agrees with me so I just committed my version of Andrea's
+> fix (with a test). Thanks for highlighting the error Andrea.
+
+You're welcome! I agree this is more correct (and hopefully all code
+knows that "=" can be inside the argument ;).
+
+From andrea at cpushare.com  Sun Sep  4 21:07:17 2005
+From: andrea at cpushare.com (Andrea Arcangeli)
+Date: Sun Sep  4 21:07:28 2005
+Subject: [Twisted-web] fix nevow exception in args parsing
+In-Reply-To: <1125712718.18287.36.camel@207-118-81-111.dyn.centurytel.net>
+References: <20050903013740.GU1614@g5.random>
+	<1125712718.18287.36.camel@207-118-81-111.dyn.centurytel.net>
+Message-ID: <20050905030717.GF17185@g5.random>
+
+On Fri, Sep 02, 2005 at 06:58:37PM -0700, Ed Suominen wrote:
+> On Sat, 2005-09-03 at 03:37 +0200, Andrea Arcangeli wrote:
+> > PS. While sending this email I take the opportunity to point you to the
+> > nevow sourcecode of a little GPL nevow appserver I developed last
+> > weekend, any suggestion for improvements is welcome ;).
+> > 
+> > 	http://klive.cpushare.com/downloads/
+> 
+> Yes, here's a suggestion for a big improvement:
+> 
+> DOCSTRINGS!!!!!  :-)
+
+eheh ;)
+
+> Code is so much more readable (and easily documented with epydoc or
+> something like it) when people include plenty of docstrings to explain
+> what's going on.
+
+Indeed, I'm pretty lazy at documenting code, especially for two days
+projects like klive.
+
+Actually I may be putting comment in the code but I never used the
+docstrings as .__doc__ yet (except for the nevow abuse of it ;).
+
+But I tried to write klive in a readable way nevertheless...
+
+From eric.faurot at gmail.com  Mon Sep  5 01:56:05 2005
+From: eric.faurot at gmail.com (Eric Faurot)
+Date: Mon Sep  5 01:56:40 2005
+Subject: [Twisted-web] small json improvements
+In-Reply-To: <20050904211353.3914.1159402075.divmod.quotient.12197@ohm>
+References: <20050904211353.3914.1159402075.divmod.quotient.12197@ohm>
+Message-ID: <e012d6b505090500565c35b1e2@mail.gmail.com>
+
+On 9/4/05, Jp Calderone <exarkun@divmod.com> wrote:
+
+> This will break for strings containing ASCII control bytes (pretty much anything with ordinal value less than 32).  It will also break for strings containing bytes above 127.  If Python byte strings are supported, it should be in an 8-bit clean manner.  The one possible alternative to this I'm considering is to treat them as ASCII-encoded character strings, decode them as such, and then apply the unicode serialization rules to the result.
+
+All I wanted was to be able to serialize 'regular' strings
+conveniently. Of course
+strings containing non-printable chars should be handled differently.
+
+> Unicode serialization support is, of course, incomplete.
+
+Could you elaborate on this? I'm not sure to understand the issue here.
+What are javascript/browser requirements regarding unicode?
+
+> Why add support to json.serialize() for this?  Why not just not use json.serialize()?  The goal of json is to pass data around, not executable code.
+
+Well, what I originally had in mind was to rely on json to call methods on the
+client, bypassing the livepage.js thing that I find confusing. I was not aware
+of your callRemote branch. Now it looks really perfect.
+
+Eric.
+From alberto.trujillo at ucd.ie  Mon Sep  5 04:15:09 2005
+From: alberto.trujillo at ucd.ie (Alberto Trujillo)
+Date: Mon Sep  5 04:10:58 2005
+Subject: [Twisted-web] how to redirect to another url
+Message-ID: <431C1AAD.2000605@ucd.ie>
+
+Hello:
+Could anybody tell me what I must change in the next code to do an 
+automatic redirection of url.
+I need something similar to the line 30, but this doesn't work. I have 
+created a temporal solution in the line 33 and everything works ok, but 
+of course if the url is different to 'localhost', nothing works.
+Thanks you very much.
+
+file.py
+-----------
+    def data_header(self, ctx, data):
+        http_equiv = ''
+        content = ''
+        myform = ctx.arg('form')
+        if (myform == 'login'):
+            if (self.executeLogin(ctx)):
+                http_equiv = 'refresh'
+                 href = url.here.curdir()
+                 href = href.add('content', 'home')
+30            # content = '2;URL=' + href
+
+                #Temporal solution
+33            content = '2;URL=http://localhost:' + str(HTTP_PORT)
+
+        return {'http_equiv':http_equiv, 'content':content}
+
+
+From dialtone at divmod.com  Mon Sep  5 05:16:47 2005
+From: dialtone at divmod.com (Valentino Volonghi aka Dialtone)
+Date: Mon Sep  5 05:16:54 2005
+Subject: [Twisted-web] how to redirect to another url
+In-Reply-To: <431C1AAD.2000605@ucd.ie>
+References: <431C1AAD.2000605@ucd.ie>
+Message-ID: <431C291F.9020504@divmod.com>
+
+Alberto Trujillo wrote:
+
+> Hello:
+> Could anybody tell me what I must change in the next code to do an
+> automatic redirection of url.
+> I need something similar to the line 30, but this doesn't work. I have
+> created a temporal solution in the line 33 and everything works ok,
+> but of course if the url is different to 'localhost', nothing works.
+> Thanks you very much.
+>
+> file.py
+> -----------
+>    def data_header(self, ctx, data):
+
+Too late.
+If you want to redirect you have to do that in:
+locateChild or a child_something method returning an url object or
+calling: inevow.IRequest(ctx).redirect('where/')
+
+or in beforeRender method.
+
+otherwise you have to make the page bufferized and then call
+IRequest(ctx).redirect() to do what you need.
+
+there are no other ways to redirect.
+
+-- 
+Valentino Volonghi aka Dialtone
+Now Running MacOSX 10.4.1
+Blog: http://vvolonghi.blogspot.com
+http://weever.berlios.de
+
+
+From michal at pasternak.in  Mon Sep  5 06:45:57 2005
+From: michal at pasternak.in (Michal Pasternak)
+Date: Mon Sep  5 06:44:55 2005
+Subject: [Twisted-web] how to redirect to another url
+In-Reply-To: <431C1AAD.2000605@ucd.ie>
+References: <431C1AAD.2000605@ucd.ie>
+Message-ID: <200509051445.58744.michal@pasternak.in>
+
+Dnia Monday 05 September 2005 12:15, Alberto Trujillo napisa?:
+> Could anybody tell me what I must change in the next code to do an
+> automatic redirection of url.
+
+Here comes an untested solution... I think it will work:
+
+> 30            # content = '2;URL=' + href
+
+		content = [ '2;URL=', href ]
+
+You shouldn't add URLOverlay and str object. Just return them from render_ 
+method, and it will be treated in the right way.
+
+Of course, everything depends on your render method :) If it looks like 
+"return str(data['content'])", well, it still will not work :^)
+
+-- 
+m
+
+From alberto.trujillo at ucd.ie  Mon Sep  5 10:35:39 2005
+From: alberto.trujillo at ucd.ie (Alberto Trujillo)
+Date: Mon Sep  5 10:31:23 2005
+Subject: [Twisted-web] how to redirect to another url
+In-Reply-To: <200509051445.58744.michal@pasternak.in>
+References: <431C1AAD.2000605@ucd.ie> <200509051445.58744.michal@pasternak.in>
+Message-ID: <431C73DB.8040401@ucd.ie>
+
+Michal Pasternak wrote:
+
+>Dnia Monday 05 September 2005 12:15, Alberto Trujillo napisa?:
+>  
+>
+>>Could anybody tell me what I must change in the next code to do an
+>>automatic redirection of url.
+>>    
+>>
+>
+>Here comes an untested solution... I think it will work:
+>
+>  
+>
+>>30            # content = '2;URL=' + href
+>>    
+>>
+>
+>		content = [ '2;URL=', href ]
+>
+>You shouldn't add URLOverlay and str object. Just return them from render_ 
+>method, and it will be treated in the right way.
+>
+>Of course, everything depends on your render method :) If it looks like 
+>"return str(data['content'])", well, it still will not work :^)
+>
+>  
+>
+Thank you very much, this works perfectly Michal, and even you were 
+right in the idea that you  have about my render method.
+Thank again, and thank to everybody who has answer my question and help 
+me with my nevow problems.
+
+
+From michaelschneider at fuse.net  Mon Sep  5 12:09:14 2005
+From: michaelschneider at fuse.net (Michael Schneider)
+Date: Mon Sep  5 12:09:53 2005
+Subject: [Twisted-web] trouble making tap file
+In-Reply-To: <E1ECLGH-0000pq-01@pyramid.twistedmatrix.com>
+References: <E1ECLGH-0000pq-01@pyramid.twistedmatrix.com>
+Message-ID: <431C89CA.7070300@fuse.net>
+
+Hello All,
+
+Setup:
+
+    Windows XP 32 bit, all patches
+    Athon64
+    1 gig mem
+
+    python 2.4 (latest)
+    twisted 2.0.1
+    nevow (svn)
+
+
+I can run the example tac file.
+
+When I try to run mktap,  nevow.application can't be found,  I added a 
+print statement in mktap, and the site-packates were included (along 
+with the rest).
+
+Here is the error that I get:
+
+
+Any suggestions???
+----------------------------------------------------------------------------------------------------
+C:\grid\gridnode\grid>mktap gridnoded
+C:\grid\gridnode\grid\gridnode\plugins.tml:7: DeprecationWarning: The 
+twisted.py
+thon.plugin system is deprecated.  See twisted.plugin for the revised 
+edition.
+  tapname="gridnoded")
+Traceback (most recent call last):
+  File "C:\Python24\scripts\mktap.py", line 19, in ?
+    run()
+  File "C:\Python24\Lib\site-packages\twisted\scripts\mktap.py", line 
+193, in ru
+n
+    options.parseOptions(sys.argv[1:])
+  File "C:\Python24\Lib\site-packages\twisted\python\usage.py", line 
+197, in par
+seOptions
+    self.postOptions()
+  File "C:\Python24\Lib\site-packages\twisted\scripts\mktap.py", line 
+180, in po
+stOptions
+    self.parseOptions(self.params)
+  File "C:\Python24\Lib\site-packages\twisted\python\usage.py", line 
+185, in par
+seOptions
+    self.subOptions = parser()
+  File "C:\Python24\Lib\site-packages\twisted\scripts\mktap.py", line 
+146, in <l
+ambda>
+    name, None, lambda obj=module: obj.load().Options(),
+  File "C:\Python24\Lib\site-packages\twisted\python\plugin.py", line 
+49, in loa
+d
+    return namedModule(self.module)
+  File "C:\Python24\Lib\site-packages\twisted\python\reflect.py", line 
+344, in n
+amedModule
+    topLevel = __import__(name)
+  File "C:\grid\gridnode\grid\gridnode\gridnodetap.py", line 7, in ?
+    from gridnode.web.GridNodeSite import GridNodeSite
+  File "C:\grid\gridnode\grid\gridnode\web\GridNodeSite.py", line 4, in ?
+    from nevow import appserver
+ImportError: cannot import name appserver
+
+C:\grid\gridnode\grid>
+
+From exarkun at divmod.com  Mon Sep  5 12:37:48 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Mon Sep  5 12:37:50 2005
+Subject: [Twisted-web] small json improvements
+In-Reply-To: <e012d6b505090500565c35b1e2@mail.gmail.com>
+Message-ID: <20050905183748.3914.1105861486.divmod.quotient.12487@ohm>
+
+On Mon, 5 Sep 2005 09:56:05 +0200, Eric Faurot <eric.faurot@gmail.com> wrote:
+>On 9/4/05, Jp Calderone <exarkun@divmod.com> wrote:
+>
+> [snip]
+>
+>All I wanted was to be able to serialize 'regular' strings
+>conveniently. Of course
+>strings containing non-printable chars should be handled differently.
+
+It sounds like you're in favor of the treat-as-ASCII rule then.  I've certainly written code that would have benefited from this behavior too, I just want to make sure there's no lurking downside before making the change.
+
+>
+>> Unicode serialization support is, of course, incomplete.
+>
+>Could you elaborate on this? I'm not sure to understand the issue here.
+>What are javascript/browser requirements regarding unicode?
+
+The problem is server-side (at least for the moment).  json.serialize() will do something if you give it a unicode string, but it will usually not be the correct thing.  This is fixable, someone just needs to get around to it.
+
+Jp
+
+From eric.faurot at gmail.com  Mon Sep  5 14:14:58 2005
+From: eric.faurot at gmail.com (Eric Faurot)
+Date: Mon Sep  5 14:15:32 2005
+Subject: [Twisted-web] small json improvements
+In-Reply-To: <20050905183748.3914.1105861486.divmod.quotient.12487@ohm>
+References: <e012d6b505090500565c35b1e2@mail.gmail.com>
+	<20050905183748.3914.1105861486.divmod.quotient.12487@ohm>
+Message-ID: <e012d6b50509051314480df17d@mail.gmail.com>
+
+On 9/5/05, Jp Calderone <exarkun@divmod.com> wrote:
+> On Mon, 5 Sep 2005 09:56:05 +0200, Eric Faurot <eric.faurot@gmail.com> wrote:
+> >On 9/4/05, Jp Calderone <exarkun@divmod.com> wrote:
+> >
+> > [snip]
+> >
+> >All I wanted was to be able to serialize 'regular' strings
+> >conveniently. Of course
+> >strings containing non-printable chars should be handled differently.
+
+> It sounds like you're in favor of the treat-as-ASCII rule then.  I've certainly written code that would have benefited from this behavior too, I just want to make sure there's no lurking downside before making the change.
+
+Just because it is more convenient and it is what is expected many cases
+where strings are used (email address, hostnames, ip address...).
+The string could be checked by the serializer to ensure that it does not
+contain non-ASCII chars, in wich case a contextual string serializer can be
+used instead (on a per page basis for example)
+
+> >Could you elaborate on this? I'm not sure to understand the issue here.
+> >What are javascript/browser requirements regarding unicode?
+> 
+> The problem is server-side (at least for the moment).  json.serialize() will do something if you give it a unicode string, but it will usually not be the correct thing.  This is fixable, someone just needs to get around to it.
+
+So what is the correct thing to do?
+
+BTW, this patch should allow deferred response from callRemote, but I does
+not seem to work. I don't understand why.
+http://ekyo.nerim.net/wantresponse.diff
+
+Eric.
+From alberto.trujillo at ucd.ie  Wed Sep  7 10:15:45 2005
+From: alberto.trujillo at ucd.ie (Alberto Trujillo)
+Date: Wed Sep  7 10:11:31 2005
+Subject: [Twisted-web] Problems with images and css
+Message-ID: <431F1231.2000307@ucd.ie>
+
+I know that I must load the diretory where I have my images and css, 
+because otherwise nevow is not going to render it.
+Everything works well while this is running in my local machine, but in 
+the server doesn't work. I have noticed that a simple '.' at the 
+begining of a path, can destroy all my web, even the things that are not 
+relate with that image.
+Why is this happening?
+Another problems is that even if I fix that problems, the website 
+doesn't recover the information from my image directory or css 
+directory, and I have to remove all the structure directory, upload 
+again, close the web browser, etc.
+Is nevow keeping information in any kind of cache, and that is probably 
+the reason because even if I fix the problems, still I can't see anything?
+
+Thank for the help.
+
+From tv at twistedmatrix.com  Wed Sep  7 11:10:54 2005
+From: tv at twistedmatrix.com (Tommi Virtanen)
+Date: Wed Sep  7 11:11:00 2005
+Subject: [Twisted-web] Problems with images and css
+In-Reply-To: <431F1231.2000307@ucd.ie>
+References: <431F1231.2000307@ucd.ie>
+Message-ID: <1126113054.4207.26.camel@pooch>
+
+On Wed, 2005-09-07 at 17:15 +0100, Alberto Trujillo wrote:
+> I know that I must load the diretory where I have my images and css, 
+> because otherwise nevow is not going to render it.
+> Everything works well while this is running in my local machine, but in 
+> the server doesn't work. I have noticed that a simple '.' at the 
+> begining of a path, can destroy all my web, even the things that are not 
+> relate with that image.
+> Why is this happening?
+
+With the information you have given us, no one knows.
+First, simplify your system to the smallest possible,
+where the problem still occurs. Then, try to actually
+give us exact information on what you did, what happened,
+and what did you expect to happen.
+
+> Another problems is that even if I fix that problems, the website 
+> doesn't recover the information from my image directory or css 
+> directory, and I have to remove all the structure directory, upload 
+> again, close the web browser, etc.
+> Is nevow keeping information in any kind of cache, and that is probably 
+> the reason because even if I fix the problems, still I can't see anything?
+
+No, but your browser most likely is. Or a proxy is. It might even be a
+transparent proxy run by your ISP.
+
+
+From andrea at cpushare.com  Thu Sep  8 00:44:23 2005
+From: andrea at cpushare.com (Andrea Arcangeli)
+Date: Thu Sep  8 00:44:36 2005
+Subject: [Twisted-web] cache freeing with timeout and max size limit per page
+In-Reply-To: <20050903013740.GU1614@g5.random>
+References: <20050903013740.GU1614@g5.random>
+Message-ID: <20050908064423.GN466@g5.random>
+
+On Sat, Sep 03, 2005 at 03:37:40AM +0200, Andrea Arcangeli wrote:
+> And here again my latest version of the usual caching patches based on
+> dialtone's stuff, that prevents high traffic pages to hurt.
+
+I reworked the whole caching patch, because I've too many variations of
+the same page (with different args) and I can't keep all of them in
+memory at the same time, so now I'm freeing the cache once the timeout
+triggers (it's invalid cache anyway, it doesn't worth to keep it in ram)
+and I let the traffic to choose and cache the high traffic ones. I also
+added a per-page cache limit to be sure not to swap/oom-kill etc...
+Even when the cache size limit triggers, the cache code has a positive
+effect of preventing to run the same query many times for all waiting
+connections.
+
+I believe these features could be useful for more than just my little
+webapp.
+
+All you have to do to enable caching is to add:
+
+	cache = True
+	lifetime = 0 (infinite/notimeout) or >0 (timeout) default is 0
+	max_cache_size = bytes (0 means to send to all waiting clients
+				but no cache), None is the default
+				(None means cache size unlimited)
+
+to the declaration of your rand.Page inherited istances.
+	
+With this applied I can as usual serve >200req/sec saturating the
+bandwidth of the server, without it I can serve only 2/3 req/sec.
+
+Despite being very new (not well tested) code, I tried to put it online,
+let's see what happens ;).
+
+Index: Nevow/nevow/util.py
+===================================================================
+--- Nevow/nevow/util.py	(revision 1765)
++++ Nevow/nevow/util.py	(working copy)
+@@ -133,6 +133,7 @@
+     from twisted.python.failure import Failure
+     from twisted.trial.unittest import deferredError
+     from twisted.python import log
++    from twisted.internet import reactor
+ 
+     try:
+         # work with twisted before retrial
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 1765)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -481,6 +481,56 @@
+         self.children[name] = child
+     
+ 
++class PageCache(object):
++    def __init__(self):
++        self.__db = {}
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def __storeCache(self, cacheIDX, c):
++        self.__db[cacheIDX] = c
++    def __deleteCache(self, cacheIDX):
++        del self.__db[cacheIDX]
++    def __deleteCacheData(self, cacheIDX, page):
++        size = self.__db[cacheIDX][1]
++        assert len(self.__db[cacheIDX][0]) == size
++        page.subCacheSize(size)
++        self.__deleteCache(cacheIDX)
++    def __lookupCache(self, cacheIDX):
++        return self.__db.get(cacheIDX)
++    def getCache(self, ctx):
++        cacheIDX = self.cacheIDX(ctx)
++        c = self.__lookupCache(cacheIDX)
++
++        if c is None:
++            self.__storeCache(cacheIDX, [util.Deferred()])
++            return
++
++        if isinstance(c[0], util.Deferred):
++            d = util.Deferred()
++            c.append(d)
++            return d
++
++        return c[0]
++    def cacheRendered(self, ctx, data, page):
++        cacheIDX = self.cacheIDX(ctx)
++        defer_list = self.__lookupCache(cacheIDX)
++        assert(isinstance(defer_list[0], util.Deferred))
++        size = len(data)
++        if page.canCache(size):
++            # overwrite the deferred with the data
++            timer = None
++            if page.lifetime > 0:
++                timer = util.reactor.callLater(page.lifetime,
++                                               self.__deleteCacheData, cacheIDX, page)
++            page.addCacheSize(size)
++            self.__storeCache(cacheIDX, (data, size, timer, ))
++        else:
++            self.__deleteCache(cacheIDX)
++        for d in defer_list:
++            d.callback(data)
++
++_CACHE = PageCache()
++
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     """A page is the main Nevow resource and renders a document loaded
+     via the document factory (docFactory).
+@@ -494,8 +544,27 @@
+     afterRender = None
+     addSlash = None
+ 
++    cache = False
++    lifetime = 0
++    max_cache_size = None
++    __cache_size = 0
++
+     flattenFactory = lambda self, *args: flat.flattenFactory(*args)
+ 
++    def hasCache(self, ctx):
++        if not self.cache:
++            return
++        return _CACHE.getCache(ctx)
++    def addCacheSize(self, size):
++        assert self.canCache(size)
++        self.__cache_size += size
++    def subCacheSize(self, size):
++        self.__cache_size -= size
++        assert self.__cache_size >= 0
++    def canCache(self, size):
++        return self.max_cache_size is None or \
++               self.__cache_size + size <= self.max_cache_size
++
+     def renderHTTP(self, ctx):
+         if self.beforeRender is not None:
+             return util.maybeDeferred(self.beforeRender,ctx).addCallback(
+@@ -520,11 +589,20 @@
+             if self.afterRender is not None:
+                 return util.maybeDeferred(self.afterRender,ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c is not None:
++            assert self.afterRender is None
++            finishRequest()
++            return c
++
++        if self.buffered or self.cache:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = io.getvalue()
++                if self.cache:
++                    _CACHE.cacheRendered(ctx, c, self)
++                request.write(c)
+                 return util.maybeDeferred(finishRequest).addCallback(lambda r: result)
+         else:
+             writer = request.write
+
+From alberto.trujillo at ucd.ie  Thu Sep  8 03:04:42 2005
+From: alberto.trujillo at ucd.ie (Alberto Trujillo)
+Date: Thu Sep  8 03:00:42 2005
+Subject: [Twisted-web] Problems with images and css
+In-Reply-To: <1126113054.4207.26.camel@pooch>
+References: <431F1231.2000307@ucd.ie> <1126113054.4207.26.camel@pooch>
+Message-ID: <431FFEAA.2030308@ucd.ie>
+
+I don't know where is the exactly problem, only I know that is related 
+with the path of the images I'll try to explain it better.
+The template that I'm working with is a html template, which load 
+different fragments. The template has 3 fragments (head, body and 
+footer), so depende where the user click, I will load one fragment or 
+another. In this way I can change the template of all my pages just 
+changing one file.
+The template (portal.html) is call by a nevow file (portal.py), that is 
+the responsible of the calls to the others fragments.
+In portal.htm I have this two lines to load the images and the css files
+
+    child_styles = static.File('./templates/styles')
+    child_images = static.File('./templates/images')
+
+The fragment are place in different directories, I show a example:
+
+    Main Directory:
+
+        * portal.py
+        * Fragments:
+              o Fragment1:
+                    + file.py
+                    + file.html
+                    + Images:
+                          # image.jpg
+                          # ...
+                    + styles:
+                          # ...
+              o Fragment2:
+                    + ...
+        * templates:
+              o portal.html
+              o images:
+                    + ...
+              o styles:
+                    + ....
+
+
+Probably the example is not very good, but at least you have an idea 
+about my structure directory.
+As you can see the fragment can has their own images, and everything 
+works well while I am running the application in my local machine, even 
+without call the images directory like static file. But when I upload 
+the application in the server, everything looks like nevow can't find 
+the directories.
+Should I insert a line   "child_styles = static.File('./styles')" and 
+"child_images = static.File('./images')" in all my fragments, or should 
+be the portal.py file who do this job.
+
+I hope this information should be enough.
+
+Thank you very much
+
+
+
+
+Tommi Virtanen wrote:
+
+>On Wed, 2005-09-07 at 17:15 +0100, Alberto Trujillo wrote:
+>  
+>
+>>I know that I must load the diretory where I have my images and css, 
+>>because otherwise nevow is not going to render it.
+>>Everything works well while this is running in my local machine, but in 
+>>the server doesn't work. I have noticed that a simple '.' at the 
+>>begining of a path, can destroy all my web, even the things that are not 
+>>relate with that image.
+>>Why is this happening?
+>>    
+>>
+>
+>With the information you have given us, no one knows.
+>First, simplify your system to the smallest possible,
+>where the problem still occurs. Then, try to actually
+>give us exact information on what you did, what happened,
+>and what did you expect to happen.
+>
+>  
+>
+>>Another problems is that even if I fix that problems, the website 
+>>doesn't recover the information from my image directory or css 
+>>directory, and I have to remove all the structure directory, upload 
+>>again, close the web browser, etc.
+>>Is nevow keeping information in any kind of cache, and that is probably 
+>>the reason because even if I fix the problems, still I can't see anything?
+>>    
+>>
+>
+>No, but your browser most likely is. Or a proxy is. It might even be a
+>transparent proxy run by your ISP.
+>
+>
+>_______________________________________________
+>Twisted-web mailing list
+>Twisted-web@twistedmatrix.com
+>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>  
+>
+
+
+From stefano at pragma2000.com  Thu Sep  8 04:01:06 2005
+From: stefano at pragma2000.com (Stefano Masini)
+Date: Thu Sep  8 04:01:38 2005
+Subject: [Twisted-web] Problems with images and css
+In-Reply-To: <431FFEAA.2030308@ucd.ie>
+References: <431F1231.2000307@ucd.ie> <1126113054.4207.26.camel@pooch>
+	<431FFEAA.2030308@ucd.ie>
+Message-ID: <432742240509080301588f3744@mail.gmail.com>
+
+On 9/8/05, Alberto Trujillo <alberto.trujillo@ucd.ie> wrote:
+>     child_styles = static.File('./templates/styles')
+>     child_images = static.File('./templates/images')
+
+Since you're making relative references to files (by using the
+dot-slash './templates...'), are you sure that your twisted
+application on the server is run with the current working directory
+correctly set to the root of your application file system?
+If on your system you run the application with, say, twistd -noy
+server.tac, and on the server you run it with twistd -noy
+/myapp/server.tac, it would be no wonder if it didn't work. You wound
+have to first chdir /myapp, and then run twistd. Or, you change all
+the paths to absolute.
+
+that's my 2 cents, hope it helps,
+stefano
+
+From alberto.trujillo at ucd.ie  Thu Sep  8 04:27:31 2005
+From: alberto.trujillo at ucd.ie (Alberto Trujillo)
+Date: Thu Sep  8 04:23:13 2005
+Subject: [Twisted-web] Problems with images and css
+In-Reply-To: <432742240509080301588f3744@mail.gmail.com>
+References: <431F1231.2000307@ucd.ie> <1126113054.4207.26.camel@pooch>
+	<431FFEAA.2030308@ucd.ie> <432742240509080301588f3744@mail.gmail.com>
+Message-ID: <43201213.6090708@ucd.ie>
+
+Thank you Stefano, I going to check my references, althoug in my system 
+and in the server I allways run the applicattion from the directory 
+where is the .tac file. I know that the problem is related with the 
+references, so I'll check it again.
+
+Stefano Masini wrote:
+
+>On 9/8/05, Alberto Trujillo <alberto.trujillo@ucd.ie> wrote:
+>  
+>
+>>    child_styles = static.File('./templates/styles')
+>>    child_images = static.File('./templates/images')
+>>    
+>>
+>
+>Since you're making relative references to files (by using the
+>dot-slash './templates...'), are you sure that your twisted
+>application on the server is run with the current working directory
+>correctly set to the root of your application file system?
+>If on your system you run the application with, say, twistd -noy
+>server.tac, and on the server you run it with twistd -noy
+>/myapp/server.tac, it would be no wonder if it didn't work. You wound
+>have to first chdir /myapp, and then run twistd. Or, you change all
+>the paths to absolute.
+>
+>that's my 2 cents, hope it helps,
+>stefano
+>
+>_______________________________________________
+>Twisted-web mailing list
+>Twisted-web@twistedmatrix.com
+>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>  
+>
+
+
+From exarkun at divmod.com  Thu Sep  8 23:08:39 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Thu Sep  8 23:08:42 2005
+Subject: Possible removal of ctx from inevow.IResource (was Re:
+	[Twisted-web]
+	access control feature, ctx removal from locateChild and renderHTTP,
+	what's going on?)
+In-Reply-To: <431966D4.8050603@pollenation.net>
+Message-ID: <20050909050839.3914.1671162193.divmod.quotient.14370@ohm>
+
+On Sat, 03 Sep 2005 10:03:16 +0100, Matt Goodall <matt@pollenation.net> wrote:
+>-----BEGIN PGP SIGNED MESSAGE-----
+>Hash: SHA1
+>
+>Tommi Virtanen wrote:
+>
+>[snip]
+>
+>> <exarkun> Tv: it'll break when ctx is removed as an argument to
+>> locateChild et al
+>> ...
+>> <Tv> exarkun: err, wouldn't a _lot_ break with that change?
+>> <exarkun> Tv: yes!  but this, too.
+>> <Tv> well, I can make it give a wrapper resource from locateChild
+>> <Tv> that does the access checking at render time..
+>> <exarkun> ctx will be removed from renderHTTP at about the same time
+>> <Tv> so huh
+>> <Tv> 1) what's the reasoning behind that
+>> <Tv> 2) what, then?
+>> <exarkun> those questions are big and I have to catch a bus
+>
+>Jp, I assume you caught you bus now ;-) so please could you post your
+>ideas about removing the context arg from IResource.
+>
+>That is a *major* change that would affect every single Nevow
+>application so it needs proper discussion, including how to handle
+>backwards compatability.
+>
+
+This is a very long term plan.  There will be no changes of this sort in the immediate future.  When the changes are made, there will be a very clear migration path.  Since the ways in which the context can be used are legion, I am not sure if there will be a completely backwards compatible API layer, but this will be the goal for as long as possible.
+
+When the time comes to make this change, there will be an opportunity for more discussion (it won't just be mentioned in passing on IRC and then done willy nilly).  I'd welcome any ideas or proposals anyone has now, but I doubt I'll have time to participate in any discussion that happens in the foreseeable future.
+
+Jp
+
+From iacovou at gmail.com  Fri Sep  9 15:01:11 2005
+From: iacovou at gmail.com (kgi)
+Date: Fri Sep  9 10:42:16 2005
+Subject: [Twisted-web] XML-RPC and None
+In-Reply-To: <42B096BE.9030608@twistedmatrix.com>
+References: <6fb6dbfe05061512216f143221@mail.gmail.com>
+	<42B096BE.9030608@twistedmatrix.com>
+Message-ID: <200509100001.11490.iacovou@gmail.com>
+
+On Wednesday 15 June 2005 23:59, Tommi Virtanen wrote:
+> Matt Feifarek wrote:
+> > We'd like to pass None through the rpc connection on occasion. There's
+> > a flag in the standard lib to allow this to serialize ( send
+> > allow_none=True to the xmlrpclib.Server() )
+> >
+> > We're getting this error from the twisted resource when we try to
+> > serialize 'None':
+> >
+> > Fault: <Fault 8002: "can't serialize output">
+> >
+> > I know that the twisted resources uses the stock xmlrpclib, but how
+> > can we tell it to allow None to serialize the twisted way?
+>
+> With the current twisted.web.xmlrpc, you can't.
+> (You'd need to patch that to optionally give an allow_none
+> flag to everything using dumps/loads.)
+>
+> Why do people want to break the perfectly nice standard, anyway?
+> Return a tuple (False, ) for None and (True, stuff) for stuff,
+> or something..
+
+(I know I'm a little late to this discussion, but I thought I'd reply to the 
+thread for those who keep the mailing list for reference, like I do).
+
+Whereas Tommi is strictly correct when he says, "Why do people want to break 
+the perfectly nice standard?" in that it's generally a Good Thing to stick to 
+standards, it's not always as simple as he implies: not all lookups are 
+simple ones that return nice simple scalar values that can be wrapped up in 
+two-tuples.
+
+Personally, I think the absence of a "None" concept from the XML-RPC standard 
+is astounding, and that the decision to adhere strictly to the standard or 
+not should be up to the developer, since only he can make the decision as to 
+whether the allow_none hack is worse than alternative workarounds.
+
+One way would be to write wrappers that recurse through the data structure 
+just before serialization and after deserialization and use magical strings 
+like "NULLVALUE") but this is a really nasty hack and affects performance, 
+since you're effectively walking the tree twice.
+
+I'm moving some multithreaded xmlrpclib servers to Twisted; some of them 
+return structured data that ultimately comes from a database. Both the 
+*existence* of the column and the *absence* of a defined value are important 
+to the client application.
+
+Since the original servers used allow_none, I'd like that to be allowed via 
+Twisted's xmlrpc.py. The trivial patch below is against SVN head. Note that 
+rather than adding a construction argument to xmlrpc.XMLRPC, it simply adds a 
+class attribute which defaults to False (this means that users don't need to 
+subclass xmlrpc.XMLRPC):
+
+class MyServer ( xmlrpc.XMLRPC ):
+? ? allow_none = True
+? ? def xmlrpc_Foo ( self, ... ):
+? ? ? ? ...
+
+Note that the modification to xmlrpclib.dumps when serializing the Fault is 
+technically not needed; it's just there for completeness, just in case a hook 
+for user-created Fault objects is added in the future.
+
+Could this patch (or something like it) be committed to SVN, please?
+
+Thanks,
+
+Ricky
+
+
+
+Index: xmlrpc.py
+===================================================================
+--- xmlrpc.py ? (revision 14375)
++++ xmlrpc.py ? (working copy)
+@@ -93,6 +93,8 @@
+? ? ?isLeaf = 1
+? ? ?separator = '.'
+
++ ? ?allow_none = False
++
+? ? ?def __init__(self):
+? ? ? ? ?resource.Resource.__init__(self)
+? ? ? ? ?self.subHandlers = {}
+@@ -128,10 +130,12 @@
+? ? ? ? ?if not isinstance(result, Fault):
+? ? ? ? ? ? ?result = (result,)
+? ? ? ? ?try:
+- ? ? ? ? ? ?s = xmlrpclib.dumps(result, methodresponse=1)
++ ? ? ? ? ? ?s = xmlrpclib.dumps(result, methodresponse=1,
++ ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?allow_none = self.allow_none)
+? ? ? ? ?except:
+? ? ? ? ? ? ?f = Fault(self.FAILURE, "can't serialize output")
+- ? ? ? ? ? ?s = xmlrpclib.dumps(f, methodresponse=1)
++ ? ? ? ? ? ?s = xmlrpclib.dumps(f, methodresponse=1,
++ ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?allow_none = self.allow_none )
+? ? ? ? ?request.setHeader("content-length", str(len(s)))
+? ? ? ? ?request.write(s)
+? ? ? ? ?request.finish()
+
+From m.milvo at gmail.com  Sat Sep 10 02:05:07 2005
+From: m.milvo at gmail.com (Michael M)
+Date: Sat Sep 10 02:05:41 2005
+Subject: [Twisted-web] Context Help
+Message-ID: <3a767c39050910010529101a26@mail.gmail.com>
+
+Thanks in advance for any help.
+
+My problem is getting context to remember things.  If I remember
+something when the context is PageContext, I cannot retrieve it when
+the context changes to say WebContext because it tells me that it has
+not been remembered.
+
+Now, I was under the impression that context would search for my
+interface through the different contexts but this does not seem to be
+the case. This kind of limits what I can do with context because I
+have no idea when the context changes and my rememberances will be
+forgotten.
+
+Example Problem
+
+def render_cow(self, ctx, data):
+    ctx.remember(data, ISomeInterface)
+
+def render_something_else(self, ctx, data):
+    mydata = ctx.locate(ISomeInterface)
+
+Now in between remebering ISomeInterface and recalling it the context
+changes and it is no longer remebered.
+
+My apologies if I am way out with my understanding and any help is appreciated.
+
+Thanks
+Michael
+
+From mary-twisted at puzzling.org  Sun Sep 11 02:24:56 2005
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Sun Sep 11 02:24:41 2005
+Subject: [Twisted-web] Twisted virtual sprint weekend: 8-9 October 2005
+Message-ID: <20050911082456.GA4115@sourdust.home.puzzling.org>
+
+Hi everyone,
+
+As foreshadowed previously, we're following up the Australian sprints
+earlier this year with an experimental virtual sprint.
+
+ What: a weekend of hacking on the Twisted codebase when you can be sure
+       other people will be too
+
+ When: 8-9 October 2005, in whatever timezone you choose to spend your
+       weekends
+
+ Where: sprint discussion will happen on #twisted on the Freenode IRC
+        network
+
+-Mary
+
+-- 
+<Artimage> I believe a bar chart can confirm my humanity.
+
+From m.milvo at gmail.com  Sun Sep 11 10:12:01 2005
+From: m.milvo at gmail.com (Michael M)
+Date: Sun Sep 11 10:12:34 2005
+Subject: [Twisted-web] Getting URL
+In-Reply-To: <4305BEFF.9010201@ucd.ie>
+References: <4305BEFF.9010201@ucd.ie>
+Message-ID: <3a767c3905091109121deeb21@mail.gmail.com>
+
+I'd like to help but I don't understand what you are trying to do,
+what are you trying to achieve?
+
+Maybe something like,
+1.) User clicks http://myurl.com/arguments
+2.) data_header recieves arguments
+3.) want to change arguments to something else.
+4.) data_content recieves changed arguments
+
+??
+Regards
+Michael
+
+
+On 8/19/05, Alberto Trujillo <alberto.trujillo@ucd.ie> wrote:
+> Could anybody help me with this piece of code. I would like to add to
+> the url the information that is placed in the line "50", but looks not
+> possible. The url shoul be like the url in the line "51".
+> 
+>     def data_header(self, ctx, data):
+>         """return the content for the head of the template"""
+>         http_equiv = ''
+>         content = ''
+>         self.loginOK = False
+>         myform = ctx.arg('form')
+>         if (myform == 'login') and (self.executeLogin(ctx)):
+>             self.loginOk = True
+>             http_equiv = 'refresh'
+>             href = url.here.curdir()
+>             href = href.add('content', 'home')
+> 50        #content = '3;URL=' + href
+> 51         content = '2;URL=http://localhost:8088/'
+>         return {'http_equiv':http_equiv, 'content':content}
+> 
+> Another question.
+> While I'm processing the call from an url, is possible to change the
+> values from the arguments? I mean, in this example I have a template
+> that calls to different fragments (header, navigation, content, footer),
+> the data_header method inside the template is the first one in the
+> calls. Could I change here the value of one argumentin such a way that
+> when the data_content method inside the template is called, this one
+> receives the new value.
+> 
+> Thank you very much
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+From tv at twistedmatrix.com  Mon Sep 12 08:17:24 2005
+From: tv at twistedmatrix.com (Tommi Virtanen)
+Date: Mon Sep 12 08:17:31 2005
+Subject: [Twisted-web] Context Help
+In-Reply-To: <3a767c39050910010529101a26@mail.gmail.com>
+References: <3a767c39050910010529101a26@mail.gmail.com>
+Message-ID: <43258DF4.9010307@twistedmatrix.com>
+
+Michael M wrote:
+> Thanks in advance for any help.
+> 
+> My problem is getting context to remember things.  If I remember
+> something when the context is PageContext, I cannot retrieve it when
+> the context changes to say WebContext because it tells me that it has
+> not been remembered.
+> 
+> Now, I was under the impression that context would search for my
+> interface through the different contexts but this does not seem to be
+> the case. This kind of limits what I can do with context because I
+> have no idea when the context changes and my rememberances will be
+> forgotten.
+> 
+> Example Problem
+> 
+> def render_cow(self, ctx, data):
+>     ctx.remember(data, ISomeInterface)
+> 
+> def render_something_else(self, ctx, data):
+>     mydata = ctx.locate(ISomeInterface)
+> 
+> Now in between remebering ISomeInterface and recalling it the context
+> changes and it is no longer remebered.
+> 
+> My apologies if I am way out with my understanding and any help is appreciated.
+
+If your template is
+
+	<foo n:render="cow">
+	 <bar n:render="something_else />
+	</foo>
+
+that should work. If your template is
+
+	<foo n:render="cow" />
+	<bar n:render="something_else />
+
+then it even shouldn't work (AIUI).
+
+The context stack in the latter example is like this, as time passes:
+
+[the page]
+
+...
+
+[the page]
+[context for render_cow]
+
+...
+
+[the page]
+
+...
+
+[the page]
+[context for render_something_else]
+
+From m.milvo at gmail.com  Mon Sep 12 23:55:31 2005
+From: m.milvo at gmail.com (Michael M)
+Date: Mon Sep 12 23:56:06 2005
+Subject: [Twisted-web] Re: Context Help
+In-Reply-To: <3a767c39050910010529101a26@mail.gmail.com>
+References: <3a767c39050910010529101a26@mail.gmail.com>
+Message-ID: <3a767c39050912225521f4ed27@mail.gmail.com>
+
+Its been pointed out to me that some of my messages have not been
+going to the list so I will post a summary of what I have learnt so
+far thanks to Tommi.
+
+
+I was under the impression that with context it would be possible to
+remember an interface by doing ctx.remember(data, ISomeInterface) and
+then recall this interface anywhere throughout the request.
+
+This does not work as I expected and the reason for this is that
+context changes throughout the request and so looses what it has
+remembered when it changes.
+
+Example:
+def render_cow(self, ctx, data):
+    """Context is say WovenContext"""
+    ctx.remember('myinfo', ISomeInterface)
+
+def render_dog(self, ctx, data):
+    """Context is now PageContext"""
+    myinfo = ctx.locate(ISomeInterface)
+
+This will fail because I remembered data when the context was
+WovenContext and now the context is PageContext and so it does not
+have the data and interface that I remembered.
+
+Now I didn't think that this would be a problem because I thought that
+the context stack?? would be searched, i,e PageContext is searched for
+ISomeInterface, then maybe WovenContext is searched etc until the
+interface is found.
+
+Obviously this is not quite right.
+
+Tommi stated that:
+"Nested in template does not mean nested in implementation." and
+"remember the thing you want on something that stays on the stack for
+the duration you want."
+
+>From this I gather that some interfaces stay on the context stack
+longer than others?
+
+So I need to investigate the following.  
+
+1.) How do I find out what interfaces stays on the stack for the
+duration of the whole request?
+
+2.) If I remebered say ctx.remember('myinfo', IRequest)...will this
+mean I cannot use IRequest to retrieve the request, i.e I will have
+overwritten request.
+
+3.) How to I make my own interfaces stay on the stack throughout the request.
+
+Off to read some more nevow code and do some tests and I will post
+back to the list the results so hopefully some other users benefit.
+
+Cheers
+Michael
+
+From en.karpachov at ospaz.ru  Tue Sep 13 10:14:50 2005
+From: en.karpachov at ospaz.ru (en.karpachov@ospaz.ru)
+Date: Tue Sep 13 16:23:59 2005
+Subject: [Twisted-web] Nevow: returning defer.succeed() from the data_* or
+	render_* method
+Message-ID: <20050913201450.542672ca.jk@ospaz.ru>
+
+What's wrong with the code below?
+
+from nevow import tags as T, loaders, rend
+from twisted.internet import defer
+
+def simple(ctx, data):
+    return defer.succeed("Hello, world!")
+
+class Simple(rend.Page):
+    docFactory = loaders.stan(
+        T.html[
+            T.body[
+                T.ul[
+                    [T.li[ T.invisible(render=simple) ] for _ in xrange(1000)]
+                ]
+            ]
+        ]
+    )
+
+I get an exception
+
+"exceptions.RuntimeError: maximum recursion depth exceeded"
+
+rendering this page. It's the defer.succeed what causes this error; if I
+return bare string, all is ok.
+
+Thanks in advance.
+
+-- 
+jk
+
+From therve at free.fr  Wed Sep 14 01:43:16 2005
+From: therve at free.fr (Thomas HERVE)
+Date: Wed Sep 14 01:45:56 2005
+Subject: [Twisted-web] Nevow: returning defer.succeed() from the data_*
+	or render_* method
+In-Reply-To: <20050913201450.542672ca.jk@ospaz.ru>
+References: <20050913201450.542672ca.jk@ospaz.ru>
+Message-ID: <20050914094316.rpg9oh9f18lwk448@itchy.wasabout.net>
+
+Quoting en.karpachov@ospaz.ru:
+
+> What's wrong with the code below?
+>
+> def simple(ctx, data):
+>    return defer.succeed("Hello, world!")
+> [snip]
+> I get an exception
+>
+> "exceptions.RuntimeError: maximum recursion depth exceeded"
+>
+> rendering this page. It's the defer.succeed what causes this error; if I
+> return bare string, all is ok.
+
+The real question is : why do you want to return a Deferred ?
+
+-- 
+Thomas
+
+
+
+
+From exarkun at divmod.com  Wed Sep 14 13:31:42 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Wed Sep 14 13:31:46 2005
+Subject: [Twisted-web] Nevow: returning defer.succeed() from the data_*
+	or render_* method
+In-Reply-To: <20050913201450.542672ca.jk@ospaz.ru>
+Message-ID: <20050914193142.3914.1152481870.divmod.quotient.17016@ohm>
+
+On Tue, 13 Sep 2005 20:14:50 +0400, en.karpachov@ospaz.ru wrote:
+>What's wrong with the code below?
+>
+>from nevow import tags as T, loaders, rend
+>from twisted.internet import defer
+>
+>def simple(ctx, data):
+>    return defer.succeed("Hello, world!")
+>
+>class Simple(rend.Page):
+>    docFactory = loaders.stan(
+>        T.html[
+>            T.body[
+>                T.ul[
+>                    [T.li[ T.invisible(render=simple) ] for _ in xrange(1000)]
+>                ]
+>            ]
+>        ]
+>    )
+>
+>I get an exception
+>
+>"exceptions.RuntimeError: maximum recursion depth exceeded"
+>
+>rendering this page. It's the defer.succeed what causes this error; if I
+>return bare string, all is ok.
+>
+>Thanks in advance.
+>
+
+The way Nevow handles Deferreds means that having a large number of already-fired Deferreds in your document causes many recursive calls to be made.  The limit, based on Python's default stack depth limit of 1000, is around 250 Deferreds (probably a slightly fewer).  For Deferreds that have not yet fired, this isn't an issue.
+
+Jp
+
+From en.karpachov at ospaz.ru  Thu Sep 15 10:08:48 2005
+From: en.karpachov at ospaz.ru (en.karpachov@ospaz.ru)
+Date: Thu Sep 15 10:09:46 2005
+Subject: [Twisted-web] Nevow: returning defer.succeed() from the 
+	data_*or render_* method
+In-Reply-To: <20050914193142.3914.1152481870.divmod.quotient.17016@ohm>
+References: <20050913201450.542672ca.jk@ospaz.ru>
+	<20050914193142.3914.1152481870.divmod.quotient.17016@ohm>
+Message-ID: <20050915200848.02526636.jk@ospaz.ru>
+
+On Wed, 14 Sep 2005 15:31:42 -0400
+Jp Calderone wrote:
+
+> The way Nevow handles Deferreds means that having a large number of already-fired Deferreds in your document causes many recursive calls to be made.
+
+Thanks, it clarifies things a bit. Is this (an excessive recursion) by
+design, or could something been done with it otherwise eventually? Not that
+it was a showstopper or something, just curious.
+
+-- 
+jk
+
+From mcfletch at rogers.com  Thu Sep 15 14:48:25 2005
+From: mcfletch at rogers.com (Mike C. Fletcher)
+Date: Thu Sep 15 14:48:57 2005
+Subject: [Twisted-web] Replacement for handler in LivePage?
+Message-ID: <4329DE19.2050003@rogers.com>
+
+Hi all,
+
+Have just done an "svn up" to the latest Nevow source and found that the 
+"handler" mechanism in LivePage is now deprecated, but there doesn't 
+seem to be a functionally equivalent construct provided.  My use of 
+handlers was to create dynamically generated (and modifying) pages where 
+a complex nested structure (tree) was presented using a set of GUI 
+controllers which would each register themselves for servicing events to 
+the controls within their view (including the sub-views for the nested 
+items).  Each controller is responsible for standard GUI-type 
+interactions, i.e. *multiple events*.
+
+Now, obviously I could override the page's locateHandler and do all of 
+the registration and lookup manually, but it seems that this kind of 
+thing would be the *common* use case for any Ajax application.  So, I'm 
+thinking we should really have an easy method for constructing such 
+callbacks.
+
+This is something along the lines of what I'm thinking (untested 
+pseudo-code):
+
+class Handler( object ):
+    """New-style handler for Nevow, uses the same basic mechanism as 
+transient
+   
+    We want to be able to produce dynamically-generated trees of
+    controls, which means that we need to be able to register multi-shot
+    event handlers live.
+    """
+    bubble = True
+    def __init__( self, identifier, callable, *args, **named ):
+        """Initialise the handler instance
+       
+        identifier -- unique identifier assigned by the client handle
+        callable -- the target callable object
+        args -- arguments to the function (javascript arguments)
+        named -- carries non-javascript arguments, currently:
+            bubble -- if defined and False, prevent bubbling of the
+                generating event (i.e. "stop" after the handler)
+        """
+        self.identifier = identifier
+        self.callable = callable
+        self.args = args
+        if named.has_key( 'bubble' ):
+            self.bubble = named['bubble']
+    def jsIdentifier( self ):
+        """Retrieve the javascript callback identifier for this callback"""
+        return '**handler.%s'%(self.identifier)
+    def jsCall( self, ctx ):
+        """Produce the javascript to call this Handler on the server"""
+        base = livepage.server.handle( self.jsIdentifier(), *self.args )
+        if not self.bubble:
+            result = base
+        else:
+            result = [
+                base,
+                stop
+            ]
+        return livepage.flat.serialize( result, ctx )
+    def __call__( self, javascriptContext, *args ):
+        """Do the final calling of the handler with the client-provided 
+values"""
+        try:
+            return self.callable( javascriptContext, *args )
+        except Exception, err:
+            log.error(
+                """Failure during Javascript callback on %s(%s): %s""",
+                getattr(self.callable,'__name__',self.callable),
+                ", ".join( [repr(a) for a in args] ),
+                log.getException( err ),
+            )
+            return None
+def flattenHandler( handler, ctx ):
+    """Redirect to flatten a handler instance"""
+    return handler.jsCall( ctx )
+livepage.flat.registerFlattener(flattenHandler, Handler)
+
+
+class ClientHandle( livepage.ClientHandle ):
+    """ClientHandle providing for run-time registration of multi-use 
+callbacks"""
+    handlerCount = 0
+    def handler( self, callable, *args, **named ):
+        """Create a new Handler object, assigning an ID automatically"""
+        self.handlerCount += 1
+        handle = Handler( self.handlerCount, callable, *args, **named )
+        if not hasattr( self, 'handlers' ):
+            self.handlers = {}
+            self.notifyOnClose().addBoth( self.cleanHandlers )
+        self.handlers[ handle.jsIdentifier() ] = handle
+        return handle
+    def cleanHandlers( self, result=None ):
+        """Clean up the handler registry for this client handle"""
+        try:
+            del self.handlers
+        except AttributeError, err:
+            pass
+        return result
+    def getHandler( self, key ):
+        """Retrieve named registered handler or None
+       
+        key -- identifier for the handler
+        """
+        try:
+            return self.handlers[ key ]
+        except KeyError, err:
+            return None
+
+obviously the InputHandlerResource.renderHTTP method would need to be 
+taught to do the lookup for the handler registry as well.  Still, the 
+point here is to make a callback-registration system that works as 
+transparently for dynamically generated content as the original handler 
+mechanism, i.e. it's just an automated system where you can generate 
+client.handler( callable, livepage.get('blah').value ) calls to register 
+callbacks for any piece of content you are producing.
+
+Any memory-cleanup issues with the following scheme are present with the 
+current "transient" scheme, incidentally.  If there's a really strong 
+need, one could even create a "register delete handler" on the Handler 
+objects so that you can tell the handler to de-register itself when a 
+given controller goes away, i.e.:
+
+
+    def deregisterOnDelete( self, targetObject, client ):
+        """Deregister this handler from the client on deletion of 
+targetObject"""
+        return weakref.ref( targetObject, _Deregister( client ))
+class _Deregister( object ):
+    def __init__( self, client ):
+        self.client = weakref.ref( client )
+       
+    def __call__( self, targetWeak ):
+        client = self.client()
+        if client:
+            try:
+                del client.handlers[ self.jsIdentifier()]
+            except (AttributeError,KeyError), err:
+                pass
+
+
+Of course, I could have missed something that takes care of this 
+use-case, I've only been playing with the new version for a few hours.
+
+Have fun,
+Mike
+
+-- 
+________________________________________________
+  Mike C. Fletcher
+  Designer, VR Plumber, Coder
+  http://www.vrplumber.com
+  http://blog.vrplumber.com
+
+
+From mcfletch at rogers.com  Thu Sep 15 16:59:23 2005
+From: mcfletch at rogers.com (Mike C. Fletcher)
+Date: Thu Sep 15 16:59:53 2005
+Subject: [Twisted-web] Why not "remember" the clientHandle at the start of
+	rendering?
+Message-ID: <4329FCCB.9090306@rogers.com>
+
+When rendering a LivePage, we have a method render_liveglue which, as a 
+hidden side-effect, creates a client handle in self.clientFactory (then 
+promptly forgets about it, making it difficult to reference).  Thing is, 
+having that clientHandle available throughout the rendering process 
+would be quite convenient, so why not create it in the renderHTTP method 
+and remember it there for use by anything that's wanting access to it?
+
+    def renderHTTP(self, ctx):
+        """Override to store the client-handle in the main page context"""
+        handle = self.clientFactory.newClientHandle(
+            self, self.refreshInterval,self.targetTimeoutCount
+        )
+        ctx.remember( handle, IClientHandle )
+        return super( LivePage, self ).renderHTTP( ctx )
+    def render_liveglue(self, ctx, data):
+        """Override to use already-created client handle (from 
+renderHTTP)"""
+        if not self.cacheable:
+            handle = IClientHandle( ctx )
+            handleId = "'", handle.handleId, "'"
+        else:
+            handleId = 'null'
+        return [
+            tags.script(type="text/javascript")[
+                "var nevow_clientHandleId = ", handleId ,";"],
+            tags.script(type="text/javascript",
+                        src=url.here.child('nevow_glue.js'))
+        ]
+
+Noticed this as I was implementing the new handler implementation posted 
+about a little while ago (it now works, incidentally, with a few bumps 
+and twists).
+
+Have fun,
+Mike
+
+-- 
+________________________________________________
+  Mike C. Fletcher
+  Designer, VR Plumber, Coder
+  http://www.vrplumber.com
+  http://blog.vrplumber.com
+
+
+From mcfletch at rogers.com  Thu Sep 15 17:48:16 2005
+From: mcfletch at rogers.com (Mike C. Fletcher)
+Date: Thu Sep 15 17:48:47 2005
+Subject: [Twisted-web] Replacement for handler in LivePage?
+In-Reply-To: <4329DE19.2050003@rogers.com>
+References: <4329DE19.2050003@rogers.com>
+Message-ID: <432A0840.9090202@rogers.com>
+
+Mike C. Fletcher wrote:
+...
+
+> Now, obviously I could override the page's locateHandler and do all of 
+> the registration and lookup manually, but it seems that this kind of 
+> thing would be the *common* use case for any Ajax application.  So, 
+> I'm thinking we should really have an easy method for constructing 
+> such callbacks.
+>
+> This is something along the lines of what I'm thinking (untested 
+> pseudo-code):
+
+And attached is a module that implements the functionality.  It's 
+currently set up as a set of subclasses and functions that shadow those 
+in nevow.livepage.
+
+Have fun,
+Mike
+
+-- 
+________________________________________________
+  Mike C. Fletcher
+  Designer, VR Plumber, Coder
+  http://www.vrplumber.com
+  http://blog.vrplumber.com
+
+-------------- next part --------------
+"""Provide classic dynamic-code-friendly handler mechanism for Nevow"""
+from nevow import rend, loaders, tags, flat, livepage, inevow
+from twisted.internet import defer
+import weakref
+
+log = APPLICATION.getLog( 'livepage' )
+
+class Handler( object ):
+	"""New-style handler for Nevow, uses the same basic mechanism as transient
+	
+	We want to be able to produce dynamically-generated trees of 
+	controls, which means that we need to be able to register multi-shot
+	event handlers live.
+	"""
+	bubble = True
+	def __init__( self, identifier, callable, *args, **named ):
+		"""Initialise the handler instance
+		
+		identifier -- unique identifier assigned by the client handle 
+		callable -- the target callable object
+		args -- arguments to the function (javascript arguments)
+		named -- carries non-javascript arguments, currently:
+			bubble -- if defined and False, prevent bubbling of the 
+				generating event (i.e. "stop" after the handler)
+		"""
+		self.identifier = identifier
+		self.callable = callable
+		self.args = args 
+		if named.has_key( 'bubble' ):
+			self.bubble = named['bubble']
+	def jsIdentifier( self ):
+		"""Retrieve the javascript callback identifier for this callback"""
+		return '**handler.%s'%(self.identifier)
+	def jsCall( self, ctx ):
+		"""Produce the javascript to call this Handler on the server"""
+		client = livepage.IClientHandle(ctx)
+		if self.identifier is None:
+			self.identifier = client.nextId()
+			client.registerHandler( self )
+		base = livepage.server.handle( self.jsIdentifier(), *self.args )
+		if not self.bubble:
+			result = base
+		else:
+			result = [ 
+				base,
+				livepage.stop
+			]
+		return livepage.flat.serialize( result, ctx )
+	def __call__( self, javascriptContext, *args ):
+		"""Do the final calling of the handler with the client-provided values"""
+		try:
+			log.debug( """Callback: %s, %r""", self.callable, args )
+			client = livepage.IClientHandle( javascriptContext )
+			return self.callable( client, *args )
+		except Exception, err:
+			log.error(
+				"""Failure during Javascript callback on %s %s: %s""",
+				getattr(self.callable,'__name__',self.callable),
+				args,
+				log.getException( err ),
+			)
+			return None
+	def deregisterOnDelete( self, targetObject, client ):
+		"""Deregister this handler from the client on deletion of targetObject"""
+		return weakref.ref( targetObject, _Deregister( client ))
+class _Deregister( object ):
+	"""Class to deregister a registered handler when target dies"""
+	def __init__( self, client ):
+		self.client = weakref.ref( client )
+	def __call__( self, targetWeak ):
+		"""De-register the javascript handler now that target is gone"""
+		client = self.client()
+		if client:
+			try:
+				del client.handlers[ self.jsIdentifier()]
+			except (AttributeError,KeyError), err:
+				pass 
+def flattenHandler( handler, ctx ):
+	"""Redirect to flatten a handler instance"""
+	return handler.jsCall( ctx )
+livepage.flat.registerFlattener(flattenHandler, Handler)
+
+def handler( callable, *args, **named ):
+	"""Handler call for use without reference to the client object
+	
+	See Handler for discussion of arguments
+	"""
+	return Handler( None, callable, *args, **named )
+
+class InputHandlerResource( livepage.InputHandlerResource ):
+	"""Teach to support the **handler.ID names..."""
+	def renderHTTP(self, ctx):
+		"""Handle incoming HTTP-based XML-RPC call
+		
+		This is far more verbose than it should be because the base function
+		doesn't provide resolveHandler( ctx ), so we have to duplicate the 
+		rest of the function just to overload that piece of functionality.
+		"""
+		self.clientHandle.timeoutCount = 0
+	
+		request = inevow.IRequest(ctx)
+		livepage.neverEverCache(request)
+		livepage.activeChannel(request)
+		ctx.remember(self.clientHandle, livepage.IClientHandle)
+		ctx.remember(livepage.jsExceptionHandler, inevow.ICanHandleException)
+	
+		handlerName = request.args['handler-name'][0]
+		arguments = request.args.get('arguments', ())
+		livepage.jslog(">>>>>>\n%s %s\n" % (handlerName, arguments))
+		handler = self.resolveHandler( ctx )
+	
+		jsContext = livepage.JavascriptContext(ctx, tags.invisible[handler])
+		towrite = []
+	
+		def writer(r):
+			livepage.jslog("WRITE ", r)
+			towrite.append(r)
+	
+		def finisher(r):
+			livepage.jslog("FINISHED", r)
+			writestr = ''.join(towrite)
+			livepage.jslog("<><><>\n%s\n" % (writestr, ))
+			request.write(writestr)
+			request.finish()
+			return r
+		result = handler(jsContext, *arguments)
+		livepage.jslog("RESULT ", result)
+	
+		if result is None:
+			return defer.succeed('')
+		return self.clientHandle.livePage.flattenFactory(result, jsContext,
+											writer, finisher)
+	def resolveHandler( self, ctx ):
+		"""Resolve the handler for the given context (request)"""
+		request = inevow.IRequest(ctx)
+		handlerName = request.args['handler-name'][0]
+		handler = self.clientHandle.getHandler( handlerName )
+		if handler is None:
+			if handlerName.startswith('--transient.'):
+				handler = self.clientHandle.popTransient(
+					handlerName.split('.')[-1]
+				)
+			else:
+				handler = self.clientHandle.livePage.locateHandler(
+					ctx, request.args['handler-path'],
+					handlerName
+				)
+		return handler
+
+
+
+class ClientHandle( livepage.ClientHandle ):
+	"""ClientHandle providing for run-time registration of multi-use callbacks"""
+	def handler( self, callable, *args, **named ):
+		"""Create a new Handler object, assigning an ID automatically
+		
+		With the LivePage below, this allows for doing
+			IClientHandle( ctx ).handler( callable, arg, arg1, arg2 )
+		whereever you see a context instance.  Of course, we also support 
+		the original handler top-level function as well.
+		"""
+		id = self.nextId()
+		handle = Handler( id, callable, *args, **named )
+		return self.registerHandler( handler )
+	def registerHandler( self, handler ):
+		"""Register a handler (must already have identifier)
+		
+		handler -- callable handler taking a client instance and having a 
+			jsIdentifier() method.
+		
+		Side-effect: creates the "handlers" attribute and registers for 
+			deletion of that attribute on loss of connection.
+		
+		returns handler
+		"""
+		if not hasattr( self, 'handlers' ):
+			self.handlers = {}
+			self.notifyOnClose().addBoth( self.cleanHandlers )
+		self.handlers[ handler.jsIdentifier() ] = handler
+		return handler
+		
+	def cleanHandlers( self, result=None ):
+		"""Clean up the handler registry for this client handle
+		
+		Called by a notifyOnClose deferred
+		"""
+		log.debug( """Cleaning up handlers for client handler %s""", self )
+		try:
+			del self.handlers
+		except AttributeError, err:
+			pass
+		return result
+	def getHandler( self, key ):
+		"""Retrieve named registered handler or None
+		
+		key -- identifier for the handler, exactly as returned from 
+			jsIdentifier() on the handler (no pre-processing is done).
+		"""
+		try:
+			return self.handlers[ key ]
+		except KeyError, err:
+			return None
+
+
+class DefaultClientHandleFactory( livepage.DefaultClientHandleFactory ):
+	"""Override declaration of clientHandleClass"""
+	clientHandleClass = ClientHandle
+theDefaultClientHandleFactory = DefaultClientHandleFactory()
+class DefaultClientHandlesResource(livepage.DefaultClientHandlesResource):
+	"""Override declarations of Input and Output handlers and clientFactory"""
+	clientResources = {
+		'input': InputHandlerResource,
+		'output': livepage.OutputHandlerResource,
+	}
+	clientFactory = theDefaultClientHandleFactory
+theDefaultClientHandlesResource = DefaultClientHandlesResource()
+
+class LivePage( livepage.LivePage):
+	"""Base class for Cinemon LivePage instances
+	
+	Initialise as LivePage( content=SomeFragment(), target=target )
+	
+	LivePages are resources, so can be directly returned from 
+	traversal (i.e. don't need extra wrapping.
+	"""
+	clientFactory = theDefaultClientHandleFactory
+	def renderHTTP(self, ctx):
+		"""Override to store the client-handle in the main page context"""
+		handle = self.clientFactory.newClientHandle(
+			self, self.refreshInterval,self.targetTimeoutCount
+		)
+		ctx.remember( handle, livepage.IClientHandle )
+		return super( LivePage, self ).renderHTTP( ctx )
+	def render_liveglue(self, ctx, data):
+		"""Override to use already-created client handle (from renderHTTP)"""
+		if not self.cacheable:
+			handle = livepage.IClientHandle( ctx )
+			handleId = "'", handle.handleId, "'"
+		else:
+			handleId = 'null'
+		return [
+			tags.script(type="text/javascript")[
+				"var nevow_clientHandleId = ", handleId ,";"],
+			tags.script(type="text/javascript",
+						src=livepage.url.here.child('nevow_glue.js'))
+		]
+	def child_livepage_client(self, ctx):
+		"""Override the default client-handles-resources lookup to use local"""
+		return theDefaultClientHandlesResource
+From eric.faurot at gmail.com  Fri Sep 16 04:47:03 2005
+From: eric.faurot at gmail.com (Eric Faurot)
+Date: Fri Sep 16 04:47:37 2005
+Subject: [Twisted-web] Replacement for handler in LivePage?
+In-Reply-To: <432A0840.9090202@rogers.com>
+References: <4329DE19.2050003@rogers.com> <432A0840.9090202@rogers.com>
+Message-ID: <e012d6b505091603471c67425@mail.gmail.com>
+
+I'll jump in here to let you know about the work I've been doing after
+Jp's callRemote idea/branch regarding livepage.
+
+Basically, the idea is to have all live interaction done as RPC calls
+between the server and the browser, or more specifically between
+remote objects exported by the server and the client over a
+connection.
+
+A live resource establishes and maintains a connection between the
+server and the client. It is also used as a broker for remote
+objects. So upon connection, both sides get a remote reference to the
+other end's root object: by default the LiveResource itself for the
+server, and the 'Page' singleton on the client side.
+
+On both sides, calling a remote method (via obj.callRemote(...))
+returns a deferred that will be fired when the result arrives.  Note
+that we only pass data around, no serialized JS code (though this
+might happen for special things later). All pages updates are supposed
+to be handled by the client itself.  This way, we get something
+"vaguely ressembling" pb, where only application data are exchanged
+and the interface itself is fully managed by the client.
+
+The implementation I have now (which has changed drastically as my "JS
+skills" improved) would allow the live client to connect to multiple
+servers at the same time, possibly exposing a different root object
+for each of them. The first resource is just used for bootstrapping.
+Serilialization and parsing still have to be fixed.  Although it
+relies on twisted, it is rather framework-agnostic for the web part
+itself, and it currently works with either tw.web2 or nevow.
+
+Current code available at:
+http://ekyo.nerim.net/python/liveresource.tgz
+
+Comments/ideas welcome. If people are interrested in hacking on it
+that would be nice.
+
+Eric.
+From alberto.trujillo at ucd.ie  Fri Sep 16 05:41:27 2005
+From: alberto.trujillo at ucd.ie (Alberto Trujillo)
+Date: Fri Sep 16 05:37:08 2005
+Subject: [Twisted-web] A question about sequence
+Message-ID: <432AAF67.601@ucd.ie>
+
+Hello everybody:
+
+Thank in advance for all the help that you have gave me.
+Well I have seen how works the sequences in nevow and is very cool, but 
+always I find the problem that I don't know how to defined limits inside 
+the sequence.
+What I want to do is create a table with multiple row and two colums (at 
+least in this case). Well, each colum is a item, and each column 
+contained a table with mutiple slots that I have to fill.
+Right now my html code look like this:
+
+<table nevow:data="myplugins" nevow:render="sequence">
+    <tr nevow:pattern="item" nevow:render="myplugins">
+        <td>
+            <table>
+                <tr>
+                    <td>
+                    <div align="center"><nevow:slot 
+name="plugin_name"/></div>
+                    </td>
+                </tr>
+                    ...
+            </table>
+        </td>
+    </tr>
+    <tr nevow:pattern="empty">
+        <td>Empty</td>
+    </tr>
+</table>
+
+But of course in this way the result is a table with multiple row and 
+only one column, because the item is the row.
+There is any way to insert more than one cell in the same row, and after 
+a numbers of cell that I decide, insert a new row?
+I'll was checking the example of the "calendar", but in that way I must 
+to specified too may patterns.
+Well I hope that somebody can give me a solution.
+
+Thanks a lot
+
+
+From bhyz00 at gmail.com  Tue Sep 20 12:56:22 2005
+From: bhyz00 at gmail.com (Boh Yap)
+Date: Tue Sep 20 12:56:54 2005
+Subject: [Twisted-web] starting up with twisted.web2
+Message-ID: <5ca6b3580509201156722e4f72@mail.gmail.com>
+
+hi,
+
+I'm a newbie with Twisted, and having messed around a bit with
+Tisted-1.3.0, I recently moved over to Twisted Web2.
+
+a few things did'nt work (like they did in Twisted-1.3.0:
+
+1.   I can't seem to 'mktap web' anymore, the reply I get is
+       Unknown command: web
+
+       without web.tap, how do I run a .rpy resource?
+       I find this useful for testing and debugging.
+
+
+2.   I managed to build my resource apps. into python modules, but I
+miss being able to get tracebacks on the browser for debugging. Can I
+get the browser to display Tracebacks?
+
+
+3.   What will be the root directory for the twisted web app, assuming
+the app is in a dir. like:
+         /var/www/html/,     and run with    twistd -ny someapp.py  
+from that dir.
+
+     I need this because my references to styles etc... no longer
+work. I have tried defining
+     first as relative, then as absolute paths, but it still dose'nt work.
+
+
+4.  I can't seem to sepcifiy a path for the logfile, if I follow the
+example given in the docs.
+          site = server.Site(static.File(WWWROOT), logPath=LOGPATH)
+
+      I get an error:
+          Failed to load application: __init__() got an unexpected
+keyword argument 'logPath'
+
+
+would appreciate it very much if soemone could shed some light on
+this. Am starting on a new project and wld like to give twisted.web2 a
+whirl...
+
+When I get all this to work.. will do up some docs and post this up...
+perhaps it could contribute to TechnoTurkey
+<http://twisted.paisite.com> which I came across on this maillist..
+
+
+thanks ...
+boh
+
+From exarkun at divmod.com  Tue Sep 20 15:45:22 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Tue Sep 20 15:45:29 2005
+Subject: [Twisted-web] Re: [Twisted-Python] Resource instanciated and never
+	destroyed ?
+In-Reply-To: <loom.20050920T202628-62@post.gmane.org>
+Message-ID: <20050920214522.3914.1055302029.divmod.quotient.19026@ohm>
+
+On Tue, 20 Sep 2005 18:37:40 +0000 (UTC), Anand <web@anand-fr.net> wrote:
+>Hi,
+>
+>I'm using twisted+web (2.0.1) + Nevow (0.4.1) for building a web application.
+>
+>My web application is inside a "Realm" for handling user authentication.
+>
+>When an url is requested for a logged in user, this is handled by a resource
+>called "LoggedIn", which is a nevow rend.Page subclass.
+>LoggedIn redefines the locateChildMethod.
+>That method instanciates and returns a resource object , which can be of any
+>specific class which I have defined. My resource classes are subclasses of
+>rend.Page.
+>
+>I've noticed, putting traces in __init__ and __del__ methods of my resource
+>classes, that resource objects which are instanciated are never destroyed.
+>As as consequences, the python process ends up eating up a lot of memory.
+>
+>I guess I might do something the wrong way.
+>I would like to know how resource object can be automatically destroyed after a
+>page has been rendered by Nevow + twisted web.
+>
+>Thank you for your help
+>
+
+  Instrumenting object lifetime using __del__ alters behavior.  Adding a __del__ method is not a valid way to determine the end of an object's lifetime.
+
+  Nevow 0.4.1 had an egregious Page leak which has since been fixed.  You can test to see if this is the leak you are experiencing by finding all occurrences of adaption which use the callable interface form and which pass "persist=True" and removing the persist parameter.  You could also try switching to a newer version of Nevow, though there is no release of such a thing.
+
+  There is a mailing list dedicated to Twisted Web (<http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web>) to which I have copied this response.  Please continue this thread there.
+
+  Jp
+
+From exarkun at divmod.com  Tue Sep 20 15:49:54 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Tue Sep 20 15:49:55 2005
+Subject: [Twisted-web] starting up with twisted.web2
+In-Reply-To: <5ca6b3580509201156722e4f72@mail.gmail.com>
+Message-ID: <20050920214954.3914.1768861525.divmod.quotient.19029@ohm>
+
+On Wed, 21 Sep 2005 02:56:22 +0800, Boh Yap <bhyz00@gmail.com> wrote:
+>hi,
+>
+>I'm a newbie with Twisted, and having messed around a bit with
+>Tisted-1.3.0, I recently moved over to Twisted Web2.
+
+  Sounds like there's some confusion here.  There's Twisted 2.0, the successor to Twisted 1.3.  Then there's Twisted Web2, the yet-unreleased successor to Twisted Web.  Twisted Web2 almost certainly will not work with Twisted 1.3.  If you want to try out Web2, you need to install Twisted 2.0.
+
+>
+>a few things did'nt work (like they did in Twisted-1.3.0:
+>
+>1.   I can't seem to 'mktap web' anymore, the reply I get is
+>       Unknown command: web
+>
+>       without web.tap, how do I run a .rpy resource?
+>       I find this useful for testing and debugging.
+>
+
+  Once you install the right version of various things, you should regain the ability to make web taps.  However, these will not give you a Web2 server.  You may not even want a Web2 server, though.  It's not clear whether you were attempting to experiment with Twisted 2.0 or Twisted Web2.
+
+> [snip]
+
+  Jp
+
+From bhyz00 at gmail.com  Wed Sep 21 11:38:59 2005
+From: bhyz00 at gmail.com (Boh Yap)
+Date: Wed Sep 21 11:39:32 2005
+Subject: [Twisted-web] starting up with twisted.web2
+In-Reply-To: <5ca6b35805092019561e6aede5@mail.gmail.com>
+References: <5ca6b3580509201156722e4f72@mail.gmail.com>
+	<20050920214954.3914.1768861525.divmod.quotient.19029@ohm>
+	<5ca6b35805092019561e6aede5@mail.gmail.com>
+Message-ID: <5ca6b3580509211038593f12ae@mail.gmail.com>
+
+hi,
+
+I apologise for replying directly to Jp Calderone <exarkun@divmod.com>
+instead of to the mailing list... new to all this (&gmail) and just
+clicked reply ;-)
+
+I am re-posting this to the list, with the hope someone could shed
+some light on this...
+
+
+On 9/21/05, Boh Yap <bhyz00@gmail.com> wrote:
+> hi,
+>
+Thanks for the prompt reply, JP...
+>
+> On 9/21/05, Jp Calderone <exarkun@divmod.com> wrote:
+> > On Wed, 21 Sep 2005 02:56:22 +0800, Boh Yap <bhyz00@gmail.com> wrote:
+> > >hi,
+> > >
+> > >I'm a newbie with Twisted, and having messed around a bit with
+> > >Tisted-1.3.0, I recently moved over to Twisted Web2.
+> >
+> >   Sounds like there's some confusion here.  There's Twisted 2.0, the successor to Twisted 1.3.  Then there's Twisted Web2, the yet-unreleased successor to Twisted Web.  Twisted Web2 almost certainly will not work with Twisted 1.3.  If you want to try out Web2, you need to install Twisted 2.0.
+> >
+
+Yes, am aware of that, am using Web2 with Twisted2, cldnt install otherwise.
+
+>
+> > >
+> > >a few things did'nt work (like they did in Twisted-1.3.0:
+> > >
+> > >1.   I can't seem to 'mktap web' anymore, the reply I get is
+> > >       Unknown command: web
+> > >
+> > >       without web.tap, how do I run a .rpy resource?
+> > >       I find this useful for testing and debugging.
+> > >
+> >
+> >   Once you install the right version of various things, you should regain
+> > the ability to make web taps.  However, these will not give you a Web2
+> > server.  You may not even want a Web2 server, though.  It's not clear
+> > whether you were attempting to experiment with Twisted 2.0 or Twisted
+> > Web2.
+> >
+Well the Web server generated form mktap was useful for experimenting
+and testing.
+
+Assuming I got the right things insatlled and running, the previous
+questions still apply. Wld still need and appreciate answers for
+those.. ;-)
+
+many thanks.
+>
+> > > [snip]
+> >
+> >   Jp
+> >
+>
+
+
+ 2.   I managed to build my resource apps. into python modules, but I
+miss being able to get tracebacks on the browser for debugging. Can I
+get the browser to display Tracebacks?
+
+
+3.   What will be the root directory for the twisted web app, assuming
+the app is in a dir. like:
+
+           /var/www/html/,     and run with    twistd -ny someapp.py
+
+      from that dir.
+
+    I need this because my references to styles etc... no longer work.
+I have tried defining
+    first as relative, then as absolute paths, but it still dose'nt work.
+
+
+4.  I can't seem to sepcifiy a path for the logfile, if I follow the
+example given in the docs.
+         site = server.Site(static.File(WWWROOT), logPath=LOGPATH)
+
+     I get an error:
+          Failed to load application: __init__() got an unexpected
+keyword argument 'logPath'
+
+Would appreciate it very much if soemone could shed some light on
+this. Am starting on a new project and wld like to give twisted.web2 a
+whirl...
+
+When I get all this to work.. will do up some docs and post this up...
+perhaps it could contribute to TechnoTurkey
+<http://twisted.paisite.com> which I came across on this list..
+
+thanks
+
+boh.
+
+From therve at free.fr  Wed Sep 21 14:55:52 2005
+From: therve at free.fr (Thomas HERVE)
+Date: Wed Sep 21 14:57:35 2005
+Subject: [Twisted-web] Flatten problem in livepage trunk
+Message-ID: <20050921225552.zhsyltgt5lmsos8s@itchy.wasabout.net>
+
+I've managed to make some tests on Livepage in Nevow trunk, and I've found a
+problem.
+The following code work without problem :
+
+def handle_action(self, ctx):
+    client = livepage.IClientHandle(ctx)
+    client.set("mynode", tags.span["test"])
+
+But the following don't :
+
+def handle_action(self, ctx):
+    client = livepage.IClientHandle(ctx)
+    client.set("mynode", [tags.span["test1"], tags.span["test2"]])
+
+(it prints <span>'test1'</span><span>'test2'</span> instead of
+'<span>test1</span><span>test2</span>'
+
+This works on nevow 0.4.1. Am I doing something wrong, or is there really a
+problem ? My knowledge of the flatten mecanism is too poor for tracking the
+cause of this...
+
+By the way, I'll also look at the callRemote branch that seems to offer great
+things.
+
+Thanks,
+
+-- 
+Thomas
+
+From lloyd at paisite.com  Wed Sep 21 20:45:30 2005
+From: lloyd at paisite.com (lloyd@paisite.com)
+Date: Wed Sep 21 20:49:55 2005
+Subject: [Twisted-web] starting up with twisted.web2
+In-Reply-To: <5ca6b3580509211038593f12ae@mail.gmail.com>
+References: <5ca6b3580509201156722e4f72@mail.gmail.com>
+	<20050920214954.3914.1768861525.divmod.quotient.19029@ohm>
+	<5ca6b35805092019561e6aede5@mail.gmail.com>
+	<5ca6b3580509211038593f12ae@mail.gmail.com>
+Message-ID: <2536.129.44.172.53.1127357130.squirrel@www.wbsysnet.com>
+
+Hi Boh,
+
+> When I get all this to work.. will do up some docs and post this up...
+> perhaps it could contribute to TechnoTurkey
+> <http://twisted.paisite.com> which I came across on this list..
+
+As the author of TechnoTurkey I'd much appreciate your contributions. I've
+been trying to understand the Twisted framework myself, with much
+frustration. At this point I've gone about as far as I can go without deep
+analysis of source. I've asked for guidance from the community, have
+received some, but not enough to carry me anywhere near to sufficient
+understanding to develop production quality code.
+
+If you've looked at the TechnoTurkey site you'll see that it's a series of
+step-by-step experiments intended to unfold ever deeper understanding. We
+have a simple tinker-toy dynamic page running. But I don't understand
+enough yet, myself, to go much further based on the documentation. So I'm
+just now delving into the source to see if I can understand how it all
+fits together.
+
+I'd much welcome any help you could provide in that direction, or any
+experiments that you might suggest that would deepen Turkey's
+understanding of Twisted.
+
+All the best,
+
+Lloyd R. Prentice
+
+
+
+
+
+
+
+
+From slamb at slamb.org  Fri Sep 23 15:27:41 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Fri Sep 23 15:27:46 2005
+Subject: [Twisted-web] twisted.web2.stream.IStream.reset()?
+Message-ID: <2F2BEA1A-7F4F-4D91-ADF4-B09CF7313305@slamb.org>
+
+Hi David and all,
+
+I stumbled across your twisted web2-client branch from google. I need  
+to make a specialized HTTP load generator that uses Keep-Alives.  
+twisted.web2.client seems the best way, so I'm trying to make this  
+branch work for me.
+
+My load generator needs to make a bunch of sequences of authenticated  
+POSTs, picking up a cookie along the way.
+
+I've stumbled onto a bug: the first request will return a  
+401Unauthorized. HTTPClientFactory.handleStatus_401 deals with  
+this...but the postdata is gone.
+
+This code generates the new request:
+
+                 req = Request(request.method, request.uri,  
+request.args,
+                               request.headers, request.stream)
+
+It looks like web2.stream.IStream is single-use - it returns a None  
+when there's no more data. I think this - or maybe a  
+IResettableStream subclass - needs a reset() method.
+
+I've got a patch that allowed me to proceed. I wouldn't recommend  
+applying as-is - I only messed with the MemoryStream that I'm using,  
+and there's no unit test. I want to send this in before I forget  
+about it, though.
+
+Regards,
+Scott
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: stream-kludgey-reset.patch
+Type: application/octet-stream
+Size: 2207 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20050923/9c122164/stream-kludgey-reset.obj
+-------------- next part --------------
+
+From exarkun at divmod.com  Fri Sep 23 15:37:43 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Fri Sep 23 15:37:45 2005
+Subject: [Twisted-web] twisted.web2.stream.IStream.reset()?
+In-Reply-To: <2F2BEA1A-7F4F-4D91-ADF4-B09CF7313305@slamb.org>
+Message-ID: <20050923213743.3914.401570084.divmod.quotient.20587@ohm>
+
+On Fri, 23 Sep 2005 14:27:41 -0700, Scott Lamb <slamb@slamb.org> wrote:
+>Hi David and all,
+>
+>I stumbled across your twisted web2-client branch from google. I need  to 
+>make a specialized HTTP load generator that uses Keep-Alives. 
+>twisted.web2.client seems the best way, so I'm trying to make this  branch 
+>work for me.
+>
+>My load generator needs to make a bunch of sequences of authenticated 
+>POSTs, picking up a cookie along the way.
+>
+>I've stumbled onto a bug: the first request will return a  401Unauthorized. 
+>HTTPClientFactory.handleStatus_401 deals with  this...but the postdata is 
+>gone.
+>
+>This code generates the new request:
+>
+>                 req = Request(request.method, request.uri,  request.args,
+>                               request.headers, request.stream)
+>
+>It looks like web2.stream.IStream is single-use - it returns a None  when 
+>there's no more data. I think this - or maybe a  IResettableStream subclass 
+>- needs a reset() method.
+>
+>I've got a patch that allowed me to proceed. I wouldn't recommend  applying 
+>as-is - I only messed with the MemoryStream that I'm using,  and there's no 
+>unit test. I want to send this in before I forget  about it, though.
+
+Many stream sources cannot be rewound.  Implementing reset for IStream would require many implementations to hold their entire contents in memory.  This is completely unreasonable.  Creating a separate interface for streams which could be rewound would avoid this problem, but at the same time limit the actual implementations your code could work with to an extreme subset.
+
+Instead of extending IStream or creating a new interface, you probably want to wrap request.stream before passing it to the request.  The wrapper can take care of providing restartability.  It can also prevent the concurrency bugs that handing a single stream to multiple Requests will present.
+
+Jp
+
+From slamb at slamb.org  Fri Sep 23 16:15:24 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Fri Sep 23 16:15:28 2005
+Subject: [Twisted-web] twisted.web2.stream.IStream.reset()?
+In-Reply-To: <20050923213743.3914.401570084.divmod.quotient.20587@ohm>
+References: <20050923213743.3914.401570084.divmod.quotient.20587@ohm>
+Message-ID: <D59B909A-05D4-45DD-9D4B-50A77FA9FDB4@slamb.org>
+
+On Sep 23, 2005, at 2:37 PM, Jp Calderone wrote:
+
+> Instead of extending IStream or creating a new interface, you  
+> probably want to wrap request.stream before passing it to the  
+> request.  The wrapper can take care of providing restartability.   
+> It can also prevent the concurrency bugs that handing a single  
+> stream to multiple Requests will present.
+
+Makes sense. I'm not going to write it today, though. I might once  
+things calm down around here (hopefully next week) unless someone  
+beats me to it.
+
+By the way, there's something funny going on with mail headers from  
+you -> the list -> me. The "To:" header I see is this:
+
+     To: Discussion@calvin.slamb.org, of@calvin.slamb.org,
+         twisted.web@calvin.slamb.org, Nevow@calvin.slamb.org,
+         and Woven <twisted-web@twistedmatrix.com>
+
+I think my SMTP server appends its hostname to "To" parts without  
+one. It probably received this:
+
+     To: Discussion of twisted.web, Nevow, and Woven <twisted- 
+web@twistedmatrix.com>
+
+instead of this:
+
+     To: "Discussion of twisted.web, Nevow, and Woven" <twisted- 
+web@twistedmatrix.com>
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+
+
+From slamb at slamb.org  Fri Sep 23 17:10:09 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Fri Sep 23 17:10:13 2005
+Subject: [Twisted-web] web2.client: Extraneous '\n' in Authorization: header
+Message-ID: <2C2ACE36-AB1E-4588-9787-4C0482720112@slamb.org>
+
+The base64 encoding seems to introduce a newline. There was a strip  
+in this line, but not in the right place to take care of this. (Does  
+strip('') do anything? Is there some other reason to strip _before_  
+base64 encoding?) If the answers to those questions are both "No",  
+this patch fixes it.
+
+I noticed this because I'm sending XML. The server was complaining  
+about my "<?xml ...?>" preamble; apparently the '<' has to be the  
+very first character of an XML document.
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: auth-newline.patch
+Type: application/octet-stream
+Size: 490 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20050923/c7dbb782/auth-newline.obj
+From slamb at slamb.org  Sat Sep 24 10:41:35 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Sat Sep 24 10:41:43 2005
+Subject: [Twisted-web] twisted.web2.stream.IStream.reset()?
+In-Reply-To: <20050923213743.3914.401570084.divmod.quotient.20587@ohm>
+References: <20050923213743.3914.401570084.divmod.quotient.20587@ohm>
+Message-ID: <228E5503-2000-4721-A269-79A72C4B3228@slamb.org>
+
+On 23 Sep 2005, at 14:37, Jp Calderone wrote:
+
+> Many stream sources cannot be rewound.  Implementing reset for  
+> IStream would require many implementations to hold their entire  
+> contents in memory.  This is completely unreasonable.  Creating a  
+> separate interface for streams which could be rewound would avoid  
+> this problem, but at the same time limit the actual implementations  
+> your code could work with to an extreme subset.
+>
+> Instead of extending IStream or creating a new interface, you  
+> probably want to wrap request.stream before passing it to the  
+> request.  The wrapper can take care of providing restartability.   
+> It can also prevent the concurrency bugs that handing a single  
+> stream to multiple Requests will present.
+
+On second, thought, i don't buy this at all. You're saying that this  
+wrapper should provide the buffering itself to provide  
+restartability? Will the data be large / should this buffering happen  
+in memory or on disk? For MemoryStream and FileStream, the answers  
+differ. In both cases, the buffering is silly, though; they have all  
+the information to reset themselves.
+
+CompoundStream, TruncaterStream, and PostTruncaterStream could all be  
+made resettable, provided the streams that they operate on are.
+
+Only ProducerStream differs. I don't think it's unreasonable to say  
+that caller should wrap it before feeding it to web2.client.Request.  
+Only the caller knows whether in-memory or on-disk buffering makes  
+more sense. Maybe neither - if it could be produced once, maybe the  
+best thing is to produce it again.
+
+ProducerStream is already different in that it doesn't  
+support .length. What's another optional operation?
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+
+From slamb at slamb.org  Sat Sep 24 17:16:43 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Sat Sep 24 17:16:47 2005
+Subject: [Twisted-web] [PATCH] web2.client: Extraneous '\n' in
+	Authorization: header
+In-Reply-To: <2C2ACE36-AB1E-4588-9787-4C0482720112@slamb.org>
+References: <2C2ACE36-AB1E-4588-9787-4C0482720112@slamb.org>
+Message-ID: <4C220307-D179-4B08-BB7E-BD4BE450B19C@slamb.org>
+
+Same patch with unit tests. Ready to apply, I believe.
+
+By the way, twisted's "trial" is great. This is the first time I've  
+used it.
+
+Regards,
+Scott
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: auth-newline.patch
+Type: application/octet-stream
+Size: 1509 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20050924/a43a1c84/auth-newline.obj
+-------------- next part --------------
+
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+From exarkun at divmod.com  Sat Sep 24 18:17:47 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Sat Sep 24 18:17:50 2005
+Subject: [Twisted-web] [PATCH] web2.client: Extraneous '\n' in
+	Authorization: header
+In-Reply-To: <4C220307-D179-4B08-BB7E-BD4BE450B19C@slamb.org>
+Message-ID: <20050925001747.3914.497632179.divmod.quotient.20900@ohm>
+
+On Sat, 24 Sep 2005 16:16:43 -0700, Scott Lamb <slamb@slamb.org> wrote:
+>Same patch with unit tests. Ready to apply, I believe.
+>
+>By the way, twisted's "trial" is great. This is the first time I've  used 
+>it.
+>
+
+Thanks a lot, Scott.  Patch applied (with one minor change - b64encode instead of encodestring().strip()).
+
+Jp
+
+(PS - thanks for pointing out that weird mailer behavior, too.  I assume my mailer is getting confused by some header and replying to the wrong place.  I'll have to take a look at it some point)
+
+From slamb at slamb.org  Sat Sep 24 19:06:42 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Sat Sep 24 19:06:48 2005
+Subject: [Twisted-web] [PATCH] Distinct headers per
+	web2.client.HTTPClientFactory
+Message-ID: <8F29602A-DF50-4C1F-ADF2-EC550458DB04@slamb.org>
+
+I was getting failures because my "Authorization:" and "Cookie:"  
+headers were getting shared between all HTTPClientFactory instances.  
+Patch, with unit test.
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: distinct-headers.patch
+Type: application/octet-stream
+Size: 1742 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20050924/a88985d9/distinct-headers.obj
+-------------- next part --------------
+
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+From exarkun at divmod.com  Sat Sep 24 19:27:11 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Sat Sep 24 19:27:13 2005
+Subject: [Twisted-web] [PATCH] Distinct headers per
+	web2.client.HTTPClientFactory
+In-Reply-To: <8F29602A-DF50-4C1F-ADF2-EC550458DB04@slamb.org>
+Message-ID: <20050925012711.3914.1436617986.divmod.quotient.20916@ohm>
+
+On Sat, 24 Sep 2005 18:06:42 -0700, Scott Lamb <slamb@slamb.org> wrote:
+>I was getting failures because my "Authorization:" and "Cookie:"  headers 
+>were getting shared between all HTTPClientFactory instances.  Patch, with 
+>unit test.
+>
+
+Thanks again :)  Patch applied.
+
+Jp
+
+From slamb at slamb.org  Sat Sep 24 23:25:45 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Sat Sep 24 23:25:52 2005
+Subject: [Twisted-web] [PATCH] web2.client: Callback on "no body" requests
+Message-ID: <2B7CCE34-0094-4342-BA5E-6746E1CE8D34@slamb.org>
+
+Got another one. On status 204, among others, my callback is not  
+invoked. Test (just uncommented) and fix.
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: no_body_callback.patch
+Type: application/octet-stream
+Size: 2371 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20050924/e95e2fce/no_body_callback.obj
+-------------- next part --------------
+
+
+Regards,
+Scott
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+From exarkun at divmod.com  Sun Sep 25 10:12:54 2005
+From: exarkun at divmod.com (Jp Calderone)
+Date: Sun Sep 25 10:12:56 2005
+Subject: [Twisted-web] [PATCH] web2.client: Callback on "no body" requests
+In-Reply-To: <2B7CCE34-0094-4342-BA5E-6746E1CE8D34@slamb.org>
+Message-ID: <20050925161254.3914.352960967.divmod.quotient.20926@ohm>
+
+On Sat, 24 Sep 2005 22:25:45 -0700, Scott Lamb <slamb@slamb.org> wrote:
+>Got another one. On status 204, among others, my callback is not  invoked. 
+>Test (just uncommented) and fix.
+>
+
+Thanks, applied.
+
+Jp
+
+From andrea at cpushare.com  Mon Sep 26 09:50:24 2005
+From: andrea at cpushare.com (Andrea Arcangeli)
+Date: Mon Sep 26 09:50:30 2005
+Subject: [Twisted-web] overkill context switches
+Message-ID: <20050926155024.GK10408@opteron.random>
+
+Hello,
+
+when a page that requires _several_ sql queries (through psycopg2) is
+loaded, an overkill amount of context switches happens:
+
+ 0  0      0  18772 614380 227500    0    0     0    20 1037    55  0  0 99  1
+ 0  0      0  18772 614380 227500    0    0     0     0 1035    48  0  0 100  0
+ 1  0      0  18772 614380 227500    0    0     0     0 1032 24613 17 31 53  0
+ 0  0      0  18764 614380 227500    0    0     0     0 1086  6766 20  6 75  0
+ 0  0      0  18764 614380 227500    0    0     0     0 1133    64  1  0 99  0
+
+These shall be thread switches, otherwise I doubt my slow server system would
+be able to schedule 24k times per second and still provide decent performance.
+
+However those useless context switches are certainly wasting quite some cpu. So
+I'd like to fix this.
+
+There's an huge number of futex(FUTEX_WAKE) call in the strace, python calls
+futex_wake even when you simply invoke it with `python` from the shell (it
+makes no sense to call futex syscall until the first pthread_create is called,
+so this is certainly suboptimal but I'm unsure if it's related to the
+context switches, a flood of futex calls would just waste tonds of cpu
+with enter/exit kernels without necessairly switch the task). The point
+of futex is exactly to avoid entering the kernel in the fast path so
+this is all no-sense code.
+
+I could reproduce the overkill context switches even with linuxthreads instead
+of NPTL, so this is probably not a NPTL bug.
+
+It's also probably not a psycopg2 bug because psycopg has no notion of threading.
+
+This should be a python or twisted-thread-pool bug. I'm not sure about the best
+way to track it down, especially because so far I can reproduce it only on the
+server, that is a bit slower and that I cannot use for debugging.
+
+Can people try in their systems to run `vmstat 1` and then to reload
+some complex page, and see if you also get a flood of context switches
+for certainly no good reason?
+
+I wonder if perhaps a select call on the thread is buggy, and it keeps
+yielding the cpu to the other tasks for some reasons. This doesn't seem
+a starvation issue, it seems just that some thread instead of waiting
+keeps looping and trying. So this is noticeable only as a slowdown,
+there is no effective malfunction.
+
+If you can reproduce let me know, otherwise I'll try to debug it in the
+next days (it's not really urgent, since as said it's only a performance
+issue and if the system is under load the caching patches makes it fast
+anyway). OTOH watch the stats, 31% of the cpu is spent in system load,
+those are the context switches for sure, so the page would be rendered
+at least twice as fast if this was fixed, only 17% of the cpu was spent
+in userland rendering the page.
+
+From therve at free.fr  Mon Sep 26 12:44:35 2005
+From: therve at free.fr (Thomas HERVE)
+Date: Mon Sep 26 12:46:28 2005
+Subject: [Twisted-web] Flatten problem in livepage trunk
+In-Reply-To: <20050921225552.zhsyltgt5lmsos8s@itchy.wasabout.net>
+References: <20050921225552.zhsyltgt5lmsos8s@itchy.wasabout.net>
+Message-ID: <20050926204435.v26946709x80s08k@itchy.wasabout.net>
+
+Quoting Thomas HERVE <therve@free.fr>:
+
+> I've managed to make some tests on Livepage in Nevow trunk, and I've found a
+> problem.
+> The following code work without problem :
+>
+> def handle_action(self, ctx):
+>    client = livepage.IClientHandle(ctx)
+>    client.set("mynode", tags.span["test"])
+>
+> But the following don't :
+>
+> def handle_action(self, ctx):
+>    client = livepage.IClientHandle(ctx)
+>    client.set("mynode", [tags.span["test1"], tags.span["test2"]])
+
+I reply to myself because I managed to handle this case by adding 
+types.ListType
+in the __call__ function of livepage._js. But I have another problem : 
+quotes in
+i18n strings are not escaped. For example if I have :
+
+def handle_action(self, ctx):
+   client = livepage.IClientHandle(ctx)
+   client.set("mynode", [tags.span[_("test1")]])
+
+and a locale file :
+
+msgid "test1"
+msgstr "I'm test 1"
+
+I have an error.
+
+I don't know if these feedbacks are useful and/or at the right place... but
+these elements are really important for my use of livepage.
+
+-- 
+Thomas
+
+
+From foom at fuhm.net  Mon Sep 26 13:04:09 2005
+From: foom at fuhm.net (James Y Knight)
+Date: Mon Sep 26 13:04:23 2005
+Subject: [Twisted-web] twisted.web2.stream.IStream.reset()?
+In-Reply-To: <228E5503-2000-4721-A269-79A72C4B3228@slamb.org>
+References: <20050923213743.3914.401570084.divmod.quotient.20587@ohm>
+	<228E5503-2000-4721-A269-79A72C4B3228@slamb.org>
+Message-ID: <8C5BADCB-AD60-4119-9F78-A7FC85A9DFB3@fuhm.net>
+
+On Sep 24, 2005, at 12:41 PM, Scott Lamb wrote:
+> On second, thought, i don't buy this at all. You're saying that  
+> this wrapper should provide the buffering itself to provide  
+> restartability? Will the data be large / should this buffering  
+> happen in memory or on disk? For MemoryStream and FileStream, the  
+> answers differ. In both cases, the buffering is silly, though; they  
+> have all the information to reset themselves.
+
+Doing any sort of automatic buffering is going to be a bad solution,  
+because you won't be able to discard the buffer until you've got the  
+final response from the other side, which may not happen until you've  
+sent all 20GB of data, two days from now. If the server is well- 
+designed, it will send an authorization denied error before you've  
+uploaded everything, but you cannot rely on that. And you really  
+don't really want to have the server buffer all that data for two  
+days. Of course, you also don't want to upload it twice, but some  
+things you've just gotta live with. So, anyhow, I think any buffering  
+must be explicit so the developer has to explicitly ask to shoot  
+themselves in the foot.
+
+Also, I've tried to keep the stream API and implementation relatively  
+simple and easy to understand. Some bits of it do get complicated  
+already, but I think adding reset will complicate it quite a bit  
+further for any non-trivial stream. So, what do you do? Probably it'd  
+be best to pass something from which you can get a stream, rather  
+than a stream itself. Thus if you need to get the stream again, you  
+can call the function again. No muss, no fuss.
+
+James
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20050926/a3e9dee3/attachment.htm
+From andrew-twisted at puzzling.org  Mon Sep 26 18:25:01 2005
+From: andrew-twisted at puzzling.org (Andrew Bennetts)
+Date: Mon Sep 26 18:25:09 2005
+Subject: [Twisted-web] overkill context switches
+In-Reply-To: <20050926155024.GK10408@opteron.random>
+References: <20050926155024.GK10408@opteron.random>
+Message-ID: <20050927002501.GC24353@trogdor.home.puzzling.org>
+
+On Mon, Sep 26, 2005 at 05:50:24PM +0200, Andrea Arcangeli wrote:
+[...]
+> This should be a python or twisted-thread-pool bug. I'm not sure about the best
+> way to track it down, especially because so far I can reproduce it only on the
+> server, that is a bit slower and that I cannot use for debugging.
+
+Twisted's threadpools are pretty straightforward wrappers around Python's
+threading module.  See twisted.python.threadpool.
+
+I'd expect you could reproduce this with a simple python script that starts
+two threads, with one putting items on a Queue.Queue, and the other reading
+them off, as a simple approximation of the threadpool arrangement.
+
+In fact, here's a script that does this:
+
+----
+import threading
+import Queue
+
+q = Queue.Queue()
+
+def producer():
+    # Count from 0 to 99, over and over.
+    i = 0
+    while True:
+        q.put(i)
+        i += 1
+        i %= 100
+
+
+def consumer():
+    while True:
+        i = q.get()
+        i * 2
+
+p = threading.Thread(target=producer)
+c = threading.Thread(target=consumer)
+p.setDaemon(True)
+c.setDaemon(True)
+p.start()
+c.start()
+
+import time; time.sleep(10)
+----
+
+vmstat reports lines like:
+
+ 1  1 350740  18828  38260 204880    0    0  2696     0 1099 100315 83 17  0  0
+ 3  2 350740  16852  38336 206760    0    0  1956    20 1133 100174 86 14  0  0
+ 1  1 350740  15116  38444 208352    0    0  1684   592 1106 99901 85 15  0  0
+ 1  1 350740  12760  38520 210640    0    0  2364     0 1119 100183 87 13  0  0
+ 1  1 350740  11024  38612 212336    0    0  1792     0 1123 100255 85 15  0  0
+ 1  1 350740   9048  38696 214216    0    0  1964     0 1129 100057 85 15  0  0
+
+(it also appears that the producer adds to the queue faster than the consumer
+gets from it.  Doesn't really matter, aside from the memory cost.)
+
+I don't see it with a simple script that has two threads running in parallel
+with no inter-thread communication at all, however.  I'd say the place to
+look is Python's implementation of thread synchronisation primitives.
+
+-Andrew.
+
+
+From mary-twisted at puzzling.org  Mon Sep 26 18:28:43 2005
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Mon Sep 26 18:28:46 2005
+Subject: [Twisted-web] Reminder: Virtual Twisted Sprint, 8-9 October
+Message-ID: <20050927002843.GW1012@home.puzzling.org>
+
+Just a reminder for everyone that there will be a bunch of people online
+on the weekend of 8-9 October working their hearts out on the Twisted
+codebase. All participants welcome, people unfamiliar with the codebase
+will need to be a bit self-motivated though in terms of being willing to
+find their own problem to work on (check the bug tracker for ideas).
+We're particularly keen for people who would be interested in adding
+unti tests.
+
+Sprinting discussion will be in #twisted and #twisted.web on
+freenode.net. There should be people around at most times.
+
+-Mary
+
+-- 
+<e@ircnet> on the internet the concepts of time and space lose meaning
+
+From general at eepatents.com  Mon Sep 26 21:39:58 2005
+From: general at eepatents.com (Ed Suominen)
+Date: Mon Sep 26 21:40:14 2005
+Subject: [Twisted-web] Reminder: Virtual Twisted Sprint, 8-9 October
+In-Reply-To: <20050927002843.GW1012@home.puzzling.org>
+References: <20050927002843.GW1012@home.puzzling.org>
+Message-ID: <1127792399.9677.56.camel@207-118-71-185.dyn.centurytel.net>
+
+I'm a regular grump on #twisted about the overall lack of docstrings in
+Twisted. I'd be willing to participate by offering docstrings for
+specific classes/methods if there's a general interest and willingness
+to incorporate them. What would be the preferred way to pass them on for
+review and commit, given that "all participants [are] welcome" but that
+I lack commit access and would rather not jump through the bug tracker
+hoops for every single docstring written?
+
+Best regards,
+Ed Suominen
+
+On Tue, 2005-09-27 at 10:28 +1000, Mary Gardiner wrote:
+> Just a reminder for everyone that there will be a bunch of people online
+> on the weekend of 8-9 October working their hearts out on the Twisted
+> codebase. All participants welcome, people unfamiliar with the codebase
+> will need to be a bit self-motivated though in terms of being willing to
+> find their own problem to work on (check the bug tracker for ideas).
+> We're particularly keen for people who would be interested in adding
+> unti tests.
+> 
+> Sprinting discussion will be in #twisted and #twisted.web on
+> freenode.net. There should be people around at most times.
+> 
+> -Mary
+> 
+
+
+From mary-twisted at puzzling.org  Mon Sep 26 21:47:04 2005
+From: mary-twisted at puzzling.org (Mary Gardiner)
+Date: Mon Sep 26 21:47:07 2005
+Subject: [Twisted-web] Reminder: Virtual Twisted Sprint, 8-9 October
+In-Reply-To: <1127792399.9677.56.camel@207-118-71-185.dyn.centurytel.net>
+References: <20050927002843.GW1012@home.puzzling.org>
+	<1127792399.9677.56.camel@207-118-71-185.dyn.centurytel.net>
+Message-ID: <20050927034704.GC1012@home.puzzling.org>
+
+On Mon, Sep 26, 2005, Ed Suominen wrote:
+> would rather not jump through the bug tracker hoops for every single
+> docstring written?
+
+Discussion moved to twisted-python only.
+
+-Mary
+
+-- 
+<z3D> dash: yup ... remember the word 'enterprise' ?
+<dash> z3D: YES! it is one of my favorite words
+
+From tv at twistedmatrix.com  Tue Sep 27 02:36:43 2005
+From: tv at twistedmatrix.com (Tommi Virtanen)
+Date: Tue Sep 27 02:36:51 2005
+Subject: [Twisted-web] Flatten problem in livepage trunk
+In-Reply-To: <20050926204435.v26946709x80s08k@itchy.wasabout.net>
+References: <20050921225552.zhsyltgt5lmsos8s@itchy.wasabout.net>
+	<20050926204435.v26946709x80s08k@itchy.wasabout.net>
+Message-ID: <4339049B.70400@twistedmatrix.com>
+
+Thomas HERVE wrote:
+> [...] But I have another problem :
+> quotes in
+> i18n strings are not escaped. For example if I have :
+> 
+> def handle_action(self, ctx):
+>   client = livepage.IClientHandle(ctx)
+>   client.set("mynode", [tags.span[_("test1")]])
+> 
+> and a locale file :
+> 
+> msgid "test1"
+> msgstr "I'm test 1"
+
+If you can reproduce that without livepage, I can fix it.
+I can't help with livepage, though. _('test1') returns an
+object that when flattened becomes the string "I'm test 1".
+That should be reproducible without with i18n:
+
+class Dummy(object):
+    pass
+def flatter(o):
+    return "Hi! I've got a quote!"
+flat.registerFlattener('flatter', 'Dummy')
+
+def handle_action(self, ctx):
+    client = livepage.IClientHandle(ctx)
+    client.set("mynode", [tags.span[Dummy()]])
+
+From andrea at cpushare.com  Tue Sep 27 04:07:02 2005
+From: andrea at cpushare.com (Andrea Arcangeli)
+Date: Tue Sep 27 04:07:08 2005
+Subject: [Twisted-web] overkill context switches
+In-Reply-To: <20050927002501.GC24353@trogdor.home.puzzling.org>
+References: <20050926155024.GK10408@opteron.random>
+	<20050927002501.GC24353@trogdor.home.puzzling.org>
+Message-ID: <20050927100702.GQ10408@opteron.random>
+
+On Tue, Sep 27, 2005 at 10:25:01AM +1000, Andrew Bennetts wrote:
+> On Mon, Sep 26, 2005 at 05:50:24PM +0200, Andrea Arcangeli wrote:
+> [...]
+> > This should be a python or twisted-thread-pool bug. I'm not sure about the best
+> > way to track it down, especially because so far I can reproduce it only on the
+> > server, that is a bit slower and that I cannot use for debugging.
+> 
+> Twisted's threadpools are pretty straightforward wrappers around Python's
+> threading module.  See twisted.python.threadpool.
+> 
+> I'd expect you could reproduce this with a simple python script that starts
+> two threads, with one putting items on a Queue.Queue, and the other reading
+> them off, as a simple approximation of the threadpool arrangement.
+> 
+> In fact, here's a script that does this:
+> 
+> ----
+> import threading
+> import Queue
+> 
+> q = Queue.Queue()
+> 
+> def producer():
+>     # Count from 0 to 99, over and over.
+>     i = 0
+>     while True:
+>         q.put(i)
+>         i += 1
+>         i %= 100
+> 
+> 
+> def consumer():
+>     while True:
+>         i = q.get()
+>         i * 2
+> 
+> p = threading.Thread(target=producer)
+> c = threading.Thread(target=consumer)
+> p.setDaemon(True)
+> c.setDaemon(True)
+> p.start()
+> c.start()
+> 
+> import time; time.sleep(10)
+> ----
+> 
+> vmstat reports lines like:
+> 
+>  1  1 350740  18828  38260 204880    0    0  2696     0 1099 100315 83 17  0  0
+>  3  2 350740  16852  38336 206760    0    0  1956    20 1133 100174 86 14  0  0
+>  1  1 350740  15116  38444 208352    0    0  1684   592 1106 99901 85 15  0  0
+>  1  1 350740  12760  38520 210640    0    0  2364     0 1119 100183 87 13  0  0
+>  1  1 350740  11024  38612 212336    0    0  1792     0 1123 100255 85 15  0  0
+>  1  1 350740   9048  38696 214216    0    0  1964     0 1129 100057 85 15  0  0
+> 
+> (it also appears that the producer adds to the queue faster than the consumer
+> gets from it.  Doesn't really matter, aside from the memory cost.)
+> 
+> I don't see it with a simple script that has two threads running in parallel
+> with no inter-thread communication at all, however.  I'd say the place to
+> look is Python's implementation of thread synchronisation primitives.
+
+Thanks for the example but the above looks quite normal and expected,
+this passes a token at a fast rate from one thread to the next. In my
+workload there are say 5/6 queries, two through pb, the others through
+psycopg2, so it should schedule a dozen times, not 20k times.
+
+If I were to pass 10k separate tokens (similar to above testcase) then
+20k schedules would have been normal.
+
+I even tried pgasync and it also schedules >20k times. I tracked it down
+by executing multiple sql queries simultaneously. So now I wonder if
+it's postgres scheduling so fast and not twisted... Unfortunately
+I have no kernel knob installed to know who is scheduling so fast and
+strace alters the runtime as well.
+
+I'll try to serialize the sql queries, so that no more than one query
+runs at once, and I guess that'll fix it just fine. (working on making
+this change right now)
+
+It still looks to me that something could be optimized because on such a
+basic workload that many schedules are not needed (the futex syscalls
+as well makes no sense, especially with pgasync) but perhaps that's not
+on the twisted side that generates the overscheduling.
+
+From andrea at cpushare.com  Tue Sep 27 04:41:00 2005
+From: andrea at cpushare.com (Andrea Arcangeli)
+Date: Tue Sep 27 04:41:06 2005
+Subject: [Twisted-web] overkill context switches
+In-Reply-To: <20050927100702.GQ10408@opteron.random>
+References: <20050926155024.GK10408@opteron.random>
+	<20050927002501.GC24353@trogdor.home.puzzling.org>
+	<20050927100702.GQ10408@opteron.random>
+Message-ID: <20050927104100.GS10408@opteron.random>
+
+On Tue, Sep 27, 2005 at 12:07:02PM +0200, Andrea Arcangeli wrote:
+> I'll try to serialize the sql queries, so that no more than one query
+> runs at once, and I guess that'll fix it just fine. (working on making
+> this change right now)
+
+that fixed it:
+
+ 0  0      0  21776 300076 488504    0    0     0     0 1037    53  0  0 100  0
+ 0  0      0  21776 300076 488504    0    0     0     0 1032    49  0  0 100  0
+ 1  0      0  21712 300084 488496    0    0     0     4 1040   243 11 26 64  0
+ 0  0      0  21704 300084 488496    0    0     0     0 1054    81 18 25 58  0
+ 0  0      0  21704 300084 488496    0    0     0     0 1103    62  1  0 99  0
+ 0  0      0  21704 300084 488496    0    0     0     0 1088    61  0  0 100  0
+
+it's not scheduling anymore at fast rate. Apparently invoking multiple queries
+at the same time to the db through different threads each one returning to a
+different deferred, triggers the overscheduling. Perhaps it's not a bug, but it
+certainly isn't a feature either ;)
+
+From therve at free.fr  Tue Sep 27 11:37:12 2005
+From: therve at free.fr (Thomas HERVE)
+Date: Tue Sep 27 11:39:08 2005
+Subject: [Twisted-web] Flatten problem in livepage trunk
+In-Reply-To: <4339049B.70400@twistedmatrix.com>
+References: <20050921225552.zhsyltgt5lmsos8s@itchy.wasabout.net>
+	<20050926204435.v26946709x80s08k@itchy.wasabout.net>
+	<4339049B.70400@twistedmatrix.com>
+Message-ID: <20050927193712.3n3pfiotdy8kscs0@itchy.wasabout.net>
+
+Quoting Tommi Virtanen <tv@twistedmatrix.com>:
+>
+> If you can reproduce that without livepage, I can fix it.
+> I can't help with livepage, though.
+
+Unfortunately (well... or not), it's not a i18n problem, it's really a 
+livepage
+problem. Livepage didn't handle i18n on 0.4.1 either, but a workaroud was
+possible (and  not too complicated).
+
+> _('test1') returns an
+> object that when flattened becomes the string "I'm test 1".
+> That should be reproducible without with i18n:
+>
+> class Dummy(object):
+>    pass
+> def flatter(o):
+>    return "Hi! I've got a quote!"
+> flat.registerFlattener('flatter', 'Dummy')
+>
+> def handle_action(self, ctx):
+>    client = livepage.IClientHandle(ctx)
+>    client.set("mynode", [tags.span[Dummy()]])
+
+Yes it reproduces the problem. I think you've got the point. Livepage can
+simple-quote objects when _js called, but it didn't escape it when it's more
+complex (typically, i18n or own flatten).
+
+-- 
+Thomas
+
+
+From psanchez at nortel.com  Tue Sep 27 15:27:56 2005
+From: psanchez at nortel.com (Pedro Sanchez)
+Date: Tue Sep 27 15:24:01 2005
+Subject: [Twisted-web] How to render an empty stan tag in Nevow
+Message-ID: <1127856476.31072.28.camel@pcard0ze.ca.nortel.com>
+
+Hello,
+
+I have a situation like this:
+
+class myPage(rend.Page):
+
+    def render_salute(self, context, data):
+	rv = <something-I-don't-know>
+        if <condition>:
+           rv = loaders.stan(T.p['You made it'])
+        return rv
+
+    docFactory = loaders.stan(
+	....
+	T.invisible(render=T.directive('salute'))
+        ....
+
+What I want in render_salute is to return 'nothing' if <condition> is
+false. Basically, as if the T.invisible in the docFactory didn't exist.
+I've tried
+  <something-I-don't-know> = loaders.stan(T.p[''])
+but it has the side effect of forcing a line break which is undesirable
+(in my real code the T.invisible is inside a table cell). Even returning
+a &nbsp; string would do it! 
+
+Any suggestions?
+
+Thanks,
+
+-- 
+Pedro
+
+
+
+From slamb at slamb.org  Tue Sep 27 16:00:45 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Tue Sep 27 16:01:14 2005
+Subject: [Twisted-web] overkill context switches
+In-Reply-To: <20050927100702.GQ10408@opteron.random>
+References: <20050926155024.GK10408@opteron.random>
+	<20050927002501.GC24353@trogdor.home.puzzling.org>
+	<20050927100702.GQ10408@opteron.random>
+Message-ID: <D385CC5A-7572-44DB-8164-D1171BFDE527@slamb.org>
+
+On Sep 27, 2005, at 3:07 AM, Andrea Arcangeli wrote:
+
+> So now I wonder if
+> it's postgres scheduling so fast and not twisted... Unfortunately
+> I have no kernel knob installed to know who is scheduling so fast and
+> strace alters the runtime as well.
+
+The non-kernel developers among us might just try running PostgreSQL  
+on a different machine. ;)
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+
+
+From matt at pollenation.net  Tue Sep 27 16:13:23 2005
+From: matt at pollenation.net (Matt Goodall)
+Date: Tue Sep 27 16:13:24 2005
+Subject: [Twisted-web] How to render an empty stan tag in Nevow
+In-Reply-To: <1127856476.31072.28.camel@pcard0ze.ca.nortel.com>
+References: <1127856476.31072.28.camel@pcard0ze.ca.nortel.com>
+Message-ID: <4339C403.7040500@pollenation.net>
+
+Pedro Sanchez wrote:
+
+>Hello,
+>
+>I have a situation like this:
+>
+>class myPage(rend.Page):
+>
+>    def render_salute(self, context, data):
+>	rv = <something-I-don't-know>
+>        if <condition>:
+>           rv = loaders.stan(T.p['You made it'])
+>        return rv
+>
+>    docFactory = loaders.stan(
+>	....
+>	T.invisible(render=T.directive('salute'))
+>        ....
+>
+>What I want in render_salute is to return 'nothing' if <condition> is
+>false. Basically, as if the T.invisible in the docFactory didn't exist.
+>I've tried
+>  <something-I-don't-know> = loaders.stan(T.p[''])
+>but it has the side effect of forcing a line break which is undesirable
+>(in my real code the T.invisible is inside a table cell). Even returning
+>a &nbsp; string would do it! 
+>
+>Any suggestions?
+>  
+>
+return ''
+
+Semantically, "return None" is better but the Big Red None is such a
+useful debugging aid that returning the emptry string is used to
+indicate HTML nothingness.
+
+- Matt
+
+
+From andrea at cpushare.com  Thu Sep 29 07:02:53 2005
+From: andrea at cpushare.com (Andrea Arcangeli)
+Date: Thu Sep 29 07:02:59 2005
+Subject: [Twisted-web] overkill context switches
+In-Reply-To: <D385CC5A-7572-44DB-8164-D1171BFDE527@slamb.org>
+References: <20050926155024.GK10408@opteron.random>
+	<20050927002501.GC24353@trogdor.home.puzzling.org>
+	<20050927100702.GQ10408@opteron.random>
+	<D385CC5A-7572-44DB-8164-D1171BFDE527@slamb.org>
+Message-ID: <20050929130253.GO10408@opteron.random>
+
+On Tue, Sep 27, 2005 at 03:00:45PM -0700, Scott Lamb wrote:
+> The non-kernel developers among us might just try running PostgreSQL  
+> on a different machine. ;)
+
+eheh ;)
+
+If I could have reproduced it locally I would have tried it, but on the
+remote server behind firewalls to try that it would have been tricky and
+the extremely different timings and huge latency of connecting to the
+sql server through the internet would have probably invalidate the
+results.
+
+Anyway it's fixed now by making serial requests to the db, so I tend to
+think it was postgres and not twisted and so I apologise for the noise.
+
+A full vacuum with analyse (vaccumdb -z -f) also halved the time it
+takes to nevow to render the page.
+
+From slamb at slamb.org  Thu Sep 29 21:00:05 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Thu Sep 29 21:00:32 2005
+Subject: [Twisted-web] [PATCH] Fix web2.client auth on Python 2.3
+Message-ID: <5D90A925-8FEF-46C6-B540-7D7CD561FBB6@slamb.org>
+
+The base64.b64encode() method doesn't seem to exist on Python 2.3. So  
+I've switched it back to encodestring(...).strip().
+
+I'm curious why buildbot didn't pick this up, since there is an  
+existing unit test. web2 isn't in the setup.py list; maybe it should  
+be? How does buildbot work?
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: auth-python23.patch
+Type: application/octet-stream
+Size: 473 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20050929/dfae2515/auth-python23.obj
+-------------- next part --------------
+
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+From andrew-twisted at puzzling.org  Thu Sep 29 21:45:10 2005
+From: andrew-twisted at puzzling.org (Andrew Bennetts)
+Date: Thu Sep 29 21:45:15 2005
+Subject: [Twisted-web] [PATCH] Fix web2.client auth on Python 2.3
+In-Reply-To: <5D90A925-8FEF-46C6-B540-7D7CD561FBB6@slamb.org>
+References: <5D90A925-8FEF-46C6-B540-7D7CD561FBB6@slamb.org>
+Message-ID: <20050930034510.GP24353@trogdor.home.puzzling.org>
+
+On Thu, Sep 29, 2005 at 08:00:05PM -0700, Scott Lamb wrote:
+> The base64.b64encode() method doesn't seem to exist on Python 2.3. So  
+> I've switched it back to encodestring(...).strip().
+> 
+> I'm curious why buildbot didn't pick this up, since there is an  
+> existing unit test. web2 isn't in the setup.py list; maybe it should  
+> be? How does buildbot work?
+
+As you can see at e.g.
+http://twistedmatrix.com/buildbot/full-2.3/builds/801/shell/0, buildbot is
+configured to run "python2.3 -Wall ./bin/trial -to --recurse --random=0
+twisted" in the root of the SVN checkout.  This should find and run all
+tests in the twisted/ directory.  It doesn't use setup.py, it just directly
+looks through the subdirectories.  See the trial docs/source for details.
+
+-Andrew.
+
+
+From slamb at slamb.org  Thu Sep 29 22:35:19 2005
+From: slamb at slamb.org (Scott Lamb)
+Date: Thu Sep 29 22:35:24 2005
+Subject: [Twisted-web] [PATCH] Fix web2.client auth on Python 2.3
+In-Reply-To: <20050930034510.GP24353@trogdor.home.puzzling.org>
+References: <5D90A925-8FEF-46C6-B540-7D7CD561FBB6@slamb.org>
+	<20050930034510.GP24353@trogdor.home.puzzling.org>
+Message-ID: <3B8BA38C-E021-4063-AA7F-F9E33D6055EB@slamb.org>
+
+
+On 29 Sep 2005, at 20:45, Andrew Bennetts wrote:
+
+> On Thu, Sep 29, 2005 at 08:00:05PM -0700, Scott Lamb wrote:
+>> 've switched it back to encodestring(...).strip().
+>>
+>> I'm curious why buildbot didn't pick this up, since there is an
+>> existing unit test. web2 isn't in the setup.py list; maybe it should
+>> be? How does buildbot work?
+>>
+>
+> As you can see at e.g.
+> http://twistedmatrix.com/buildbot/full-2.3/builds/801/shell/0,  
+> buildbot is
+> configured to run "python2.3 -Wall ./bin/trial -to --recurse -- 
+> random=0
+> twisted" in the root of the SVN checkout.  This should find and run  
+> all
+> tests in the twisted/ directory.  It doesn't use setup.py, it just  
+> directly
+> looks through the subdirectories.  See the trial docs/source for  
+> details.
+
+Thanks. So it would pick it up...except buildbot's working on trunk,  
+and this is on the web2-client branch.
+
+-- 
+Scott Lamb <http://www.slamb.org/>
+
+

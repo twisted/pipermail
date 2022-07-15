@@ -1,0 +1,410 @@
+From Eric.Chamberlain at zonarsystems.com  Thu Mar 10 00:50:18 2011
+From: Eric.Chamberlain at zonarsystems.com (Eric Chamberlain)
+Date: Wed, 9 Mar 2011 21:50:18 -0800
+Subject: [Twisted-web] Question regarding callLater() and service creation
+Message-ID: <8C8A186C-A56B-4354-BC73-C4B60020BB4C@zonarsystems.com>
+
+I'm creating a service using Twisted.  It has nothing to do with networking (I know that Twisted is an event-driven networking engine... stay with me here :).  It's simply polling a database every 30 seconds.  I'm using callLater() once the work has been completed.  My question is does the reactor spawn a new thread once the callLater() timeout has been reached?  If so, this would mean that the work being done may be effected by the GIL, correct?
+
+I may make more services like this where Twisted is used to create the service.  These services may do a lot of heavy lifting... and may have nothing to do with networking.  However, I like the fact that Twisted gives me a base for creating services.  I also like the fact that if I do any network related services I'm using the same lib... which will use the same method to launch the service, etc.
+
+Even with all of these pros I still feel like I may be using the wrong tool for the job.  Maybe I answered my own question... for non-network related services, services that will do a lot of heavy lifting, etc. fork a process (there are plenty of classes out there that daemonize scripts easily enough) and use Twisted for all event-driven networking related services.
+
+I'd be interested to know what you guys think.  Thanks in an advance!
+
+Eric Chamberlain
+
+Confidentiality Notice: This e-mail may contain proprietary information some of which may be legally privileged. It is for the intended recipient(s) only. If you believe that it has been sent to you in error, please notify the sender by reply e-mail and delete the message. Any disclosure, copying, distribution or use of this information by someone other than the intended recipient(s) is prohibited and may be unlawful.
+
+
+From cell at phunware.com  Tue Mar 29 21:21:03 2011
+From: cell at phunware.com (Jason Pepas)
+Date: Tue, 29 Mar 2011 20:21:03 -0500
+Subject: [Twisted-web] integrating inotify into a protocol
+Message-ID: <AANLkTi=bNsyRkyik4QFfScE3LhW5gQHHO-9djbTMBzZY@mail.gmail.com>
+
+hey guys,
+
+I'm new to twisted, and I'm trying to figure out how to integrate the
+inotify support into a client protocol.
+
+let's say I have a client protocol which connects to a server and
+stays connected, like the "Echo" example here:
+http://twistedmatrix.com/documents/10.2.0/core/howto/clients.html#auto3
+
+I've taken that example a tweaked it so that it echos back to the
+server, rather than to stdout (see echo.py, attached), and takes its
+port number as sys.argv[1].
+
+now, I can start the "server":
+
+
+  $ cat | socat - tcp4-listen:1234
+
+
+and start the client:
+
+
+  $ python echo.py 1234
+  Started to connect.
+  Connected.
+
+
+and if I type something into the server, it gets printed on client's
+stdout, and then echoed back to the server:
+
+
+  $ cat | socat - tcp4-listen:1234
+  blah
+  blah
+
+  $ python foo.py 1234
+  Started to connect.
+  Connected.
+  blah
+
+
+life is good.
+
+now, let's say I want to integrate inotify support into my persistent
+client.  let's say that whenever a new file appears in /tmp, I want to
+client to announce this file to the server, over its persistent
+connection.  accordingly, I've added 'def announceNewFile()' to the
+Echo() protocol class (see echo_inotify, attached).
+
+but herein lies the rub: the inotify notifier just takes a list of
+callback functions, not a list of objects.  so how can I get the
+notifier to call a method on my Echo protocol object?
+
+another way to say this is that the protocol/client/factory side of
+things is all object-oriented, but the inotify side of things is just
+procedural.  n'ere the twain shall meet?
+
+specifically, the notifier expects the callback to accept 3 args:
+_Watch object, path, and mask.  so, when you try to pass in a class
+method as one of its callbacks, you get something like this:
+
+  exceptions.TypeError: unbound method announceNewFile() must be
+called with Echo instance as first argument (got _Watch instance
+instead)
+
+halp?
+
+-jason
+-------------- next part --------------
+from twisted.internet.protocol import Protocol, ClientFactory
+from sys import stdout
+
+class Echo(Protocol):
+    def dataReceived(self, data):
+        stdout.write(data)
+        self.transport.write(data)
+
+    def announceNewFile(self, watch_obj, path, mask):
+        # problem!!! the inotify callback sends three args (watch_obj, path, mask)
+        # but we require a reference to self.  halp?
+        self.transport.write(msg)
+
+class EchoClientFactory(ClientFactory):
+    def startedConnecting(self, connector):
+        print 'Started to connect.'
+
+    def buildProtocol(self, addr):
+        print 'Connected.'
+        return Echo()
+
+    def clientConnectionLost(self, connector, reason):
+        print 'Lost connection.  Reason:', reason
+
+    def clientConnectionFailed(self, connector, reason):
+        print 'Connection failed. Reason:', reason
+
+if __name__ == "__main__":
+    from twisted.internet import reactor, inotify
+    from twisted.python import filepath
+    import sys
+    reactor.connectTCP("localhost", int(sys.argv[1]), EchoClientFactory())
+
+    notifier = inotify.INotify()
+    notifier.startReading()
+    watch_mask = inotify.IN_CREATE
+    notifier.watch(filepath.FilePath("/tmp"), mask=watch_mask, callbacks=[Echo.announceNewFile])
+    # again, there is no way for notifier to actually call the announceNewFile
+    # method on an Echo() object, because it doesn't have an Echo() object.  lolwut?
+
+    # speaking generally, the protocol/client/factory situation is all object-oriented,
+    # but the inotify stuff if procedure (ie, just a callback function).  how does one
+    # reconcile these two realms?
+    
+    reactor.run()
+-------------- next part --------------
+from twisted.internet.protocol import Protocol, ClientFactory
+from sys import stdout
+
+class Echo(Protocol):
+    def dataReceived(self, data):
+        stdout.write(data)
+        self.transport.write(data)
+
+class EchoClientFactory(ClientFactory):
+    def startedConnecting(self, connector):
+        print 'Started to connect.'
+
+    def buildProtocol(self, addr):
+        print 'Connected.'
+        return Echo()
+
+    def clientConnectionLost(self, connector, reason):
+        print 'Lost connection.  Reason:', reason
+
+    def clientConnectionFailed(self, connector, reason):
+        print 'Connection failed. Reason:', reason
+
+if __name__ == "__main__":
+    from twisted.internet import reactor, inotify
+    from twisted.python import filepath
+    import sys
+    reactor.connectTCP("localhost", int(sys.argv[1]), EchoClientFactory())
+    reactor.run()
+
+From p.mayers at imperial.ac.uk  Wed Mar 30 05:49:15 2011
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Wed, 30 Mar 2011 10:49:15 +0100
+Subject: [Twisted-web] integrating inotify into a protocol
+In-Reply-To: <AANLkTi=bNsyRkyik4QFfScE3LhW5gQHHO-9djbTMBzZY@mail.gmail.com>
+References: <AANLkTi=bNsyRkyik4QFfScE3LhW5gQHHO-9djbTMBzZY@mail.gmail.com>
+Message-ID: <4D92FC9B.2090807@imperial.ac.uk>
+
+On 03/30/2011 02:21 AM, Jason Pepas wrote:
+
+> another way to say this is that the protocol/client/factory side of
+> things is all object-oriented, but the inotify side of things is just
+> procedural.  n'ere the twain shall meet?
+>
+> specifically, the notifier expects the callback to accept 3 args:
+> _Watch object, path, and mask.  so, when you try to pass in a class
+> method as one of its callbacks, you get something like this:
+>
+>    exceptions.TypeError: unbound method announceNewFile() must be
+> called with Echo instance as first argument (got _Watch instance
+> instead)
+
+Well, sure. You need to pass in an *instance* method, not a class method 
+i.e. only once your Echo protocol class has been instantiated, do:
+
+class Echo(LineReceiver):
+   def connectionMade(self):
+     inotify.whatever(self.announceNewFile, path, mask)
+
+But if you want >1 client, you'll probably want something a bit more 
+sophisticated. Specifically, you'll probably want to route the inotify 
+callbacks via an instance method on the Factory, then have the Factory 
+maintain a list of all Protocol instances, and fan out the inotify to 
+all the clients.
+
+e.g.
+
+class Echo(...):
+   def connectionMade(self):
+     self.factory.clients.append(self)
+   def connectionLost(self, ...):
+     if self in self.factory.clients:
+       self.factory.clients.remove(self)
+   def announceNewFile(self, ...):
+     whatever
+
+class Factory(...):
+   protocol = Echo
+
+   def __init__(self):
+     self.clients = []
+
+   def announceNewFile(self, *p, **kw):
+     for client in self.clients:
+       client.announceNewFile(*p, **kw)
+
+
+def main():
+   f = Factory()
+   inotify.whatever(f.announceNewFile, path, mask)
+   reactor.listenTCP(port, f)
+   reactor.run()
+
+
+From cell at phunware.com  Wed Mar 30 17:06:32 2011
+From: cell at phunware.com (Jason Pepas)
+Date: Wed, 30 Mar 2011 16:06:32 -0500
+Subject: [Twisted-web] integrating inotify into a protocol
+In-Reply-To: <4D92FC9B.2090807@imperial.ac.uk>
+References: <AANLkTi=bNsyRkyik4QFfScE3LhW5gQHHO-9djbTMBzZY@mail.gmail.com>
+	<4D92FC9B.2090807@imperial.ac.uk>
+Message-ID: <AANLkTim13mU6WWimvzXdtbFxO2vkVyFGLFTeq71CiWH7@mail.gmail.com>
+
+Phil, that's a huge help, thanks so much for pointing me in the right
+direction.  The notion of the factory being persistent and "owning" a
+protocol for each connection was what I needed to wrap my head around
+the problem.
+
+In fact, when I thought about it some more, I realized that the
+factory should "own" the inotify watcher.  This then makes it
+straightforward for the factory to pass in its instance method as
+inotify's callback.
+
+I've implemented your suggestions and retooled my "Echo" example as
+"TmpTell" (attached).  When you run it, it creates several persistent
+clients (one for each port number listed on the command line).  Then,
+each time a file is created in /tmp, each client tells its server
+about the new file.
+
+here's an example usage.
+
+first, start up a "server"
+
+
+ $ socat - tcp4-listen:1234
+
+
+and another:
+
+
+ $ socat - tcp4-listen:1235
+
+
+now start up tmptell:
+
+
+ $ python tmptell.py 1234 1235
+ calling TmpTellClientFactory.__init__
+ calling TmpTellClientFactory.startFactory
+ calling TmpTellClientFactory.startedConnecting
+ calling TmpTellClientFactory.startedConnecting
+ calling TmpTellClientFactory.buildProtocol
+ calling TmpTell.__init__
+ calling TmpTellClientFactory.buildProtocol
+ calling TmpTell.__init__
+
+
+finally, in a third terminal, run 'mktemp':
+
+
+ $ mktemp
+ /tmp/tmp.1xtuY16NKr
+
+
+you will then see this additional output in the tmptell terminal:
+
+
+ calling TmpTellClientFactory.inotifyEventHappened
+ calling TmpTell.announceNewFile
+ calling TmpTell.announceNewFile
+
+
+and your "servers" will look like this:
+
+
+ $ socat - tcp4-listen:1234
+ new file created at FilePath('/tmp/tmp.1xtuY16NKr')
+
+ $ socat - tcp4-listen:1235
+ new file created at FilePath('/tmp/tmp.1xtuY16NKr')
+
+
+if you kill one of the servers with CTRL+c, you see this in the
+tmptell terminal:
+
+
+ calling TmpTell.connectionLost
+ calling TmpTellClientFactory.removeProtocolObject
+ calling TmpTellClientFactory.clientConnectionLost
+
+
+and now we run mktemp a second time:
+
+
+ $ mktemp
+ /tmp/tmp.L5EeFSdXRJ
+
+
+and now tmptell correctly calls announceNewFile just once, instead of twice:
+
+
+ calling TmpTellClientFactory.inotifyEventHappened
+ calling TmpTell.announceNewFile
+
+
+and the server we didn't kill looks like this now:
+
+
+ $ socat - tcp4-listen:1235
+ new file created at FilePath('/tmp/tmp.1xtuY16NKr')
+ new file created at FilePath('/tmp/tmp.L5EeFSdXRJ')
+
+
+Thanks again Phil, I think I've got it now!
+
+-jason
+-------------- next part --------------
+from twisted.internet.protocol import Protocol, ClientFactory
+from sys import stdout
+
+
+class TmpTell(Protocol):
+    def __init__(self, factory):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.factory = factory
+
+    def announceNewFile(self, watch_obj, path, mask):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.transport.write("new file created at %s\n" % path)
+
+    def connectionLost(self, reason):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.factory.removeProtocolObject(self)
+
+
+class TmpTellClientFactory(ClientFactory):
+    def __init__(self, path, mask):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.protocol_objects = []
+        self.watch_path = filepath.FilePath(path)
+        self.watch_mask = mask
+        self.notifier = inotify.INotify()
+
+    def startFactory(self):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.notifier.startReading()
+        self.notifier.watch(self.watch_path, mask=self.watch_mask, callbacks=[self.inotifyEventHappened])
+
+    def startedConnecting(self, connector):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+
+    def buildProtocol(self, addr):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        new_protocol_object = TmpTell(factory=self)
+        self.protocol_objects.append(new_protocol_object)
+        return new_protocol_object
+
+    def inotifyEventHappened(self, watch_obj, path, mask):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        for p in self.protocol_objects:
+            p.announceNewFile(watch_obj, path, mask)
+
+    def clientConnectionLost(self, connector, reason):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+
+    def clientConnectionFailed(self, connector, reason):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+
+    def removeProtocolObject(self, dead_protocol_object):
+        print "calling %s.%s" % (self.__class__.__name__, sys._getframe().f_code.co_name)
+        self.protocol_objects.remove(dead_protocol_object)
+
+if __name__ == "__main__":
+    from twisted.internet import reactor, inotify
+    from twisted.python import filepath
+    import sys
+    factory = TmpTellClientFactory('/tmp', inotify.IN_CREATE)
+    for port in sys.argv[1:]:
+        reactor.connectTCP("localhost", int(port), factory)
+    reactor.run()
+

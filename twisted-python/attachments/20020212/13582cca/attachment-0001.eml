@@ -1,0 +1,152 @@
+[From nobody Mon Jul  6 12:16:22 2009
+Return-Path: &lt;zope3-dev-admin@zope.org&gt;
+Delivered-To: itamar@mail.maxnm.com
+Received: (qmail 9430 invoked by uid 500); 12 Feb 2002 07:05:19 -0000
+Delivered-To: itamar-itamarst.org-twisted@itamarst.org
+Received: (qmail 9427 invoked from network); 12 Feb 2002 07:05:18 -0000
+Received: from mail.python.org (63.102.49.29)
+	by female.israel.maxnm.com with SMTP; 12 Feb 2002 07:05:18 -0000
+Received: from localhost.localdomain ([127.0.0.1] helo=mail.python.org)
+	by mail.python.org with esmtp (Exim 3.21 #1)
+	id 16aV6o-000306-00; Tue, 12 Feb 2002 00:04:02 -0500
+Received: from [63.100.190.94] (helo=shane.zope.com)
+	by mail.python.org with esmtp (Exim 3.21 #1) id 16aV6i-0002zv-00
+	for zope3-dev@zope.org; Tue, 12 Feb 2002 00:03:56 -0500
+Received: from localhost (localhost.localdomain [127.0.0.1])
+	by shane.zope.com (Postfix) with ESMTP
+	id 50FA9F262; Tue, 12 Feb 2002 00:03:42 -0500 (EST)
+From: Shane Hathaway &lt;shane@zope.com&gt;
+X-X-Sender: &lt;shane@localhost.localdomain&gt;
+To: Itamar Shtull-Trauring &lt;twisted@itamarst.org&gt;
+Cc: &lt;zope3-dev@zope.org&gt;
+Subject: Re: [Zope3-dev] Twisted as server
+In-Reply-To: &lt;3C684583.90400@itamarst.org&gt;
+Message-ID: &lt;Pine.LNX.4.33L2.0202112247530.20389-100000@localhost.localdomain&gt;
+MIME-Version: 1.0
+Content-Type: TEXT/PLAIN; charset=US-ASCII
+Sender: zope3-dev-admin@zope.org
+Errors-To: zope3-dev-admin@zope.org
+X-BeenThere: zope3-dev@zope.org
+X-Mailman-Version: 2.0.8 (101270)
+Precedence: bulk
+List-Help: &lt;mailto:zope3-dev-request@zope.org?subject=help&gt;
+List-Post: &lt;mailto:zope3-dev@zope.org&gt;
+List-Subscribe: &lt;http://lists.zope.org/mailman/listinfo/zope3-dev&gt;,
+	&lt;mailto:zope3-dev-request@zope.org?subject=subscribe&gt;
+List-Id: Discuss development of and for Zope3 &lt;zope3-dev.zope.org&gt;
+List-Unsubscribe: &lt;http://lists.zope.org/mailman/listinfo/zope3-dev&gt;,
+	&lt;mailto:zope3-dev-request@zope.org?subject=unsubscribe&gt;
+List-Archive: &lt;http://lists.zope.org/pipermail/zope3-dev/&gt;
+Date: Tue, 12 Feb 2002 00:03:42 -0500 (EST)
+
+On Mon, 11 Feb 2002, Itamar Shtull-Trauring wrote:
+
+&gt; Shane Hathaway wrote:
+&gt;
+&gt;
+&gt; &gt; I don't think Twisted has this kind of capability.  But I suggest that
+&gt; &gt; Twisted *could* have these capabilities.  It would take some refactoring
+&gt; &gt; because a single-threaded event loop is not the right strategy for Zope in
+&gt; &gt; general.  I would be happy to explain how to start.
+&gt;
+&gt; I'd be very interested to hear your thoughs on the subject.
+
+Great!
+
+Well, I went through several designs of the server before I hit on an
+architecture that's clean and easy to write for.  Zope requires some
+pretty specific things of its servers.
+
+DualModeChannel is the base class.  It's an asynchronous channel that lets
+you switch the channel mode to synchronous through a call to &quot;set_sync&quot;.
+In synchronous mode, no asynchronous activity occurs, but you can instead
+read, write, and close the socket directly.  (Of course you have to do
+these things in non-blocking mode.)
+
+There is also a derivative of DualModeChannel called
+SimultaneousModeChannel that actually lets both events and synchronous
+activity occur at the same time, but because of locking it turned out to
+be slower (in my limited testing).  Still, you can re-enable it with an
+environment variable, and in some conditions it might be faster.
+
+Anyway, the first thing I would suggest for Twisted is to make it so the
+channel classes can switch modes like this.  It makes it so connections
+being handled by application threads don't have to wait for an event in
+the main thread, which can be a big deal on a loaded server.
+
+Then come then Buffer classes.  These are probably usable as-is.  The most
+significant part is OverflowableBuffer, which is a FIFO that progresses
+through 4 stages: empty, a small string, a large string, and a
+tempfile-backed buffer.  You can think of it as self-adjusting, where
+small requests are handled quickly while large requests don't eat up RAM
+or virtual memory and don't block application threads.
+
+Next is the threaded task handling.  You can probably just use ITask,
+ITaskDispatcher, and ThreadedTaskDispatcher as they stand.  It's a simple
+framework that lets you just assume that once a task is put in the queue,
+it will either be executed by some thread or canceled.
+
+Then you'll want the separation of request parsing and request handling.
+I believe Twisted has this to a large degree.  One object should accept
+all the data for a transaction, then that object should be passed to the
+constructor of a request handler object.  The request handler is a task
+which either gets executed immediately (if you don't want threads) or put
+on the threaded task dispatcher queue (if you do want threads).
+
+That way, Twisted can operate in either asynchronous *or* threaded mode
+without any changes to applications.  To reiterate, the request handler
+should never try to collect more data from the socket--the request parser
+should have done all that.  For the FTP protocol, for example, each line
+on the control connection would be represented by a separate request
+parser object.  (This has a side effect of making it easy to support
+pipelining!)
+
+ServerBase.ServerChannelBase shows one way to coordinate all this.  Data
+is received asynchronously and pushed to a request parser.  As soon as the
+request parser says it has collected all it needs for one request,
+ServerChannelBase creates a request handler based on the parsed request.
+The handler task is sent to ServerBase.addTask(), which chooses to either
+execute it right away or dispatch to a thread, depending on whether the
+server was given a task dispatcher in its constructor.
+
+The handler task invokes the application.  The application calls
+channel.sync_write(), which fills the output buffer then tries to empty it
+without blocking on I/O.  When the application is finished, if it is
+appropriate to close the socket and the output buffer is empty, the socket
+is closed immediately.
+
+Consequently, requests for things no larger than the kernel's I/O buffers
+are executed with a single context switch and no blocking.  Large
+responses sent to 56k modems don't take up RAM, CPU, or threads, just
+tempfile space.  Malformed requests never hit the application threads.
+It gives you threading with nearly all the benefits of event-driven
+communication.
+
+I think these kinds of changes can be made to Twisted without a big
+rewrite.  Event-driven communication is the hardest part and Twisted does
+that already.  You have to then make sure the request parsers and request
+handlers are different objects.  It's not strictly necessary, but the
+distinction turns out to be extremely helpful.  Finally, put task
+dispatching in the core, and you have a very thread-friendly server.
+
+It also helps a lot to have exhaustive unit tests.  I don't know how
+extensive Twisted's tests are, but I imagine porting the tests in
+Zope/Server/tests/testHTTPServer wouldn't be hard.
+
+There are a couple of little crufty things in Zope.Server that you should
+ignore, like AlternateSocketMapMixin.  It lets you support multiple main
+loops, a feature I needed for one of my little experiments on the side.  I
+hope Twisted has no need of this kind of hack. :-)
+
+Anyway, I hope I didn't talk your ear off. ;-)  I think Twisted is a great
+project, and if you can get it working with threads, maybe we won't have
+to write a new FTP server!
+
+Shane
+
+
+_______________________________________________
+Zope3-dev mailing list
+Zope3-dev@zope.org
+http://lists.zope.org/mailman/listinfo/zope3-dev
+]

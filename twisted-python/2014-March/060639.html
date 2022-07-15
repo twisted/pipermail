@@ -1,0 +1,188 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] object identify and lifecycle in pb
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20object%20identify%20and%20lifecycle%20in%20pb&In-Reply-To=%3CCAKN9TD%2BZTQo2xNpekWu9b6wS10dUat4%3DUMwOZozoFtHS5JtYyQ%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] object identify and lifecycle in pb</H1>
+    <B>Daniel Sank</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20object%20identify%20and%20lifecycle%20in%20pb&In-Reply-To=%3CCAKN9TD%2BZTQo2xNpekWu9b6wS10dUat4%3DUMwOZozoFtHS5JtYyQ%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] object identify and lifecycle in pb">sank.daniel at gmail.com
+       </A><BR>
+    <I>Mon Mar 17 22:10:58 MDT 2014</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#60639">[ date ]</a>
+              <a href="thread.html#60639">[ thread ]</a>
+              <a href="subject.html#60639">[ subject ]</a>
+              <a href="author.html#60639">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Dear Twisted users,
+
+I have been writing a developer library under pb and I've come to a
+problem that I don't know how to solve. I suspect folks here will have
+dealt with similar problems so I want to get your advice. This is a
+long post so I've put specific questions on their own lines.
+
+Suppose we're part of a society of spies. We desire to possess top
+secret Widgets. Widgets can be purchased from a black market, or
+obtained from other spies. Suppose we implement this by having Widget
+inheret from pb.Cacheable. When I buy a Widget from the black market I
+am passed a pb.RemoteCache of that Widget. We use Cacheable so that
+when the Widget receives a top secret message, my RemoteCache is
+notified of the message. Now suppose I give my Widget to my trusted
+co-spy Glyph. On the network this is implemented by passing Glyph a
+RemoteCache of that Widget and by remembering to stop updating my
+RemoteCache, since I'm no longer in posession of the Widget. This
+could be done simply by keeping a .owner attribute on the Widget so
+that it knows whos RemoteCache to update when secret messages come in.
+
+Now suppose it turns out Glyph is a traitor and secretly gives the
+Widget to Mr. Evil. Again, the Widget's .owner attribute changes and
+everything seems hunky dory. The problem comes in when I infiltrate
+Mr. Evil's castle and steal the Widget. The server passes me a
+reference to the Widget which, because of the way pb works, I can
+immediately identify as the same widget I originally gave Glyph,
+allowing me to identify him as a traitor. This is bad because my
+ability to trace the Widget comes from pb, not from my own decision to
+give (or not give) the Widgets distinguishing characteristics.
+
+Q1: Is there a simple solution to this problem?
+
+My idea is to have each Widget implemented as a vanilla object that
+knows nothing about pb or the network, but which can (through
+extension in a subclass) create pb objects as users need them. The
+problem I'm having with that idea is that I haven't figured out a
+reasonable to distribute the network layer objects, particularly in
+cases in which objects &quot;contain&quot; one another. Let's try an example.
+First we have a vanilla Widget
+
+class Widget(object):
+    def __init__(self):
+        owner = None
+
+    def receiveMessage(self, msg):
+        print(&quot;Widget received message: %s&quot;%(msg,))
+
+
+Next we need to extend this object so that it can spawn and interact
+with network-layer objects. To do this we add two features
+
+1) We use a decorator that allows methods to notify other observing
+methods when they are run. For a possible implementation see the
+&quot;obsub&quot; module on PyPI. I have my own implementation for reasons.
+
+2) We add a method that spawns network layer objects.
+
+class FeaturefulWidget(Widget):
+
+    networkClass = WidgetNetwork
+
+    @event #Allows other bound methods to observe this method
+    def receiveMessage(self, msg):
+        return Widget.receiveMessage(self, msg)
+
+    def makeNetworkModel(self):
+        return self.networkClass(self)
+
+    def addCallback(self, methodName, callback):
+        &quot;&quot;&quot;
+        Sign up a callback to be invoked when a method decorated by @event
+        is called
+
+        methodName: the name of the method to be observed on the present object.
+        callback: The thing to call when methodName is invoked.
+        &quot;&quot;&quot;
+        &lt;just trust me that this works&gt;
+
+
+Now we can make the actual cacheable object,
+
+class WidgetNetworkModel(pb.Cacheable):
+    def __init__(self, obj):
+        self.obj = weakref.proxy(obj)
+        # Sign up our receiveMessage method to be called whenever
+        # obj.receiveMessage is called.
+        obj.addCallback(&quot;receiveMessage&quot;, self.receiveMessage)
+        # The usual set of observers needed by a pb.Cacheable
+        self.observers = weakref.WeakKeyDictionary{} #perspective -&gt; observer
+
+    def getStateToCacheAndObserveFor(self, perspective, observer):
+        self.observers[p] = observer
+        # Get state data from the actual object
+        return {'some key': self.obj.someData, etc.}
+
+    def receiveMessage(self, msg):
+        for p in self.observers:
+            &lt;possibly decide whether p should know about this message&gt;
+            self.observers[p].callRemote(&quot;receiveMessage&quot;, msg)
+
+
+and its remote cache,
+
+class WidgetRemoteCache(pb.RemoteCache):
+    def setCopyableState(self, state):
+        for k, v in state.items():
+            setattr(self, k, v)
+
+    def observe_receiveMessage(self, msg):
+        print(&quot;Top secret message received: %s&quot;%(msg,))
+
+
+In an application we would work most directly with FeaturefulWidget.
+When a user gets its hands on a particular instance of
+FeaturefulWidget called myWidget, we would either pass or return
+myWidget.makeNetworkModel().
+
+Q2: Is there a good mental framework we can use to decide when to make
+new network models and when to pass multiple remote references to the
+same one?
+
+Q3: We had a line in getStateToCacheAndObserveFor where we put
+self.obj.someData in a dict to pass over the wire. In many cases
+objects will contain other objects that should be networkified before
+they can be passed over the wire. Certainly we can manually put
+self.obj.someData.makeNetworkModel() into the dict as necessary, but I
+wonder if there's a nice way to handle this sort of thing.
+
+Thanks!
+
+Daniel
+
+
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#60639">[ date ]</a>
+              <a href="thread.html#60639">[ thread ]</a>
+              <a href="subject.html#60639">[ subject ]</a>
+              <a href="author.html#60639">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,175 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] newpb authorization
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20newpb%20authorization&In-Reply-To=%3C20051128.233740.02126410.warner%40lothar.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="044562.html">
+   <LINK REL="Next"  HREF="044563.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] newpb authorization</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20newpb%20authorization&In-Reply-To=%3C20051128.233740.02126410.warner%40lothar.com%3E"
+       TITLE="[Twisted-Python] newpb authorization">warner at lothar.com
+       </A><BR>
+    <I>Tue Nov 29 00:37:40 MST 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="044562.html">[Twisted-Python] newpb authorization
+</A></li>
+        <LI>Next message (by thread): <A HREF="044563.html">[Twisted-Python] Re: [Twisted-commits] r15230 - Merge of jml/trial-deferred-logic -r15183:15229. Resolves #1341.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44564">[ date ]</a>
+              <a href="thread.html#44564">[ thread ]</a>
+              <a href="subject.html#44564">[ subject ]</a>
+              <a href="author.html#44564">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&gt;<i> There's an entry in the newpb-docs, newpb-jobs.txt or so,
+</I>&gt;<i> where an example is given how this authorization might/will look like.
+</I>&gt;<i> it seems that it is to be implemented in the negotiation-phase, before
+</I>&gt;<i> the switch-to-banana. Is that interpretation right, or am i wrong about
+</I>&gt;<i> this, and the authorization is meant to take place via a mediating
+</I>&gt;<i> pb.referenceable, similar to oldpb?
+</I>
+My current thought is the latter, keeping all notion of authorization at the
+Referenceable layer, out of the connection itself. I'm thinking that the
+Realm (in cred terms) is a Referenceable, and you send your credentials to it
+via a login() method. The Realm then returns another Referenceable (the
+Avatar), which you interact with to your hearts content. On the client side,
+you'd have some sort of higher-level object to which you would pass the
+PB-URL of the target Realm and your Credentials. When all was said and done,
+you'd wind up with a RemoteReference to the remote Avatar. You could have
+multiple Realms on the same host, distinguished by their URLs.
+
+I'm definitely leaning in a capabilities-based direction these days, so both
+the Realm (which anybody can access) and the Avatar (which can only be
+accessed by the person with the right credentials) are reachable with URLs,
+the only difference being that the Realm's URL is public knowledge, while the
+Avatar URLs are randomly-generated and unguessable. If you want to bypass the
+whole username/password thing, you just give the hopeful client the URL of
+their Avatar, and let them connect directly to that.
+
+[note that some of the things I wrote about cred-vs-newpb were before I was
+fully aware of the capabilities model. back in those days, I was vaguely
+thinking of having a &quot;default object&quot; for each connection, which could accept
+credentials and return Avatars, such that it might make sense to put things
+like username and passwords in the URLs. Also, back then it seemed reasonable
+to use Interfaces or RemoteInterfaces as ways to specify &quot;who&quot; or &quot;what&quot; you
+wanted to talk to. I've since come to my senses. newpb provides a layer of
+secure remote references, on top of which you can build whatever sort of
+authorization scheme you like]
+
+[also, back then I was expecting Glyph to swoop down and implement the whole
+thing in one afternoon's frantic coding binge, absolving me from needing to
+understand how it would actually work or get used. fortunately this has not
+come to pass, so I get to write something that can be comprehended by my own
+humble brain. muahahaha.]
+
+&gt;<i> What i'm thinking of is two distinct uses of cred in pb. one at an early
+</I>&gt;<i> stage, affecting the whole connection to be or not to be, and one in
+</I>&gt;<i> later phases, to have a basis for managing roles and permissions while
+</I>&gt;<i> the app is running.
+</I>
+It sounds like the capabilities-based scheme I have in mind fits the second
+of your use cases. As for the first one.. what sort of things connection-time
+things would you like to be controlled by authorization information? One
+thing that comes to mind is whether the connection will be accepted or not,
+presumeably to reduce resource utilization, but consider this:
+
+ the TCP connection will be accepted regardless. until the first byte of data
+ arrives, the only thing we can deduce about the client is their IP address,
+ and we all know how unhelpful it is to make decisions upon purely that
+ basis.
+
+ given that tub.registerReference() returns an unguessable URL by default,
+ the only objects that can be reached will be ones to which you have
+ explicitly granted access, either by registering a well-known URL (like
+ &quot;/login&quot;) or by giving the URL to the client by some other channel. So
+ allowing the &quot;bad guy&quot; to establish a connection doesn't actually let them
+ access anything you don't want them to have.
+
+ newpb's Schemas can be used to minimize resource utilization (specifically
+ memory consumption) required by messages sent to those public objects. If
+ the only object exposed to the world at large is the &quot;/login&quot; Realm, and if
+ it only has a single remote_login(username, password) method, then a simple
+ (username=str, password=str) schema will prevent that one permissible
+ message from consuming too much space, limiting its utility in a DoS attack.
+
+
+Given those, what other connection-time authorization checks do you think
+might be useful?
+
+Having authorization take place entirely at the object layer also has the
+nice property that you can run arbitrary numbers of mutually-unaware services
+off the same connection. My reluctance to add authorization below that layer
+comes partially from the benefits of this property. As an example, in the
+Buildbot[1], there are several PB services provided to entities in the
+outside world (buildslaves, a status client, a debug client, and a Change
+inlet), each distinguished by the cred username/password provided by the
+various clients. The nominal API for these services (i.e., what you put in
+the config file to create each service) would allow you to choose an
+arbitrary TCP port for each, which may or may not overlap with each other. In
+practice, the hassle of creating a Realm for each PBServerFactory (some of
+which know about some usernames, others which don't, all of which could
+change each time the config file is changed, etc) was so great that I punted
+and just forced the user to make all those services share a single TCP port,
+hence using a single Realm which knows about everything.
+
+I haven't quite figured out how this would work if Buildbot used newpb, but I
+know that I'd expose, say, the status service with a URL that ended in
+&quot;/status&quot;, and the debug service (which is supposed to be protected, and thus
+gets a user-specified password in oldpb) would just get an unguessable URL.
+The same TCP port could be used for different services that had different
+authorization requirements.
+
+If authorization took place before the object-level connection could be
+established, I'd have to coordinate another layer of usernames and passwords
+(or challenge-response pairs, or SRP exchanges, or whatever) without the
+benefit of using PB serialization or object references. Having already built
+one remote-method-invocation protocol this decade, I'm not keen on creating
+another one quite yet :).
+
+
+cheers,
+ -Brian
+
+PS: Yay! Somebody is looking at newpb! :)
+
+
+[1] Buildbot: <A HREF="http://buildbot.sf.net/">http://buildbot.sf.net/</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="044562.html">[Twisted-Python] newpb authorization
+</A></li>
+	<LI>Next message (by thread): <A HREF="044563.html">[Twisted-Python] Re: [Twisted-commits] r15230 - Merge of jml/trial-deferred-logic -r15183:15229. Resolves #1341.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44564">[ date ]</a>
+              <a href="thread.html#44564">[ thread ]</a>
+              <a href="subject.html#44564">[ subject ]</a>
+              <a href="author.html#44564">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

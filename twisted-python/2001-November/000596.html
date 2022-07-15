@@ -1,0 +1,158 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: [Twisted-commits] CVS: Twisted/twisted/protocols irc.py,1.24,1.25
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20%5BTwisted-commits%5D%20CVS%3A%20Twisted/twisted/protocols%20irc.py%2C1.24%2C1.25&In-Reply-To=20011122213352.A28166%40twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000595.html">
+   <LINK REL="Next"  HREF="000597.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: [Twisted-commits] CVS: Twisted/twisted/protocols irc.py,1.24,1.25</H1>
+    <B>Kevin Turner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20%5BTwisted-commits%5D%20CVS%3A%20Twisted/twisted/protocols%20irc.py%2C1.24%2C1.25&In-Reply-To=20011122213352.A28166%40twistedmatrix.com"
+       TITLE="[Twisted-Python] Re: [Twisted-commits] CVS: Twisted/twisted/protocols irc.py,1.24,1.25">acapnotic at twistedmatrix.com
+       </A><BR>
+    <I>Fri Nov 23 02:40:07 EST 2001</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000595.html">[Twisted-Python] Re: [Twisted-commits] CVS:	Twisted/twisted/protocols irc.py,1.24,1.25
+</A></li>
+        <LI>Next message: <A HREF="000597.html">[Twisted-Python] pyff
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#596">[ date ]</a>
+              <a href="thread.html#596">[ thread ]</a>
+              <a href="subject.html#596">[ subject ]</a>
+              <a href="author.html#596">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Thu, Nov 22, 2001 at 09:33:52PM -0600, Glyph Lefkowitz wrote:
+&gt;<i> On Wed, Nov 21, 2001 at 11:48:54PM -0600, Kevin Turner wrote:
+</I>&gt;<i> &gt; protocols/irc.py: An exception in the server isn't a reason to drop the
+</I>&gt;<i> &gt; client, right?
+</I>&gt;<i> 
+</I>&gt;<i> IMHO, it is.  If the protocol isn't specifically designed to deal with
+</I>&gt;<i> exceptions (For example, dynamic web content or PB protocol exceptions) then
+</I>&gt;<i> it's undefined behavior and the connection should be dropped.
+</I>&gt;<i> Bot behavior should be implemented in a layer above the IRC protocol,
+</I>&gt;<i> if there is a place for a catch-all exception handler.
+</I>
+Thanks for the comments.  There's an encapsulation problem highligthed
+here, let me see if I can un-mire my head from the turkey gravy well
+enough to explain it.  This probably won't flow as well as it should,
+but hopefully I'll get all the pieces written down here.
+
+That change was to protocols.irc.IRC.dataReceived(), irc.IRC being the
+server-oriented side of the IRC client/server protocol.  The 'try' block
+I added surrounds the call to the dispatch method.  By this point, the
+data received has already been parsed as an IRC command.  If anything
+goes wrong after this, I wouldn't consider it to be an error in the
+client/server IRC protocol (or protocol.irc.IRC), but rather an error in
+the application (substitue a more specific word if you can find one)
+that's on the receiving end of that protocol.
+
+I should explain here what triggered this patch:
+
+Setting: 
+  twisted.words, with a words.ircservice server as it comes with by default.  
+  The ircservice is in the same process as the words service.
+  I've also added a tendril to the service, also in the same process.
+
+1) radix logs on to the irc service.  On the server side, he's
+represented by a words.ircservice.IRCChatter, a subclass of the irc.IRC
+server protocol.
+
+2) radix says &quot;hi&quot;.  This triggers Protocol.dataReceived, which
+dispatches the message to IRCChatter.irc_PRIVMSG.
+
+3) IRCChatter.irc_PRIVMSG invokes the groupMessage of its correspoding
+Participant (Perspective) instance.
+
+4) Participant invokes the sendMessage method of one of the service's
+Groups.
+
+5) The Group, in turn, calls receiveGroupMessage on its subscribing
+Participants.
+
+6) One of the subscribing Participants is Tendril's.
+Tendril-Participant invokes receiveGroupMessage on its client, a
+TendrilClient implementing the WordsClientInterface.
+
+7) Oops -- I screwed up.  TendrilClient.receiveGroupMessage raises an
+exception.
+The exception is passed to Tendril's participant, letting it know that
+its client didn't get this OK.
+The Tendril participant lets the exception pass on to the Group, letting
+the Group know that sending the message to this participant has failed.
+The Group lets the exception through to radix's Participant, letting him
+know that something went wrong while performing the action he ordered.
+His Participant lets the exception pass back to IRCChatter.irc_PRIVMSG,
+as the command failed.
+Since IRCChatter.irc_PRIVMSG had an error carrying out the command, the
+exception goes back to its caller...
+the IRCChatter(IRC(Protocol)).dataReceived method.
+So an error occoured when calling Protocol.dataReceived, the receiving
+method for radix's-irc-client's-tcp-connection-selectable,
+When internet.main.doSelect finds out, it busts the selectable, and
+kills the TCP connection to radix's IRC client.
+
+Clearly, the wrong guy took the fall for this one.  So what *should*
+have happened?
+
+First note that there are some irregularites in this process which are
+contrary to what a PB service (e.g. Words) assumes.  Normally, the
+relation between Perspective and its client is a remote one, 'client'
+being the referenceable that the perspective has .attached().  But here
+the clients on both ends, tendril.TendrilClient and
+ircservice.IRCChatter, are local references.
+
+When you start out with event-based programming, you get bit when you
+assume a call is synchronous when it's not.  When you've worked with
+Twisted too long, you get bit when you assume an action is asynchronous
+and it turns out to be synchronous.
+
+Both steps 3 and 6 &quot;should&quot; have happened asynchronously.  Since
+asynchronous calls &quot;don't really happen now&quot;, your program works on the
+assumption that it is going to carry on normal operations, leaving any
+worries about what may or may not have happened &quot;over there&quot; until
+later.  Here, that assumption was violated.
+
+
+Stopping here feels unfinished, but I've got to go digest some more.
+
+*belch*ing-ly yours,
+
+ - Kevin
+
+-- 
+The moon is first quarter, 50.2% illuminated, 7.4 days old.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000595.html">[Twisted-Python] Re: [Twisted-commits] CVS:	Twisted/twisted/protocols irc.py,1.24,1.25
+</A></li>
+	<LI>Next message: <A HREF="000597.html">[Twisted-Python] pyff
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#596">[ date ]</a>
+              <a href="thread.html#596">[ thread ]</a>
+              <a href="subject.html#596">[ subject ]</a>
+              <a href="author.html#596">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

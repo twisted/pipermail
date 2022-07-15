@@ -1,0 +1,141 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] possible error in twisted app
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20possible%20error%20in%20twisted%20app&In-Reply-To=%3C8502E475-AD3F-45B5-9B74-469927658C59%402xlp.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="027944.html">
+   <LINK REL="Next"  HREF="060415.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] possible error in twisted app</H1>
+    <B>Jonathan Vanasco</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20possible%20error%20in%20twisted%20app&In-Reply-To=%3C8502E475-AD3F-45B5-9B74-469927658C59%402xlp.com%3E"
+       TITLE="[Twisted-Python] possible error in twisted app">twisted-python at 2xlp.com
+       </A><BR>
+    <I>Fri Jan 17 19:22:52 MST 2014</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="027944.html">[Twisted-Python] large features and code review
+</A></li>
+        <LI>Next message (by thread): <A HREF="060415.html">[Twisted-Python] possible error in twisted app
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27949">[ date ]</a>
+              <a href="thread.html#27949">[ thread ]</a>
+              <a href="subject.html#27949">[ subject ]</a>
+              <a href="author.html#27949">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>a portion of my twisted app is having some problems.  i think i figured out the issue -- but if I'm right.. i'll be a bit lost.
+
+this portion of the app is essentially a web scraper.  it grabs a batch of X urls from a data broker , and then updates a database with data about the URL ( which either comes from an oEmbed endpoint , a third party data provider, or scraping the page if needed )
+
+there's a lot of code that would be messy to follow, so i'll just explain it as best as possible, and provide some highlights.
+
+the underlying logic is basically this:
+
+	reactor starts an UpdateLinksService, that checks for new batches every 30 seconds
+	the UpdateLinksService has an internal marker to check if it's still processing the last batch - or if it's safe to process
+
+	to process the urls, the UpdateLinksService runs them in a request wrapper , that is supposed to be run through a defer.DeferredSemaphore() service
+
+	when i'm done with the batch, i clear out internal marker via a `deferred_list_finish` method.
+
+looking at some aggressive debugging output, it looks like my work to process a url is happening /after/ i call deferred_list_finish.  
+
+in other words, i've somehow structured this so that i'm instantly finished.  
+
+i *thought* i was running out of memory because i had some phantom deferreds running around.  now i'm starting to think that i'm just stacking the queue faster than i work on it.
+
+i've tried changing things around and using different return values, but then started getting &quot;exceptions.AssertionError:&quot; because &quot;assert not isinstance(result, Deferred)&quot; ( twisted/internet/defer.py&quot;, line 381, in callback )
+
+the following is a rough composite of what is going on.  if anyone sees an obvious fix, i'd be greatly appreciative.  
+
+thanks!
+
+=================
+
+class UpdateLinksService():
+
+	def process_urls(self, urls):
+		requests = []
+		for url in urls:
+			wrapper = requestWrapper( self.semaphoreService, dbPool ) 
+			d = wrapper.queue_url(url)
+			updates.append(d)
+                self.d_list = defer.DeferredList( updates )\
+                    .addCallback( self.deferred_list_finish )
+
+
+class RequestWrapper():
+
+	def __init__(self, semaphore_service, dbPool):
+		self.semaphoreService=semaphore_service
+     	self.dbPool = dbPool
+
+    def queue_url( self, url ):
+        self.url = url
+        d = self.semaphoreService.run( self._to_thread )
+        return d
+
+    def _to_thread( self ):
+        d = threads.deferToThread( self._thread_begin )
+        return d
+
+    def _thread_begin(self):
+    	worker = UrlWorker()
+        d = self.dbPool.runInteraction( worker.process_url , self.url )
+
+
+class UrlWorker():
+
+	def process_url(self,txn, url):
+		#blocking stuff
+		return True/False					
+		
+		
+The reason why I have _to_thread + _thread_begin  as 2 functions, and UrlWoker separate is for code re-use.
+
+The RequestWrapper functions are mostly all in a base class; i just subclass RequestWrapper and override _thread_begin and an error callback (not shown)
+
+UrlWorker's various methods are used througout my twisted daemon.
+</PRE>
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="027944.html">[Twisted-Python] large features and code review
+</A></li>
+	<LI>Next message (by thread): <A HREF="060415.html">[Twisted-Python] possible error in twisted app
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27949">[ date ]</a>
+              <a href="thread.html#27949">[ thread ]</a>
+              <a href="subject.html#27949">[ subject ]</a>
+              <a href="author.html#27949">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

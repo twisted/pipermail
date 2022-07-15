@@ -1,0 +1,329 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] questions about testing xmlrpc server with ssl - problems with more than 1000 requests
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20questions%20about%20testing%20xmlrpc%20server%20with%20ssl%20-%0A%20problems%20with%20more%20than%201000%20requests&In-Reply-To=%3CB06FDC00E1358B48ACD6C2254D4C9E3AD8ED5869%40MS-01%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="057589.html">
+   <LINK REL="Next"  HREF="057597.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] questions about testing xmlrpc server with ssl - problems with more than 1000 requests</H1>
+    <B>Hanusz L.</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20questions%20about%20testing%20xmlrpc%20server%20with%20ssl%20-%0A%20problems%20with%20more%20than%201000%20requests&In-Reply-To=%3CB06FDC00E1358B48ACD6C2254D4C9E3AD8ED5869%40MS-01%3E"
+       TITLE="[Twisted-Python] questions about testing xmlrpc server with ssl - problems with more than 1000 requests">Hanusz at aegtranzcom.com
+       </A><BR>
+    <I>Thu Jan 19 11:15:48 MST 2012</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="057589.html">[Twisted-Python] xmlrpc function return message to client	asynchronously
+</A></li>
+        <LI>Next message (by thread): <A HREF="057597.html">[Twisted-Python] Twisted Hackday at Rackspace, SF
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#57592">[ date ]</a>
+              <a href="thread.html#57592">[ thread ]</a>
+              <a href="subject.html#57592">[ subject ]</a>
+              <a href="author.html#57592">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I did some testing between a twisted xmlrpc ssl server and a twisted client with lots of simultaneous requests.
+I'm using windows (don't have the choice...), python 2.7, twisted 11.1 and both server and client are on the same computer... (Xeon 2Ghz 3GB of RAM)
+
+The client is configured to get a number of &quot;Hello&quot; answers and if there is a problem on the connection, it will try again with a calllater of 1second
+
+If the number of requests is low (&lt;100), there is no problem.
+With 200 requests, there is some errors &quot;Connection to the other side was lost in a non-clean fashion.&quot; but the client can still get all the answers by retrying.
+If I try to increase the number of requests, the number of retries is rising very fast and at some point the client is unable to get any answer (with errors like &quot;User timeout caused connection failure&quot;)
+100 request - no retries 0.688 s
+200 requests - 37 retries 1.5s
+500 requests - 395 retries 4.2s
+750 requests - 1205 retries  - 36.4s
+1500 requests - too much
+
+In the client the time is measured between the start of the reactor and the reception of each answer.
+
+ What I don't understand is that it seems no answer is parsed before all the messages are received. 
+For example for the 750 requests, the first message is parsed after 32.1s
+
+My questions are the following:
+- what is happening ?
+- why are all messages parsed at the end ? Priority of the reactor ?
+- is it possible to limit the number of incoming connections globally and/or for each client ? How ? Same for outgoing connections in the client.
+- to be able to see what is going on, is it possible to print the number of connections (counting connectionMade and connectionLost or is there a better method?), and the number of callbacks waiting in the reactor ?
+- is there a maximum number of callbacks waiting in the reactor ?
+
+The code I used is below.
+Modified from <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2007-May/015357.html">http://twistedmatrix.com/pipermail/twisted-python/2007-May/015357.html</A>
+
+Thanks for your help.
+
+##########################
+xmlrpc_ssl_helloworld_server.py
+##########################
+
+from twisted.web import xmlrpc, server, http
+from twisted.internet import reactor, ssl
+from twisted.web.xmlrpc import withRequest
+
+class Engine:
+    def __init__(self):
+        self.clientWS_ip_address = &quot;127.0.0.1&quot;
+        self.clientWS_port = 8010
+        self.clientWS = ClientWebServiceListener(self.clientWS_ip_address,self.clientWS_port,self)
+        self.clientWS.start()
+
+class ClientWebServiceListener():
+
+    class XmlRpcFunctions(xmlrpc.XMLRPC):
+
+        @withRequest
+        def xmlrpc_helloworld(self,request):
+            return 'Hello ' +  request.channel.transport.getPeerCertificate().get_subject().commonName
+
+    def __init__(self,ip_address,port,engine):
+        self.engine = engine
+        self.ip_address = ip_address
+        self.port = port
+
+    def start(self):
+        ctx = self.makeSSLContext(myKey='server.pem',trustedCA='cacert.pem')
+        self.listening_port = reactor.listenSSL(self.port, server.Site(self.XmlRpcFunctions()) ,ctx)        
+
+    def makeSSLContext(self,myKey,trustedCA):
+        '''Returns an ssl Context Object
+        @param myKey a pem formated key and certificate with for my current host
+        the other end of this connection must have the cert from the CA that signed this key
+        @param trustedCA a pem formated certificat from a CA you trust
+        you will only allow connections from clients signed by this CA
+        and you will only allow connections to a server signed by this CA
+        '''
+        fd = open(myKey,'r')
+        theCert = ssl.PrivateCertificate.loadPEM(fd.read())
+        fd.close()
+        fd = open(trustedCA,'r')
+        theCA = ssl.Certificate.loadPEM(fd.read())
+        fd.close()
+        ctx = theCert.options(theCA)
+
+     # Now the options you can set look like Standard OpenSSL Library options
+
+     # The SSL protocol to use, one of SSLv23_METHOD, SSLv2_METHOD,
+     # SSLv3_METHOD, TLSv1_METHOD. Defaults to TLSv1_METHOD.
+        ctx.method = ssl.SSL.TLSv1_METHOD
+
+     # If True, verify certificates received from the peer and fail
+     # the handshake if verification fails. Otherwise, allow anonymous
+     # sessions and sessions with certificates which fail validation.
+        ctx.verify = True
+
+     # Depth in certificate chain down to which to verify.
+        ctx.verifyDepth = 1
+
+     # If True, do not allow anonymous sessions.
+        ctx.requireCertification = True
+
+     # If True, do not re-verify the certificate on session resumption.
+        ctx.verifyOnce = True
+
+     # If True, generate a new key whenever ephemeral DH parameters are used
+     # to prevent small subgroup attacks.
+        ctx.enableSingleUseKeys = True
+
+     # If True, set a session ID on each context. This allows a shortened
+     # handshake to be used when a known client reconnects.
+        ctx.enableSessions = True
+
+     # If True, enable various non-spec protocol fixes for broken
+     # SSL implementations.
+        ctx.fixBrokenPeers = False
+
+        return ctx            
+
+if __name__ == '__main__' :
+    e = Engine()
+    print &quot;Starting reactor now.&quot;
+    reactor.run()
+
+
+##########################
+xmlrpc_ssl_helloworld_client.py
+##########################
+
+import sys
+import time
+from twisted.web import xmlrpc, server
+from twisted.internet import reactor, ssl
+from datetime import datetime
+
+class wstest():
+    times=[]
+
+    def __init__(self,port,nb_test):
+        self.nb_test=0
+        self.i=0
+        self.nb_retry=0
+        ctx = self.makeSSLContext(myKey='client.pem', trustedCA='cacert.pem')
+        self.proxy = Proxy('<A HREF="https://localhost:">https://localhost:</A>'+str(port)+'/')
+        self.proxy.setSSLClientContext(ctx)
+        self.port = port
+        
+    def printValue(self,value):
+        time_diff = datetime.now() - self.time_begin
+        ms_time_diff = time_diff.microseconds / 1000 + time_diff.seconds * 1000
+        self.times.append(ms_time_diff)
+        self.i = self.i + 1
+        print repr(value) + ' - ' + str(self.i)
+        if self.i == nb_test:
+            print 'Nb retrys : ' + str(self.nb_retry)
+            for j in self.times:
+                print str(j) + ',',
+            reactor.stop()
+    
+    def retry_connect(self):
+        self.proxy.callRemote('helloworld').addCallbacks(self.printValue,self.err_received)
+
+    def err_received(self,failure):
+        print &quot;Error - retrying&quot;
+        sys.stderr.write(str(failure))
+        self.nb_retry = self.nb_retry + 1
+        reactor.callLater(1,self.retry_connect)
+
+    def makeSSLContext(self,myKey,trustedCA):
+        '''Returns an ssl Context Object
+        @param myKey a pem formated key and certifcate with for my current host
+            the other end of this connection must have the cert from the CA
+            that signed this key
+        @param trustedCA a pem formated certificat from a CA you trust
+            you will only allow connections from clients signed by this CA
+            and you will only allow connections to a server signed by this CA
+        '''
+
+        # our goal in here is to make a SSLContext object to pass to connectSSL
+        # or listenSSL
+
+        # Why these functioins... Not sure...
+        fd = open(myKey,'r')
+        theCert = ssl.PrivateCertificate.loadPEM(fd.read())
+        fd.close()
+        fd = open(trustedCA,'r')
+        theCA = ssl.Certificate.loadPEM(fd.read())
+        fd.close()
+        ctx = theCert.options(theCA)
+
+     # Now the options you can set look like Standard OpenSSL Library options
+
+     # The SSL protocol to use, one of SSLv23_METHOD, SSLv2_METHOD,
+     # SSLv3_METHOD, TLSv1_METHOD. Defaults to TLSv1_METHOD.
+        ctx.method = ssl.SSL.TLSv1_METHOD
+
+     # If True, verify certificates received from the peer and fail
+     # the handshake if verification fails. Otherwise, allow anonymous
+     # sessions and sessions with certificates which fail validation.
+        ctx.verify = True
+
+     # Depth in certificate chain down to which to verify.
+        ctx.verifyDepth = 1
+
+     # If True, do not allow anonymous sessions.
+        ctx.requireCertification = True
+
+     # If True, do not re-verify the certificate on session resumption.
+        ctx.verifyOnce = True
+
+     # If True, generate a new key whenever ephemeral DH parameters are used
+     # to prevent small subgroup attacks.
+        ctx.enableSingleUseKeys = True
+
+     # If True, set a session ID on each context. This allows a shortened
+     # handshake to be used when a known client reconnects.
+        ctx.enableSessions = True
+
+     # If True, enable various non-spec protocol fixes for broken
+     # SSL implementations.
+        ctx.fixBrokenPeers = False
+
+        return ctx
+
+class Proxy(xmlrpc.Proxy):
+     ''' See: <A HREF="http://twistedmatrix.com/projects/web/documentation/howto/xmlrpc.html">http://twistedmatrix.com/projects/web/documentation/howto/xmlrpc.html</A>
+         this is eacly like the xmlrpc.Proxy included in twisted but you can
+         give it a SSLContext object insted of just accepting the defaults..
+     '''
+     def setSSLClientContext(self,SSLClientContext):
+         self.SSLClientContext = SSLClientContext
+     def callRemote(self, method, *args):
+         factory = xmlrpc._QueryFactory(
+             self.path, self.host, method, self.user,
+             self.password, self.allowNone, args)
+         if self.secure:
+             from twisted.internet import ssl
+             try:
+                 self.SSLClientContext
+             except NameError:
+                 print &quot;Must Set a SSL Context&quot;
+                 print &quot;use self.setSSLClientContext() first&quot;
+                 # Its very bad to connect to ssl without some kind of
+                 # verfication of who your talking to
+                 # Using the default sslcontext without verification
+                 # Can lead to man in the middle attacks
+             reactor.connectSSL(self.host, self.port or 443,
+                                factory,self.SSLClientContext)
+         else:
+             reactor.connectTCP(self.host, self.port or 80, factory)
+         return factory.deferred
+
+
+def do_test(t,nb_test):
+    for i in range(0,nb_test):
+        t.proxy.callRemote('helloworld').addCallbacks(t.printValue,t.err_received)
+
+if __name__ == '__main__':
+    if len(sys.argv) &lt; 2 :
+        sys.exit('Usage: ' + sys.argv[0] + ' nb_test')
+
+    nb_test = int(sys.argv[1])
+    t = wstest(8010,nb_test)
+
+    reactor.callWhenRunning(do_test,t,nb_test)
+
+    print &quot;Starting reactor now.&quot;
+    t.time_begin = datetime.now()
+    reactor.run()     
+#####################################################################################
+This e-mail message has been scanned for Viruses and Content and cleared 
+by Mailsecurity software
+#####################################################################################
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="057589.html">[Twisted-Python] xmlrpc function return message to client	asynchronously
+</A></li>
+	<LI>Next message (by thread): <A HREF="057597.html">[Twisted-Python] Twisted Hackday at Rackspace, SF
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#57592">[ date ]</a>
+              <a href="thread.html#57592">[ thread ]</a>
+              <a href="subject.html#57592">[ subject ]</a>
+              <a href="author.html#57592">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

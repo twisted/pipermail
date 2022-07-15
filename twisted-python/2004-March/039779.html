@@ -1,0 +1,274 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Lock class using Deferreds
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Lock%20class%20using%20Deferreds&In-Reply-To=%3C404AD0FC.2050103%40thecablelounge.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="039776.html">
+   <LINK REL="Next"  HREF="039773.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Lock class using Deferreds</H1>
+    <B>Andy Gayton</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Lock%20class%20using%20Deferreds&In-Reply-To=%3C404AD0FC.2050103%40thecablelounge.com%3E"
+       TITLE="[Twisted-Python] Lock class using Deferreds">andy at thecablelounge.com
+       </A><BR>
+    <I>Sun Mar  7 00:36:28 MST 2004</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="039776.html">[Twisted-Python] Lock class using Deferreds
+</A></li>
+        <LI>Next message (by thread): <A HREF="039773.html">[Twisted-Python] Twisted + tlslite
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39779">[ date ]</a>
+              <a href="thread.html#39779">[ thread ]</a>
+              <a href="subject.html#39779">[ subject ]</a>
+              <a href="author.html#39779">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Christopher Armstrong wrote:
+
+&gt;&gt;<i> dnsRequest_Semaphore = Semaphore(20)
+</I>&gt;&gt;<i> for (sink, input) in source :
+</I>&gt;&gt;<i>     dnsRequest_Semaphore.run( request, input ).addCallback( sink )
+</I>
+&gt;<i> OTOH, my 
+</I>&gt;<i> thing didn't call .next() on the source until its result was actually 
+</I>&gt;<i> required, but this snippet is obviously queuing up the (potentially 
+</I>&gt;<i> thousands) of operations in the Semaphore.. Probably doesn't actually 
+</I>&gt;<i> matter.
+</I>
+It might matter - if .next took even a small amount of time (say 
+fetching jobs out of a text file) - then my for loop would block for a 
+bit which is against the rules .. maybe these are different tasks after 
+all ..
+
+It's a nice exercise for learning defers though :)
+
+The problem with my for loop is its effectively copying the queue stored
+in source and putting it in Semaphore upfront, instead of as needed.
+
+Perhaps something which is a cross between Lock and DeferredQueue would 
+be better - if there is a queue of known work to be processed, leave it 
+as an external queue instead of copying it ...
+
+Ok - a sunday afternoon spent with the defers howto later - I came up 
+with this - which only does what your original does Chris but allows you 
+to add new jobs on the fly and is 5 times longer in code :) .. I was a 
+bit embarrassed by that so added the ability to prioritise jobs in the 
+queue to justify the whole experience ;)
+
+--------------
+from twisted.internet import reactor, defer
+
+class Semaphore:
+     &quot;&quot;&quot;A semaphore for event driven systems.&quot;&quot;&quot;
+
+     &quot;&quot;&quot;This hasn't changed from the earlier email.&quot;&quot;&quot;
+
+     def __init__(self, tokens):
+         self.waiting = []
+         self.tokens  = tokens
+         self.limit   = tokens
+
+     def acquire(self):
+         &quot;&quot;&quot;Attempt to acquire the token.
+
+         @return Deferred which returns on token acquisition.
+         &quot;&quot;&quot;
+         assert self.tokens &gt;= 0
+         d = defer.Deferred()
+         if not self.tokens:
+             self.waiting.append(d)
+         else:
+             self.tokens = self.tokens - 1
+             d.callback(self)
+         return d
+
+     def release(self):
+         &quot;&quot;&quot;Release the token.
+
+         Should be called by whoever did the acquire() when the shared
+         resource is free.
+         &quot;&quot;&quot;
+         assert self.tokens &lt; self.limit
+         self.tokens = self.tokens + 1
+         if self.waiting:
+             # someone is waiting to acquire token
+             self.tokens = self.tokens - 1
+             d = self.waiting.pop(0)
+             d.callback(self)
+
+     def _releaseAndReturn(self, r):
+         self.release()
+         return r
+
+     def run(self, f, *args, **kwargs):
+         &quot;&quot;&quot;Acquire token, run function, release token.
+
+         @return Deferred of function result.
+         &quot;&quot;&quot;
+         d = self.acquire()
+         d.addCallback(lambda r: defer.maybeDeferred(f, *args, 
+**kwargs).addBoth(self._releaseAndReturn))
+         return d
+
+
+class DeferredPriorityQueue:
+     &quot;&quot;&quot;An event driven priority queue&quot;&quot;&quot;
+
+     def __init__( self, max_concurrent ) :
+         self.semaphore = Semaphore( max_concurrent )
+         self.queue = {}
+         self.processing = False
+
+     def next(self) :
+         &quot;&quot;&quot;
+         @return the next job in the queue
+         raises StopIteration when out of jobs
+         &quot;&quot;&quot;
+         if not len( self.queue ) : raise StopIteration
+
+         highest_priority = min( self.queue.keys() )
+
+         try:
+             return self.queue[highest_priority][0].next()
+         except StopIteration :
+             del self.queue[highest_priority][0]
+             if not len( self.queue[highest_priority] ) : del 
+self.queue[highest_priority]
+             return self.next()
+
+     def _cbTokenAcquired(self, semaphore, job) :
+         &quot;&quot;&quot;Runs queued up job once a token can be acquired
+         Sets the job to release the token when completed and calls the 
+jobs callback
+         Then continues processing the queue
+         &quot;&quot;&quot;
+         (f, args, kwargs, cb) = job
+
+         d = defer.maybeDeferred(f, *args, 
+**kwargs).addBoth(self.semaphore._releaseAndReturn)
+         d.addCallback(cb)
+
+         self._processQueue()
+
+     def _processQueue(self):
+         &quot;&quot;&quot;Grabs the next job in queue if available and then waits for 
+a token&quot;&quot;&quot;
+         try:
+             job = self.next()
+         except StopIteration :
+             self.processing = False
+             return
+
+         self.semaphore.acquire().addCallback(self._cbTokenAcquired, job)
+
+     def _startQueue(self) :
+         &quot;&quot;&quot;Start queue processing if its not already started&quot;&quot;&quot;
+         if not self.processing:
+             self.processing = True
+             self._processQueue()
+
+     def run( self, f, cb, *args, **kwargs ) :
+         &quot;&quot;&quot;Queue up a single job&quot;&quot;&quot;
+
+         # not happy with this bit at all, but can't
+         # think of another way to do it without making
+         # it compulsory to pass in priority
+
+         if kwargs.has_key(&quot;priority&quot;) :
+             priority = kwargs[&quot;priority&quot;]
+             del kwargs[&quot;priority&quot;]
+         else :
+             priority = 5
+
+         self.runQueue( iter([(f, args, kwargs, cb)]), priority )
+
+     def runQueue(self, queue, priority=5):
+         &quot;&quot;&quot;Queue up a (potentially external) queue of jobs&quot;&quot;&quot;
+
+         if not self.queue.has_key( priority ) :
+             self.queue[priority] = []
+         self.queue[priority].append( queue )
+
+         self._startQueue()
+
+
+#
+# test things out
+#
+
+def triple(x):
+     d = defer.Deferred()
+     reactor.callLater(2, d.callback, x * 3)
+     return d
+
+def cbPrintResult( result ) :
+     print result
+
+def sources() :
+     for i in range(8) :
+         yield ( triple, [3], {}, cbPrintResult )
+
+
+#
+# sources can be run directly off a semaphore,
+# but if it takes a while to retrieve jobs
+# from the source
+# then the following will block until all
+# jobs are queued up
+#
+#s = Semaphore(2)
+#for (f, args, kwargs, cb) in sources() :
+#    s.run( f, *args, **kwargs ).addCallback( cb )
+
+
+q = DeferredPriorityQueue(2)
+q.runQueue( sources() )
+q.run( triple, cbPrintResult, 4, priority=3 )
+
+reactor.run()
+------------
+
+It might have its uses - perhaps to stop mass mailouts from holding up 
+hadhoc mails ...
+
+I'm mainly trying to learn though by tweaking with Itamar's and Chris's 
+code - so feedback/criticism would be welcome.
+
+Andy.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="039776.html">[Twisted-Python] Lock class using Deferreds
+</A></li>
+	<LI>Next message (by thread): <A HREF="039773.html">[Twisted-Python] Twisted + tlslite
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39779">[ date ]</a>
+              <a href="thread.html#39779">[ thread ]</a>
+              <a href="subject.html#39779">[ subject ]</a>
+              <a href="author.html#39779">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

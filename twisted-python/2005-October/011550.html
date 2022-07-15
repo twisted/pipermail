@@ -1,0 +1,129 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] TCP KeepAlive
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20TCP%20KeepAlive&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="011549.html">
+   <LINK REL="Next"  HREF="011551.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] TCP KeepAlive</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20TCP%20KeepAlive&In-Reply-To="
+       TITLE="[Twisted-Python] TCP KeepAlive">warner at lothar.com
+       </A><BR>
+    <I>Sun Oct  2 15:18:56 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="011549.html">[Twisted-Python] passClient for	ReverseProxyResource/VHostMonsterResource
+</A></li>
+        <LI>Next message: <A HREF="011551.html">[Twisted-Python] TCP KeepAlive
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11550">[ date ]</a>
+              <a href="thread.html#11550">[ thread ]</a>
+              <a href="subject.html#11550">[ subject ]</a>
+              <a href="author.html#11550">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>&gt;<i> 1. When the TCP connection times-out, is pb.Copyable.stoppedObserving()
+</I>&gt;<i> called?
+</I>
+I think you mean pb.Cacheable.stoppedObserving, right? pb.Copyable is
+fire-and-forget.
+
+I see a call to stoppedObserving() inside Broker.connectionLost, so I'd
+hazard a guess and say yes, when the TCP connection is lost (which could be
+due to timeout, or the other end closing the connection, or the near end
+closing the connection), all the current Cacheables will have their
+stoppedObserving methods invoked.
+
+Remember, however, that TCP timeouts are somewhat tricky, and rather
+&quot;forgiving&quot;: they are intended to ignore &quot;transient&quot; network failures that
+only last a few minutes (once upon a time, when the internet was a slower
+place than it is now, and the phrase &quot;five nines&quot; referred to a dubious but
+still lucky poker hand, connection losses of several minutes at a time were
+no cause for alarm, and certainly not a reason to abandon your hard-won
+RFC88 Remote Job Entry Protocol session).
+
+The primary timer is a &quot;short&quot; exponential-backoff retransmission timer for
+data that has been sent but not yet acknowledged. It depends upon the kernel,
+but I tend to see this one give up on the connection after 5 to 15 minutes of
+non-connectivity.
+
+If you set the SO_KEEPALIVE option, a second timer is activated which
+basically pings the remote host every once in a while (although it does this
+within the context of the TCP session, so it will also detect a remote host
+that has shut down your connection but for which the FIN somehow went
+missing). This helps detect remote hosts that have powered off abruptly (so
+they weren't able to kill off processes and thus send FIN packets to
+terminate the TCP connections), and failures in intermediate routers (or,
+more commonly, a NAT box which has forgotten about the connection because it
+hasn't sent any traffic for 10 or 20 minutes). If the connection is busy,
+that is if each end sends some data to the other every couple of minutes,
+then the normal retransmission timer will catch connectivity losses after 5
+to 15 minutes.
+
+The default interval for the keepalive timer tends to be one the order of 2
+hours, plus it tries several times if it can't get through, which adds
+another 10 or 15 minutes. So even with SO_KEEPALIVE turned on, it may be
+hours before an otherwise-idle connection is detected as being broken.
+
+This drove me crazy on the buildbot, because many of the buildslaves are
+behind NAT boxes with short (20 minute) connection timeouts, and because the
+buildslaves can be idle for days at a time (waiting for someone to make an
+SVN checkin). So I added some application-level keepalives. The actual scheme
+I used is kind of weird, I'm not sure I would recommend it for new code, but
+the basic idea was to simply add a 'def remote_doNothing(self): pass' method
+to a pb.Referenceable at the far end, set up a timer to invoke
+target.callRemote(&quot;doNothing&quot;) once every 10 minutes, and then let the TCP
+retransmission timer take care of the rest. On top of that, you could reduce
+the extra traffic by keeping track of your normal callRemote invocations and
+setting an .activity flag, and then only send the remote_doNothing if there
+hadn't been any normal activity in the last 10 minutes. You could also detect
+connectivity losses faster by starting a shorter (perhaps 3 minute) timer
+when you send the doNothing, and if it doesn't complete (i.e. its Deferred
+doesn't fire) before that timer expires, abandon the connection with
+target.broker.transport.loseConnection() . If you choose this short timeout,
+remember that it could be triggered accidentally if you have a method which
+pushes a large amount of data over a slow (dialup) connection: this bit us
+several times when the buildslave was dumping _trial_temp/test.log up to the
+master, because it filled the Broker's transmit buffer with data that took 5
+to 10 minutes to send, and the app-level keepalive message got queued after
+that, so the response couldn't possibly get back in time.
+
+
+Anyways, probably a larger answer than you really wanted :). Hope you (or
+someone else, some day) finds it useful.
+
+cheers,
+ -Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="011549.html">[Twisted-Python] passClient for	ReverseProxyResource/VHostMonsterResource
+</A></li>
+	<LI>Next message: <A HREF="011551.html">[Twisted-Python] TCP KeepAlive
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11550">[ date ]</a>
+              <a href="thread.html#11550">[ thread ]</a>
+              <a href="subject.html#11550">[ subject ]</a>
+              <a href="author.html#11550">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

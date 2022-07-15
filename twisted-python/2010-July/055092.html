@@ -1,0 +1,197 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Client/Server upload problem
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Client/Server%20upload%20problem&In-Reply-To=%3CAANLkTimurH6XnWqBVCVPPRe0Q0ohPLyeLBtMIupUXpJy%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="055091.html">
+   <LINK REL="Next"  HREF="055097.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Client/Server upload problem</H1>
+    <B>Sean Dugan</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Client/Server%20upload%20problem&In-Reply-To=%3CAANLkTimurH6XnWqBVCVPPRe0Q0ohPLyeLBtMIupUXpJy%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Client/Server upload problem">smdugan01 at gmail.com
+       </A><BR>
+    <I>Tue Jul 20 23:37:14 MDT 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="055091.html">[Twisted-Python] loading intermediate CA certs from a chain file
+</A></li>
+        <LI>Next message (by thread): <A HREF="055097.html">[Twisted-Python] Client/Server upload problem
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55092">[ date ]</a>
+              <a href="thread.html#55092">[ thread ]</a>
+              <a href="subject.html#55092">[ subject ]</a>
+              <a href="author.html#55092">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I can't seem to figure out how a client uploads a file to the server using
+twisted.protocols.ftp. For the server side I am using the ftpserver example
+from the twisted website. For the client I have the following:
+
+from twisted.protocols.ftp import FTPClient, FTPFileListProtocol
+from twisted.internet.protocol import Protocol, ClientCreator
+from twisted.python import usage
+from twisted.internet import reactor
+
+from twisted.protocols.basic import FileSender
+
+
+# Standard library imports
+import string
+import sys
+try:
+    from cStringIO import StringIO
+except ImportError:
+    from StringIO import StringIO
+
+
+class BufferingProtocol(Protocol):
+    &quot;&quot;&quot;Simple utility class that holds all data written to it in a
+buffer.&quot;&quot;&quot;
+    def __init__(self, fileToWrite):
+        self.buffer = StringIO()
+        self.fileToWrite = fileToWrite
+
+    def dataReceived(self, data):
+        self.buffer.write(data)
+
+# Define some callbacks
+
+def success(response):
+    print 'Success!  Got response:'
+    print '---'
+    if response is None:
+        print None
+    else:
+        print string.join(response, '\n')
+    print '---'
+
+
+def fail(error):
+    print 'Failed.  Error was:'
+    print error
+
+def showFiles(result, fileListProtocol):
+    print 'Processed file listing:'
+    for file in fileListProtocol.files:
+        print '    %s: %d bytes, %s' \
+              % (file['filename'], file['size'], file['date'])
+    print 'Total: %d files' % (len(fileListProtocol.files))
+
+def showBuffer(result, bufferProtocol):
+    print 'Got data:'
+    print bufferProtocol.buffer.getvalue()
+
+def writeBufferToFile(result, bufferProtocol):
+    f = open(bufferProtocol.fileToWrite, 'w')
+    f.write(bufferProtocol.buffer.getvalue())
+    f.close()
+
+
+class Options(usage.Options):
+    optParameters = [['host', 'h', 'localhost'],
+                     ['port', 'p', 21],
+                     ['username', 'u', 'anonymous'],
+                     ['password', None, 'bozo'],
+                     ['passive', None, 0],
+                     ['debug', 'd', 1],
+                    ]
+
+def run():
+    # Get config
+    config = Options()
+    config.parseOptions()
+    config.opts['port'] = int(config.opts['port'])
+    config.opts['passive'] = int(config.opts['passive'])
+    config.opts['debug'] = int(config.opts['debug'])
+
+    # Create the client
+    FTPClient.debug = config.opts['debug']
+    creator = ClientCreator(reactor, FTPClient, config.opts['username'],
+                            config.opts['password'],
+passive=config.opts['passive'])
+    creator.connectTCP(config.opts['host'],
+config.opts['port']).addCallback(connectionMade).addErrback(connectionFailed)
+    reactor.run()
+
+def connectionFailed(f):
+    print &quot;Connection Failed:&quot;, f
+    reactor.stop()
+
+def fileTransferFail(failure):
+    failure.printTraceback()
+    reactor.stop()
+
+def cbStore(consumer, filename):
+    fs = FileSender()
+    d = fs.beginFileTransfer(open(filename, 'r'), consumer)
+    d.addCallback(lambda _: consumer.finish()).addErrback(fileTransferFail)
+    return d
+
+
+def connectionMade(ftpClient):
+    # Get the current working directory
+    ftpClient.pwd().addCallbacks(success, fail)
+
+    # Get a detailed listing of the current directory
+    fileList = FTPFileListProtocol()
+    d = ftpClient.list('.', fileList)
+    d.addCallbacks(showFiles, fail, callbackArgs=(fileList,))
+
+    # Change to the parent directory
+    ftpClient.cdup().addCallbacks(success, fail)
+
+    filename = &quot;FtpDownload.txt&quot;
+    uploadpath = &quot;FtpUpload.txt&quot;
+    d1, d2 = ftpClient.storeFile(uploadpath)
+    d1.addCallback(cbStore, filename).addErrback(fileTransferFail)
+    d2.addCallback(lambda _: reactor.stop())
+
+
+# this only runs if the module was *not* imported
+if __name__ == '__main__':
+    run()
+
+When I run this, it returns “Failure: twisted.protocols.ftp.CommandFailed:
+['550 FtpUpload.txt: Permission denied']”. I can download a file, and view
+the files in a folder, I just can't upload a file. Also if I log-in as one
+the users in the .dat file, instead of anonymous, I can't even view the
+files in a folder. So is there a way to give anonymous or a user in the .dat
+file more permissions, like the write permission?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20100721/3a80b7e5/attachment-0001.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="055091.html">[Twisted-Python] loading intermediate CA certs from a chain file
+</A></li>
+	<LI>Next message (by thread): <A HREF="055097.html">[Twisted-Python] Client/Server upload problem
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55092">[ date ]</a>
+              <a href="thread.html#55092">[ thread ]</a>
+              <a href="subject.html#55092">[ subject ]</a>
+              <a href="author.html#55092">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

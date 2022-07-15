@@ -1,0 +1,274 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted.internet.process for Win32
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.internet.process%20for%20Win32&In-Reply-To=%3C20020309122340.GA486%40frobozz.local%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="033386.html">
+   <LINK REL="Next"  HREF="033388.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted.internet.process for Win32</H1>
+    <B>Andrew Bennetts</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20twisted.internet.process%20for%20Win32&In-Reply-To=%3C20020309122340.GA486%40frobozz.local%3E"
+       TITLE="[Twisted-Python] twisted.internet.process for Win32">andrew-twisted at puzzling.org
+       </A><BR>
+    <I>Sat Mar  9 05:23:40 MST 2002</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="033386.html">[Twisted-Python] twisted.internet.process for Win32
+</A></li>
+        <LI>Next message (by thread): <A HREF="033388.html">[Twisted-Python] twisted.internet.process for Win32
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#33387">[ date ]</a>
+              <a href="thread.html#33387">[ thread ]</a>
+              <a href="subject.html#33387">[ subject ]</a>
+              <a href="author.html#33387">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sat, Mar 09, 2002 at 11:19:45PM +1100, Andrew Bennetts wrote:
+&gt;<i> I'm attaching a version which should work with only one thread per process,
+</I>
+*sigh*
+
+And here is the attachment....
+
+-Andrew.
+
+-------------- next part --------------
+&quot;&quot;&quot;
+Win32 process support.
+&quot;&quot;&quot;
+
+# Twisted imports
+from twisted.internet import task, abstract
+
+# System imports
+import win32api
+import win32pipe
+import win32file
+import win32process
+import win32security
+import win32con
+import win32event
+import pywintypes
+import msvcrt
+import os
+import sys
+import threading
+import Queue
+import string
+
+
+class Process(abstract.FileDescriptor):
+    &quot;&quot;&quot;A process that integrates with the Twisted event loop.&quot;&quot;&quot;
+    
+    buffer = ''
+    
+    def __init__(self, command, args, environment, path):
+        # security attributes for pipes
+        sAttrs = win32security.SECURITY_ATTRIBUTES()
+        sAttrs.bInheritHandle = 1
+
+        # create pipes
+        hStdin_r,  self.hStdin_w  = win32pipe.CreatePipe(sAttrs, 0)
+        self.hStdout_r, hStdout_w = win32pipe.CreatePipe(sAttrs, 0)
+        self.hStderr_r, hStderr_w = win32pipe.CreatePipe(sAttrs, 0)
+
+        # set the info structure for the new process.
+        StartupInfo = win32process.STARTUPINFO()
+        StartupInfo.hStdInput  = hStdin_r
+        StartupInfo.hStdOutput = hStdout_w
+        StartupInfo.hStdError  = hStderr_w
+        StartupInfo.dwFlags = win32process.STARTF_USESTDHANDLES
+        # Mark doesn't support wShowWindow yet.
+        # StartupInfo.dwFlags = StartupInfo.dwFlags | win32process.STARTF_USESHOWWINDOW
+        # StartupInfo.wShowWindow = win32con.SW_HIDE
+        
+        # Create new output read handles and the input write handle. Set
+        # the inheritance properties to FALSE. Otherwise, the child inherits
+        # the these handles; resulting in non-closeable handles to the pipes
+        # being created.
+        pid = win32api.GetCurrentProcess()
+
+        tmp = win32api.DuplicateHandle(
+            pid,
+            self.hStdin_w,
+            pid,
+            0,
+            0,     # non-inheritable!!
+            win32con.DUPLICATE_SAME_ACCESS)
+        # Close the inhertible version of the handle
+        win32file.CloseHandle(self.hStdin_w)
+        self.hStdin_w = tmp
+        
+        tmp = win32api.DuplicateHandle(
+            pid,
+            self.hStdout_r,
+            pid,
+            0,
+            0,     # non-inheritable!
+            win32con.DUPLICATE_SAME_ACCESS)
+        # Close the inhertible version of the handle
+        win32file.CloseHandle(self.hStdout_r)
+        self.hStdout_r = tmp
+        
+        tmp = win32api.DuplicateHandle(
+            pid,
+            self.hStderr_r,
+            pid,
+            0,
+            0,     # non-inheritable!
+            win32con.DUPLICATE_SAME_ACCESS)
+        # Close the inhertible version of the handle
+        win32file.CloseHandle(self.hStderr_r)
+        self.hStderr_r = tmp
+        
+        # start the process.
+        print &quot;creating process&quot;
+        cmdline = &quot;%s %s&quot; % (command, string.join(args, ' '))
+        hProcess, hThread, dwPid, dwTid = win32process.CreateProcess(
+                None,   # program
+                cmdline,# command line
+                None,   # process security attributes
+                None,   # thread attributes
+                1,      # inherit handles, or USESTDHANDLES won't work.
+                        # creation flags. Don't access the console.
+                0,      # Don't need anything here.
+                        # If you're in a GUI app, you should use
+                        # CREATE_NEW_CONSOLE here, or any subprocesses
+                        # might fall victim to the problem described in:
+                        # KB article: Q156755, cmd.exe requires
+                        # an NT console in order to perform redirection.. 
+                environment,   # new environment
+                path,          # new directory
+                StartupInfo)
+        # normally, we would save the pid etc. here...
+        print &quot;process created&quot;
+        # Child is launched. Close the parents copy of those pipe handles
+        # that only the child should have open.
+        # You need to make sure that no handles to the write end of the
+        # output pipe are maintained in this process or else the pipe will
+        # not close when the child process exits and the ReadFile will hang.
+        win32file.CloseHandle(hStderr_w)
+        win32file.CloseHandle(hStdout_w)
+        win32file.CloseHandle(hStdin_r)
+
+        self.outQueue = Queue.Queue()
+        self.closed = 0
+        
+        #threading.Thread(target=self.doWrite).start()
+        #threading.Thread(target=self.doReadOut).start()
+        #threading.Thread(target=self.doReadErr).start()
+
+        # Create event to signal when new data should be written
+        self.writeMore = win32event.CreateEvent(None, 0, 0, None)
+        
+        threading.Thread(target=self.waitOnPipe).start()
+    
+    def write(self, data):
+        &quot;&quot;&quot;Write data to the process' stdin.&quot;&quot;&quot;
+        self.outQueue.put(data)
+        win32event.PulseEvent(self.writeMore)
+    
+    def closeStdin(self):
+        &quot;&quot;&quot;Close the process' stdin.&quot;&quot;&quot;
+        self.outQueue.put(None)
+        win32event.PulseEvent(self.writeMore)
+    
+    def connectionLost(self):
+        &quot;&quot;&quot;Will be called twice, by the stdout and stderr threads.&quot;&quot;&quot;
+        if not self.closed:
+            abstract.FileDescriptor.connectionLost(self)
+            print &quot;connection lost&quot;
+            self.closed = 1
+            self.closeStdin()
+            win32file.CloseHandle(self.hStdout_r)
+            win32file.CloseHandle(self.hStderr_r)
+
+    def waitOnPipe(self):
+        &quot;&quot;&quot;Runs in thread.&quot;&quot;&quot;
+        handles = [self.writeMore, self.hStdout_r, self.hStderr_r]
+        win32event.PulseEvent(self.writeMore)
+        #print 'Event:' + str(win32event.WaitForSingleObject(self.hStdin_w, 2000))
+        stdinClosed = 0
+        while 1:
+            val = win32event.WaitForMultipleObjects(handles, 0,
+                                                    win32event.INFINITE)
+            print 'waitOnPipe got val:', val
+            if val == win32event.WAIT_OBJECT_0:
+                if stdinClosed:
+                    continue
+                while not self.outQueue.empty():
+                    data = self.outQueue.get()
+                    if data == None:
+                        win32file.CloseHandle(self.hStdin_w)
+                        stdinClosed = 1
+                    try:
+                        win32file.WriteFile(self.hStdin_w, data, None)
+                    except win32api.error:
+                        win32file.CloseHandle(self.hStdin_w)
+                        stdinClosed = 1
+            elif val == win32event.WAIT_OBJECT_0 + 1:
+                try:
+                    hr, data = win32file.ReadFile(self.hStdout_r, 8192, None)
+                except win32api.error:
+                    task.schedule(self.connectionLost)
+                    return
+                task.schedule(self.handleChunk, data)
+            elif val == win32event.WAIT_OBJECT_0 + 2:
+                try:
+                    hr, data = win32file.ReadFile(self.hStderr_r, 8192, None)
+                except win32api.error:
+                    task.schedule(self.connectionLost)
+                    return
+                task.schedule(self.handleError, data)
+
+    
+if __name__ == '__main__':
+    from twisted.internet import main
+    
+    def printer(x):
+        print &quot;Got&quot;, repr(x)
+    
+    exe = win32api.GetModuleFileName(0)
+    print exe
+    p = Process(exe, ['-u', 'processtest.py'], None, None)
+    print &quot;ok, made process object&quot;
+    p.handleChunk = printer
+    p.handleError = printer
+    p.write(&quot;hello, world&quot;)
+    p.closeStdin()
+    main.run()
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="033386.html">[Twisted-Python] twisted.internet.process for Win32
+</A></li>
+	<LI>Next message (by thread): <A HREF="033388.html">[Twisted-Python] twisted.internet.process for Win32
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#33387">[ date ]</a>
+              <a href="thread.html#33387">[ thread ]</a>
+              <a href="subject.html#33387">[ subject ]</a>
+              <a href="author.html#33387">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

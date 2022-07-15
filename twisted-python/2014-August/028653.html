@@ -1,0 +1,108 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Is there pb documentation somewhere?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Is%20there%20pb%20documentation%20somewhere%3F&In-Reply-To=%3C6A9957DF-8797-494C-BBCB-F2D330F65BAF%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="028651.html">
+   <LINK REL="Next"  HREF="028654.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Is there pb documentation somewhere?</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Is%20there%20pb%20documentation%20somewhere%3F&In-Reply-To=%3C6A9957DF-8797-494C-BBCB-F2D330F65BAF%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Is there pb documentation somewhere?">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue Aug 19 02:04:13 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="028651.html">[Twisted-Python] Is there pb documentation somewhere?
+</A></li>
+        <LI>Next message: <A HREF="028654.html">[Twisted-Python] Is there pb documentation somewhere?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28653">[ date ]</a>
+              <a href="thread.html#28653">[ thread ]</a>
+              <a href="subject.html#28653">[ subject ]</a>
+              <a href="author.html#28653">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Aug 18, 2014, at 8:31 PM, Daniel Sank &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">sank.daniel at gmail.com</A>&gt; wrote:
+
+&gt;<i> Dustin,
+</I>&gt;<i> 
+</I>&gt;<i> &gt; Adding what amounts to a use-after-free bug to the protocol seems like a really bad idea to me.
+</I>&gt;<i> 
+</I>&gt;<i> Oh goody, a sarcastic comment which doesn't actually bother to explain the bug :)
+</I>
+Oddly this is _exactly_ how a co-worker characterized the problem as well, with (as far as I can see) no communication of this idea ;).
+
+&lt;<A HREF="http://cwe.mitre.org/data/definitions/416.html">http://cwe.mitre.org/data/definitions/416.html</A>&gt; describes the disastrous consequences of this in C; the Python equivalent is mild, but it's still annoying to get 'None has no attribute &quot;frob&quot;' when you do self.frobber.frob().
+
+&gt;<i> Since what I describe is basically WeakReferenceable, it's not obvious to me that there's a bug. I tell you when the thing to which your Remote(Weak)Reference points is destroyed, just like weak references invoke finalization callbacks. If you try to invoke remote methods after than happens I just return you an error. What's the problem? This is exactly how weak references work.
+</I>
+The thing about weak references is that they are almost always to objects that are shared, that have a well-defined lifecycle.  Your PB objects generally should _not_ be shared; a well-structured PB application will almost always create thin wrapper objects, factoring the remote-access-control logic out of the core model abstractions.  Exposing weak references across a network is also very, very tricky: distributed reference counting is hard enough without trying to introduce real distributed GC that involves reference tracing.
+
+&gt;<i> &gt; If your server-side app is sensitive to when objects are destroyed for any reason aside
+</I>&gt;<i> &gt; from management of its memory consumption, I'd argue your app is broken.
+</I>&gt;<i> 
+</I>&gt;<i> That's a really good point. Only CPython destroys objects deterministically when the ref count hits zero.
+</I>
+Yes. And even the CPython developers have said it's effectively a bug to depend on this behavior, because you can't really know when it's going to happen.  A debugger might be holding on to your stack frames for a little while.  The profiler might be keeping your locals around for a moment longer than you expect.  This is why we have idioms like 'with f as open(...)' now.
+
+&gt;<i> &gt; Certainly it opens you to a denial of service from a malicious client, which might hold references
+</I>&gt;<i> &gt; to objects you'd rather it didn't
+</I>&gt;<i> 
+</I>&gt;<i> So my instinct to keep strong references only where they're needed is just bad?
+</I>
+Here are a couple of ways to solve this problem without getting weak references involved:
+
+Set limits on things.  PB isn't great about this, but this is an area where it could get better, and where all the fixes are really straightforward (find the place where PB does a thing, set a limit, raise an exception if the thing is over that limit). In this case, don't allow clients to hold unlimited numbers of simultaneous references.  Start throwing errors when too many live references exist on one connection.  A reasonable application should not need that many at once - if you set a limit at around 1024 and allow servers to tune it for particular workloads, it should be fine.  (Set it per-type maybe?)
+Don't give out references to objects you can't revoke logically, at an application level.  If you have a chess piece that has been taken, that is not a NULL pointer or None.  There is a small, fixed number of chess pieces per game, so you don't have to worry about denials of service.  Therefore your ChessPiece class should have a 'taken' state associated with it; in fact, you could remember which move of the game the piece was taken on, and produce an error message which specifically reminds the player when it was taken.  Much like 'with f as open(...)' explicitly invokes 'f.close()' at the end of the block but does not force 'f' to get garbage collected, you should still be able to have a PB protocol-level reference to an application-level revoked object.  Debugging distributed systems is hard enough without translating every revoked-permission error into some common &quot;the distributed GC happened, I don't know what happened to your object, life is hard&quot;.
+
+Is this making sense?
+
+&gt;<i> Should a GUI or a logger keep a strong reference to the things they observe?
+</I>
+
+As my other message indicated - yes :).
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20140819/6a224022/attachment-0001.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20140819/6a224022/attachment-0001.html</A>&gt;
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="028651.html">[Twisted-Python] Is there pb documentation somewhere?
+</A></li>
+	<LI>Next message: <A HREF="028654.html">[Twisted-Python] Is there pb documentation somewhere?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28653">[ date ]</a>
+              <a href="thread.html#28653">[ thread ]</a>
+              <a href="subject.html#28653">[ subject ]</a>
+              <a href="author.html#28653">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,966 @@
+From manlio_perillo at libero.it  Thu Apr  5 16:22:05 2007
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Thu Apr  5 16:22:11 2007
+Subject: [Twisted-web] disabling logging in Nevow
+Message-ID: <4615687D.1030608@libero.it>
+
+Hi.
+
+Since I'm using nginx to serve a Nevow application via mod_proxy I do 
+not need logging in Nevow.
+
+I have disabled logging changing a few line of code in
+appserver.NevowRequest and appserver.NevowSite:
+
+--- appserver.old.py    2007-04-05 23:03:02.000000000 +0200
++++ appserver.py        2007-04-05 23:04:03.000000000 +0200
+@@ -156,8 +156,8 @@
+          if pageContext is not errorMarker:
+              return defer.maybeDeferred(
+                  pageContext.tag.renderHTTP, pageContext
+-            ).addBoth(
+-                self._cbSetLogger, pageContext
++#            ).addBoth(
++#                self._cbSetLogger, pageContext
+              ).addErrback(
+                  processingFailed, self, pageContext
+              ).addCallback(
+@@ -306,6 +306,7 @@
+          )
+
+      def log(self, request):
++        return
+          if request._logger is None:
+              server.Site.log(self, request)
+          else:
+
+
+Unfortunately I have noted (using Apache Bench) that there are very 
+little performance improvements...
+
+
+
+Regards  Manlio Perillo
+
+
+
+From ibu at radempa.de  Thu Apr 12 14:35:57 2007
+From: ibu at radempa.de (ibu)
+Date: Thu Apr 12 14:36:03 2007
+Subject: [Twisted-web] web2.server: returning a deferred from
+	IResource.render()
+Message-ID: <200704122135.58774.ibu@radempa.de>
+
+Hi,
+
+I'm running web2.server (much like the example at
+http://twistedmatrix.com/projects/web2/documentation/examples/intro/simple.py
+) and everything works well, except if I return a deferred from an 
+IResource.render() :
+
+This does NOT work:
+    def render(self, req):
+            #...
+            deferredResponse = h.getResponse() # generates a deferred
+            return deferredResponse
+While this DOES work:
+    def render(self, req):
+            #...
+            deferredResponse = h.getResponse() # generates a deferred
+            deferredResponse.callback(None)
+            return deferredResponse.result
+
+According to the docs (
+http://twistedmatrix.com/projects/web2/documentation/howto/object-traversal.xhtml
+) I should
+
+    Return an IResponse or a deferred which will fire an
+    IResponse.
+
+What's wrong here?
+Does anybody have a working exmaple?
+To where does render() return its result?
+
+My versions:
+>>> twisted.__version__
+'2.4.0'
+>>> twisted.web2.__version__
+'0.2.0'
+
+>python -V
+Python 2.4.4
+
+I hope somebody can help.
+Thx,
+ibu
+
+From exarkun at divmod.com  Thu Apr 12 14:54:20 2007
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Thu Apr 12 14:54:23 2007
+Subject: [Twisted-web] web2.server: returning a deferred from
+	IResource.render()
+In-Reply-To: <200704122135.58774.ibu@radempa.de>
+Message-ID: <20070412195420.19381.104063359.divmod.quotient.68@ohm>
+
+On Thu, 12 Apr 2007 21:35:57 +0200, ibu <ibu@radempa.de> wrote:
+>Hi,
+>
+>I'm running web2.server (much like the example at
+>http://twistedmatrix.com/projects/web2/documentation/examples/intro/simple.py
+>) and everything works well, except if I return a deferred from an
+>IResource.render() :
+>
+>This does NOT work:
+>    def render(self, req):
+>            #...
+>            deferredResponse = h.getResponse() # generates a deferred
+>            return deferredResponse
+
+While it may be the case that a program can only work in one particular
+way (and so saying that a program works may fully describe its behavior),
+it is not the case that a program can only be broken in one particular
+way.  Don't just say that something doesn't work.  Explain the behavior
+you expected to see and how the behavior you did see differed from that.
+It's also very useful to include complete examples.  In the above, I have
+no idea what `h' is or what `h.getResponse' might return.  This means I
+really have no idea what the render method might even be trying to do, let
+alone what it actually does.
+
+>While this DOES work:
+>    def render(self, req):
+>            #...
+>            deferredResponse = h.getResponse() # generates a deferred
+>            deferredResponse.callback(None)
+>            return deferredResponse.result
+
+The `result' attribute of Deferreds is not strictly public, and you should
+avoid using it.  The above is equivalent to returning f(None), where f is
+the composite function of all of the callbacks on deferredResult, though
+what those might be I do not know.
+
+Jean-Paul
+
+From ibu at radempa.de  Thu Apr 12 15:55:36 2007
+From: ibu at radempa.de (ibu)
+Date: Thu Apr 12 15:55:42 2007
+Subject: [Twisted-web] web2.server: returning a deferred from
+	IResource.render()
+In-Reply-To: <20070412195420.19381.104063359.divmod.quotient.68@ohm>
+References: <20070412195420.19381.104063359.divmod.quotient.68@ohm>
+Message-ID: <200704122255.36761.ibu@radempa.de>
+
+You are right, I should not say that it is not working; I should say 
+it is not working as I expected, and my expectations regarding 
+deferreds may well be wrong, since I am new to them.
+
+Anyway, here is a full example code, which (when run with 
+twistd -l - -noy ) does render the expected output line correctly. 
+Upon removing the comment the http client does not receive an answer 
+to the http request however.
+
+I'd just like to know how I can correctly return a deferred from 
+render(), or to where render() returns.
+
+Thx, ibu
+
+---------------------------------------------------------------------->>>>>
+
+from twisted.web2 import server, http, resource, channel, http_headers
+from twisted.internet import defer
+
+class Handler:
+    def __init__(self, request):
+        self.request = request
+    def err(self, e):
+        print "---- errb", e
+    def getResponse(self, result = None):
+        rep = "The output which shall be transferred to the browser."
+        res = http.Response( 200,
+            {'content-type': http_headers.MimeType('text','plain')},
+            rep)
+        print "---- getResponse returning: ", res
+        return res
+    def getDeferredResponse(self):
+        print "---- getDeferredResponse beginning"
+        d = defer.Deferred()
+        d.addCallback(self.getResponse)
+        d.addErrback(self.err)
+        print "---- getDeferredResponse returning: ", d
+        return d
+
+class Toplevel(resource.Resource):
+    addSlash = True
+    def render(self, r):
+        h = Handler(r)
+        deferredResponse = h.getDeferredResponse()
+        #return deferredResponse
+        deferredResponse.callback(None)
+        return deferredResponse.result
+
+site = server.Site(Toplevel())
+
+
+from twisted.application import service, strports
+application = service.Application("demoserver")
+s = strports.service('tcp:8080', channel.HTTPFactory(site))
+s.setServiceParent(application)
+
+<<<<<------------------------------------------------------------------------
+
+
+
+----- Original message -----
+From: Jean-Paul Calderone (Jean-Paul Calderone <exarkun@divmod.com>)
+To: twisted-web@twistedmatrix.com
+Cc: 
+Date: Thursday 12 April 2007 21:54 (UTC+1)
+Subject: Re: [Twisted-web] web2.server: returning a deferred from 
+IResource.render()
+
+> On Thu, 12 Apr 2007 21:35:57 +0200, ibu <ibu@radempa.de> wrote:
+> >Hi,
+> >
+> >I'm running web2.server (much like the example at
+> >http://twistedmatrix.com/projects/web2/documentation/examples/intr
+> >o/simple.py ) and everything works well, except if I return a
+> > deferred from an IResource.render() :
+> >
+> >This does NOT work:
+> >    def render(self, req):
+> >            #...
+> >            deferredResponse = h.getResponse() # generates a
+> > deferred return deferredResponse
+>
+> While it may be the case that a program can only work in one
+> particular way (and so saying that a program works may fully
+> describe its behavior), it is not the case that a program can only
+> be broken in one particular way.  Don't just say that something
+> doesn't work.  Explain the behavior you expected to see and how the
+> behavior you did see differed from that. It's also very useful to
+> include complete examples.  In the above, I have no idea what `h'
+> is or what `h.getResponse' might return.  This means I really have
+> no idea what the render method might even be trying to do, let
+> alone what it actually does.
+>
+> >While this DOES work:
+> >    def render(self, req):
+> >            #...
+> >            deferredResponse = h.getResponse() # generates a
+> > deferred deferredResponse.callback(None)
+> >            return deferredResponse.result
+>
+> The `result' attribute of Deferreds is not strictly public, and you
+> should avoid using it.  The above is equivalent to returning
+> f(None), where f is the composite function of all of the callbacks
+> on deferredResult, though what those might be I do not know.
+>
+> Jean-Paul
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+From ldanielburr at mac.com  Thu Apr 12 16:12:42 2007
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Thu Apr 12 16:12:48 2007
+Subject: [Twisted-web] web2.server: returning a deferred from
+	IResource.render()
+In-Reply-To: <200704122255.36761.ibu@radempa.de>
+References: <20070412195420.19381.104063359.divmod.quotient.68@ohm>
+	<200704122255.36761.ibu@radempa.de>
+Message-ID: <op.tqovvgmn3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+On Thu, 12 Apr 2007 15:55:36 -0500, ibu <ibu@radempa.de> wrote:
+
+> from twisted.web2 import server, http, resource, channel, http_headers
+> from twisted.internet import defer
+> class Handler:
+>     def __init__(self, request):
+>         self.request = request
+>     def err(self, e):
+>         print "---- errb", e
+>     def getResponse(self, result = None):
+>         rep = "The output which shall be transferred to the browser."
+>         res = http.Response( 200,
+>             {'content-type': http_headers.MimeType('text','plain')},
+>             rep)
+>         print "---- getResponse returning: ", res
+>         return res
+>     def getDeferredResponse(self):
+>         print "---- getDeferredResponse beginning"
+>         d = defer.Deferred()
+>         d.addCallback(self.getResponse)
+>         d.addErrback(self.err)
+>         print "---- getDeferredResponse returning: ", d
+>         return d
+
+Deferreds don't just automatically schedule themselves to
+be fired, they fire in response to some event.  In other
+words some event must occur in which d.callback gets
+invoked.
+
+Your code, as written, never causes the Deferred's
+callback to be fired.
+
+In this example, you'd need to cause the callback to
+be invoked yourself, like so:
+
+def getDeferredResponse(self):
+     print "---- getDeferredResponse beginning"
+     d = defer.Deferred()
+     d.addCallback(self.getResponse)
+     d.addErrback(self.err)
+     print "---- getDeferredResponse returning: ", d
+     reactor.callLater(1, d.callback, None)
+     return d
+
+Hope this helps,
+
+L. Daniel Burr
+
+From twisted-python at 2xlp.com  Tue Apr 17 09:57:24 2007
+From: twisted-python at 2xlp.com (Jonathan Vanasco)
+Date: Tue Apr 17 09:57:29 2007
+Subject: [Twisted-web] confusion with general web serving
+Message-ID: <4BC7A870-C060-47A6-B5E2-03FA6CD6AE26@2xlp.com>
+
+I asked this on the -python list, some suggested I re-ask here.
+
+I'm trying to build a small daemon that does the following:
+
+	1_ parse the uri for the key to an image
+	2_ validate that key against db
+		3_ if not valid, render a 404
+		4_ if valid, map to an arbitrary file on the fs  ( pulled from db )
+		4b_ or check a bdb to see if its on the fs, pull a copy off of  
+amazon's s3 otherwise and update the cachedb to note we have it
+
+The issue that I'm having:
+
+	i originally tried doing this based on one of the chapters in the  
+twisted o'reilley book.  i ran into issues when I tried to render an  
+image -- i couldn't figure out how to do that.
+
+	somone on twisted web suggested i not use the protocol and instead  
+use site (http://twistedmatrix.com/projects/web/documentation/howto/ 
+using-twistedweb.html#auto2 ).   i ran into issues when trying to  
+render status codes and add in proxy functionality.
+
+
+I'm at a loss on what I should be using.  can someone offer advice ?
+
+
+
+
+== oreilley style ==
+class UserphotoRequestHandler(http.Request):
+	def process(self):
+		pass
+
+class UserphotoHttp(http.HTTPChannel):
+	requestFactory = UserphotoRequestHandler
+
+class UserphotoHttpFactory(http.HTTPFactory):
+	protocol= UserphotoHttp
+
+if __name__ == "__main__":
+	from twisted.internet import reactor
+	reactor.listenTCP(7087, UserphotoHttpFactory())
+	reactor.run( )
+
+
+	
+
+
+// Jonathan Vanasco
+
+| - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -  
+- - - - - - - - - - - - - - - -
+| FindMeOn.com - The cure for Multiple Web Personality Disorder
+| Web Identity Management and 3D Social Networking
+| - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -  
+- - - - - - - - - - - - - - - -
+| RoadSound.com - Tools For Bands, Stuff For Fans
+| Collaborative Online Management And Syndication Tools
+| - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -  
+- - - - - - - - - - - - - - - -
+
+
+
+From ldanielburr at mac.com  Tue Apr 17 10:20:27 2007
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Tue Apr 17 10:20:30 2007
+Subject: [Twisted-web] confusion with general web serving
+In-Reply-To: <4BC7A870-C060-47A6-B5E2-03FA6CD6AE26@2xlp.com>
+References: <4BC7A870-C060-47A6-B5E2-03FA6CD6AE26@2xlp.com>
+Message-ID: <op.tqxowd2h3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+On Tue, 17 Apr 2007 09:57:24 -0500, Jonathan Vanasco  
+<twisted-python@2xlp.com> wrote:
+
+> I asked this on the -python list, some suggested I re-ask here.
+>
+> I'm trying to build a small daemon that does the following:
+>
+> 	1_ parse the uri for the key to an image
+> 	2_ validate that key against db
+> 		3_ if not valid, render a 404
+> 		4_ if valid, map to an arbitrary file on the fs  ( pulled from db )
+> 		4b_ or check a bdb to see if its on the fs, pull a copy off of  
+> amazon's s3 otherwise and update the cachedb to note we have it
+>
+> The issue that I'm having:
+>
+> 	i originally tried doing this based on one of the chapters in the  
+> twisted o'reilley book.  i ran into issues when I tried to render an  
+> image -- i couldn't figure out how to do that.
+>
+> 	somone on twisted web suggested i not use the protocol and instead use  
+> site (http://twistedmatrix.com/projects/web/documentation/howto/ 
+> using-twistedweb.html#auto2 ).   i ran into issues when trying to render  
+> status codes and add in proxy functionality.
+>
+>
+> I'm at a loss on what I should be using.  can someone offer advice ?
+
+You are attacking this at too low a level, I think.  In essence you are
+building a fixed-function web server, which is a waste of your time and
+resources, because twisted already has a decent web server implementation.
+
+Just make a .tac file for starters, something along these lines:
+
+--------------webserver.tac-------------------------------------
+
+# UNTESTED CODE I PULLED OUT OF MY EAR!
+
+ from twisted.application import internet, service
+ from twisted.python import log
+ from twisted.web2 import channel, http
+ from twisted.web2 import resource, responsecode, server
+
+
+class Image(resource.LeafResource):
+     def __init__(self, key):
+         self.key = key
+
+     def render(self, request)
+         # Locate the image, return some kind
+         # of http.Response, or a defer.Deferred
+
+
+class Root(resource.Resource):
+     addSlash = True
+
+     def childFactory(self, request, name):
+         return Image(name)
+
+     def render(self, request):
+         return http.Response(
+             code=responsecode.OK,
+             headers={},
+             stream='Blah'
+         )
+
+
+root = Root()
+site = server.Site(root)
+port = 8080
+application = service.Application('ImageServer')
+svc = internet.TCPServer(port, channel.HTTPFactory(site))
+svc.setServiceParent(application)
+
+---------------------------------------------------------------
+
+Run the above with twistd -noy webserver.tac.  This should be
+sufficient to get you started.
+
+Hope this helps,
+
+L. Daniel Burr
+
+From manlio_perillo at libero.it  Tue Apr 17 15:01:37 2007
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Tue Apr 17 15:01:41 2007
+Subject: [Twisted-web] parsing of the Host header and proxy
+Message-ID: <462527A1.6070803@libero.it>
+
+Hi.
+
+I'm using nginx as a proxy server.
+It's mod_proxy is very good, so I do not have to use all the 
+VHostMonster (ugly) stuff.
+
+However there is a problem with the parsing of the Host header: Twisted 
+Web only parses the host name and not the port.
+
+This means that, as an example, when I use request.prePathURL, I got the 
+wrong port.
+
+I have written a patch where I define a new getRequestHost method in the 
+Request object, that returns a tuple (host, port), and a modified 
+version of  _prePathURL that uses the new method.
+
+However I'm not sure if I shoulf fill a ticked.
+Nobody else has the same problem?
+
+
+
+Thanks  Manlio Perillo
+
+From twisted-python at 2xlp.com  Tue Apr 17 15:01:49 2007
+From: twisted-python at 2xlp.com (Jonathan Vanasco)
+Date: Tue Apr 17 15:01:53 2007
+Subject: [Twisted-web] confusion with general web serving
+In-Reply-To: <op.tqxowd2h3oj628@l-daniel-burrs-powerbook-g4-17.local>
+References: <4BC7A870-C060-47A6-B5E2-03FA6CD6AE26@2xlp.com>
+	<op.tqxowd2h3oj628@l-daniel-burrs-powerbook-g4-17.local>
+Message-ID: <42FB0D2B-953E-4AAB-927C-BF8BC7DBCA02@2xlp.com>
+
+
+On Apr 17, 2007, at 11:20 AM, L. Daniel Burr wrote:
+>
+> You are attacking this at too low a level, I think.  In essence you  
+> are
+> building a fixed-function web server, which is a waste of your time  
+> and
+> resources, because twisted already has a decent web server  
+> implementation.
+>
+> Just make a .tac file for starters, something along these lines:
+
+
+> Run the above with twistd -noy webserver.tac.  This should be
+> sufficient to get you started.
+>
+
+Thanks.  Thats a big help -- it shows the interplay of more than just  
+2 classes, and gives me a good feel for Twisted web.
+
+I havne't touched twisted web in years , just other twisted  
+portions.    that puts a lot in perspective.
+
+
+// Jonathan Vanasco
+
+| - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -  
+- - - - - - - - - - - - - - - - - - -
+| SyndiClick.com
+| - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -  
+- - - - - - - - - - - - - - - - - - -
+|      FindMeOn.com - The cure for Multiple Web Personality Disorder
+|      Web Identity Management and 3D Social Networking
+| - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -  
+- - - - - - - - - - - - - - - - - - -
+|      RoadSound.com - Tools For Bands, Stuff For Fans
+|      Collaborative Online Management And Syndication Tools
+| - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -  
+- - - - - - - - - - - - - - - - - - -
+
+
+
+From manlio_perillo at libero.it  Tue Apr 17 15:46:52 2007
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Tue Apr 17 15:47:10 2007
+Subject: [Twisted-web] parsing of the Host header and proxy
+In-Reply-To: <462527A1.6070803@libero.it>
+References: <462527A1.6070803@libero.it>
+Message-ID: <4625323C.8000201@libero.it>
+
+Manlio Perillo ha scritto:
+> Hi.
+> 
+> I'm using nginx as a proxy server.
+> It's mod_proxy is very good, so I do not have to use all the 
+> VHostMonster (ugly) stuff.
+> 
+> However there is a problem with the parsing of the Host header: Twisted 
+> Web only parses the host name and not the port.
+> 
+> This means that, as an example, when I use request.prePathURL, I got the 
+> wrong port.
+> 
+> I have written a patch where I define a new getRequestHost method in the 
+> Request object, that returns a tuple (host, port), and a modified 
+> version of  _prePathURL that uses the new method.
+> 
+
+I just noticed that the current implementation does not work for Unix 
+sockets.
+
+My implementation still does not support Unix Socket, but this is a 
+concern only if the Host header is not set (but nginx returns a
+400 Bad Request, in this case).
+
+
+I will fill a ticket.
+
+
+
+Regards  Manlio Perillo
+
+From feldman+twisted-web at shinkuro.com  Tue Apr 17 15:49:10 2007
+From: feldman+twisted-web at shinkuro.com (Mark Feldman)
+Date: Tue Apr 17 15:59:23 2007
+Subject: [Twisted-web] web2 post/put examples
+Message-ID: <auto-000014520966@execdsl.com>
+
+Does anyone have a simple example of processing either a post or put on the server side using web2?  I've had no problem serving up web pages from a variety of sources (files, database backends).   The changes needed to support data back fro the user -- undoubtedly a set of deferred methods in the right place -- escape me.  Thanks.
+
+    Mark
+
+
+From ldanielburr at mac.com  Tue Apr 17 16:25:54 2007
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Tue Apr 17 16:26:03 2007
+Subject: [Twisted-web] web2 post/put examples
+In-Reply-To: <auto-000014520966@execdsl.com>
+References: <auto-000014520966@execdsl.com>
+Message-ID: <op.tqx5tguy3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+Hi Mark,
+
+On Tue, 17 Apr 2007 15:49:10 -0500, Mark Feldman  
+<feldman+twisted-web@shinkuro.com> wrote:
+
+> Does anyone have a simple example of processing either a post or put on  
+> the server side using web2?  I've had no problem serving up web pages  
+> from a variety of sources (files, database backends).   The changes  
+> needed to support data back fro the user -- undoubtedly a set of  
+> deferred methods in the right place -- escape me.  Thanks.
+>
+
+For POST, you could use resource.PostableResource, which will take
+care of parsing your run-of-the-mill form posting.  Just subclass
+resource.PostableResource, and implement the "render" method.
+
+For PUT, and also for cases where your are POSTING non-form data,
+e.g., an XML payload, you need to subclass resource.Resource,
+implement the desired method (http_POST, http_PUT), and then hook
+the request.stream up to a processing chain.
+
+Example:
+
+ from twisted.web2 import resource, stream
+
+
+class Foo(resource.Resource):
+     _allowedMethods = ('POST', 'PUT')
+
+     def _finished(self, result, request):
+         # return some http.Response
+
+     def _failed(self, reason, request):
+         # return some http.Response
+
+     def http_POST(self, request):
+         def handleData(data):
+             # process each chunk of data as it arrives
+
+         # readStream will keep calling handleData until the
+         # entire stream has been read.
+         d = stream.readStream(request.stream, handleData)
+
+         # these callbacks/errbacks will be called when readStream
+         # has finished reading the stream.
+         d.addCallbacks(
+             self._finished,
+             self._failed,
+             callbackArgs=(request,),
+             errbackArgs=(request,)
+         )
+
+         # Catch any errors that occur in self._finished.
+         d.addErrback(self._failed, request)
+
+         return d
+
+     def http_PUT(self, request):
+         # Just handle things the same way POST does
+         return self.http_POST(request)
+
+
+Hope this helps,
+
+L. Daniel Burr
+
+From ste at demaledetti.net  Wed Apr 18 08:26:14 2007
+From: ste at demaledetti.net (Stefano Debenedetti)
+Date: Wed Apr 18 08:28:25 2007
+Subject: [Twisted-web] excess-transports-1938-3 fixes athena problem with IE7
+Message-ID: <46261C76.1030604@demaledetti.net>
+
+hallo folks,
+
+I have an athena app that stopped working with IE7 so I did some tests and found out that you can replicate the bug:
+
+http://divmod.org/trac/ticket/1938
+
+using IE7 on the /widgets/ demo from the nevow examples:
+
+1) start a clock
+2) stop it
+3) start it again
+--> athena hangs for a few minutes + reloading page doesn't work (hangs indefinitely)
+
+The problem doesn't happen with IE6 nor FF.
+
+It doesn't happen with IE7 either when using this branch (instead of trunk or 0.9.18):
+
+http://divmod.org/trac/browser/branches/excess-transports-1938-3
+
+(thank you mithrandi!)
+
+I was going to report this on the ticket page but I couldn't register.
+
+ciao
+ste
+
+
+From manlio_perillo at libero.it  Sat Apr 28 15:23:30 2007
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Sat Apr 28 15:23:36 2007
+Subject: [Twisted-web] http://genshi.edgewall.org/wiki/GenshiPerformance
+Message-ID: <4633AD42.5030806@libero.it>
+
+I have found two simple benchmark on the genshi site.
+The basic benchmark is not a good benchmark, since the tests are not all 
+equivalent.
+
+I have added a test for Nevow (the patch is attached).
+Before sending the patch to the genshi developers, I want to be sure 
+that the code is the best possible.
+
+Here is the results:
+
+basic
+=====
+
+Django: 1.35 ms
+Cheetah: 0.64 ms
+Nevow: 1.88 ms
+
+
+bigtable
+========
+
+Djange template                               370.68 ms
+Nevow                                         947.84 ms
+
+
+
+
+Thanks and regards  Manlio Perillo
+-------------- next part --------------
+Index: bigtable.py
+===================================================================
+--- bigtable.py	(revisione 565)
++++ bigtable.py	(copia locale)
+@@ -9,10 +9,14 @@
+ import sys
+ import timeit
+ from StringIO import StringIO
+-from genshi.builder import tag
+-from genshi.template import MarkupTemplate
+ 
+ try:
++    from genshi.builder import tag
++    from genshi.template import MarkupTemplate
++except ImportError:
++    MarkupTemplate = None
++
++try:
+     from elementtree import ElementTree as et
+ except ImportError:
+     et = None
+@@ -45,10 +49,16 @@
+ except ImportError:
+     MyghtyInterpreter = None
+ 
++try:
++    from nevow import inevow, rend, loaders
++except ImportError:
++    inevow = None
++
+ table = [dict(a=1,b=2,c=3,d=4,e=5,f=6,g=7,h=8,i=9,j=10)
+           for x in range(1000)]
+ 
+-genshi_tmpl = MarkupTemplate("""
++if MarkupTemplate:
++    genshi_tmpl = MarkupTemplate("""
+ <table xmlns:py="http://genshi.edgewall.org/">
+ <tr py:for="row in table">
+ <td py:for="c in row.values()" py:content="c"/>
+@@ -56,7 +66,7 @@
+ </table>
+ """)
+ 
+-genshi_tmpl2 = MarkupTemplate("""
++    genshi_tmpl2 = MarkupTemplate("""
+ <table xmlns:py="http://genshi.edgewall.org/">$table</table>
+ """)
+ 
+@@ -184,11 +194,44 @@
+ </table>""")
+         cs.render()
+ 
++if inevow:
++    class NevowPage(rend.Page):
++        docFactory = loaders.xmlstr("""
++<table xmlns:n="http://nevow.com/ns/nevow/0.1" n:render="table">
++  <tr n:pattern="row">
++    <td n:pattern="col"><n:slot name="item" /></td>
++  </tr>
++</table>""")
+ 
++        def render_table(self, ctx, data):
++            tag = ctx.tag
++            l = []
++            rowPattern = tag.patternGenerator('row')
++            
++            for row in table:
++                tr = rowPattern()
++                colPattern = tr.patternGenerator('col')
++                ll = []
++                
++                for col in row.values():
++                    td = colPattern()
++                    td.fillSlots('item', col)
++                    ll.append(td)
++
++                l.append(tr[ll])
++
++            return tag[l]
++
++    def test_nevow():
++        """Nevow"""
++        
++        NevowPage().renderSynchronously()
++
++
+ def run(which=None, number=10):
+     tests = ['test_builder', 'test_genshi', 'test_genshi_builder', 'test_myghty', 'test_kid',
+              'test_kid_et', 'test_et', 'test_cet', 'test_clearsilver',
+-             'test_django']
++             'test_django', 'test_nevow']
+ 
+     if which:
+         tests = filter(lambda n: n[5:] in which, tests)
+Index: basic.py
+===================================================================
+--- basic.py	(revisione 565)
++++ basic.py	(copia locale)
+@@ -4,7 +4,7 @@
+ import sys
+ import timeit
+ 
+-__all__ = ['clearsilver', 'myghty', 'django', 'kid', 'genshi', 'cheetah']
++__all__ = ['clearsilver', 'myghty', 'django', 'kid', 'genshi', 'cheetah', 'nevow']
+ 
+ def genshi(dirname, verbose=False):
+     from genshi.template import TemplateLoader
+@@ -105,11 +105,48 @@
+     return render
+ 
+ def nevow(dirname, verbose=False):
+-    # FIXME: can't figure out the API
+-    from nevow.loaders import xmlfile
+-    template = xmlfile('template.xml', templateDir=dirname).load()
++    from nevow import rend, loaders
++
++
++    class Base(rend.Page):
++        docFactory = loaders.xmlfile('template.xhtml', templateDir=dirname)
++        template = None # The template to be used, in derived class
++        
++        def render_title(self, ctx, data):
++            return 'Just a test'
++
++        def macro_main(self, ctx):
++            return ctx.tag[
++                loaders.xmlfile(self.template, ignoreDocType=True, templateDir=dirname)
++                ]
++
++    class Main(Base):
++        template = 'main.xhtml'
++
++        def __init__(self, items):
++            self.items = items
++            
++        def render_loop(self, ctx, data):
++            tag = ctx.tag
++            if not self.items:
++                return tag
++
++            l = []
++            itemPattern = tag.patternGenerator('item')
++
++            for item in self.items:
++                li = itemPattern()
++                li.fillSlots('item', item)
++                l.append(li)
++
++            l[-1].attributes['class'] = 'last'
++            return tag[l]
++
++
++    root = Main(['Number %d' % num for num in range(1, 15)])
++    
+     def render():
+-        print template
++        return root.renderSynchronously()
+ 
+     if verbose:
+         print render()
+Index: nevow/main.xhtml
+===================================================================
+--- nevow/main.xhtml	(revisione 0)
++++ nevow/main.xhtml	(revisione 0)
+@@ -0,0 +1,10 @@
++<!DOCTYPE html
++          PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
++          "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
++<n:invisible xmlns="http://www.w3.org/1999/xhtml"
++             xmlns:n="http://nevow.com/ns/nevow/0.1">
++  <h2>Loop</h2>
++  <ul n:render="loop">
++    <li n:pattern="item"><n:slot name="item" /></li>
++  </ul>
++</n:invisible>
+
+Propriet? modificate su: nevow/main.xhtml
+___________________________________________________________________
+Nome: svn:keywords
+   + Id
+
+Index: nevow/template.xhtml
+===================================================================
+--- nevow/template.xhtml	(revisione 0)
++++ nevow/template.xhtml	(revisione 0)
+@@ -0,0 +1,20 @@
++<!DOCTYPE html 
++          PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
++          "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
++<html xmlns="http://www.w3.org/1999/xhtml"
++      xmlns:n="http://nevow.com/ns/nevow/0.1" 
++      lang="en">
++  <head>
++    <title n:render="title" />
++  </head>
++
++  <body>
++    <div id="header">
++      <h1 n:render="title" />
++    </div>
++
++    <n:invisible n:macro="main" />
++
++    <div id="footer"></div>
++  </body>
++</html>
+
+Propriet? modificate su: nevow/template.xhtml
+___________________________________________________________________
+Nome: svn:keywords
+   + Id
+

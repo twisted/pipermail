@@ -1,0 +1,261 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Proxy CONNECT support
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Proxy%20CONNECT%20support&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003876.html">
+   <LINK REL="Next"  HREF="003879.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Proxy CONNECT support</H1>
+    <B>Felix Ingram</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Proxy%20CONNECT%20support&In-Reply-To="
+       TITLE="[Twisted-web] Proxy CONNECT support">f.ingram.lists at gmail.com
+       </A><BR>
+    <I>Thu Aug  7 10:42:06 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003876.html">[Twisted-web] Using HTTPClientFactory to send POST form data
+</A></li>
+        <LI>Next message: <A HREF="003879.html">[Twisted-web] linking javascript and CSS file
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3878">[ date ]</a>
+              <a href="thread.html#3878">[ thread ]</a>
+              <a href="subject.html#3878">[ subject ]</a>
+              <a href="author.html#3878">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello all,
+
+I'm looking into adding HTTPS support to the proxy module for some
+testing I'm doing. I'd like to be able to trap requests and responses
+as they go to and from the server, so proper CONNECT support is not
+really what I'm aiming for. I've come up with the following (quite
+long, apologies):
+
+&quot;&quot;&quot;
+from twisted.web import proxy, http
+from twisted.internet import reactor, ssl
+from twisted.python import log
+import sys
+import urlparse
+
+from OpenSSL import SSL as OSSL
+
+class MyProxyClient(proxy.ProxyClient):
+
+    def handleEndHeaders(self):
+        print &quot;THOSE HEADERS DONE ENDED&quot;
+        self.father.transport.write(&quot;\r\n&quot;)
+
+    def handleResponsePart(self, buffer):
+        print &quot;GOT SOME STUFF TO SEND TO THE BROWSER&quot;
+        self.father.transport.write(buffer)
+
+    def dataReceived(self, data):
+        print &quot;To the Browser&quot;
+        print data # Data sent to the browser
+        proxy.ProxyClient.dataReceived(self, data)
+
+    def handleResponseEnd(self):
+        print &quot;losing connection...&quot;
+        self.transport.loseConnection()
+        self.father.channel.transport.loseConnection()
+
+
+class MyProxyClientFactory(proxy.ProxyClientFactory):
+    def buildProtocol(self, addr):
+        client = proxy.ProxyClientFactory.buildProtocol(self, addr)
+        client.__class__ = MyProxyClient
+        return client
+
+class MySSLContext(ssl.ContextFactory):
+    def getContext(self):
+        ctx = OSSL.Context(OSSL.SSLv23_METHOD)
+        ctx.use_certificate_file('server.cert')
+        ctx.use_privatekey_file('server.pkey')
+        return ctx
+
+class MyProxyRequest(proxy.ProxyRequest):
+    protocols = {
+            'http': MyProxyClientFactory,
+            'https': MyProxyClientFactory
+            }
+    ports = {
+            'http': 80,
+            'https': 443
+            }
+
+    def requestDone(self, request):
+        &quot;&quot;&quot;Called by first request in queue when it is done.&quot;&quot;&quot;
+        print &quot;REQUESTDONE DONE BE CALLED&quot;
+        if request != self.requests[0]: raise TypeError
+        del self.requests[0]
+
+        if self.persistent:
+            # notify next request it can start writing
+            if self.requests:
+                self.requests[0].noLongerQueued()
+            else:
+                if self._savedTimeOut:
+                    self.setTimeout(self._savedTimeOut)
+        else:
+            print &quot;lOSING CONNECTION&quot;
+            self.transport.loseConnection()
+
+    def process(self):
+        parsed = urlparse.urlparse(self.uri)
+        protocol = parsed.scheme
+        host = parsed.hostname
+        doSSL = False
+        if self.method.upper() == &quot;CONNECT&quot;:
+            self.transport.write(&quot;HTTP/1.1 200 Connection established\r\n\r\n&quot;)
+            self.transport.startTLS(MySSLContext())
+            protocol = &quot;https&quot;
+            self.host = parsed.scheme
+            print &quot;finished connect request&quot;
+        else:
+            if self.isSecure():
+                headers = self.getAllHeaders().copy()
+                host = headers[&quot;host&quot;]
+                protocol = &quot;https&quot;
+                doSSL = True
+            port = self.ports[protocol]
+            if ':' in host:
+                host, port = host.split(':')
+                port = int(port)
+            rest = urlparse.urlunparse(('', '') + parsed[2:])
+            if not rest:
+                rest = rest + '/'
+            class_ = self.protocols[protocol]
+            headers = self.getAllHeaders().copy()
+            if 'host' not in headers:
+                headers['host'] = host
+            self.content.seek(0, 0)
+            s = self.content.read()
+            clientFactory = class_(self.method, rest, self.clientproto, headers,
+                            s, self)
+            if not doSSL:
+                self.reactor.connectTCP(host, port, clientFactory)
+            else:
+                print &quot;Connecting to SSL&quot;
+                self.reactor.connectSSL(host, port, clientFactory,
+ssl.ClientContextFactory())
+
+class MyProxy(proxy.Proxy):
+    def dataReceived(self, data):
+        print &quot;To the Server&quot;
+        print data # Data sent to the server
+        proxy.Proxy.dataReceived(self, data)
+
+    def requestFactory(self, *args):
+        return MyProxyRequest(*args)
+
+class ProxyFactory(http.HTTPFactory):
+        protocol = MyProxy
+
+reactor.listenTCP(8081, ProxyFactory())
+log.startLogging(sys.stdout) # Log to the console
+reactor.run()
+&quot;&quot;&quot;
+
+Most of the magic is happening in the 'process' method. I've copied
+some of the other methods in for debugging. At the moment it's a bit
+hackish but it's almost working as expected. When a connect request is
+received then the SSL connection is set up as required (using
+transport.startTLS). This generates certificate mismatch errors in the
+browser, but this is expected and is what I'm looking for. The GET
+request is then received from the browser and forwarded on to the
+server. The server appears to be happy with this as it does pass the
+appropriate response back to the proxy. For some reason, however, the
+browser does not then get passed the response. Comparing identical
+requests for the HTTP and HTTPS versions of a site show that the only
+apparent difference is that the headers and body are sent in one go
+under HTTP and as two separate chunks under HTTPS.
+
+E.g. HTTPS:
+&quot;&quot;&quot;
+2008-08-07 15:34:15+0100 [MyProxyClient,client] To the Browser
+2008-08-07 15:34:15+0100 [MyProxyClient,client] HTTP/1.1 200 OK
+2008-08-07 15:34:15+0100 [MyProxyClient,client] Date: Thu, 07 Aug 2008
+14:34:15 GMT
+2008-08-07 15:34:15+0100 [MyProxyClient,client] Server: Apache/2.2.9
+(Win32) DAV/2 mod_ssl/2.2.9 Ope
+nSSL/0.9.8h mod_autoindex_color PHP/5.2.6
+2008-08-07 15:34:15+0100 [MyProxyClient,client] X-Powered-By: PHP/5.2.6
+2008-08-07 15:34:15+0100 [MyProxyClient,client] Content-Length: 1325
+2008-08-07 15:34:15+0100 [MyProxyClient,client] Connection: close
+2008-08-07 15:34:15+0100 [MyProxyClient,client] Content-Type: text/html
+2008-08-07 15:34:15+0100 [MyProxyClient,client]
+2008-08-07 15:34:15+0100 [MyProxyClient,client]
+2008-08-07 15:34:15+0100 [MyProxyClient,client] THOSE HEADERS DONE ENDED
+2008-08-07 15:34:15+0100 [MyProxyClient,client] To the Browser
+2008-08-07 15:34:15+0100 [MyProxyClient,client] &lt;html&gt;
+2008-08-07 15:34:15+0100 [MyProxyClient,client] &lt;head&gt;&lt;title&gt;XAMPP&lt;/title&gt;
+2008-08-07 15:34:15+0100 [MyProxyClient,client] &lt;link href=&quot;xampp.css&quot;
+rel=&quot;stylesheet&quot; type=&quot;text/c
+...
+&quot;&quot;&quot;
+
+HTTP:
+&quot;&quot;&quot;
+2008-08-07 15:34:01+0100 [MyProxyClient,client] To the Browser
+2008-08-07 15:34:01+0100 [MyProxyClient,client] HTTP/1.1 200 OK
+2008-08-07 15:34:01+0100 [MyProxyClient,client] Date: Thu, 07 Aug 2008
+14:34:01 GMT
+2008-08-07 15:34:01+0100 [MyProxyClient,client] Server: Apache/2.2.9
+(Win32) DAV/2 mod_ssl/2.2.9 Ope
+nSSL/0.9.8h mod_autoindex_color PHP/5.2.6
+2008-08-07 15:34:01+0100 [MyProxyClient,client] X-Powered-By: PHP/5.2.6
+2008-08-07 15:34:01+0100 [MyProxyClient,client] Content-Length: 1325
+2008-08-07 15:34:01+0100 [MyProxyClient,client] Connection: close
+2008-08-07 15:34:01+0100 [MyProxyClient,client] Content-Type: text/html
+2008-08-07 15:34:01+0100 [MyProxyClient,client]
+2008-08-07 15:34:01+0100 [MyProxyClient,client] &lt;html&gt;
+2008-08-07 15:34:01+0100 [MyProxyClient,client] &lt;head&gt;&lt;title&gt;XAMPP&lt;/title&gt;
+2008-08-07 15:34:01+0100 [MyProxyClient,client] &lt;link href=&quot;xampp.css&quot;
+rel=&quot;stylesheet&quot; type=&quot;text/c
+&quot;&quot;&quot;
+
+The HTTPS version seems to have an extra line feed being added after
+the headers, which may be causing the problem. I've tried stripping
+this out but then I get some other exception being thrown and HTTP
+traffic stops working.
+
+I've got a feeling that I'm not quite going about this in the correct
+way but I'd appreciate any help or insights that anyone could offer.
+If you need any more details then please ask.
+
+Many thanks in advance,
+
+Felix
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003876.html">[Twisted-web] Using HTTPClientFactory to send POST form data
+</A></li>
+	<LI>Next message: <A HREF="003879.html">[Twisted-web] linking javascript and CSS file
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3878">[ date ]</a>
+              <a href="thread.html#3878">[ thread ]</a>
+              <a href="subject.html#3878">[ subject ]</a>
+              <a href="author.html#3878">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

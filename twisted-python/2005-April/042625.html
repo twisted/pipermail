@@ -1,0 +1,200 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] wxpython issues
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20wxpython%20issues&In-Reply-To=%3C20050414.yIu.09204200%40dev-server%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="042621.html">
+   <LINK REL="Next"  HREF="042627.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] wxpython issues</H1>
+    <B>Shawn Church</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20wxpython%20issues&In-Reply-To=%3C20050414.yIu.09204200%40dev-server%3E"
+       TITLE="[Twisted-Python] wxpython issues">twisted-python at twistedmatrix.com
+       </A><BR>
+    <I>Thu Apr 14 23:13:34 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="042621.html">[Twisted-Python] wxpython issues
+</A></li>
+        <LI>Next message (by thread): <A HREF="042627.html">[Twisted-Python] wxpython issues
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#42625">[ date ]</a>
+              <a href="thread.html#42625">[ thread ]</a>
+              <a href="subject.html#42625">[ subject ]</a>
+              <a href="author.html#42625">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I am new to twisted and also experienced problems using wxreactor.  After
+reading some earlier posts to this message list I wrote a wx.App sub-class
+that polls the reactor ONLY when the GUI requires data from twisted:
+
+# This is a method of derived wx.App class I'm leaving out init/clean up
+methods:
+def twistedCall(self,deferredFunction,timeOut=3.0):
+&quot;&quot;&quot; Call a remote method and return when it is done (or times out) &quot;&quot;&quot;
+   class WaitForDeferred(object):
+      def __call__(self,deferredFunction,timeOut=3.0):
+         self.loop=True; self.returnValue=None
+         deferredFunction().addBoth(self.__callback)
+         if timeOut&gt;0:
+            self.timeOut=reactor.callLater(
+               timeOut,self.__callback,
+               Failure(&quot;Timeout while connecting to host&quot;,TimeoutError)
+            )
+         else: self.timeOut=None
+
+         while self.loop:
+            reactor.runUntilCurrent();
+            reactor.iterate(0)
+
+         if isinstance(self.returnValue,Failure):
+            self.returnValue.trap()
+	 return self.returnValue
+
+      def __callback(self,arg):
+         if self.timeOut is not None: self.timeOut.cancel()
+         self.timeOut=None; self.returnValue=arg; self.loop=False
+
+   try:
+      return WaitForDeferred()(deferredFunction,timeOut)
+   # This is to reconnect to server after the connection is broken (client
+factory               is overridden to
+        # reconnect as well)  Is there a better way of doing this???:
+   except pb.DeadReferenceError:
+      self.twistedPerspective=self.twistedCall(lambda:
+         self.twistedFactory.login(self.twistedCredentials)
+      )
+      return WaitForDeferred()(deferredFunction,timeOut)
+
+So when the application needs to login,  request data,  etc.,  it calls
+wx.GetApp().twistedCall(...) and the wx app is &quot;blocked&quot; until  the deferred
+completes.  In addition I have a wx.Timer poll set at one second to do one
+reactor iteration &quot;just in case&quot; although things seem to run fine without this
+extra poll.
+
+In preliminary tests I was able to run 10+ client instances each requesting
+551k blocks of data at 1 second intervals and everything seemed to run fine
+(some of the wx polls were missed but twisted never dropped anything).  Note
+that this is a PB based client/server application running (both clients and
+sever) on a 1.7 Ghz P4 w/1 GB under Linux.
+
+I was pretty impressed with this performance esp. since the server was reading
+the 551k from disk each time it was requested with a simple &quot;return
+file(read(...))&quot; statement and I did not even wrap the server code in a
+deferred like I should of.  I did this test to see if the the reactor loop,
+as implemented,  would &quot;starve&quot; and drop data producing timeout errors.
+
+This testing was done before I read this latest post and before any actual
+production application code has been developed.  So am I better off just
+scrapping this approach and adopting a threaded method?  The reason I adopted
+the above approach was that, in general,  the applications I write NEED to
+wait for data before they can continue.  For example,  the user enter a userid
+and password and hits the &quot;login&quot; button. No further (interactive) processing
+can be performed until the server validates the input and authorizes/rejects
+the login.
+
+I have over 20 years applications exp but minimal networking/systems type exp
+so forgive me if my questions (and testing approach) are naive.  Also,  I
+apologize for the length of this post. I tried to avoid posting so much code
+but could not find a better way to explain what I was doing (I will be happy
+to provide complete examples if anyone is interested).
+
+
+
+Shawn Church
+Information Systems Consultant
+<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">sl_church at sbcglobal.net</A>
+<A HREF="http://SChurchComputers.com">http://SChurchComputers.com</A>
+
+
+Uwe C. Schroeder (<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">uwe at oss4u.com</A>) wrote:
+&gt;<i>
+</I>&gt;<i> You probably better switch to using separate threads.
+</I>&gt;<i> Although I basically invented the timer driven &quot;eventloop starving&quot; quite a
+</I>&gt;<i> while ago, published it in the python cookbook (which eventually was turned
+</I>&gt;<i> into wxreactor by Itamar), I meanwhile switched my application to multiple
+</I>&gt;<i> threads. Works way better, particularly on windows.
+</I>&gt;<i> The timer-eventloop works fine for smaller applications with little to
+</I>&gt;<i> moderate network usage, the moment you start transferring more data over the
+</I>&gt;<i> network you basically starve both eventloops to death, because neither of the
+</I>&gt;<i> loops gets enough CPU attention to do the job properly.
+</I>&gt;<i>
+</I>&gt;<i> You might want to check out this example:
+</I>&gt;<i>
+</I>&gt;<i>  <A HREF="http://solipsis.netofpeers.net/wiki/wikka.php?wakka=WxTwistedExample">http://solipsis.netofpeers.net/wiki/wikka.php?wakka=WxTwistedExample</A>
+</I>&gt;<i>
+</I>&gt;<i> It's a basic example of multiple threads, but it will give you the idea.
+</I>&gt;<i> I've written a network wrapper layer to make this whole thing more easy to
+</I>&gt;<i> handle, but I can't put this online just yet (contract reasons) - and it's
+</I>&gt;<i> very specialized for my application anyways.  Just to give you a hint: once
+</I>&gt;<i> you understood how the above example works, you can write wrapper classes for
+</I>&gt;<i> the remote referenceable interfaces of twisted. This allows you to use the
+</I>&gt;<i> twisted interface the way it's documented without having to fiddle around
+</I>&gt;<i> with the threads.
+</I>&gt;<i>
+</I>&gt;<i> Hope that gives you some clues
+</I>&gt;<i>
+</I>&gt;<i> UC
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> On Wednesday 13 April 2005 19:58, Anthony Baxter wrote:
+</I>&gt;<i> &gt; The problem has been that wx's timer promises &quot;no worse
+</I>&gt;<i> &gt; than 1s&quot; resolution. In practice, it's been utterly unable to
+</I>&gt;<i> &gt; hit less than 100ms on Windows, and 20ms on Linux is a
+</I>&gt;<i> &gt; sometimes-thing. The only real solution that works robustly
+</I>&gt;<i> &gt; is to run wx and twisted in separate threads. If there's a new
+</I>&gt;<i> &gt; version of wx, you should probably try running wxreactor with
+</I>&gt;<i> &gt; a LoopingCall set to 1ms, and see what timer it can hit
+</I>&gt;<i> &gt; reliably.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Anthony
+</I>&gt;<i>
+</I>&gt;<i> --
+</I>&gt;<i> Open Source Solutions 4U, LLC	2570 Fleetwood Drive
+</I>&gt;<i> Phone:  +1 650 872 2425		San Bruno, CA 94066
+</I>&gt;<i> Cell:   +1 650 302 2405		United States
+</I>&gt;<i> Fax:    +1 650 872 2417
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="042621.html">[Twisted-Python] wxpython issues
+</A></li>
+	<LI>Next message (by thread): <A HREF="042627.html">[Twisted-Python] wxpython issues
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#42625">[ date ]</a>
+              <a href="thread.html#42625">[ thread ]</a>
+              <a href="subject.html#42625">[ subject ]</a>
+              <a href="author.html#42625">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

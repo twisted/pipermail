@@ -1,0 +1,187 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Transparent pooling of deferreds to be fired upon	another deferred firing
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Transparent%20pooling%20of%20deferreds%20to%20be%20fired%20upon%0A%09another%20deferred%20firing&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="019521.html">
+   <LINK REL="Next"  HREF="019525.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Transparent pooling of deferreds to be fired upon	another deferred firing</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Transparent%20pooling%20of%20deferreds%20to%20be%20fired%20upon%0A%09another%20deferred%20firing&In-Reply-To="
+       TITLE="[Twisted-Python] Transparent pooling of deferreds to be fired upon	another deferred firing">terry at jon.es
+       </A><BR>
+    <I>Wed Apr 22 20:22:27 EDT 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="019521.html">[Twisted-Python] One of a kind Gucci reps
+</A></li>
+        <LI>Next message: <A HREF="019525.html">[Twisted-Python] Transparent pooling of deferreds to be fired upon	another deferred firing
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19522">[ date ]</a>
+              <a href="thread.html#19522">[ thread ]</a>
+              <a href="subject.html#19522">[ subject ]</a>
+              <a href="author.html#19522">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I have a need to make sure that a deferred-returning function is not called
+multiple times, but I want to be able to write code without having to worry
+about that.
+
+To be more concrete:
+
+Suppose I have a function called alertSupervisor that takes a string
+message for the supervisor and which returns a deferred. I want to be able
+to call that function from anywhere in my code, and I always want to get a
+deferred back, but if there's already a call in progress to tell the
+supervisor the same thing then I don't want to bug him/her by sending
+another message, but I do want to know when the original call fires.
+
+So code fragment A calls
+
+  d = alertSupervisor(&quot;We have a problem in the boiler room!&quot;)
+
+and before the deferred has fired, code fragment B notices the same
+underlying problem, and also calls
+
+  d = alertSupervisor(&quot;We have a problem in the boiler room!&quot;)
+
+I want A and B's deferreds to both be called back with the result/failure.
+If I can write it like the above it has the advantage of looking like
+regular code and no-one has to think about what's going on. Underneath
+there's a pool of deferreds whose firing is triggered by the firing of the
+single original deferred.
+
+Note that I specifically only want to pool deferreds like this if there is
+a call already underway (i.e., the original deferred has not fired). That
+implies you could not pool calls to functions that return via defer.succeed
+or defer.fail since those deferreds have already fired.  If someone calls
+alertSupervisor(&quot;We have a problem in the boiler room!&quot;) and their deferred
+fires, then a subsequent call to alertSupervisor(&quot;We have a problem in the
+boiler room!&quot;) should get through to the supervisor, as per normal.
+
+This may all seem a bit esoteric, but I have several uses for it. In
+particular when the service providing alertSupervisor lives on one machine
+and is being called via RPC by A and B, both on separate machines.  As for
+how to nicely make RPC calls like this, see Thrift [1] which now has
+built-in support for Twisted.
+
+Here's a first cut at a solution:
+
+    from twisted.internet import defer
+    from twisted.python import failure
+
+    class DeferredPooler(object):
+        def __init__(self, func):
+            self.pool = {}
+            self.func = func
+
+        def _callOthers(self, result, key):
+            if isinstance(result, failure.Failure):
+                for d in self.pool[key]:
+                    d.errback(result)
+            else:
+                for d in self.pool[key]:
+                    d.callback(result)
+            del self.pool[key]
+            return result
+
+        def __call__(self, *args, **kwargs):
+            key = (args, hash(tuple(sorted(kwargs.items()))))
+            if key in self.pool:
+                d = defer.Deferred()
+                self.pool[key].append(d)
+                return d
+            else:
+                self.pool[key] = []
+                d = self.func(*args, **kwargs)
+                assert isinstance(d, defer.Deferred)
+                d.addBoth(self._callOthers, key)
+                return d
+
+
+You use the class transparently, via a decorator:
+
+    from twisted.internet import reactor
+
+    @DeferredPooler
+    def x(*args, **kwargs):
+        print 'x called: args = %r, kwargs = %r' % (args, kwargs)
+        d = defer.Deferred()
+        reactor.callLater(2, d.callback, args)
+        return d
+
+    def printer(what):
+        print 'printer received:', what
+
+    def stop(_):
+        reactor.stop()
+
+    if __name__ == '__main__':
+
+        d1 = x('fred')
+        d1.addCallback(printer)
+
+        d2 = x('fred')
+        d2.addCallback(printer)
+
+        d = defer.DeferredList([d1, d2])
+        d.addBoth(stop)
+        reactor.run()
+
+
+If you run this you'll see x is called only once, but d1 and d2 are each
+fired properly.
+
+For more Twisted pleasure/pain, you can also try out funky things like:
+
+        d1 = x('fred')
+        d1.addCallback(printer)
+        d1.addCallback(x)
+        d1.addCallback(printer)
+
+        d2 = x('fred')
+        d2.addCallback(printer)
+        d2.addCallback(x)
+        d2.addCallback(printer)
+
+Here there are 4 calls to x, but only 2 get through.
+
+I could say more, as usual. But I'll wait to see if there's any reaction.
+One issue to consider further is the simplistic use of hash.  
+
+Terry
+
+
+[1] Thrift: <A HREF="http://incubator.apache.org/thrift/">http://incubator.apache.org/thrift/</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="019521.html">[Twisted-Python] One of a kind Gucci reps
+</A></li>
+	<LI>Next message: <A HREF="019525.html">[Twisted-Python] Transparent pooling of deferreds to be fired upon	another deferred firing
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19522">[ date ]</a>
+              <a href="thread.html#19522">[ thread ]</a>
+              <a href="subject.html#19522">[ subject ]</a>
+              <a href="author.html#19522">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

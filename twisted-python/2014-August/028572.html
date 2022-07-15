@@ -1,0 +1,139 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Is there pb documentation somewhere?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Is%20there%20pb%20documentation%20somewhere%3F&In-Reply-To=%3C975E500C-003B-4FD9-A53B-6AD31242A05A%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="028570.html">
+   <LINK REL="Next"  HREF="028578.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Is there pb documentation somewhere?</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Is%20there%20pb%20documentation%20somewhere%3F&In-Reply-To=%3C975E500C-003B-4FD9-A53B-6AD31242A05A%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Is there pb documentation somewhere?">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue Aug  5 13:41:44 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="028570.html">[Twisted-Python] Is there pb documentation somewhere?
+</A></li>
+        <LI>Next message: <A HREF="028578.html">[Twisted-Python] Is there pb documentation somewhere?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28572">[ date ]</a>
+              <a href="thread.html#28572">[ thread ]</a>
+              <a href="subject.html#28572">[ subject ]</a>
+              <a href="author.html#28572">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Aug 4, 2014, at 10:07 PM, Daniel Sank &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">sank.daniel at gmail.com</A>&gt; wrote:
+
+&gt;<i> glyph
+</I>&gt;<i> 
+</I>&gt;<i> &gt; I would be happy to answer questions, but obviously I'm not super responsive :).
+</I>&gt;<i> &gt; Let me know what you need.
+</I>&gt;<i> 
+</I>&gt;<i> I am trying to understand jelly's serialization strategy:
+</I>&gt;<i> 
+</I>&gt;<i> 1. In t.s.jelly._Jellier, what is the meaning of persistentStore?
+</I>
+From the perspective of PB, you can ignore this completely.  It's effectively an unused feature.
+
+There are two entry-point call-sites for jelly in Pb.  Broker.unserialize and Broker.serialize.  Both explicitly pass &quot;None&quot; for the &quot;persistent&quot; argument, &quot;persistentStore&quot; and &quot;persistentLoad&quot; respectively.
+
+Reaching back into my dim and distant memory of the ancient past, I believe that the purpose of these callables was to allow you to use Jelly (and perhaps PB) to refer to objects in some kind of pluggable long-term storage.  The reason they're called &quot;persistent&quot; was that &quot;ephemeral&quot; storage was local to the connection, and therefore short-lived enough that we could trust that an in-memory Python dictionary would be both large enough and long-lived enough to serve it.
+
+But if you have your objects in a database, you might want a different database backend with an application-provided callable for loading objects by ID.
+
+Again, this was never really used, so you can probably ignore it.  (I think there might have been a 4X massively multiplayer video game which used it in 2002 or so, but nothing since then that I'm aware of, especially since PB doesn't even have a way to pass in your own without subclassing and overriding 'serialize'.)
+
+&gt;<i> 2. In t.s.jelly._Jellier, what is the meaning of cooked? The comment here doesn't make sense to me yet.
+</I>
+I just read the comment in _cook, and I hate my younger self right now.  Seriously.  Screw that guy.
+
+When you make a jelly, you have to cook the fruit first.  So part of the metaphor here is that you are &quot;cooking&quot; the objects as you're serialize them.
+
+The &quot;cooked&quot; attribute maps object IDs (integers representing pointers, at least in CPython) to &quot;dereference&quot; jelly expressions.  It is said to be &quot;cooked&quot; at that point because you no longer need to put in the energy (I guess heat, in this metaphor?) to serialize the internal state.  A &quot;dereference&quot; expression is one that points at an object within the same Jelly, so this is not like something pointing at a remote reference.
+
+It uses object IDs for keys and not the objects themselves because these objects are (since they can participate in circular references) implicitly mutable, and mutable objects often don't have a working __hash__ implementation, so we can't rely on that.
+
+This happens in a weird order because an object may circularly refer to itself, so we prepare it and put it in the &quot;preserved&quot; map before actually beginning the serialization process of its initial state.
+
+We also don't want to pollute the jelly output with reference IDs for every single object that _might_ be referenced more than once, we only want to add the ['reference'] expression if we actually refer to it twice.
+
+If you look at this example:
+
+&gt;&gt;&gt;<i> from twisted.spread.jelly import jelly
+</I>&gt;&gt;&gt;<i> circular = [1, 2]
+</I>&gt;&gt;&gt;<i> circular.append(circular)
+</I>&gt;&gt;&gt;<i> jelly(circular)
+</I>['reference', 1, ['list', 1, 2, ['dereference', 1]]]
+&gt;&gt;&gt;<i> acyclic = [1, 2]
+</I>&gt;&gt;&gt;<i> jelly(acyclic)
+</I>['list', 1, 2]
+
+You can see that the circular list allocates a reference ID '1' for the circular list.  The output list there would have been the thing that went into the _Jellier's &quot;cooked&quot; list, keyed by the 'id' for the serialized list, and then 'reference 1' would have been inserted into the beginning and its body appended.
+
+So the steps are:
+
+Here's a mutable object.  Let me remember that I've seen it, just in case I see it again.
+Now I'm going to recursively serialize it.
+Oh, here it is again, I know it's the same object because it has the same ID.  Instead of serializing it, I'll change the ['list'] into a ['reference', 1] and stick in a ['dereference', 1] here.
+
+If we never get to step 3, we never see the ['reference'] at all, and it's as if this functionality didn't exist.
+
+&gt;<i> 3. In t.s.jelly._Jellier, what is the meaning of cooker?
+</I>
+The &quot;cooker&quot; attribute is a hack related to the use of &quot;id&quot; for the unique IDs.  If we used the object itself as the key (which we shouldn't do, for reasons I mentioned above), then we could just rely on it sticking around until the end of the 'jelly' call.  But instead, we use its 'id', which is its pointer address, so we need to make sure that it lives on until the end of the _Jellier's lifetime, so we just stick it into the &quot;cooker&quot; map as the value.  You'll notice that there's no store of the object itself anywhere else: in &quot;cooked&quot; the key is the ID, and the value is the serialized output value that Jelly is going to write out.
+
+If we didn't make sure the object stuck around, a different object might get the same ID, and that would produce spurious back-references (like, we might get a ['dereference'] where something harmless like a string should go).
+
+&gt;<i> A short, narrative explanation of what _Jellier does would be very useful, and if you provide it I will submit a patch to the documentation.
+</I>
+A _Jellier jellies objects of course, isn't it obvious ;-).
+
+Hopefully you can make sense out of the explanations above and your own existing knowledge.  Are there any other phases of the process which are confusing?
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20140805/f6e94323/attachment-0001.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20140805/f6e94323/attachment-0001.html</A>&gt;
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="028570.html">[Twisted-Python] Is there pb documentation somewhere?
+</A></li>
+	<LI>Next message: <A HREF="028578.html">[Twisted-Python] Is there pb documentation somewhere?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28572">[ date ]</a>
+              <a href="thread.html#28572">[ thread ]</a>
+              <a href="subject.html#28572">[ subject ]</a>
+              <a href="author.html#28572">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

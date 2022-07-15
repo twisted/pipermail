@@ -1,0 +1,200 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Looping in a deffered
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Looping%20in%20a%20deffered&In-Reply-To=%3C20090905141700.7436.533833547.divmod.xquotient.416%40localhost.localdomain%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="052873.html">
+   <LINK REL="Next"  HREF="052879.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Looping in a deffered</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Looping%20in%20a%20deffered&In-Reply-To=%3C20090905141700.7436.533833547.divmod.xquotient.416%40localhost.localdomain%3E"
+       TITLE="[Twisted-Python] Looping in a deffered">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Sat Sep  5 08:17:00 MDT 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="052873.html">[Twisted-Python] Looping in a deffered
+</A></li>
+        <LI>Next message (by thread): <A HREF="052879.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52877">[ date ]</a>
+              <a href="thread.html#52877">[ thread ]</a>
+              <a href="subject.html#52877">[ subject ]</a>
+              <a href="author.html#52877">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 02:49 am, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">jjoske at nextdigital.com</A> wrote:
+&gt;<i>I'm trying to make a simple deferred that will continue get a message 
+</I>&gt;<i>of
+</I>&gt;<i>a message queue, process it and then wait for another message.
+</I>&gt;<i>
+</I>&gt;<i>While I can get the first message easily I am unable to work out how I
+</I>&gt;<i>can get a second message without creating a new deferred in the 
+</I>&gt;<i>printMsg
+</I>&gt;<i>function, which eventually gives me a maximum recursion depth exceeded.
+</I>&gt;<i>
+</I>&gt;<i>Basic code is a follows:
+</I>&gt;<i>
+</I>&gt;<i>from twisted.internet import reactor,defer
+</I>&gt;<i>
+</I>&gt;<i>def printMsg(msg):
+</I>&gt;<i>    print &quot;Message is:&quot;
+</I>&gt;<i>    print msg
+</I>&gt;<i>
+</I>&gt;<i>    deferred=getMsg()
+</I>&gt;<i>    deferred.addCallback(printMsg)
+</I>&gt;<i>
+</I>&gt;<i>def getMsg() :
+</I>&gt;<i>    d=defer.Deferred()
+</I>&gt;<i>    #replaced with code that actually goes to a queue to get the message
+</I>&gt;<i>    msg=&quot;This is a message&quot;
+</I>&gt;<i>    d.callback(msg)
+</I>&gt;<i>    return d
+</I>&gt;<i>
+</I>&gt;<i>deferred=getMsg()
+</I>&gt;<i>deferred.addCallback(printMsg)
+</I>&gt;<i>reactor.run()
+</I>&gt;<i>
+</I>&gt;<i>Can any one point me on the right path to solve this?
+</I>&gt;<i>
+</I>&gt;<i>Thanks
+</I>&gt;<i>
+</I>&gt;<i>John
+</I>
+The above code is basically another way of writing this:
+
+    def getMsg():
+        return &quot;This is a message&quot;
+
+    def printMsg(msg):
+        print &quot;Message is:&quot;
+        print msg
+        printMsg(getMsg())
+
+    printMsg(getMsg())
+
+Hopefully it's obvious why this version of the code would fail 
+eventually with a recursion error.  These are equivalent because 
+d.addCallback(f) will call f immediately (ie, before addCallback 
+returns) if d.callback(result) has already been called.
+
+This only changes if getMsg (the original Deferred-returning one) ever 
+returns a Deferred which has *not* already fired.  In such a case, the 
+call stack will unwind back to the main loop and the code won't run any 
+further until the Deferred returned by getMsg is called back.
+
+I would expect the actual queue-retrieval version of the code to 
+sometimes (or always) return a Deferred which has not yet been called 
+back.  However, if you're seeing recursion errors, then this must not be 
+the case.  Are you expecting the queue-retrieval version to return 
+Deferreds that have already fired?
+
+If you aren't, then I don't think I understand why you're encountering 
+this error (or you're mistaken in your expectations).  An example closer 
+to your actual program might help clear things up.
+
+If you are, then you have two options.
+
+First, you can stop using Deferreds and change the code from recursive 
+to iterative.  eg,
+
+    def getMsg():
+        return &quot;This is a message&quot;
+
+    def printMsg(msg):
+        print &quot;Message is:&quot;
+        print msg
+
+    while True:
+        printMsg(getMsg())
+
+Of course, that's not very event loop friendly, so you might try making 
+it cooperative by hooking it up to a scheduler:
+
+    def messageIteration():
+        printMsg(getMsg())
+        reactor.callLater(0, messageIteration)
+
+Or, factoring the specific scheduler policy out:
+
+    def messagePrinter():
+        while True:
+            yield printMsg(getMsg())
+
+    from twisted.internet.task import coiterate
+    coiterate(messagePrinter())
+
+Second, if there's a good reason to use Deferreds in this code (for 
+example, there are multiple implementations of getMsg, some of which are 
+synchronous, some of which are asynchronous, and preserving the 
+interface between all of them is desirable), then you may want to use 
+one of the above scheduler techniques as a trampoline so that you can 
+avoid having the stack build up when a synchronous implementation is 
+used:
+
+    def messagePrinter():
+        d = getMsg()
+        d.addCallback(printMsg)
+        d.addCallback(lambda ignored: reactor.callLater(0, 
+messagePrinter))
+
+Or you might use inlineCallbacks to define the trampoline:
+
+    @inlineCallbacks
+    def messagePrinter():
+        while True:
+            pringMsg(yield getMsg())
+
+The idea here being that you never let recursion continue unbounded. 
+You process one iteration and then let its call frames finish, return, 
+and pop off the call stack so that they're out of the way for the next 
+iteration.
+
+Incidentally, there are a couple of other ways that Deferreds can trick 
+you into hitting the call stack limit.  They can be addressed in ways 
+similar to the ones I've described here.  However, they're also due to 
+implementation limitations which hopefully will be removed someday.  The 
+problem that you've run into here, though, doesn't seem to be due to an 
+implementation limitation (at least not one that I can imagine any 
+resolution to now) - it's just a pattern you need to avoid.
+
+Hope this helps,
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="052873.html">[Twisted-Python] Looping in a deffered
+</A></li>
+	<LI>Next message (by thread): <A HREF="052879.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52877">[ date ]</a>
+              <a href="thread.html#52877">[ thread ]</a>
+              <a href="subject.html#52877">[ subject ]</a>
+              <a href="author.html#52877">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.4 (GNU/Linux)
+
+iD8DBQFA67MJhTADrt6Jx1wRAoYuAJ9sJig1RnCZNJ+xtPzTWphaUn+LkwCg5ivN
+3J0mKsbYLxORqh3Tw1cRJOo=
+=PnJQ
+-----END PGP SIGNATURE-----

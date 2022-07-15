@@ -1,0 +1,196 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Running commands (ssh) from a GUI client
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Running%20commands%20%28ssh%29%20from%20a%20GUI%20client&In-Reply-To=%3Cfegnmb%24t2f%241%40sea.gmane.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="048644.html">
+   <LINK REL="Next"  HREF="048654.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Running commands (ssh) from a GUI client</H1>
+    <B>paul</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Running%20commands%20%28ssh%29%20from%20a%20GUI%20client&In-Reply-To=%3Cfegnmb%24t2f%241%40sea.gmane.org%3E"
+       TITLE="[Twisted-Python] Re: Running commands (ssh) from a GUI client">paul at subsignal.org
+       </A><BR>
+    <I>Tue Oct  9 14:18:27 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="048644.html">[Twisted-Python] Running commands (ssh) from a GUI client
+</A></li>
+        <LI>Next message (by thread): <A HREF="048654.html">[Twisted-Python] Re: Running commands (ssh) from a GUI client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48653">[ date ]</a>
+              <a href="thread.html#48653">[ thread ]</a>
+              <a href="subject.html#48653">[ subject ]</a>
+              <a href="author.html#48653">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE><A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Paul_S_Johnson at mnb.uscourts.gov</A> schrieb:
+&gt;<i> Raul,
+</I>&gt;<i> 
+</I>&gt;<i> This is simply some work-in-progress code, but is basically what you are 
+</I>&gt;<i> looking for even written for PythonCard. This takes a list of three 
+</I>&gt;<i> commands and runs them in the order given using deferreds to wait for the 
+</I>&gt;<i> previous to complete before executing the next.
+</I>&gt;<i> 
+</I>&gt;<i> This took me about forever to get it this far. If you make and significant 
+</I>&gt;<i> improvements, please share.
+</I>I'll take your word and add my 2 cents here:
+
+Running commands is not a problem, the client example provided at 
+twistedmatrix.com does just that. However, it always uses a new 
+connection with all the associated overhead.
+I've been told you need a Channel for each command but you can reuse the 
+connection. To make this work you have to decouple the Channel from the 
+connection setup:
+
+class ClientConnection(connection.SSHConnection):
+
+     def __init__(self):
+         self.started = False
+         self.runCalled = 0
+         connection.SSHConnection.__init__(self)
+
+     def serviceStarted(self):
+         # just set a flag
+         self.started = True
+         log.msg('ssh connection started')
+
+     def runCommand(self, d, command, *args):
+         &quot;&quot;&quot;
+         the connection needs some time to get up, hence we use callLater
+         so that the caller doesn't have to bother.
+         FIXME: remove hardcoded delay, add backlog and break eventually
+         if self.started never gets true for some reason...
+         &quot;&quot;&quot;
+         if not self.started:
+             reactor.callLater(1, self.runCommand, d, command, *args)
+         else:
+             self.openChannel(CommandChannel(d, self, command, *args))
+
+the self.openChannel is moved out of serviceStarted() and we have an 
+independent method runCommmand() we can call as often as we want as long 
+as the connection is alive (I wonder if the self.started hack can be 
+avoided...)
+
+The CommandChannel fires(?) the passed in Deferred when the command has 
+finished:
+
+class CommandChannel(channel.SSHChannel):
+     name = 'session'
+
+    def __init__(self, d, connection, command, *args):
+         self.command = command
+         self.args = args
+         self.d = d
+         channel.SSHChannel.__init__(self, conn=connection)
+
+     def channelOpen(self, data):
+         args = list(self.args)
+         args.insert(0, self.command)
+         d = self.conn.sendRequest(self, 'exec', common.NS(&quot; &quot;
+                                  .join(args)), wantReply = 1)
+         d.addCallback(self._endCommand)
+         self.catData = ''
+
+     def _endCommand(self, ignored):
+         self.conn.sendEOF(self)
+
+     def eofReceived(self):
+         self.d.callback((self.catData,))
+
+     def dataReceived(self, data):
+         #log.msg('DEBUG, dataReceived: %s' % data)
+         self.catData += data
+
+The last piece of the puzzle is the factory which holds the connection 
+specific data and !! a reference to the connection object to call the 
+runCommand method:
+
+class CommandClientFactory(protocol.ClientFactory):
+
+     def __init__(self, host, user, fingerprint, password=None,
+                     ConnClass=ClientConnection,
+                     AuthClass=ClientUserAuth,
+                     TransportClass=ClientTransport):
+         self.host = host
+         self.user = user
+         self.password = password
+         self.fingerprint = fingerprint
+
+         self.TransportClass = TransportClass
+         self.connection = ConnClass() #&lt;- we have the connection here
+         self.auth_client = AuthClass(self, self.connection)
+
+     def runCommand(self, deferred, cmd, *args):
+         self.connection.runCommand(deferred, cmd, *args)
+
+     def buildProtocol(self, addr):
+         p = self.TransportClass()
+         p.factory = self
+         return p
+
+     def clientConnectionFailed(self, connection, reason):
+         print &quot;connect to %s as %s failed, reason: %s&quot; % (
+             self.host, self.user, reason)
+
+     def clientConnectionLost(self, connection, reason):
+         print 'connection to &quot;%s&quot; as &quot;%s&quot; lost, reason: %s' % (
+             self.host, self.user, reason)
+
+Now you setup a CommandClientFactory, create a new Deferred, a callback 
+function and put it all together:
+
+def cmdCallback(result):
+     print result
+	
+cf = CommandClientFactory(host, user, fingerprint, password=None)
+reactor.connectTCP(host, self.port, cf)
+
+d = defer.Deferred()
+d.addCallback(cmdCallback)
+cf.connection.runCommand(d, command, *args)
+
+WRT the su - problem, I'll probably use sudo (to fetch the sudoers file ;))
+
+
+hth
+  Paul
+
+BTW: This is not working code, it's just to show the basic schema...
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="048644.html">[Twisted-Python] Running commands (ssh) from a GUI client
+</A></li>
+	<LI>Next message (by thread): <A HREF="048654.html">[Twisted-Python] Re: Running commands (ssh) from a GUI client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48653">[ date ]</a>
+              <a href="thread.html#48653">[ thread ]</a>
+              <a href="subject.html#48653">[ subject ]</a>
+              <a href="author.html#48653">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

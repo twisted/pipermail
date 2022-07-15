@@ -1,0 +1,228 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Experimenting with tubes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Experimenting%20with%20tubes&In-Reply-To=%3CE10C96F8-4EEA-4752-A4AA-89AF27FE7DE4%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="028618.html">
+   <LINK REL="Next"  HREF="061116.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Experimenting with tubes</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Experimenting%20with%20tubes&In-Reply-To=%3CE10C96F8-4EEA-4752-A4AA-89AF27FE7DE4%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Experimenting with tubes">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Thu Aug 14 15:29:56 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="028618.html">[Twisted-Python] Experimenting with tubes
+</A></li>
+        <LI>Next message (by thread): <A HREF="061116.html">[Twisted-Python] Experimenting with tubes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#61087">[ date ]</a>
+              <a href="thread.html#61087">[ thread ]</a>
+              <a href="subject.html#61087">[ subject ]</a>
+              <a href="author.html#61087">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Aug 11, 2014, at 6:51 AM, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ccx at webprojekty.cz</A> wrote:
+
+&gt;<i> Hello, I've been playing with the new tubes that are being implemented:
+</I>&gt;<i> <A HREF="http://comments.gmane.org/gmane.comp.python.twisted/27248">http://comments.gmane.org/gmane.comp.python.twisted/27248</A>
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/trac/ticket/1956">https://twistedmatrix.com/trac/ticket/1956</A>
+</I>
+Thanks so much for taking the time to play with it, and taking some time to write feedback.
+
+&gt;<i> Here are few things that I did with it. I won't publish the full code now,
+</I>&gt;<i> as in it's current shape it could implode eyeballs of twisted devs and
+</I>&gt;<i> possibly make them summon some of the elder gods, but I'll see if I can
+</I>&gt;<i> produce something less vile as I merge the ongoing changes to the tubes
+</I>&gt;<i> branch.
+</I>
+I'd be interested to see the code nevertheless.  If you had to do eyeball-imploding antics to get Tubes to work well for your use-case, being able to have a look at that would help us evaluate whether those antics were required by the code, encouraged by misfeatures of the API design, or just issues with lack of documentation.
+
+&gt;<i> So far I wrote relatively simple app that read logfiles, parse them and
+</I>&gt;<i> insert what they got out of them into a database.
+</I>
+If it's actually reading a file, another nice to-do would be an IFount provider that provides the contents of a file with appropriate flow control, and maybe a thread or process in the background to do the file I/O.  Another thing you could contribute to the branch, possibly?  :-)  How did you implement this?
+
+&gt;<i> First issue that I've
+</I>&gt;<i> dealt with is stopping the tubes. When I read the whole of the input I want
+</I>&gt;<i> to wait until all of it was parsed (atm synchronous code, but I can imagine
+</I>&gt;<i> eg. some expensive processing being done in thread / external process) and
+</I>&gt;<i> then wait until it's commited to the database before shutting the reactor
+</I>&gt;<i> down cleanly.
+</I>
+To translate this into Tubes terminology, what it sounds like you want is a way for a drain (in this case, the drain representing the database transaction) to authoritatively signal that it has completed consuming all of the inputs that it has received from its fount.  But the only notification that you can get now is stopFlow, which just means &quot;cut it out&quot; and not &quot;I'm done&quot; - not to mention that &quot;stopFlow&quot; is unnecessary after &quot;flowStopped&quot; which makes it meaningless in the current idiom.
+
+&gt;<i> As of #42908 which I pulled for experimenting the support for passing
+</I>&gt;<i> flowStopped(reason) through pipeline (or series if you want) was not
+</I>&gt;<i> working, an issue with None being returned from stopped() ended the
+</I>&gt;<i> processing prematurely, which I fixed with:
+</I>&gt;<i> 
+</I>&gt;<i> === modified file 'tubes7/tube.py'
+</I>&gt;<i> --- tubes7/tube.py	2014-08-01 18:32:48 +0000
+</I>&gt;<i> +++ tubes7/tube.py	2014-08-01 21:20:44 +0000
+</I>&gt;<i> @@ -441,6 +446,8 @@
+</I>&gt;<i>                 downstream.flowStopped(f)
+</I>&gt;<i>             return
+</I>&gt;<i>         if iterableOrNot is None:
+</I>&gt;<i> +            if self._flowStoppingReason is not None:
+</I>&gt;<i> +                self._tfount.drain.flowStopped(self._flowStoppingReason)
+</I>&gt;<i>             return 0
+</I>&gt;<i>         self._pendingIterator = iter(iterableOrNot)
+</I>&gt;<i>         if self._tfount.drain is None:
+</I>
+I'm not sure I totally understand the case that you're describing right now.  Can you perhaps contribute a unit test which demonstrates why this line of code is necessary?
+
+&gt;<i> Also the ProtocolFount didn't really do what it should, so I made it
+</I>&gt;<i> implement IHalfCloseableProtocol and made it call flowStopped() accordingly.
+</I>
+Yeah that is definitely a known issue on our to-do list.  I think it's even in the notes.rst in the branch.  Can we have your patch?  (You wrote tests, too, right? ;-))
+
+&gt;<i> One more thing about it I did is that I made it invoke flowStopped() on any
+</I>&gt;<i> drain that is newly attached to it - apparently when I used the stdio
+</I>&gt;<i> endpoint it managed to close it when reading from /dev/null even before I
+</I>&gt;<i> managed to set up the series/pipeline.
+</I>
+Are you running into &lt;<A HREF="https://twistedmatrix.com/trac/ticket/7546">https://twistedmatrix.com/trac/ticket/7546</A>&gt;?
+
+&gt;<i> That still didn't make it possible for me to wait on DB being written to
+</I>&gt;<i> properly. What I had to do is to implement CloseableDrain that has
+</I>&gt;<i> waitDone() method that emits a Deferred that fires when the drain's
+</I>&gt;<i> flowStopped() was called and all it should do has been done. This makes it
+</I>&gt;<i> quite handy to use from react()-style setup since I can just return this
+</I>&gt;<i> Deferred, or DeferredList of all ongoing pipelines.
+</I>
+There are some thoughts I have about the database transaction thing:
+
+Maybe this should be done out of band?  Right before I read this paragraph I was thinking of something like this; a database transaction is a separate thing.  The data has in fact flowed to the appropriate point.
+Rather than having an &quot;I'm completely done&quot; notification as I proposed above, we could have an explicit notion of application-level acknowledgements of each receive(...) call?
+Maybe those acknowledgements could themselves be coming from a Fount in the reverse direction of the data, rather than trying to put in actual bi-directional data flow into the core interfaces?  A recipe in terms of the existing abstraction, rather than an extension?  This is sort of how real app-level acknowledgements work: the recipient has to send its own message to indicate receipt of the message it received.
+
+&gt;<i> For the next pipeline I had one more issue: this pipeline can be run either
+</I>&gt;<i> as a log reader, or as essential part of running program that emits such
+</I>&gt;<i> logs. In the latter case I need to generate confirmation messages for
+</I>&gt;<i> specific entries that are being inserted and send them back to the
+</I>&gt;<i> originator, after they has been safely written to the DB. This I resolved by
+</I>&gt;<i> adding another field into the values I pass into PostgreSQLDrain - deferred
+</I>&gt;<i> that will be fired as txpostgres's runOperation finishes. This resolution
+</I>&gt;<i> works pretty well but it took me quite a while to come up with it, so I'm
+</I>&gt;<i> not sure if it's intuitive design pattern or if we could come up with
+</I>&gt;<i> something better.
+</I>
+I'm glad I didn't read ahead in this message as I'm replying to it, because I can see that we're thinking along very convergent lines :-).  This sounds just like the the 3rd point in the proposal I was saying before: we should have a recipe present for acknowledgements somewhere.
+
+&gt;<i> Then I had to run both pipelines in parallel, after implementing the fan-in
+</I>&gt;<i> pattern (fan-out was already done by glyph), I wrote this helper function:
+</I>&gt;<i> 
+</I>&gt;<i> def parallel(*tubes):
+</I>&gt;<i>    out = Out()
+</I>&gt;<i>    in_ = In()
+</I>&gt;<i>    out._drain.nextFount = in_
+</I>&gt;<i>    for tube in tubes:
+</I>&gt;<i>        out.newFount().flowTo(series(tube, in_.newDrain()))
+</I>&gt;<i>    in_.stop_on_empty = True
+</I>&gt;<i>    return out.drain
+</I>
+We actually started working on twisted.tubes.fan to implement something very much like this that we hadn't gotten to yet!  David was calling this pattern &quot;fork/join&quot; and we were debating whether we needed infrastructure code to do this.
+
+&gt;<i> The nextFount attribute on _OutDrain is what is returned from flowingFrom()
+</I>&gt;<i> so this function can be used as a part of series. What I'm unsure about is
+</I>&gt;<i> how to handle stopping of the fan-in. Currently I don't make it stop until
+</I>&gt;<i> the stop_on_empty is set
+</I>
+That ... definitely sounds kind of gross.  As does actually setting the nextFount attribute directly on the fan.Out.
+
+&gt;<i> (so I can add/remove things during it's
+</I>&gt;<i> initialization) and then I make it stop when the last fount that's flowing
+</I>&gt;<i> in has stopped (and removed from input founts set) and I use the reason it
+</I>&gt;<i> passes into flowStopped() to propagate along to the rest of series,
+</I>&gt;<i> effectively discarding any reason objects passed to all the founts except
+</I>&gt;<i> the last one.
+</I>
+twisted.web.client.Agent has a solution to this where there's a multi-failure object that aggregates multiple errors into one thing.  I think we have to do something similar.  Unfortunately this is a very confusing interface in addition to being poorly documented and relies on private classes that expose ostensibly public attributes.  We need to very carefully document this within fan.In.
+
+&gt;<i> What I'll have to deal with is a lack of sensible flow control in some parts
+</I>&gt;<i> of the code. For example the part that generates the log files should not be
+</I>&gt;<i> stopped just because there's some delay in writing the logs. This made me
+</I>&gt;<i> wonder if the flow control and perhaps processing confirmation should not be
+</I>&gt;<i> run not as a part of the main interface but instead something that runs
+</I>&gt;<i> alongside, where applicable, in the opposite direction. But I don't have any
+</I>&gt;<i> specific API in my mind at the moment. On the other hand, both are perfectly
+</I>&gt;<i> solvable with current design - implementing FIFO buffers or message droppers
+</I>&gt;<i> for flow control and the above mentioned deferred passing for confirmations.
+</I>
+So, at some level, yes it should be stopped because there's a delay in writing the logs.  By which I mean that if you don't want to stop it, you have to choose an explicit, finite amount of memory or disk to use for buffering.  FIFO buffers and message droppers are (obviously) very important flow-control intermediaries, but at the end of the day you have a finite amount of resources and the idea that flow-control should be &quot;optional&quot; means that sometimes (read: &quot;usually&quot;) you have an infinite amount of RAM and disk and you're perfectly happy to put it all to work whenever you experience a network partition that stalls your TCP stack.
+
+&gt;<i> As for data representation that I choose to pass between each tube I've
+</I>&gt;<i> started with simple namedtuples and following that I've built a simple
+</I>&gt;<i> &quot;datatype&quot; class somewhat reminiscent of
+</I>&gt;<i> <A HREF="https://github.com/hynek/characteristic">https://github.com/hynek/characteristic</A>
+</I>&gt;<i> which I learned of few moments after I finished polishing my own
+</I>&gt;<i> implementation. What I have there is added layer above namedtuples that
+</I>&gt;<i> autogenerate zope Interfaces (so I can have adaptation), do field type and
+</I>&gt;<i> value validation/adaptation and possibly (as a future extension) provide
+</I>&gt;<i> easy way to make them into AMP commands so the series can be split into
+</I>&gt;<i> communicating processes as needed. (What would be interesting imo is
+</I>&gt;<i> something like ampoule for tubes, or perhaps a ThreadTube and SubprocessTube
+</I>&gt;<i> for performing blocking operations)
+</I>
+I think it's likely we'll acquire a dependency on Characteristic sometime soon, I have promised to look at the issues on &lt;<A HREF="https://github.com/hynek/characteristic/pull/13">https://github.com/hynek/characteristic/pull/13</A>&gt; and try to address them already :).
+
+&gt;<i> Also maybe of note is the implementation of Pipes in Async library for OCaml
+</I>&gt;<i> which I've been examining lately. What they seem to do there is that they
+</I>&gt;<i> push values downstream and the function called in each processing step may
+</I>&gt;<i> return deferred signifying a pause is requested until this deferred is
+</I>&gt;<i> fired. For those interested in the details you can refer to:
+</I>&gt;<i> <A HREF="https://ocaml.janestreet.com/ocaml-core/111.25.00/doc/async/#Std.Pipe">https://ocaml.janestreet.com/ocaml-core/111.25.00/doc/async/#Std.Pipe</A>
+</I>&gt;<i> and the relevant section of Real World OCaml book (available online).
+</I>
+Creating a token for every single call to .receive() makes life hard.  Deferred could go to some trouble to be a cheaper token to pass around (especially on PyPy) but doing it this way is also error-prone as a mistaken error-handler in the Deferred chain means that the default behavior of buggy code un-hooks your loop and leaves idle data sources that will never be cleaned up.
+
+(The fact that each call to .pauseFlow returns a token is me trying to rehabilitate myself from worrying about the performance side of this argument and worry more about the correctness / error-prone-ness part.  The PyPy developers, especially Alex Gaynor, have almost convinced me that it is OK to malloc things, sometimes.  Sometimes.)
+
+I worked quite a bit with the 'Streams' interface in web2 on Calendar Server, and my conclusion there is that while this is better than nothing (it was very nice to be able to just return a Stream rather than cobble together something that returned NOT_DONE_YET every time) it was (A) slow and (B) error prone.  Tubes are designed specifically to avoid this error.  Although you can return Deferreds internally, no consumer ever needs to write the callback-loop that calls .read() again from a callback on .read().
+
+&gt;<i> Looking forward to further tubes development :-)
+</I>
+As am I.  Thanks for all the feedback and encouragement!  This was very useful.  My main takeaway is that we definitely have some missing utility classes (file fount, FIFO queue, message dropper, fan.In, an idiom and supporting code for processing message acknowledgements at the application level), some bugs (something about flowStopped not propagating correctly?), but that the interfaces as they stand are largely on the right track.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20140814/33b72ec2/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="028618.html">[Twisted-Python] Experimenting with tubes
+</A></li>
+	<LI>Next message (by thread): <A HREF="061116.html">[Twisted-Python] Experimenting with tubes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#61087">[ date ]</a>
+              <a href="thread.html#61087">[ thread ]</a>
+              <a href="subject.html#61087">[ subject ]</a>
+              <a href="author.html#61087">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

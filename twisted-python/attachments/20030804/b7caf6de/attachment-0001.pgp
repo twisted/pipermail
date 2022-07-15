@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.2 (GNU/Linux)
+
+iD8DBQA/Lm0kvcCgrgZGjesRAhk3AJsEktzDWWYMHIzS9m9TT+dxjsNAxgCfb1Bv
+AWGnhhlKoTO4T+6674I7m7g=
+=zPOT
+-----END PGP SIGNATURE-----

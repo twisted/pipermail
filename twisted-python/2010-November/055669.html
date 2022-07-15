@@ -1,0 +1,133 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] [Twisted] #4747: tw.inet.test.ProcessTestsBuilder.test_openFileDescriptors is broken in many ways
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20%5BTwisted%5D%20%234747%3A%0A%20tw.inet.test.ProcessTestsBuilder.test_openFileDescriptors%20is%20broken%20in%20many%0A%20ways&In-Reply-To=%3CAANLkTikwm_BbFGinhTkmVcg6hhm6rJsPGSy06EPdYsnR%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="055668.html">
+   <LINK REL="Next"  HREF="023203.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] [Twisted] #4747: tw.inet.test.ProcessTestsBuilder.test_openFileDescriptors is broken in many ways</H1>
+    <B>Eric Faurot</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20%5BTwisted%5D%20%234747%3A%0A%20tw.inet.test.ProcessTestsBuilder.test_openFileDescriptors%20is%20broken%20in%20many%0A%20ways&In-Reply-To=%3CAANLkTikwm_BbFGinhTkmVcg6hhm6rJsPGSy06EPdYsnR%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] [Twisted] #4747: tw.inet.test.ProcessTestsBuilder.test_openFileDescriptors is broken in many ways">eric.faurot at gmail.com
+       </A><BR>
+    <I>Wed Nov 24 10:17:39 MST 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="055668.html">[Twisted-Python] [Twisted]	#4747:	tw.inet.test.ProcessTestsBuilder.test_openFileDescriptors	is broken in	many ways
+</A></li>
+        <LI>Next message (by thread): <A HREF="023203.html">[Twisted-Python] Пикап
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55669">[ date ]</a>
+              <a href="thread.html#55669">[ thread ]</a>
+              <a href="subject.html#55669">[ subject ]</a>
+              <a href="author.html#55669">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, Nov 24, 2010 at 4:17 PM,  &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A>&gt; wrote:
+&gt;<i> On 02:56 pm, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">eric.faurot at gmail.com</A> wrote:
+</I>&gt;&gt;<i> So in my opinion, the function should really return the list of actually
+</I>&gt;&gt;<i> opened files in all cases, and not fallback to a list of possible
+</I>&gt;&gt;<i> list, otherwise the test case makes no sense.
+</I>&gt;<i>
+</I>&gt;<i> Maybe so.  Fortunately the problem really seems only to be with the _test_,
+</I>&gt;<i> right?  On OpenBSD the fallback case will really be used, and the file
+</I>&gt;<i> descriptors we want to close will be closed?
+</I>
+Well, actually no... On bsd, the /dev/* files are statically created. So as it
+is now, it picks the 64 existing /dev/fd/* files, which is not correct
+since higher
+fd with a higher number will never be found. This is getting tricky. So if one
+can't trust /dev/fd/ on some platform, maybe it should not be tried at all,
+or we need to find a way to know at runtime/configure time if this is safe...
+
+&gt;&gt;<i> Of course this means trying all fds as last resort
+</I>&gt;&gt;<i> on platforms that don't provide a simpler way to do it.  Doing it there or
+</I>&gt;&gt;<i> doing it by ignoring EBADF on close() later would be the same, as far as
+</I>&gt;&gt;<i> &quot;suboptimization&quot; is concerned.
+</I>&gt;<i>
+</I>&gt;<i> Right, and this is just what should happen on OpenBSD now.
+</I>
+Except for the problem above.
+
+&gt;<i> Hopefully these are already marked as CLOEXEC, or lots of people would
+</I>&gt;<i> already be having lots of problems with them.  Despite that, they should be
+</I>&gt;<i> closed by `reactor.spawnProcess` (because that doesn't hurt and it's simpler
+</I>&gt;<i> than checking for CLOEXEC).  Then the only problem is that they are
+</I>&gt;<i> recreated in the child process and mess up the test's assumptions.
+</I>&gt;<i>
+</I>&gt;<i> Perhaps another approach to testing this function would be to create a file
+</I>&gt;<i> descriptor and assert that:
+</I>&gt;<i>
+</I>&gt;<i>  - That file descriptor is not open in the child process
+</I>&gt;<i>  - stdin, stdout, and sterr are open in the child process
+</I>&gt;<i>
+</I>&gt;<i> Only, without some care, one of the pthread pipe fds might end up looking
+</I>&gt;<i> like the probe descriptor, so maybe that can't really work.
+</I>
+That is closer to what the test is really about : spawnProcess don't leave
+an undesired fd opened.
+
+&gt;<i> closefrom() doesn't appear to help.  Descriptors intended to be kept open
+</I>&gt;<i> may be mixed together with descriptors which must be closed.  This is
+</I>&gt;<i> because of the `childFDs` parameter to `reactor.spawnProcess`, which allows
+</I>&gt;<i> arbitrary file descriptors to be passed to the child.
+</I>
+Right, I overlooked that.
+
+Oh, I have just thought of another way to test all opened fds in just
+one syscall.
+It goes like this:
+
+import resource
+import select
+
+_poll = [ 0, None ]
+
+def listOpenFDs():
+        maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        if maxfd != _poll[0]:
+                _poll[0] = maxfd
+                _poll[1] = select.poll()
+                for fd in xrange(maxfd):
+                        _poll[1].register(fd)
+        return [ d for (d, r) in _poll[1].poll() if r != select.POLLNVAL ]
+
+
+Eric.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="055668.html">[Twisted-Python] [Twisted]	#4747:	tw.inet.test.ProcessTestsBuilder.test_openFileDescriptors	is broken in	many ways
+</A></li>
+	<LI>Next message (by thread): <A HREF="023203.html">[Twisted-Python] Пикап
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55669">[ date ]</a>
+              <a href="thread.html#55669">[ thread ]</a>
+              <a href="subject.html#55669">[ subject ]</a>
+              <a href="author.html#55669">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

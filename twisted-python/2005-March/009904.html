@@ -1,0 +1,220 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] newbie: scheduling/queuing tasks with xmlrpc
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20newbie%3A%20scheduling/queuing%20tasks%20with%20xmlrpc&In-Reply-To=20050308055911.GM7812%40trogdor.home.puzzling.org">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009704.html">
+   <LINK REL="Next"  HREF="009705.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] newbie: scheduling/queuing tasks with xmlrpc</H1>
+    <B>Dustin Lee</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20newbie%3A%20scheduling/queuing%20tasks%20with%20xmlrpc&In-Reply-To=20050308055911.GM7812%40trogdor.home.puzzling.org"
+       TITLE="[Twisted-Python] newbie: scheduling/queuing tasks with xmlrpc">qhfgva at gmail.com
+       </A><BR>
+    <I>Thu Mar 17 12:29:09 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009704.html">[Twisted-Python] newbie: scheduling/queuing tasks with xmlrpc
+</A></li>
+        <LI>Next message: <A HREF="009705.html">[Twisted-Python] wxreactor and dialog on win xp problem
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9904">[ date ]</a>
+              <a href="thread.html#9904">[ thread ]</a>
+              <a href="subject.html#9904">[ subject ]</a>
+              <a href="author.html#9904">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>So I've got a simple prototype of what I'm trying to achieve with my
+&quot;queued tasks&quot; xmlrpc server.
+
+I'd appreciate any comments, suggestions.  So far it seems to work
+exactly I wanted but I have a feeling I'm abusing the intended use of
+deferreds.  And that by polling I'm deviating from the twisted
+workflow model.  But you have to start somewhere.
+
+Here is the code and a test client.
+
+xmlrpc_queued_tasks_server.py==============================
+#!/usr/bin/env python
+
+# Prototype for a xmlrpc server that
+# - queues up potentially long, resource intensive tasks
+# - run tasks in order received and only one at a time
+# - keeping track of overdue tasks
+# - doing no work for a task until it is its turn
+
+# python modules
+import time
+import thread
+import xmlrpclib
+
+# twisted modules
+from twisted.web import xmlrpc, server
+from twisted.internet import defer
+
+# GLOBALS
+XMLRPC_PORT = 7080 
+    
+# ----------------------------------------------------------------------
+def task_monitor(task_list):
+    task_run_lengths = {}
+    
+    while 1:
+        print '-' * 70
+        print 'tasks in queue:', len(task_list)
+        if len(task_list) == 0:
+            print 'Nothing to do...'
+            pass
+        else:
+            d,func,args = task_list[0]
+            if d.paused == 1:
+                print 'unpausing:', d 
+                d.unpause() 
+                print 'paused =',d.paused 
+                def curried_func(*_args):
+                    d.callback(func(*_args))
+                thread.start_new(curried_func, args)
+                task_run_lengths[d] = time.time()
+            elif d.paused == 0 and d.called == 1:
+                if len(d.callbacks) == 0:
+                    print 'removing finished task from queue:', d
+                    task_list.pop(0)
+                    del task_run_lengths[d]
+            else:
+                #print task_run_lengths[d], time.time()
+                if (time.time() - task_run_lengths[d]) &gt; 5:
+                    print 'WARNING: long running process!:', d,
+int(time.time() - task_run_lengths[d])
+
+        time.sleep(1)
+# ----------------------------------------------------------------------
+class QueuedXMLRPCServer(xmlrpc.XMLRPC):
+
+    job_queue = []
+
+    def __init__(self):
+        thread.start_new(task_monitor, (self.job_queue,))
+        xmlrpc.XMLRPC.__init__(self)
+
+    def render(self,request):
+
+        # MOSTLY COPIED FROM PARENT CLASS
+        request.content.seek(0, 0)
+        args, functionPath = xmlrpclib.loads(request.content.read())
+        try:
+            function = self._getFunction(functionPath)
+        except xmlrpc.Fault, f:
+            self._cbRender(f, request)
+        else:
+            request.setHeader(&quot;content-type&quot;, &quot;text/xml&quot;)
+            d = defer.Deferred()
+            d.addErrback(
+                self._ebRender
+            ).addCallback(
+                self._cbRender, request
+            )
+            d.pause()
+            self.job_queue.append((d,function,args))
+        return server.NOT_DONE_YET
+
+    def xmlrpc_echo(self, x):
+        &quot;&quot;&quot; Echo back to client.&quot;&quot;&quot;
+        if x.endswith('3'):
+            # cause one task to trip the warning
+            time.sleep(15)
+        else:
+            time.sleep(3)
+        return x
+    
+# ----------------------------------------------------------------------
+if __name__ == '__main__':
+
+    from twisted.internet import reactor
+    r = QueuedXMLRPCServer()
+
+    # create a &quot;listner&quot; (TCP or SSL)
+    reactor.listenTCP(XMLRPC_PORT, server.Site(r))
+    reactor.run()
+
+
+test_xmlrpc_queue.py ===================================
+
+#! /usr/bin/env python
+
+import thread
+import xmlrpclib
+import time
+
+def echo_caller(x):
+    print 'call made by:', x
+    s = xmlrpclib.Server('<A HREF="http://my.server.xyz:7080/'">http://my.server.xyz:7080/'</A>)
+    print s.echo('call returned from %d' % x)
+
+for x in range(10):
+    time.sleep(1)
+    thread.start_new_thread(echo_caller, (x,))
+raw_input('&gt; hit enter to end')
+
+
+
+
+On Tue, 8 Mar 2005 16:59:11 +1100, Andrew Bennetts
+&lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">andrew-twisted at puzzling.org</A>&gt; wrote:
+&gt;<i> On Mon, Mar 07, 2005 at 10:21:14PM -0700, Dustin Lee wrote:
+</I>&gt;<i> [...]
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Basically the idea is that the server will receive a variety of
+</I>&gt;<i> &gt; requests to perform tasks.  Some of these will be very quick to do and
+</I>&gt;<i> &gt; some will take several minutes (perhaps up to an hour).  Some tasks
+</I>&gt;<i> &gt; must run alone and some can run in parallel with others.  Even just a
+</I>&gt;<i> &gt; simple FIFO type queuing would be fine to start.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Any pointers on how to proceed?
+</I>&gt;<i> 
+</I>&gt;<i> The DeferredQueue class in SVN might be a good starting point:
+</I>&gt;<i> 
+</I>&gt;<i>     <A HREF="http://svn.twistedmatrix.com/cvs/trunk/twisted/internet/defer.py?view=auto&amp;rev=12970&amp;root=Twisted">http://svn.twistedmatrix.com/cvs/trunk/twisted/internet/defer.py?view=auto&amp;rev=12970&amp;root=Twisted</A>
+</I>&gt;<i> 
+</I>&gt;<i> -Andrew.
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> 
+</I>
+
+-- 
+Dustin Lee
+qhfgva=rot13(dustin)
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009704.html">[Twisted-Python] newbie: scheduling/queuing tasks with xmlrpc
+</A></li>
+	<LI>Next message: <A HREF="009705.html">[Twisted-Python] wxreactor and dialog on win xp problem
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9904">[ date ]</a>
+              <a href="thread.html#9904">[ thread ]</a>
+              <a href="subject.html#9904">[ subject ]</a>
+              <a href="author.html#9904">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

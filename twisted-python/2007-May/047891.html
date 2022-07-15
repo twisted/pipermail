@@ -1,0 +1,324 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Windows NT Service Problem
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Windows%20NT%20Service%20Problem&In-Reply-To=%3Cm1iraplvy6.fsf%40osx.db3l.homeip.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="047887.html">
+   <LINK REL="Next"  HREF="047886.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Windows NT Service Problem</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Windows%20NT%20Service%20Problem&In-Reply-To=%3Cm1iraplvy6.fsf%40osx.db3l.homeip.net%3E"
+       TITLE="[Twisted-Python] Re: Windows NT Service Problem">db3l.net at gmail.com
+       </A><BR>
+    <I>Fri May 18 14:26:41 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="047887.html">[Twisted-Python] Windows NT Service Problem
+</A></li>
+        <LI>Next message (by thread): <A HREF="047886.html">[Twisted-Python] Win32 IOCPReactor?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#47891">[ date ]</a>
+              <a href="thread.html#47891">[ thread ]</a>
+              <a href="subject.html#47891">[ subject ]</a>
+              <a href="author.html#47891">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Lucas Taylor &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">lucas at lucaserve.com</A>&gt; writes:
+
+&gt;<i> Berkstresser, Dan wrote:
+</I>&gt;&gt;<i> Hello, I am trying to get my twisted project to run as a Windows
+</I>&gt;&gt;<i> Service.  I have followed the instructions here:
+</I>&gt;&gt;<i> <A HREF="http://gradstein.info/DeployingTwistedWindows">http://gradstein.info/DeployingTwistedWindows</A>
+</I>&gt;&gt;<i> as well as here:
+</I>&gt;&gt;<i> <A HREF="http://svn.twistedmatrix.com/cvs/sandbox/moonfallen/?rev=18080#dirlist">http://svn.twistedmatrix.com/cvs/sandbox/moonfallen/?rev=18080#dirlist</A>
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> This isn't really relevant to the references you've mentioned, but there
+</I>&gt;<i> is a simple way to create Windows services with a minor amount of code
+</I>&gt;<i> and it's not too onerous. You don't have to use py2exe, although it is
+</I>&gt;<i> certainly possible to do so once you've got the rest working. I'm not
+</I>&gt;<i> sure if this is the &quot;best&quot; way, but it has been successful for me in a
+</I>&gt;<i> couple of projects over the past 2 years.
+</I>
+This is extremely close to how I've also been doing it for years.  One
+suggestion is to handle reactor shutdown right within SvcStop,
+avoiding the need for a polling loop, e.g.:
+
+    def SvcStop(self):
+        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        print '%s Service stopping' % self._svc_display_name_
+        reactor.callFromThread(reactor.stop)
+        self._stopped.wait(5)
+        print '%s Service stopped' % self._svc_display_name_
+
+You need the callFromThread since the service messages arrive on the
+service thread.  Note that in my case, self._stopped is a
+threading.Event that I set in SvcDoRun when reactor.run returns, for a
+positive acknowledgement for the stop, although I choose not to wait
+forever for it to happen in case something does go wrong.
+
+It's not directly related to Twisted, but since I inevitably want
+services built as executables for distribution, and often have a
+handful of persistent config elements, here's a custom boot_service.py
+module I use with py2exe.  In particular, it provides a single
+implementation (rather than different pywin32 and py2exe) for command
+line installation/removal, and adds updating support to py2exe's
+version.  It also provides a debug mode where running the service
+manually with &quot;--debug&quot; permits it to run from a normal console window
+with I/O to the window, which I find handy.  The service when running
+will be a subclass with a &quot;debug&quot; variable bound to True.
+
+It takes service name information from the existing service class, but
+is application specific in respects to command line parsing, so the
+module would be adjusted by service - that could be factored out
+easily enough.  Options are stored in the registry during installation
+or update, and can be retrieved later by the main service module
+(e.g., in SvcDoRun) with win32serviceutil.GetServiceCustomOption
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+#
+# boot_service.py
+#
+# This is a replacement for py2exe's own boot_service startup code that
+# handles re-installation more gracefully, as well as supporting command
+# line options during installation that get installed as parameters for
+# the service in the registry.
+#
+# It is pulled in by the custom cmdclass in setup.py
+#
+#
+
+import sys
+import os
+import getopt
+import servicemanager
+import winerror
+import win32service
+from win32serviceutil import InstallService, RemoveService, \
+                             ChangeServiceConfig, SetServiceCustomOption
+
+# Get access to our service class
+from dataimportd import DataImportService
+
+
+svc_display_name = getattr(DataImportService, &quot;_svc_display_name_&quot;,
+                           DataImportService._svc_name_)
+
+#
+# --------------------------------------------------------------------------
+#
+
+def usage():
+
+    print svc_display_name, DataImportService.__version__
+    print 'Usage: %s [ mode ] [ options ]' % os.path.basename(sys.argv[0])
+    print 'mode (if not supplied, assumes Service Manager execution):'
+    print '  --install       Install/Update the service'
+    print '  --remove        Remove the service'
+    print '  --debug         Run directly in current console for debugging'
+    print '  --version       Display version and exit'
+    print 'options (for installation/update):'
+    print '  --config=name   Specify configuration file name (default is'
+    print '                    data/dataimport.ini beneath installation)'
+    print
+    sys.exit(0)
+
+#
+# --------------------------------------------------------------------------
+#
+
+def update_service_options(options):
+    for option, value in options.iteritems():
+        SetServiceCustomOption(DataImportService._svc_name_, option, value)
+
+
+#
+# --------------------------------------------------------------------------
+#
+
+def main():
+
+    try:
+        opts, args = getopt.getopt(sys.argv[1:],'?',
+                                   ['install','remove','debug',
+                                    'help','version',
+                                    'config='])
+    except getopt.error, details:
+        print details
+        usage()
+
+    opt_install = opt_remove = opt_debug = False
+    service_options = {}
+
+    for opt, optval in opts:
+        if opt in ['-?', '--help']:
+            usage()
+        elif opt == '--install':
+            opt_install = True
+        elif opt == '--remove':
+            opt_remove = True
+        elif opt == '--debug':
+            opt_debug = True
+        elif opt == '--version':
+            print DataImportService.__version__
+            sys.exit(0)
+        elif opt == '--config':
+            service_options[opt[2:]] = optval
+
+    if opt_install:
+
+        try:
+            InstallService(None,
+                           serviceName = DataImportService._svc_name_,
+                           displayName = svc_display_name,
+                           exeName = sys.executable,
+                           startType = win32service.SERVICE_AUTO_START,
+                           serviceDeps = DataImportService._svc_deps_
+                           )
+            update_service_options(service_options)
+            print svc_display_name, 'installed'
+
+        except win32service.error, (hr, fn, msg):
+            if hr != winerror.ERROR_SERVICE_EXISTS:
+                raise
+
+            ChangeServiceConfig(None,
+                                serviceName = DataImportService._svc_name_,
+                                displayName = svc_display_name,
+                                exeName = sys.executable,
+                                startType = win32service.SERVICE_AUTO_START,
+                                serviceDeps = DataImportService._svc_deps_
+                                )
+
+            update_service_options(service_options)
+            print svc_display_name, 'updated'
+
+    elif opt_remove:
+        RemoveService(DataImportService._svc_name_)
+        print svc_display_name, 'removed'
+
+    else:
+
+        # Event source records come from servicemanager
+        evtsrc_dll = os.path.abspath(servicemanager.__file__)
+
+        servicemanager.Initialize(DataImportService._svc_name_, evtsrc_dll)
+        servicemanager.PrepareToHostSingle(DataImportService)
+
+        if opt_debug:
+            print 'Debugging', svc_display_name
+            # The normal registration that is done upon initialization by the
+            # win32serviceutil.ServiceFramework class will fail, so we suppress
+            # some of the __init__ processing.  This is fragile, but still
+            # better than not being able to debug directly
+            class DebugService(DataImportService):
+                ssh = None   # Since this is dereferenced by the framework
+                debug = True
+                def __init__(self):
+                    pass
+
+            service = DebugService()
+            service.initialize()
+            service.SvcRun()
+
+        else:
+            try:
+                servicemanager.StartServiceCtrlDispatcher()
+            except:
+                print 'Unable to start as service:'
+                print sys.exc_info()[1]
+                print
+                usage()
+    
+
+# If we're running frozen, assume we should just start on import
+if hasattr(sys, 'frozen'):
+    main()
+
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Once you have this module, you can reuse it from the service
+implementation module (for consistent command line parsing and debug
+execution) instead of win32serviceutil with:
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+if __name__ == &quot;__main__&quot;:
+
+    # Use the same boot code that we get when packaged
+    import boot_service
+    boot_service.main()
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+And to wrap up the service with py2exe, subclass the default cmdclass
+to return the right boot module (if you already have a subclass - for
+example I use one which upx's binaries, just add the get_boot_script
+method) and then reference it during the call to setup(), e.g.:
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+from py2exe.build_exe import py2exe
+
+
+class Py2exe(py2exe):
+
+    # (... any other customizations ...)
+
+    def get_boot_script(self, boot_type):
+        if boot_type != 'service':
+            return py2exe.get_boot_script(self, boot_type)
+        else:
+            return os.path.join(os.path.dirname(__file__),
+                                &quot;boot_&quot; + boot_type + &quot;.py&quot;)
+
+# ...
+
+
+setup( # (... normal options ...)
+      cmdclass = {'py2exe': Py2exe})
+
+          - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="047887.html">[Twisted-Python] Windows NT Service Problem
+</A></li>
+	<LI>Next message (by thread): <A HREF="047886.html">[Twisted-Python] Win32 IOCPReactor?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#47891">[ date ]</a>
+              <a href="thread.html#47891">[ thread ]</a>
+              <a href="subject.html#47891">[ subject ]</a>
+              <a href="author.html#47891">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

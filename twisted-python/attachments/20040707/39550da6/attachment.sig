@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.4 (GNU/Linux)
+
+iD8DBQFA6ye4hTADrt6Jx1wRAvTFAJwO1krxWLZfcarSc8B073xMayRlYgCglINB
+Y3mW/yRM/VwUtDjx9oI+ijg=
+=77+E
+-----END PGP SIGNATURE-----

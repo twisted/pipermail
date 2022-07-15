@@ -1,0 +1,196 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] PB and FilePager
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20PB%20and%20FilePager&In-Reply-To=%3C2C5356FB-162D-4EE0-876E-80EC0471721D%40stoppani.name%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="056634.html">
+   <LINK REL="Next"  HREF="056628.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] PB and FilePager</H1>
+    <B>Jonathan Stoppani</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20PB%20and%20FilePager&In-Reply-To=%3C2C5356FB-162D-4EE0-876E-80EC0471721D%40stoppani.name%3E"
+       TITLE="[Twisted-Python] PB and FilePager">jonathan at stoppani.name
+       </A><BR>
+    <I>Mon Jun 27 14:52:43 MDT 2011</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="056634.html">[Twisted-Python] A resizable dispatch queue for Twisted (updated)
+</A></li>
+        <LI>Next message (by thread): <A HREF="056628.html">[Twisted-Python] jQuery.Deferred - why did they have to go and	change the interface?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56627">[ date ]</a>
+              <a href="thread.html#56627">[ thread ]</a>
+              <a href="subject.html#56627">[ subject ]</a>
+              <a href="author.html#56627">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi there,
+
+I encountered a problem while dealing with file transfers using PB and t.s.u.FilePager.
+
+The sscce illustrates the problem:
+
+--------- server.py --------------------------------------------------
+from twisted.spread import pb
+from twisted.internet import reactor
+
+ROOT = '/tmp/'
+
+class ImageCollector(pb.Referenceable): 
+def __init__(self, fd):
+    self.fd = fd
+
+def remote_dummy(self):
+    pass
+
+def remote_gotPage(self, page):
+    self.fd.write(page)
+
+def remote_endedPaging(self):
+    print &quot;Completed&quot;
+    self.fd.close()
+
+class VurmController(pb.Root):
+def remote_createImage(self, imageId):
+    return ImageCollector(open(ROOT + imageId, 'w'))
+
+reactor.listenTCP(8789, pb.PBServerFactory(VurmController()))
+reactor.run()
+----------------------------------------------------------------------
+
+
+--------- client.py --------------------------------------------------
+import sys
+
+from twisted.spread import pb
+from twisted.internet import reactor, defer
+from twisted.spread import util
+
+FILE = 'myfile.something'
+
+factory = pb.PBClientFactory()
+reactor.connectTCP(&quot;localhost&quot;, 8789, factory)
+
+d = factory.getRootObject()
+
+def createImage(controller):
+return controller.callRemote('createImage', 'image-id')
+d.addCallback(createImage)
+
+def sendImage(ctl):
+print ctl.callRemote('dummy') ############# LINE 19 #############
+d = defer.Deferred()
+util.FilePager(ctl, open(FILE), callback=lambda: d.callback(None))
+return d
+d.addCallback(sendImage)
+
+def done(_):
+print &quot;Transfer completed&quot;
+#reactor.callLater(1, reactor.stop)
+reactor.stop()
+d.addCallback(done)
+
+reactor.run()
+----------------------------------------------------------------------
+
+
+I'm trying to *upload* a file from the client to the server by calling a method on the
+server which returns a collector to be used with a FilePager instance.
+
+When run with the line client.py:19 commented out, the script blocks before sending
+out any file chunks, if the line is uncommented (effectively calling the 'dummy' method
+remotely), everything works as expected.
+
+Digging around in the sources, I found out that t.p.u.Pager registers itself to the
+collector's pb broker as a pageProducer. When resumeProducing is called on the broker,
+it asks the FilePager instance for the next page, which leads to the invocation of
+the following method on FilePager::
+
+def sendNextPage(self):
+    &quot;&quot;&quot;
+    Get the first chunk read and send it to collector.
+    &quot;&quot;&quot;
+    if not self.chunks:
+        return
+
+    val = self.chunks.pop(0)
+    self.producer.resumeProducing()
+    self.collector.callRemote(&quot;gotPage&quot;, val)
+
+As the t.b.FileSender producer does not yet had a chance to write something to the
+FilePager, the method returns straight away without sending anything.
+
+As anything was sent, the Broker.resumeProducing method is never called again, and
+thus the FilePager.sendNextPage neither.
+
+The problem is caused by the calling chain of the FilePager constructor:
+
+FilePager.__init__()
+-&gt; Pager.__init__()
+-&gt; broker.registerPageProducer(FilePager)
+  -&gt; transport.registerProducer(broker)
+    -&gt; broker.resumeProducing()
+      -&gt; FilePager.sendNextPage()
+        -&gt; &lt;no data, don't send anything&gt;
+-&gt; FilePager.startProducing(fd)
+-&gt; FileSender().beginFileTransfer(fd, FilePager)
+  -&gt; FilePager.registerProducer(FileSender)
+    -&gt; FileSender.resumeProducing()
+      -&gt; FilePager.write(data)
+        -&gt; &lt;store data, wait for sendNextPage to be called&gt;
+
+Simply inverting these two method calls (Pager.__init__ and FilePager.startProducing)
+solves the problem.
+
+The same problem does not appear when calling the 'dummy' method (client.py:19)
+because the data for the method call is waiting to be sent out by the reactor and
+the transport does not call 'resumeProducing' on the broker until the next iteration.
+
+This allows the call to FilePager.startProducing to complete before sendNextPage is
+ever called on it.
+
+Does this sound correct? It seems only strange to me that nobody else had this problem
+previously. If no errors on my side are found, I'll submit this as a ticket.
+
+Cheers,
+Jonathan
+
+
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="056634.html">[Twisted-Python] A resizable dispatch queue for Twisted (updated)
+</A></li>
+	<LI>Next message (by thread): <A HREF="056628.html">[Twisted-Python] jQuery.Deferred - why did they have to go and	change the interface?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56627">[ date ]</a>
+              <a href="thread.html#56627">[ thread ]</a>
+              <a href="subject.html#56627">[ subject ]</a>
+              <a href="author.html#56627">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

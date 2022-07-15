@@ -1,0 +1,150 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] JSON &quot;page&quot; and nevow
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20JSON%20%22page%22%20and%20nevow&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003888.html">
+   <LINK REL="Next"  HREF="003885.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] JSON &quot;page&quot; and nevow</H1>
+    <B>Vincent Bernat</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20JSON%20%22page%22%20and%20nevow&In-Reply-To="
+       TITLE="[Twisted-web] JSON &quot;page&quot; and nevow">bernat at luffy.cx
+       </A><BR>
+    <I>Sat Aug 16 08:36:47 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003888.html">[Twisted-web] newbie question
+</A></li>
+        <LI>Next message: <A HREF="003885.html">[Twisted-web] JSON &quot;page&quot; and nevow
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3884">[ date ]</a>
+              <a href="thread.html#3884">[ thread ]</a>
+              <a href="subject.html#3884">[ subject ]</a>
+              <a href="author.html#3884">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi!
+
+There are several  pages that I would like to serve  as JSON page. Nevow
+include a  JSON serializer but it seems  there is no facility  to send a
+page as JSON.
+
+Here is what I do:
+
+,----
+|<i> class JsonPage(rend.Page):
+</I>|<i> 
+</I>|<i>     docFactory = loaders.stan ( T.div(render=T.directive(&quot;json&quot;),
+</I>|<i>                                       data=T.directive(&quot;json&quot;)))
+</I>|<i>     addSlash = True
+</I>|<i>     flattenFactory = lambda self, *args: flat.flattenFactory(*args)
+</I>|<i> 
+</I>|<i>     def render_json(self, ctx, data):
+</I>|<i>         &quot;&quot;&quot;Render the given data in a proper JSON string&quot;&quot;&quot;
+</I>|<i> 
+</I>|<i>         def sanitize(data, d=None):
+</I>|<i>             &quot;&quot;&quot;Nevow JSON serializer is not able to handle some types.
+</I>|<i> 
+</I>|<i>             We convert those types in proper types:
+</I>|<i>              - string to unicode string
+</I>|<i>              - PgSQL result set into list
+</I>|<i>              - handling of deferreds
+</I>|<i>             &quot;&quot;&quot;
+</I>|<i>             if type(data) in [list, tuple] or isinstance(data, PgSQL.PgResultSet):
+</I>|<i>                 return [sanitize(x, d) for x in data]
+</I>|<i>             if type(data) == str:
+</I>|<i>                 return unicode(data)
+</I>|<i>             if isinstance(data, rend.Fragment):
+</I>|<i>                 io = StringIO()
+</I>|<i>                 writer = io.write
+</I>|<i>                 finisher = lambda result: io.getvalue()
+</I>|<i>                 newctx = context.PageContext(parent=ctx, tag=data)
+</I>|<i>                 data.rememberStuff(newctx)
+</I>|<i>                 doc = data.docFactory.load()
+</I>|<i>                 newctx = context.WovenContext(newctx, T.invisible[doc])
+</I>|<i>                 fl = self.flattenFactory(doc, newctx, writer, finisher)
+</I>|<i>                 fl.addCallback(sanitize, None)
+</I>|<i>                 d.append(fl)
+</I>|<i>                 return fl
+</I>|<i>             if isinstance(data, defer.Deferred):
+</I>|<i>                 if data.called:
+</I>|<i>                     return sanitize(data.result)
+</I>|<i>                 return data
+</I>|<i>             if isinstance(data, failure.Failure):
+</I>|<i>                 return unicode(
+</I>|<i>                     &quot;&lt;span class='error'&gt;An error occured (%s)&lt;/span&gt;&quot; % data.getErrorMessage())
+</I>|<i>             return data
+</I>|<i> 
+</I>|<i>         def serialize(data):
+</I>|<i>             return json.serialize(sanitize(data))
+</I>|<i> 
+</I>|<i>         d = []
+</I>|<i>         data = sanitize(data, d)
+</I>|<i>         d = defer.DeferredList(d)
+</I>|<i>         d.addCallback(lambda x: serialize(data))
+</I>|<i>         return d
+</I>|<i>         
+</I>|<i> 
+</I>|<i>     def beforeRender(self, ctx):
+</I>|<i>         inevow.IRequest(ctx).setHeader(&quot;Content-Type&quot;, &quot;application/json; charset=UTF-8&quot;)
+</I>`----
+
+I inherit of this class and  just implement data_json. The main point is
+that I should be able what I do for regular web pages, including the use
+of deferred.
+
+There are several drawbacks:
+ - I need to use deferred.called and deferred.result that is not part of
+   the public API. I don't know  how to avoid this. JSON serializer does
+   not handle deferred (Fragments are rendered synchronously).
+ - to  render Fragment,  I  use some  obscur  tricks that  I stole  from
+   rend.py. Not sure that this would survive.
+ - for Fragment,  serializers will turn  &quot;&lt;&quot; into &quot;&amp;lt;&quot;.   Therefore, I
+   should turn  them back as &quot;&lt;&quot; on  Javascript side. I did  not found a
+   way to avoid serializing twice.  It seems that T.xml instead of T.div
+   would  do  the  trick  but  it  does  not  support  data  and  render
+   attributes.
+ - Nevow  JSON serializer  seems  not  te be  extended  to support  more
+   types. Is it some plans to allow this?
+
+Any tip to simplify or enhance the above code would be welcome.
+
+Thanks.
+-- 
+Write and test a big program in small pieces.
+            - The Elements of Programming Style (Kernighan &amp; Plauger)
+
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003888.html">[Twisted-web] newbie question
+</A></li>
+	<LI>Next message: <A HREF="003885.html">[Twisted-web] JSON &quot;page&quot; and nevow
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3884">[ date ]</a>
+              <a href="thread.html#3884">[ thread ]</a>
+              <a href="subject.html#3884">[ subject ]</a>
+              <a href="author.html#3884">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

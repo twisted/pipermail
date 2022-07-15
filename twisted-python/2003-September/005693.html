@@ -1,0 +1,206 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Patch to allow deferreds to be returned from resource.render
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Patch%20to%20allow%20deferreds%20to%20be%20returned%20from%20resource.render&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005692.html">
+   <LINK REL="Next"  HREF="005694.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Patch to allow deferreds to be returned from resource.render</H1>
+    <B>James Y. Knight</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Patch%20to%20allow%20deferreds%20to%20be%20returned%20from%20resource.render&In-Reply-To="
+       TITLE="[Twisted-Python] Patch to allow deferreds to be returned from resource.render">foom at fuhm.net
+       </A><BR>
+    <I>Sun Sep 14 06:22:27 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005692.html">[Twisted-Python] Re: Web server with Python
+</A></li>
+        <LI>Next message: <A HREF="005694.html">[Twisted-Python] Patch to allow deferreds to be returned from resource.render
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5693">[ date ]</a>
+              <a href="thread.html#5693">[ thread ]</a>
+              <a href="subject.html#5693">[ subject ]</a>
+              <a href="author.html#5693">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Ooh lets try sending this mail one more time. Apparently the combined 
+suckage of three different programs made my last mail not get through:
+1) Apple Mail sucks and doesn't quote the &quot;Full Name&quot; automatically, so 
+I end up with a non-RFC-conforming From: with a &quot;.&quot; outside of quotes 
+or the email address.
+2) Exim sucks and doesn't fix it (OTOH, Sendmail does fix it, which is 
+why i've never seen this problem before!)
+3) Mailman sucks as well, and gets completely confused by this slightly 
+non-conformant address format, and thinks my email address is 
+&quot;jamesy.knight&quot;.
+
+Anyways, on to the original message:
+===
+
+This patch lets you return a deferred from resource.render (the obvious 
+thing to do) and have it work. As opposed to the current method where 
+you need to return NOT_DONE_YET and restructure all your code to call 
+request.write(...). That should still work too, though. I'd stick this 
+on the bug tracker but I forgot my password. (anyone able to reset for 
+me? :)
+
+James
+
+--- server.py~  Mon Jul 21 00:09:52 2003
++++ server.py   Tue Sep  9 15:02:09 2003
+@@ -160,56 +160,8 @@
+          except:
+              self.processingFailed(failure.Failure())
+
+-
+-    def render(self, resrc):
+-        try:
+-            body = resrc.render(self)
+-        except UnsupportedMethod, e:
+-            allowedMethods = e.allowedMethods
+-            if (self.method == &quot;HEAD&quot;) and (&quot;GET&quot; in allowedMethods):
+-                # We must support HEAD (RFC 2616, 5.1.1).  If the
+-                # resource doesn't, fake it by giving the resource
+-                # a 'GET' request and then return only the headers,
+-                # not the body.
+-                log.msg(&quot;Using GET to fake a HEAD request for %s&quot; %
+-                        (resrc,))
+-                self.method = &quot;GET&quot;
+-                body = resrc.render(self)
+-
+-                if body is NOT_DONE_YET:
+-                    log.msg(&quot;Tried to fake a HEAD request for %s, but &quot;
+-                            &quot;it got away from me.&quot; % resrc)
+-                    # Oh well, I guess we won't include the content 
+length.
+-                else:
+-                    self.setHeader('content-length', str(len(body)))
+-
+-                self.write('')
+-                self.finish()
+-                return
+-
+-            if self.method in (supportedMethods):
+-                # We MUST include an Allow header
+-                # (RFC 2616, 10.4.6 and 14.7)
+-                self.setHeader('Allow', allowedMethods)
+-                s = ('''Your browser approached me (at %(URI)s) with'''
+-                     ''' the method &quot;%(method)s&quot;.  I only allow'''
+-                     ''' the method%(plural)s %(allowed) here.''' % {
+-                    'URI': self.uri,
+-                    'method': self.method,
+-                    'plural': ((len(allowedMethods) &gt; 1) and 's') or 
+'',
+-                    'allowed': string.join(allowedMethods, ', ')
+-                    })
+-                epage = error.ErrorPage(http.NOT_ALLOWED,
+-                                        &quot;Method Not Allowed&quot;, s)
+-                body = epage.render(self)
+-            else:
+-                epage = error.ErrorPage(http.NOT_IMPLEMENTED, &quot;Huh?&quot;,
+-                                        &quot;&quot;&quot;I don't know how to treat 
+a&quot;&quot;&quot;
+-                                        &quot;&quot;&quot; %s request.&quot;&quot;&quot;
+-                                        % (self.method))
+-                body = epage.render(self)
+-        # end except UnsupportedMethod
+-
++    def _cbRender(self, body, resrc):
++
+          if body == NOT_DONE_YET:
+              return
+          if type(body) is not types.StringType:
+@@ -232,6 +184,58 @@
+              self.setHeader('content-length', str(len(body)))
+              self.write(body)
+          self.finish()
++
++    def _ebRender(self, failure, resrc):
++        failure.trap(UnsupportedMethod)
++        e = failure.value
++        allowedMethods = e.allowedMethods
++        if (self.method == &quot;HEAD&quot;) and (&quot;GET&quot; in allowedMethods):
++            # We must support HEAD (RFC 2616, 5.1.1).  If the
++            # resource doesn't, fake it by giving the resource
++            # a 'GET' request and then return only the headers,
++            # not the body.
++            log.msg(&quot;Using GET to fake a HEAD request for %s&quot; %
++                    (resrc,))
++            self.method = &quot;GET&quot;
++            body = resrc.render(self)
++
++            if body is NOT_DONE_YET:
++                log.msg(&quot;Tried to fake a HEAD request for %s, but &quot;
++                        &quot;it got away from me.&quot; % resrc)
++                # Oh well, I guess we won't include the content length.
++            else:
++                self.setHeader('content-length', str(len(body)))
++
++            self.write('')
++            self.finish()
++            return
++
++        if self.method in (supportedMethods):
++            # We MUST include an Allow header
++            # (RFC 2616, 10.4.6 and 14.7)
++            self.setHeader('Allow', allowedMethods)
++            s = ('''Your browser approached me (at %(URI)s) with'''
++                 ''' the method &quot;%(method)s&quot;.  I only allow'''
++                 ''' the method%(plural)s %(allowed) here.''' % {
++                'URI': self.uri,
++                'method': self.method,
++                'plural': ((len(allowedMethods) &gt; 1) and 's') or '',
++                'allowed': string.join(allowedMethods, ', ')
++                })
++            epage = error.ErrorPage(http.NOT_ALLOWED,
++                                    &quot;Method Not Allowed&quot;, s)
++            body = epage.render(self)
++        else:
++            epage = error.ErrorPage(http.NOT_IMPLEMENTED, &quot;Huh?&quot;,
++                                    &quot;&quot;&quot;I don't know how to treat a&quot;&quot;&quot;
++                                    &quot;&quot;&quot; %s request.&quot;&quot;&quot;
++                                    % (self.method))
++            body = epage.render(self)
++
++    def render(self, resrc):
++        defer.maybeDeferred(resrc.render, 
+self).addErrback(self._ebRender, resrc).addCallback(self._cbRender, 
+resrc).addErrback(self.processingFailed)
++
++
+
+      def processingFailed(self, reason):
+          log.err(reason)
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005692.html">[Twisted-Python] Re: Web server with Python
+</A></li>
+	<LI>Next message: <A HREF="005694.html">[Twisted-Python] Patch to allow deferreds to be returned from resource.render
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5693">[ date ]</a>
+              <a href="thread.html#5693">[ thread ]</a>
+              <a href="subject.html#5693">[ subject ]</a>
+              <a href="author.html#5693">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

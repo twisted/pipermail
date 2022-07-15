@@ -1,0 +1,146 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Response hanging after headers sent
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20Response%20hanging%20after%20headers%20sent&In-Reply-To=%3C20140911152126.31272.88558736.divmod.xquotient.12%40top%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005112.html">
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Response hanging after headers sent</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20Response%20hanging%20after%20headers%20sent&In-Reply-To=%3C20140911152126.31272.88558736.divmod.xquotient.12%40top%3E"
+       TITLE="[Twisted-web] Response hanging after headers sent">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Thu Sep 11 09:21:26 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005112.html">[Twisted-web] Response hanging after headers sent
+</A></li>
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5113">[ date ]</a>
+              <a href="thread.html#5113">[ thread ]</a>
+              <a href="subject.html#5113">[ subject ]</a>
+              <a href="author.html#5113">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 02:27 pm, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">bruno at distributedmatter.net</A> wrote:
+&gt;<i>Hello,
+</I>&gt;<i>
+</I>&gt;<i>I've been trying to implement a simple notification system via long 
+</I>&gt;<i>polling
+</I>&gt;<i>using Twisted 14.0.0. On the client side, a web page makes Ajax calls 
+</I>&gt;<i>to an
+</I>&gt;<i>&quot;update&quot; resource, which will deliver the latest status message known 
+</I>&gt;<i>to
+</I>&gt;<i>the application. On the server side, a thread feeds a queue with status
+</I>&gt;<i>events and another one polls this queue and sends the latest value to 
+</I>&gt;<i>any
+</I>&gt;<i>pending request, trying to keep the request open for 30 seconds, or 
+</I>&gt;<i>until a
+</I>&gt;<i>new status event arrives, whichever happens sooner (this is the long
+</I>&gt;<i>polling).
+</I>&gt;<i>
+</I>&gt;<i>[snip]
+</I>&gt;<i>
+</I>&gt;<i>class CounterUpdateResource(Resource):
+</I>&gt;<i>    def __init__(self, msg_queue):
+</I>&gt;<i>        Resource.__init__(self)
+</I>&gt;<i>        self.msg_queue = msg_queue
+</I>&gt;<i>        self.msg = {}
+</I>&gt;<i>        self.etag = None
+</I>&gt;<i>        self.pending_requests = []
+</I>&gt;<i>
+</I>&gt;<i>        t = threading.Thread(target=self._poll_messages)
+</I>&gt;<i>        t.daemon = True
+</I>&gt;<i>        t.start()
+</I>&gt;<i>
+</I>&gt;<i>    def _poll_messages(self):
+</I>&gt;<i>        while True:
+</I>&gt;<i>            try:
+</I>&gt;<i>                self.msg = self.msg_queue.get(True, 30)
+</I>&gt;<i>                self.etag = '&quot;%s&quot;' % (uuid.uuid4(),)
+</I>&gt;<i>                print &quot;-&gt; Got new message: %s&quot; % (self.msg,)
+</I>&gt;<i>            except Queue.Empty:
+</I>&gt;<i>                pass
+</I>&gt;<i>            json_str = json.dumps(self.msg)
+</I>&gt;<i>            json_len = len(json_str)
+</I>&gt;<i>            while True:
+</I>&gt;<i>                try:
+</I>&gt;<i>                    request = self.pending_requests.pop()
+</I>&gt;<i>                    self._actual_render(request, json_str, json_len)
+</I>&gt;<i>                except IndexError:
+</I>&gt;<i>                    break
+</I>&gt;<i>
+</I>&gt;<i>    def _actual_render(self, request, json_msg, json_len):
+</I>&gt;<i>        try:
+</I>&gt;<i>            request.setETag(self.etag)
+</I>&gt;<i>            request.setHeader(&quot;Content-Type&quot;, &quot;application/json&quot;)
+</I>&gt;<i>            request.setHeader(&quot;Content-Length&quot;, json_len)
+</I>&gt;<i>            request.write(json_msg)
+</I>&gt;<i>            request.finish()
+</I>&gt;<i>        except:
+</I>&gt;<i>            pass
+</I>
+`_poll_messages` is run in a thread.  It calls `_actual_render` - so 
+`_actual_render` is run in a thread.  It calls these `request` methods - 
+so they are run in a thread.
+
+Twisted APIs are not thread-safe - except for one or two that are 
+explicitly marked as being thread-safe.
+
+Since this code calls Twisted APIs (the request methods) in a thread, 
+they have undefined behavior.
+
+If you change this so that `_actual_render` (or all of the request 
+methods) are called in the reactor thread then I expect it will start to 
+work reliably.
+
+Stepping back, you might consider getting rid of the multithreaded in- 
+process polling and instead make your application fully event-driven. 
+Instead of having one part of your program put messages into a queue and 
+another part look at the queue from time to time and do work if it finds 
+an item, have one part of your program call a method implemented by 
+another part of your program which does the work.  No threads, no 
+polling, hooray.
+
+Stepping back even further, there are existing libraries for doing this 
+kind of thing with Twisted already.  There's Divmod Nevow's Athena and 
+there's Minerva.  There are also other approaches to &quot;real time&quot; web - 
+such as websockets (see Autobahn and txwebsocket).  You may not actually 
+have to implement this low-level plumbing yourself.
+
+Jean-Paul
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005112.html">[Twisted-web] Response hanging after headers sent
+</A></li>
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5113">[ date ]</a>
+              <a href="thread.html#5113">[ thread ]</a>
+              <a href="subject.html#5113">[ subject ]</a>
+              <a href="author.html#5113">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

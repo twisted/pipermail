@@ -1,0 +1,777 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Slot/pattern/key changes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   
+   <LINK REL="Previous"  HREF="000165.html">
+   <LINK REL="Next"  HREF="000167.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Slot/pattern/key changes
+   </H1>
+    <B>James Y Knight
+    </B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com"
+       TITLE="[Twisted-web] Slot/pattern/key changes">twisted-web@twistedmatrix.com
+       </A><BR>
+    <I>Tue, 10 Feb 2004 16:30:48 -0500</I>
+    <P><UL>
+        <LI> Previous message: <A HREF="000165.html">[Twisted-web] Writing a web application - how to make twisted/nevow &quot;look good&quot;
+</A></li>
+        <LI> Next message: <A HREF="000167.html">[Twisted-web] Slot/pattern/key changes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#166">[ date ]</a>
+              <a href="thread.html#166">[ thread ]</a>
+              <a href="subject.html#166">[ subject ]</a>
+              <a href="author.html#166">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>--Apple-Mail-2--642798763
+Content-Transfer-Encoding: 7bit
+Content-Type: text/plain;
+	charset=US-ASCII;
+	format=flowed
+
+This is a set of *BACKWARDS-INCOMPATIBLE* changes that simplifies and 
+clarifies the set of attributes nevow has for finding elements. Tests 
+pass, and my app works (both after being updated slightly for the API 
+changes).
+
+There used to be 3 attributes you could put on elements to locate them: 
+slot, pattern, and key. They all did similar but slightly different 
+things.
+
+- Filling slots with data is a useful concept but 'slot' shouldn' t be 
+an attribute. A slot is something that gets replaced with the given 
+data, and is thus better as a standalone element. It has been replaced 
+with the following:
+slot('slotname') in a stan tree, or &lt;nevow:slot name=&quot;slotname&quot; /&gt; in 
+an (X)HTML template.
+context.slotted() (which could locate a slot) has been eliminated and 
+replaced with context.fillSlots(slotname, stantree). Note that you 
+cannot locate slots, you can just specify data for them to fill 
+themselves with.
+
+- Assigning unique keys is also a useful concept, but it doesn't 
+require the &quot;context.keyed()&quot; method. That method has been eliminated. 
+HTMLRenderer used it to find the key=&quot;content&quot; in HTML files used as 
+sub-renderers, now it uses pattern=&quot;content&quot;.
+
+- Patterns remain as the only way to locate a sub-element of your 
+renderer. There are now 3 methods to locate them, depending on what you 
+want to do. patternGenerator() replaces patterns(), onePattern() 
+semi-replaces keyed(), and allPatterns() replaces the direct use of 
+specialMatches that the sequence renderer previous did. Please see the 
+docs in context.py for these three methods for precise behavior.
+
+So, in summary, to convert your old code to new code:
+1) If you had &quot;div(style=&quot;border:1px&quot;, slot=&quot;myslot&quot;)&quot; replace it with 
+div(style=&quot;border: 1px&quot;)[slot(&quot;myslot&quot;)].
+2) If you had a template with &quot;&lt;div style=&quot;border:1px&quot; 
+nevow:slot=&quot;myslot&quot; /&gt;&quot; replace it with &quot;&lt;div 
+style=&quot;border:1px&quot;&gt;&lt;nevow:slot name=&quot;myslot&quot; /&gt;&lt;/div&gt;
+3) If you had &quot;context.slotted(&quot;myslot&quot;).clear()[a(href=&quot;foo&quot;)[&quot;bar&quot;]] 
+replace it with context.fillSlot(&quot;myslot&quot;, a(href=&quot;foo&quot;)[&quot;bar&quot;]]
+4) If you used keyed(), convert key= to pattern= and keyed() to 
+onePattern().
+5) If you used patterns(), just rename it to patternGenerator()
+
+Also included in this patch are doc cleanups, removing excess xml() 
+wrappings, replacing yield by return when possible, and the ability to 
+use the &quot;&lt;nevow:invisible&gt;&quot; element in a (x)html template file, with 
+the same behavior as the invisible stan tag.
+
+James
+
+--Apple-Mail-2--642798763
+Content-Transfer-Encoding: 7bit
+Content-Type: application/octet-stream;
+	x-unix-mode=0644;
+	name=&quot;nevow4.patch&quot;
+Content-Disposition: attachment;
+	filename=nevow4.patch
+
+Index: components.wsv
+===================================================================
+RCS file: /cvs/Quotient/nevow/components.wsv,v
+retrieving revision 1.26
+diff -u -r1.26 components.wsv
+--- components.wsv	6 Feb 2004 23:03:47 -0000	1.26
++++ components.wsv	10 Feb 2004 21:26:17 -0000
+@@ -39,6 +39,7 @@
+ nevow.serial.flatstan.MethodSerializer              types.MethodType                nevow.iwoven.ISerializable
+ nevow.serial.flatstan.CallableInstanceSerializer    nevow.iwoven.IRendererFactory   nevow.iwoven.ISerializable
+ nevow.serial.flatstan.DirectiveSerializer           nevow.stan.directive            nevow.iwoven.ISerializable
++nevow.serial.flatstan.SlotSerializer                nevow.stan.slot                 nevow.iwoven.ISerializable
+ nevow.serial.flatstan.ContextSerializer             nevow.context.WovenContext      nevow.iwoven.ISerializable
+ nevow.serial.flatstan.DeferredSerializer            twisted.internet.defer.Deferred nevow.iwoven.ISerializable
+ 
+Index: context.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/context.py,v
+retrieving revision 1.17
+diff -u -r1.17 context.py
+--- context.py	6 Feb 2004 21:21:51 -0000	1.17
++++ context.py	10 Feb 2004 21:26:17 -0000
+@@ -39,8 +39,9 @@
+ 
+ class WovenContext(object):
+     key = None
+-    _remembrances = {}
++    _remembrances = None
+     tag = None
++    _slotData = None
+     def __init__(self, parent=None, tag=None, precompile=False, remembrances=None, key=None, isAttrib=False):
+         self.tag = tag
+         self.parent = parent
+@@ -87,29 +88,16 @@
+         return self
+ 
+     def with(self, tag):
+-        &quot;&quot;&quot;Remember a few things in a new context stack entry.
++        &quot;&quot;&quot;Create a new context stack entry for the specified tag.
+         
+         tag: the tag the new context stack entry will be associated with.
+-        data: The data to pass to any rendering functions.
+-        renderer: The rendering function to use to render this node.
+-        observer: The observer function to notify when an
+-            event occurs to this node.
+         &quot;&quot;&quot;
+-#        data=None, renderer=None, observer=None, remembrances=None
+ 
+         new = WovenContext(self, tag, self.precompile, key=tag.key, isAttrib=self.isAttrib)
+         if tag.data is not Unset:
+             new.remember(tag.data, IData)
+         if tag.remember is not Unset:
+             new.remember(tag.remember)
+-#        if renderer is not None:
+-#            # push a renderer onto the stack
+-#            pass
+-# woah this seems broken
+-#            new.remember(renderer, IRendererFactory)
+-#        if observer is not None:
+-#            # push an observer onto the stack
+-#            pass
+         return new
+ 
+     def locate(self, interface, depth=1):
+@@ -155,28 +143,67 @@
+         top.parent = context
+ 
+     def patterns(self, pattern, default=None):
+-        &quot;&quot;&quot;Generate clones of pattern tags forever, looping around to the beginning
+-        when we run out of unique matches.
+-
++        warnings.warn(&quot;use patternGenerator instead&quot;, stacklevel=2)
++        return self.patternGenerator(pattern, default)
++    
++    def patternGenerator(self, pattern, default=None):
++        &quot;&quot;&quot;Returns a psudeo-Tag which will generate clones of matching
++        pattern tags forever, looping around to the beginning when running
++        out of unique matches.
++        
+         If no matches are found, and default is None, raise an exception,
+-        otherwise, return clones of default, forever.
++        otherwise, generate clones of default forever.
+ 
++        You can use the normal stan syntax on the return value.
++        
++        Useful to find repeating pattern elements. Example rendering function:
++        def simpleSequence(context, data):
++          pattern = context.patternCloner('item')
++          return [pattern(data=element) for element in data]
+         &quot;&quot;&quot;
+         patterner = self._locatePatterns(self.tag, pattern, default)
+         return PatternTag(patterner)
+ 
+-    def slotted(self, slot):
+-        &quot;&quot;&quot;Locate and return an existing slot in the current context tag, clearing any
+-        dummy content in the process. You can then fill the slot with real content.
+-        &quot;&quot;&quot;
+-        return self._locateOne(slot, self._locateSlots, 'slot')
+-
+-    def keyed(self, key):
+-        &quot;&quot;&quot;Locate an existing keyed node in the current context tag. This returns the node
+-        unchanged, without clearing or cloning anything.
++    def allPatterns(self, pattern):
++        &quot;&quot;&quot;Return a list of all matching pattern tags, not cloned.
++        
++        Useful if you just want to insert them in the output in one
++        place.
++        
++        E.g. the sequence renderer's header and footer are found with this.
+         &quot;&quot;&quot;
+-        return self._locateOne(key, self._locateKeys, 'key')
++        return list(specialMatches(self.tag, 'pattern', pattern))
+ 
++    def onePattern(self, pattern):
++        &quot;&quot;&quot;Return a single matching pattern, not cloned.
++        If there is more than one matching pattern or no matching patterns,
++        raise an exception.
++
++        Useful in the case where you want to locate one and only one
++        sub-tag and do something with it.
++        &quot;&quot;&quot;
++        return self._locateOne(pattern,
++                               lambda pattern: specialMatches(self.tag, 'pattern', pattern),
++                               'pattern')
++
++    def fillSlots(self, name, stan):
++        &quot;&quot;&quot;Set 'stan' as the stan tree to replace all slots with name 'name'.
++        &quot;&quot;&quot;
++        if self._slotData is None:
++            self._slotData = {}
++        self._slotData[name] = stan
++
++    def _locateSlotData(self, name):
++        &quot;&quot;&quot;Find previously remembered slot filler data.
++        For use by flatstan.SlotRenderer&quot;&quot;&quot;
++        if self._slotData:
++            data = self._slotData.get(name, Unset)
++            if data is not Unset:
++                return data
++        if self.parent is None:
++            raise KeyError, &quot;Slot data %s was not remembered.&quot; % name
++        return self.parent._locateSlotData(name)
++    
+     def _locatePatterns(self, tag, pattern, default):
+         keeplooking = True
+         gen = specialMatches(tag, 'pattern', pattern)
+@@ -208,15 +235,6 @@
+             raise NodeNotFound(descr, name)
+         return found
+ 
+-    def _locateSlots(self, slot):
+-        for match in specialMatches(self.tag, 'slot', slot):
+-            yield match.clear()
+-
+-    def _locateKeys(self, key):
+-        for keySpecial in specials(self.tag, 'key'):
+-            if keySpecial.key.endswith(key):
+-                yield keySpecial        
+-
+     def clone(self, deep=True, cloneTags=True):
+         ## don't clone the tags of parent contexts. I *hope* code won't be
+         ## trying to modify parent tags so this should not be necessary.
+Index: renderer.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/renderer.py,v
+retrieving revision 1.44
+diff -u -r1.44 renderer.py
+--- renderer.py	6 Feb 2004 21:21:51 -0000	1.44
++++ renderer.py	10 Feb 2004 21:26:17 -0000
+@@ -397,7 +397,7 @@
+     def __call__(self, context, data):
+         self.check()
+         ctx = context.with(tags.invisible[self.doc])
+-        return ctx.keyed(self.key)
++        return ctx.allPatterns(self.key)
+ 
+ 
+ class XMLRenderer(HTMLRenderer):
+Index: stan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/stan.py,v
+retrieving revision 1.20
+diff -u -r1.20 stan.py
+--- stan.py	6 Feb 2004 23:03:47 -0000	1.20
++++ stan.py	10 Feb 2004 21:26:17 -0000
+@@ -37,6 +37,15 @@
+     def __repr__(self):
+         return &quot;directive('%s')&quot; % self.name
+ 
++class slot(object):
++    &quot;&quot;&quot;Marker for slot insertion in a template
++    &quot;&quot;&quot;
++    __slots__ = ['name']
++    def __init__(self, name):
++        self.name = name
++
++    def __repr__(self):
++        return &quot;slot('%s')&quot; % self.name
+ 
+ class Tag(object):
+     &quot;&quot;&quot;Tag instances represent html tags with a tag name, attributes,
+@@ -46,9 +55,7 @@
+     which make representing trees of XML natural using pure python
+     syntax. See the docstrings for these methods for more details.
+     &quot;&quot;&quot;
+-    specials = ['data', 'renderer', 'observer', 'remember', 'pattern', 'slot', 'macro', 'fill-slot', 'key']
+-
+-    produceContext = False
++    specials = ['data', 'renderer', 'remember', 'pattern', 'key']
+ 
+     def __init__(self, tag, attributes=None, children=None, specials=None):
+         self.tagName = tag
+@@ -70,20 +77,32 @@
+         __call__ because it then allows the natural syntax:
+         
+         table(width=&quot;100%&quot;, height=&quot;50%&quot;, border=&quot;1&quot;)
++
++        Attributes may be 'invisible' tag instances (so that
++        a(href=invisible(data=&quot;foo&quot;, renderer=myhrefrenderer) works),
++        strings, functions, or any other object which has a registered
++        ISerializable adapter.
+         
+-        Three magic attributes may
+-        have values other than string values, and will be remembered
+-        in the context stack for later retrieval:
+-        
+-        data
+-        renderer
+-        observer
+-
+-        See WovenContext.with for details.
+-        
+-        pattern and slot attributes are special, and are not exported
+-        to the final page, but are used to locate nodes tagged with
+-        a given pattern or slot id.
++        A few magic attributes have values other than these, as they
++        are not serialized for output but rather have special purposes
++        of their own:
++        
++        data - The value is saved on the context stack and passed to
++               renderer functions.
++        renderer - A function to call that may modify the tag in any
++                   way desired.
++        remember - Remember the value on the context stack with
++                   context.remember(value) for later lookup with
++                   context.locate()
++        pattern - Value should be a key that can later be used to locate
++                  this tag with context.patternGenerator() or
++                  context.allPatterns()
++        key - A string used to give the node a unique label.
++              This is automatically namespaced, so in:
++              span(key=&quot;foo&quot;)[span(key=&quot;bar&quot;)]
++              the inner span actually has a key of 'foo.bar'.
++              The key is is intended for use as e.g. an html 'id' attribute,
++              but will is not automatically output.
+         &quot;&quot;&quot;
+         if not kw:
+             return self
+@@ -101,7 +120,7 @@
+     def __getitem__(self, children):
+         &quot;&quot;&quot;Add children to this tag. Multiple children may be added by
+         passing a tuple or a list. Children may be other tag instances,
+-        strings, functions, or any object which has a registered
++        strings, functions, or any other object which has a registered
+         ISerializable adapter.
+         
+         This is implemented using __getitem__ because it then allows
+@@ -129,6 +148,18 @@
+         &quot;&quot;&quot;
+         raise NotImplementedError, &quot;Stan tag instances are not iterable.&quot;
+ 
++    def precompilable(self):
++        &quot;&quot;&quot;Is this tag precompilable?
++        
++        Tags are precompilable if they will not be modified by a user
++        renderer function.
++
++        Currently, the following attributes prevent the tag from being
++        precompiled:
++        - renderer (because the function can modify its own tag)
++        - pattern (not sure about this, but perhaps may get modified)
++        &quot;&quot;&quot;
++        
+     def _clone(self, obj, deep):
+         if hasattr(obj, 'clone'):
+             return obj.clone(deep)
+@@ -170,7 +201,6 @@
+             rstr += ', children=%r' % self.children
+         return &quot;Tag(%r%s)&quot; % (self.tagName, rstr)
+ 
+-
+ class UnsetClass:
+     def __nonzero__(self):
+         return False
+@@ -222,26 +252,23 @@
+                 yield match
+ 
+ def sequence(context, data):
+-    headers = specialMatches(context.tag, 'pattern', 'header')
+-    pattern = context.patterns('item')
+-    divider = context.patterns('divider', default=Proto(''))
++    headers = context.allPatterns('header')
++    pattern = context.patternGenerator('item')
++    divider = context.patternGenerator('divider', default=invisible)
+     content = [(pattern(data=element), divider(data=element)) for element in data]
+     if not content:
+-        content = specialMatches(context.tag, 'pattern', 'empty')
++        content = context.allPatterns('empty')
+     else:
+         ## No divider after the last thing.
+         content[-1] = content[-1][0]
+-    footers = specialMatches(context.tag, 'pattern', 'footer')
++    footers = context.allPatterns('footer')
+     
+-    # clone is necessary here because headers and footers are generators that
+-    # haven't run yet, which depend on context.tag's contents.
+-    return context.tag.clone(deep=False).clear()[ headers, content, footers ]
++    return context.tag.clear()[ headers, content, footers ]
+ 
+ 
+ def mapping(context, data):
+     for k, v in data.items():
+-        for slot in context._locateSlots(k):
+-            slot[v]
++        context.fillSlots(k, v)
+     return context.tag
+ 
+ 
+Index: tags.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/tags.py,v
+retrieving revision 1.9
+diff -u -r1.9 tags.py
+--- tags.py	30 Jan 2004 18:52:47 -0000	1.9
++++ tags.py	10 Feb 2004 21:26:17 -0000
+@@ -4,7 +4,7 @@
+ # Public License as published by the Free Software Foundation.
+ 
+ 
+-from nevow.stan import Proto, Tag, directive, xml, CommentProto, invisible
++from nevow.stan import Proto, Tag, directive, xml, CommentProto, invisible, slot
+ 
+ 
+ comment = CommentProto()
+Index: serial/flatmdom.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatmdom.py,v
+retrieving revision 1.14
+diff -u -r1.14 flatmdom.py
+--- serial/flatmdom.py	5 Feb 2004 16:57:50 -0000	1.14
++++ serial/flatmdom.py	10 Feb 2004 21:26:17 -0000
+@@ -6,36 +6,42 @@
+ from __future__ import generators
+ 
+ from nevow.renderer import serialize
+-from nevow.stan import Tag, xml, directive
++from nevow.stan import Tag, xml, directive, slot, invisible
+ 
+ from twisted.python import components
+ 
+ def MicroDomTextSerializer(original, context):
+     if original.raw:
+-        yield original.nodeValue
++        return original.nodeValue
+     else:
+         from twisted.xish.domish import escapeToXml
+-        yield escapeToXml(original.nodeValue)
++        return escapeToXml(original.nodeValue)
+ 
+ 
+ def MicroDomCommentSerializer(original, context):
+-    yield xml(&quot;&lt;!--%s--&gt;&quot; % original.data)
++    return xml(&quot;&lt;!--%s--&gt;&quot; % original.data)
+     
+ def MicroDomEntityReferenceSerializer(original, context):
+-    yield xml(original.nodeValue)
++    return xml(original.nodeValue)
+ 
+ 
+-def MicroDomElementSerializer(original, context):
++def MicroDomElementSerializer(element, context):
+     directiveMapping = {
+         'render': 'renderer',
+         'data': 'data',
+-        'observer': 'observer'
+     }
+     attributeList = [
+-        'pattern', 'slot', 'macro', 'fill-slot', 'key',
++        'pattern', 'key',
+     ]
+ 
+-    element = original
++    name = element.tagName
++    if name.startswith('nevow:'):
++        _, name = name.split(':')
++        if name == 'invisible':
++            name = ''
++        elif name == 'slot':
++            return slot(element.attributes['name'])
++        
+     attrs = dict(element.attributes) # get rid of CaseInsensitiveDict
+     specials = {}
+     attributes = attributeList
+@@ -54,14 +60,14 @@
+             specials[nons] = v
+             del attrs[k]
+ 
+-    yield serialize(
+-        Tag(
+-            element.tagName,
++    tag = Tag(
++            name,
+             attributes=attrs,
+             children=element.childNodes,
+             specials=specials
+-        ),
+-        context)
++            )
++
++    return serialize(tag, context)
+ 
+ 
+ def MicroDomDocumentSerializer(original, context):
+Index: serial/flatsax.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatsax.py,v
+retrieving revision 1.4
+diff -u -r1.4 flatsax.py
+--- serial/flatsax.py	6 Feb 2004 22:54:31 -0000	1.4
++++ serial/flatsax.py	10 Feb 2004 21:26:17 -0000
+@@ -19,12 +19,11 @@
+     directiveMapping = {
+         'render': 'renderer',
+         'data': 'data',
+-        'observer': 'observer'
+     }
+     attributeList = [
+-        'pattern', 'slot', 'macro', 'fill-slot', 'key',
++        'pattern', 'key',
+     ]
+-    
++
+     def resolveEntity(self, publicId, systemId):
+         ## This doesn't seem to get called, which is good.
+         raise Exception(&quot;resolveEntity should not be called. We don't use external DTDs.&quot;)
+@@ -45,6 +44,17 @@
+         self.current.append(xml(&quot;&lt;?%s %s?&gt;\n&quot; % (target, data)))
+ 
+     def startElement(self, name, attrs):
++        if name.startswith('nevow:'):
++            _, name = name.split(':')
++            if name == 'invisible':
++                name = ''
++            elif name == 'slot':
++                el = slot(element.attributes['name'])
++                self.current.append(el)
++                fakeEl = Tag('') # eat children
++                self.current = fakeEl
++                self.stack.append(self.current)
++        
+         attrs = dict(attrs)
+         specials = {}
+         attributes = self.attributeList
+Index: serial/flatstan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatstan.py,v
+retrieving revision 1.25
+diff -u -r1.25 flatstan.py
+--- serial/flatstan.py	6 Feb 2004 23:03:47 -0000	1.25
++++ serial/flatstan.py	10 Feb 2004 21:26:17 -0000
+@@ -19,7 +19,7 @@
+                   'input', 'col', 'basefont', 'isindex', 'frame')
+ 
+ def ProtoSerializer(original, context):
+-    yield xml('&lt;%s /&gt;' % original)
++    return '&lt;%s /&gt;' % original
+ 
+ 
+ def TagSerializer(original, context, contextIsMine=False):
+@@ -65,26 +65,26 @@
+             yield serialize(child, context)
+         return
+     
+-    yield xml('&lt;%s' % original.tagName)
++    yield '&lt;%s' % original.tagName
+     if original.attributes:
+         attribContext = WovenContext(parent=context, precompile=context.precompile, isAttrib=True)
+         for (k, v) in original.attributes.iteritems():
+             if v is None:
+                 warnings.warn(&quot;An attribute value for key %r on tag %r was None; ignoring attribute&quot; % (original.tagName, v))
+                 continue
+-            yield xml(' %s=&quot;' % k)
++            yield ' %s=&quot;' % k
+             yield serialize(v, attribContext)
+-            yield xml('&quot;')
++            yield '&quot;'
+     if not original.children:
+         if original.tagName in allowSingleton:
+-            yield xml(' /&gt;')
++            yield ' /&gt;'
+         else:
+-            yield xml('&gt;&lt;/%s&gt;' % original.tagName)
++            yield '&gt;&lt;/%s&gt;' % original.tagName
+     else:
+-        yield xml('&gt;')
++        yield '&gt;'
+         for child in original.children:
+             yield serialize(child, context)        
+-        yield xml('&lt;/%s&gt;' % original.tagName)
++        yield '&lt;/%s&gt;' % original.tagName
+ 
+ def StringSerializer(original, context):
+     ## quote it
+@@ -98,7 +98,7 @@
+ 
+ 
+ def NoneWarningSerializer(original, context):
+-    return xml('&lt;span style=&quot;position: relative; font-size: 100; font-weight: bold; color: red; border: thick solid red;&quot;&gt;None&lt;/span&gt;')
++    return '&lt;span style=&quot;position: relative; font-size: 100; font-weight: bold; color: red; border: thick solid red;&quot;&gt;None&lt;/span&gt;'
+ 
+ 
+ def StringCastSerializer(original, context):
+@@ -175,13 +175,19 @@
+     renderer = rendererFactory.renderer(context, original.name)
+     return serialize(renderer, context)
+ 
++def SlotSerializer(original, context):
++    if context.precompile:
++        return original
++    data = context._locateSlotData(original.name)
++    return serialize(data, context)
++
+ 
+ def ContextSerializer(original, context):
+     originalContext = original.clone(deep=False)
+     originalContext.precompile = context and context.precompile or False
+     originalContext.chain(context)
+     try:
+-        return flatten(TagSerializer(originalContext.tag, originalContext, contextIsMine=True))
++        return TagSerializer(originalContext.tag, originalContext, contextIsMine=True)
+     except:
+         from twisted.web import util
+         from twisted.python import failure
+@@ -200,7 +206,7 @@
+ 
+ 
+ def CommentSerializer(original, context):
+-    yield xml(&quot;&lt;!--&quot;)
++    yield &quot;&lt;!--&quot;
+     for x in original.children:
+         yield serialize(x, context)
+-    yield(&quot;--&gt;&quot;)
++    yield &quot;--&gt;&quot;
+Index: test/test_disktemplate.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/test/test_disktemplate.py,v
+retrieving revision 1.18
+diff -u -r1.18 test_disktemplate.py
+--- test/test_disktemplate.py	17 Jan 2004 22:49:16 -0000	1.18
++++ test/test_disktemplate.py	10 Feb 2004 21:26:17 -0000
+@@ -144,8 +144,8 @@
+         temp = self.mktemp()
+         open(temp,'w').write(&quot;&quot;&quot;
+         &lt;table nevow:data=&quot;aDict&quot; nevow:render=&quot;slots&quot;&gt;
+-        &lt;tr&gt;&lt;td nevow:slot=&quot;1&quot;&gt;&lt;/td&gt;&lt;td nevow:slot=&quot;2&quot;&gt;&lt;/td&gt;&lt;/tr&gt;
+-        &lt;tr&gt;&lt;td nevow:slot=&quot;3&quot;&gt;&lt;/td&gt;&lt;td nevow:slot=&quot;4&quot;&gt;&lt;/td&gt;&lt;/tr&gt;
++        &lt;tr&gt;&lt;td&gt;&lt;nevow:slot name=&quot;1&quot; /&gt;&lt;/td&gt;&lt;td&gt;&lt;nevow:slot name=&quot;2&quot; /&gt;&lt;/td&gt;&lt;/tr&gt;
++        &lt;tr&gt;&lt;td&gt;&lt;nevow:slot name=&quot;3&quot; /&gt;&lt;/td&gt;&lt;td&gt;&lt;nevow:slot name=&quot;4&quot; /&gt;&lt;/td&gt;&lt;/tr&gt;
+         &lt;/table&gt;&quot;&quot;&quot;)
+     
+         class Renderer(renderer.HTMLRenderer):
+@@ -153,8 +153,7 @@
+                 return {'1':'one','2':'two','3':'three','4':'four'}
+             def render_slots(self,context,data):
+                 for name,value in data.items():
+-                    for slot in context._locateSlots(name):
+-                        slot[value]
++                    context.fillSlots(name, value)
+                 return context.tag
+ 
+         result = deferredRender(Renderer(templateFile=temp))
+@@ -163,17 +162,17 @@
+             &quot;&lt;table&gt;&lt;tr&gt;&lt;td&gt;one&lt;/td&gt;&lt;td&gt;two&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td&gt;three&lt;/td&gt;&lt;td&gt;four&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;&quot;,
+             &quot;Whoops. We didn't get what we expected!&quot;)
+ 
+-    def test_keys(self):
++    def test_patterns(self):
+         temp = self.mktemp()
+         open(temp,'w').write(&quot;&quot;&quot;&lt;span nevow:render=&quot;foo&quot;&gt;
+-			&lt;span nevow:key=&quot;one&quot;&gt;ONE&lt;/span&gt;
+-			&lt;span nevow:key=&quot;two&quot;&gt;TWO&lt;/span&gt;
+-			&lt;span nevow:key=&quot;three&quot;&gt;THREE&lt;/span&gt;
++			&lt;span nevow:pattern=&quot;one&quot;&gt;ONE&lt;/span&gt;
++			&lt;span nevow:pattern=&quot;two&quot;&gt;TWO&lt;/span&gt;
++			&lt;span nevow:pattern=&quot;three&quot;&gt;THREE&lt;/span&gt;
+ 		&lt;/span&gt;&quot;&quot;&quot;)
+ 
+         class Mine(renderer.HTMLRenderer):
+             def render_foo(self, context, data):
+-                return context.keyed(data)
++                return context.allPatterns(data)
+ 
+         result = deferredRender(Mine(&quot;one&quot;, templateFile=temp))
+         self.assertEquals(result, '&lt;span&gt;ONE&lt;/span&gt;')
+Index: test/test_flatstan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/test/test_flatstan.py,v
+retrieving revision 1.21
+diff -u -r1.21 test_flatstan.py
+--- test/test_flatstan.py	6 Feb 2004 21:21:52 -0000	1.21
++++ test/test_flatstan.py	10 Feb 2004 21:26:17 -0000
+@@ -201,8 +201,8 @@
+                 tags.table(data={'one': 1, 'two': 2}, renderer=stan.mapping)[
+                     tags.tr[tags.td[&quot;Header one.&quot;], tags.td[&quot;Header two.&quot;]],
+                     tags.tr[
+-                        tags.td[&quot;One: &quot;, tags.invisible(slot=&quot;one&quot;)],
+-                        tags.td[&quot;Two: &quot;, tags.invisible(slot=&quot;two&quot;)]
++                        tags.td[&quot;One: &quot;, tags.slot(&quot;one&quot;)],
++                        tags.td[&quot;Two: &quot;, tags.slot(&quot;two&quot;)]
+                     ]
+                 ]
+             ]
+Index: test/test_stan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/test/test_stan.py,v
+retrieving revision 1.3
+diff -u -r1.3 test_stan.py
+--- test/test_stan.py	28 Oct 2003 23:41:15 -0000	1.3
++++ test/test_stan.py	10 Feb 2004 21:26:17 -0000
+@@ -40,18 +40,19 @@
+         self.assertEquals(clone.children, [&quot;How are you&quot;])
+         self.assertNotIdentical(clone.children, tag.children)
+ 
++    ## TODO: need better clone test here to test clone(deep=True),
++    ## and behavior of cloning nested lists.
++
+     def test_clear(self):
+         tag = proto[&quot;these are&quot;, &quot;children&quot;, &quot;cool&quot;]
+         tag.clear()
+         self.assertEquals(tag.children, [])
+ 
+     def test_specials(self):
+-        tag = proto(data=1, renderer=str, observer=&quot;1&quot;, pattern=&quot;item&quot;, slot=&quot;aSlot&quot;, macro=&quot;aMacro&quot;, **{'fill-slot': &quot;someSlot&quot;})
++        tag = proto(data=1, renderer=str, remember=&quot;stuff&quot;, key=&quot;myKey&quot;, **{'pattern': &quot;item&quot;})
+         self.assertEquals(tag.data, 1)
+-        self.assertEquals(tag.renderer, str)
+-        self.assertEquals(tag.observer, &quot;1&quot;)
++        self.assertEquals(getattr(tag, 'renderer'), str)
++        self.assertEquals(tag.remember, &quot;stuff&quot;)
++        self.assertEquals(tag.key, &quot;myKey&quot;)
+         self.assertEquals(tag.pattern, &quot;item&quot;)
+-        self.assertEquals(tag.slot, &quot;aSlot&quot;)
+-        self.assertEquals(tag.macro, &quot;aMacro&quot;)
+-        self.assertEquals(getattr(tag, 'fill-slot'), &quot;someSlot&quot;)
+ 
+
+--Apple-Mail-2--642798763--
+
+
+
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI> Previous message: <A HREF="000165.html">[Twisted-web] Writing a web application - how to make twisted/nevow &quot;look good&quot;
+</A></li>
+	<LI> Next message: <A HREF="000167.html">[Twisted-web] Slot/pattern/key changes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#166">[ date ]</a>
+              <a href="thread.html#166">[ thread ]</a>
+              <a href="subject.html#166">[ subject ]</a>
+              <a href="author.html#166">[ author ]</a>
+         </LI>
+       </UL>
+</body></html>

@@ -1,0 +1,160 @@
+from zope.interface      import implements
+
+from twisted.python      import log
+
+from twisted.application import service, internet
+
+from twisted.cred        import portal
+from twisted.cred        import checkers
+from twisted.cred        import credentials
+from twisted.web.util    import Redirect
+
+from nevow               import appserver
+from nevow               import inevow
+from nevow               import guard
+from nevow               import rend
+from nevow               import loaders
+from nevow               import tags as T
+
+from nevow               import athena
+
+class FooElement ( athena.LiveElement ):
+    docFactory = loaders.stan (
+        T.div ( render = T.directive ( 'liveElement' ) ) [
+            "I am a LiveElement" ]
+    )
+    
+
+class FooPage ( athena.LivePage ):
+
+    addSlash = True
+
+    docFactory = loaders.stan ( T.html [
+        T.head ( render = T.directive ( 'liveglue' ) ),
+        T.body ( render = T.directive ( 'fooElement' ) ) ] )
+
+    def render_fooElement ( self, ctx, data ):
+        e = FooElement()
+        e.setFragmentParent ( self )
+        return e
+
+    # def child_ ( self, ctx ):
+    #     return FooPage()
+    
+    def logout ( self ):
+        log.msg ( "FooPage.logout() called" )
+
+
+class LoginPage ( rend.Page ):
+    
+    addSlash = True
+    docFactory = loaders.stan (
+        T.html [
+            T.head [ T.title [ "Please Log In" ] ],
+            
+            T.body [
+                T.form ( action = guard.LOGIN_AVATAR, method = "post" ) [
+                    T.table [
+                        T.tr [
+                            T.td [ "Username" ],
+                            T.td [ T.input ( type = "text", name = "username" ) ],
+                        ],
+                        
+                        T.tr [
+                            T.td [ "Password" ],
+                            T.td [ T.input ( type = "password", name = "password" ) ]
+                        ]
+                    ],
+                    
+                    T.input ( type = "submit", value = "Log In" ),
+                    T.p,
+                ]
+            ]
+        ]
+    )
+    
+
+
+# Callable for the anonymous login.
+def noLogout():
+    return None
+
+class FooRealm ( object ):
+
+    implements ( portal.IRealm )
+    
+    def requestAvatar ( self, avatarId, mind, *interfaces ):
+        for interface in interfaces:
+            if interface is inevow.IResource:
+                if avatarId is checkers.ANONYMOUS:
+                    avatar = LoginPage()
+                    avatar.realm = self
+                    avatar.logout = noLogout
+                else:
+                    avatar = FooPage ( avatarId )
+                    avatar.realm = self
+
+                return ( inevow.IResource, avatar, avatar.logout )
+                
+        raise NotImplementedError ( "No support for that interface." )
+
+    
+def createGuardedResource():
+    realm  = FooRealm()
+    _portal = portal.Portal ( realm )
+    
+    _checker = checkers.InMemoryUsernamePasswordDatabaseDontUse()
+    _checker.addUser ( "bob", "bobspassword" )
+    _portal.registerChecker ( _checker )
+
+    _portal.registerChecker ( checkers.AllowAnonymousAccess(),
+                              credentials.IAnonymous )
+
+    res = guard.SessionWrapper ( _portal )
+    return res
+
+class DummyPage ( rend.Page ):
+    addSlash = True
+    docFactory = loaders.stan ( T.html [ T.head ( title = "Dummy Page" ),
+                                         T.body [ "I am a Dummy Page" ]
+                                         ] )
+
+class TopLevel ( rend.Page ):
+
+    addSlash = True
+
+    # Doesn't get rendered because of the redirect.
+    docFactory = loaders.stan ( T.html [ T.head ( title = "Top Level Page" ),
+                                         T.body [ "Top Level Page" ]
+                                         ] )
+
+    def child_ ( self, ctx ):
+        return Redirect ( 'foopage' )
+
+
+    def child_foopage ( self, ctx ):
+        # Returning a vanilla page works.
+        # return DummyPage()
+
+        # Returning a LivePage without authentication also works.
+        # return FooPage()
+
+        # Returning a guarded resource doesn't work.
+        return createGuardedResource()
+
+
+    def childFactory ( self, ctx, name ):
+        return rend.FourOhFour()
+
+
+######################################################################
+#
+######################################################################
+
+application  = service.Application ( "redirectToGuard" )
+port         = 8080
+res          = TopLevel()
+# res          = createGuardedResource()
+site         = appserver.NevowSite ( res )
+webService   = internet.TCPServer ( port, site )
+webService.setServiceParent ( application )

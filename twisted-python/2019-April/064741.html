@@ -1,0 +1,101 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] magical and seamless asyncio support
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20magical%20and%20seamless%20asyncio%20support&In-Reply-To=%3CCB7FC780-FCBD-4150-A6A8-73F21C644103%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] magical and seamless asyncio support</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20magical%20and%20seamless%20asyncio%20support&In-Reply-To=%3CCB7FC780-FCBD-4150-A6A8-73F21C644103%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] magical and seamless asyncio support">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Sun Apr  7 23:17:10 MDT 2019</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64741">[ date ]</a>
+              <a href="thread.html#64741">[ thread ]</a>
+              <a href="subject.html#64741">[ subject ]</a>
+              <a href="author.html#64741">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>After filing <A HREF="https://github.com/tornadoweb/tornado/issues/2636">https://github.com/tornadoweb/tornado/issues/2636</A> &lt;<A HREF="https://github.com/tornadoweb/tornado/issues/2636">https://github.com/tornadoweb/tornado/issues/2636</A>&gt; recently, I was reminded that Twisted should support asyncio seamlessly, and currently we have some quite-visible seams.
+
+There are three major use-cases for asyncio integration:
+
+I've got a large Twisted application.  I run the reactor at startup.  I find a cool asyncio lib.  I want to use it.  What do I do?
+I've got a large asyncio application.  I run the main loop at startup.  I find a cool twisted lib.  I want to use it.  What do I do?
+I'm noodling around in an environment, like a Jupyter notebook, which already happens to have an event loop but I don't really know which one it is.  How do I have the fewest number of steps?
+
+What happens today in each case?
+
+Case 1: If I've got a large Twisted application, I either start off by doing Deferred.fromFuture or ensureDeferred.  These give me Deferreds that never fire, because no asyncio loop is running, but they don't yell at me; they just hang.  Now I have to switch my event loop over to be an AsyncioSelectorReactor.  Except wait, my application is a GTK+ application, and the only GTK+ main loop I can get that implements the asyncio APIs is unmaintained!  So I either give up my custom Twisted reactor or I give up my asyncio functionality or I run it all in a thread.  None of these are great experiences.
+
+Case 2: if I've got an asyncio application, I have a similar problem; I need a reactor, but one isn't running, so all my Deferred.asFuture(get_event_loop())s just hang.  So I need to run AsyncioSelectorReactor, but now I need to know a bunch of obscure Twisted trivia to boostrap all of this properly:
+
+Case 3: oh no, how do I even know which one I need to run?
+
+In all of these cases I need to know a bunch of really inane trivia:
+
+I need to call startRunning() on the reactor, but just once, when it gets set up, or threadpool invocations (such as name resolution) will hang.  Unless I'm lucky enough to actually control the whole process startup, in which case I can replace my event loop's .run_forever() with Twisted's .run().
+I need to know whether I need subprocess support, and from whom.  If I need it in Twisted, I need to do startRunning(installSignalHandlers=True); if I need it in asyncio, I need to do installSignalHandlers=False.  I don't think there's a way to have both.
+I'd better hope that this is not on Windows, because Twisted is going to use its POSIX socket I/O implementation no matter what.
+Then, once it's up and running, rather than just 'await'-ing Deferreds, I always need to await someDeferred().asFuture(loop=get_event_loop()).  From a practical perspective, get_event_loop() is the only correct value that I'd ever want to pass here, but for some reason the library makes me pass it every time.
+
+I propose a series of changes that would make this seamless from either side.
+
+Make Deferreds awaitable by asyncio by just calling `get_event_loop` and lying about what loop they're connected to.  My reading of this is that <A HREF="https://github.com/python/cpython/blob/c5c6cdada3d41148bdeeacfe7528327b481c5d18/Modules/_asynciomodule.c#L215">https://github.com/python/cpython/blob/c5c6cdada3d41148bdeeacfe7528327b481c5d18/Modules/_asynciomodule.c#L215</A> &lt;<A HREF="https://github.com/python/cpython/blob/c5c6cdada3d41148bdeeacfe7528327b481c5d18/Modules/_asynciomodule.c#L215">https://github.com/python/cpython/blob/c5c6cdada3d41148bdeeacfe7528327b481c5d18/Modules/_asynciomodule.c#L215</A>&gt; will totally let us do that, if we just have a get_loop method (or, gross, _loop property) on Deferred or whatever's returned from Deferred.__await__.  It would be fine if this raised a warning or something, as long as it worked in the 80% case so people could get some initial success and a pointer as to how to succeed, and not just hitting a wall with &quot;task got bad yield&quot;.
+Make the reactor automagical.
+Phase one of this change would be: when you do 'from twisted.internet import reactor', if there's already an asyncio loop installed and running, automatically select the asyncio integration.  This only helps you if you're in a context like a Jupyter notebook where you're not doing it at the module level, but that's still interesting.
+Make 'twisted.internet.reactor' into a dynamic proxy object which forwards reactor calls to whichever the running reactor is at the moment of the method call (connectTCP, callLater, etc).  This can move the reactor selection to whenever the &quot;first touch&quot; on the reactor is, rather than whenever it's imported.  (This also fixes a ton of of annoying import-order stuff in Twisted itself, as a bonus.)
+Automatically call startRunning() as necessary if another loop is in charge.
+Fix the subprocess integration:
+As a simple first step, for UNIX, at least participate in the asyncio get_child_watcher() / set_child_watcher() protocol, so that at least someone trying to coordinate a Twisted loop and an asyncio loop can intentionally select which one gets child process termination notifications, and possibly even multiplex this.
+Fix subprocesses along with any platform-specific socket quirks, by doing the next step...
+Actually use the asyncio APIs in the &quot;asyncio side down&quot; integration, i.e. AsyncioSelectorReactor.  Presently we implement everything in terms of the add_reader and add_writer APIs, which is both very low-level and also fairly UNIX-specific.  We should instead be using loop.create_connection, loop.create_server, loop.subprocess_exec, loop.getaddrinfo, etc, and translating between asyncio protocol/transport APIs and our own.
+Implement the &quot;twisted side down&quot; integration with asyncio; i.e. instead of implementing the twisted APIs in terms of asyncio's interfaces, implement the asyncio APIs in terms of Twisted's interfaces, so we can use existing custom reactors, GUI loop integration, etc.
+
+This is all quite a bit of work but I think it would massively improve the experience of a novice trying to adopt Twisted in a modern Python stack.
+
+In particular, I think that in addition to being a good example of the general problem domain, Jupyter is quite specifically incredibly strategic, and having the ability to just grab Treq and start doing massively parallel I/O to ingest data, then just 'await' on it, would be a very powerful demonstration of Twisted's capabilities.
+
+Let me know what you all think!
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20190407/c710c98a/attachment-0002.html&gt;
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64741">[ date ]</a>
+              <a href="thread.html#64741">[ thread ]</a>
+              <a href="subject.html#64741">[ subject ]</a>
+              <a href="author.html#64741">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

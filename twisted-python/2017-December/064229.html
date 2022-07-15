@@ -1,0 +1,257 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Unhandled exceptions and observability
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Unhandled%20exceptions%20and%20observability&In-Reply-To=%3CCAEeXt4M%2BU50okr9rh0ZsAByYpwr1Lt9L03iHPfiKy4EVewWmHQ%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="031767.html">
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Unhandled exceptions and observability</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Unhandled%20exceptions%20and%20observability&In-Reply-To=%3CCAEeXt4M%2BU50okr9rh0ZsAByYpwr1Lt9L03iHPfiKy4EVewWmHQ%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Unhandled exceptions and observability">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Thu Dec 28 06:29:15 MST 2017</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="031767.html">[Twisted-Python] Unhandled exceptions and observability
+</A></li>
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64229">[ date ]</a>
+              <a href="thread.html#64229">[ thread ]</a>
+              <a href="subject.html#64229">[ subject ]</a>
+              <a href="author.html#64229">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, Dec 27, 2017 at 11:18 PM, Svein Seldal &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">sveinse at seldal.com</A>&gt; wrote:
+
+&gt;<i> Hi
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> I'm not sure how to write this email, but please let me try. I'd like to
+</I>&gt;<i> address something that I see as a limitation in Twisted. It might be that
+</I>&gt;<i> my use case is odd or that I'm outside the scope of Twisted, but non the
+</I>&gt;<i> less, I'd hope this could be a relevant topic.
+</I>&gt;<i>
+</I>&gt;<i> Problem:
+</I>&gt;<i>
+</I>&gt;<i> Unhandled exceptions can leave the application in a half-working state,
+</I>&gt;<i> and the in-app observability for them is difficult to obtain. Instead of
+</I>&gt;<i> terminating the whole application, the rest of the app can still keep
+</I>&gt;<i> running, and can be completely unaware of the failure.
+</I>&gt;<i>
+</I>&gt;<i> This applies to unhandled errbacks in Deferred and principally to any
+</I>&gt;<i> other reactor callbacks. E.g. it can occur in Deferreds being used
+</I>&gt;<i> internally in Twisted, where direct access to the object isn't available to
+</I>&gt;<i> the caller.
+</I>&gt;<i>
+</I>&gt;<i> As a user of Twisted, I would like to have the option to catch or fail my
+</I>&gt;<i> application completely when these unhandled exceptions occur, as would be
+</I>&gt;<i> expected in a sequential program.
+</I>&gt;<i>
+</I>&gt;<i>
+</I>I'm not sure I agree with the problem statement or your idea (below) for
+solving it.  However, it's straightforward to implement your idea with
+current and all recent versions of Twisted.  This program will exit rapidly:
+
+
+from twisted.internet import reactor
+&gt;<i> from twisted.python.log import addObserver
+</I>&gt;<i> def stop_on_errors(event):
+</I>&gt;<i>     if event['isError']:
+</I>&gt;<i>         reactor.stop()
+</I>&gt;<i> addObserver(stop_on_errors)
+</I>&gt;<i> def fail():
+</I>&gt;<i>     1/0
+</I>&gt;<i> reactor.callLater(0, fail)
+</I>&gt;<i> reactor.run()
+</I>
+
+Someone else can probably demonstrate how to do the same thing using
+twisted.logger instead.
+
+
+&gt;<i>
+</I>&gt;<i> Background:
+</I>&gt;<i>
+</I>&gt;<i> I have a larger application using many simultaneous TCP, UDP and UNIX
+</I>&gt;<i> connections. As with Twisted, the app is grouped in functions, where most
+</I>&gt;<i> of the heavy lifting are done in black-box-ish modules. There is of course,
+</I>&gt;<i> no guarantee for everything to work smoothly and if something fails, the
+</I>&gt;<i> entire application stops as a clear indication of the failure. However,
+</I>&gt;<i> there have been some occasions where this application is found to be
+</I>&gt;<i> half-dead, due to a failure occurring in a reactor-based callback that can
+</I>&gt;<i> only be seen by reading the logs. The main application is unfortunately
+</I>&gt;<i> unaware of its own failure.
+</I>&gt;<i>
+</I>
+The black boxes should probably not be so black that they hide whether they
+are working or broken from the calling code.  What if they are broken in a
+way that doesn't raise an exception?  What if they are broken in a way that
+doesn't signal whatever ad hoc channel you invent or discover for
+determining if they are broken?  The only real solution is for error
+signaling to be a guaranteed part of the interface to the black box.
+
+
+&gt;<i>
+</I>&gt;<i> AFAIK Twisted has no direct mechanism for handling errors that might occur
+</I>&gt;<i> when user code is called from the reactor. Or even worse, the caller does
+</I>&gt;<i> not know about the occurred failure unless the caller has direct access to
+</I>&gt;<i> the failing object. I believe this is more dangerous to reliability than
+</I>&gt;<i> the plain failing applications is, due to lower observability.
+</I>&gt;<i>
+</I>
+Correct.  No *direct* mechanism.  Various indirect mechanisms exist,
+though, such as the logging example given above.
+
+
+&gt;<i>
+</I>&gt;<i> Lets say the following code is used in a running application:
+</I>&gt;<i>
+</I>&gt;<i>    from twisted.internet.task import LoopingCall
+</I>&gt;<i>    class Foo:
+</I>&gt;<i>      def __init__(self):
+</I>&gt;<i>        self.loop = LoopingCall(self.cb)
+</I>&gt;<i>        self.loop.start(2, False)
+</I>&gt;<i>      def cb(self):
+</I>&gt;<i>        self.count += 1
+</I>&gt;<i>
+</I>&gt;<i>    # Main app does this:
+</I>&gt;<i>    try:
+</I>&gt;<i>      foo = Foo()
+</I>&gt;<i>    except:
+</I>&gt;<i>      print &quot;Won't happen&quot;
+</I>&gt;<i>      raise
+</I>&gt;<i>
+</I>&gt;<i> The code will fail due to the programmical error in cb, but the calling
+</I>&gt;<i> application won't fail and thinks everything is fine. The methodology in
+</I>&gt;<i> debugging errors like this is by looking through the logs.
+</I>&gt;<i>
+</I>
+Foo is broken.  It uses the global reactor.  It creates side-effects in
+__init__.  It creates a Deferred (LoopingCall.start) without attaching
+callbacks or errbacks.
+
+
+&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> The 0-solution:
+</I>&gt;<i>
+</I>&gt;<i> Everywhere a function is being called from the reactor, the user is
+</I>&gt;<i> responsible to handling all exceptions. As is the current case.
+</I>&gt;<i>
+</I>&gt;<i> However, this is not completely straight forward. try-expect are great to
+</I>&gt;<i> catch expected errors, but it's easy to forget and ignore the unexpected
+</I>&gt;<i> ones. Like in the example above. The safeguard for this would be something
+</I>&gt;<i> like:
+</I>&gt;<i>
+</I>&gt;<i>    def cb(self):
+</I>&gt;<i>      try:
+</I>&gt;<i>         self.count += 1
+</I>&gt;<i>      except:
+</I>&gt;<i>         print &quot;Whoops. Unexpected&quot;
+</I>&gt;<i>         signal_main_app()
+</I>&gt;<i>
+</I>&gt;<i> And in a large application, there are many entrypoints (e.g. methods in a
+</I>&gt;<i> protcol handler), so the code becomes very cluttered. Plus it puts the
+</I>&gt;<i> responsibility for the user to implement the signal_main_app() framework.
+</I>&gt;<i>
+</I>
+You say &quot;cluttered&quot;.  Someone else might say &quot;has correct error handling
+code&quot;.  You also don't need to modify every piece of application code this
+way.  You can compose this error handling into just about anything.  For
+example:
+
+def  handle_errors_for_broken_app_code(f):
+&gt;<i>     @decorator
+</I>&gt;<i>     def g(...):
+</I>&gt;<i>         try:
+</I>&gt;<i>             f(...)
+</I>&gt;<i>         except:
+</I>&gt;<i>             signal_main_app()
+</I>&gt;<i>     return g
+</I>
+
+Or whatever variation of function composition strikes your fancy.
+
+An entirely different approach, if you don't want to have to rely on your
+black boxes having a reliable error signal is to create a monitoring system
+instead.  Flip everything around and check the system for working-ness
+instead of broken-ness.  If you ever can't confirm workingn-ess, it's a
+good bet something has gone wrong and action should be taken.
+
+
+&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> Proposal:
+</I>&gt;<i>
+</I>&gt;<i> The ideal solution would be if there were a way to configure Twisted to
+</I>&gt;<i> inform about unhandled exceptions. It can be a addSystemEventTrigger(), or
+</I>&gt;<i> a SW signal, or a process signal, or perhaps a global execute-last-errback
+</I>&gt;<i> function. Possibly in a debug-context.
+</I>&gt;<i>
+</I>&gt;<i>
+</I>Basically, there is a way now.  The logging system - since &quot;unhandled
+exceptions&quot; are actually always handled by the reactor and logged.  The
+logging-based approach has some properties I would identify as &quot;problems&quot;
+but it may work for you.
+
+The idea of a &quot;last errback&quot; is flawed in various ways and has been
+discussed and discarded many times in the past (I would love to provide a
+link to such discussion and apologize for not doing so; perhaps someone
+else can do the necessary digging to find one).
+
+
+
+&gt;<i> With this one could inform the application that one deferred object has
+</I>&gt;<i> not handled its errbacks. Then the main application is given a choice to
+</I>&gt;<i> respond appropriately, like shutting down.
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> Is my concern about the non-observability of unhandled exceptions at all
+</I>&gt;<i> warranted? Is the thinking wrong? Are there any other types of solutions to
+</I>&gt;<i> this problem? (I would like to avoid having to patch Twisted to do it.)
+</I>&gt;<i>
+</I>&gt;<i>
+</I>Hopefully the above gives you some ideas for alternate solutions.  If
+they're not workable, discussion about the particulars of why not might be
+interesting and could generate some other ideas.
+
+Thanks,
+Jean-Paul
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20171228/f22a53b6/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="031767.html">[Twisted-Python] Unhandled exceptions and observability
+</A></li>
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64229">[ date ]</a>
+              <a href="thread.html#64229">[ thread ]</a>
+              <a href="subject.html#64229">[ subject ]</a>
+              <a href="author.html#64229">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

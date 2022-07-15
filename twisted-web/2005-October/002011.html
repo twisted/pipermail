@@ -1,0 +1,119 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] web2.client keep-alive problem
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20web2.client%20keep-alive%20problem&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002010.html">
+   <LINK REL="Next"  HREF="002012.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] web2.client keep-alive problem</H1>
+    <B>Scott Lamb</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20web2.client%20keep-alive%20problem&In-Reply-To="
+       TITLE="[Twisted-web] web2.client keep-alive problem">slamb at slamb.org
+       </A><BR>
+    <I>Fri Oct 21 22:51:53 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002010.html">[Twisted-web] Status of Livepage ?
+</A></li>
+        <LI>Next message: <A HREF="002012.html">[Twisted-web] web2.client keep-alive problem
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2011">[ date ]</a>
+              <a href="thread.html#2011">[ thread ]</a>
+              <a href="subject.html#2011">[ subject ]</a>
+              <a href="author.html#2011">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I've run into another problem in my application that uses the dreid/ 
+web2-client branch. This one I'm not sure how to solve, or even  
+kludge around for the moment.
+
+My application makes a bunch of HTTP requests in serial. It needs to  
+see the previous response to make the next request.
+
+When I handle a HTTP response, I originally wrote it like this  
+(simplified):
+
+     def _makeRequest(self, ...):
+         req = client.Request(...)
+         req.addCallback(self._handleResponse)
+
+     def _handleResponse(self, response):
+         stream.readStream(response.stream, self._handleResponseBody)
+
+     def _handleResponseBody(self, body):
+         self._makeRequest(...)
+
+This worked fine - proper HTTP Keep-Alives and whatnot - until I got  
+a large response back. Then I realized that stream.readStream gives  
+me chunks and I should instead be using this (if I want to handle the  
+whole response at once):
+
+     def _handleResponse(self, response):
+         self.body = ''
+         stream.readStream(response.stream, self._handleResponseChunk
+         ).addCallback(self._handleResponseBody)
+
+     def _handleResponseChunk(self, chunk):
+         self.body += chunk
+
+     def _handleResponseBody(self):
+         self._makeRequest(...)
+         self.body = None
+
+This works with the chunking, but I am now making an HTTP connection  
+for each request. HTTPClient._endResponse() calls  
+self.response.stream.finish() and then tears down the connection if  
+no request is pending. But stream.finish() doesn't call my deferred  
+right away; it happens later from the reactor. So though I want to  
+make another request, I haven't had my chance yet. My connection is  
+torn down, then I make a new one and do an expensive SSL handshake,  
+which is all wasted round trips, bandwidth, and CPU time.
+
+I can think of two ways to solve this:
+
+(1) make stream.ProducerStream.finish() call _handleResponseBody  
+right away. But there's a &quot;reactor.callLater(0, self._read)&quot; in  
+stream._StreamReader that looks to be there for a reason. I haven't  
+thought it through, but I suspect there are unsolvable recursion  
+problems with this approach.
+
+(2) make HTTPClient not check if the connection should be torn down  
+until after my deferred has had a chance to run. Would just a  
+&quot;reactor.callLater(0, self._endResponse2)&quot; be enough? Are callLaters  
+guaranteed to be run in order?
+
+-- 
+Scott Lamb &lt;<A HREF="http://www.slamb.org/">http://www.slamb.org/</A>&gt;
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002010.html">[Twisted-web] Status of Livepage ?
+</A></li>
+	<LI>Next message: <A HREF="002012.html">[Twisted-web] web2.client keep-alive problem
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2011">[ date ]</a>
+              <a href="thread.html#2011">[ thread ]</a>
+              <a href="subject.html#2011">[ subject ]</a>
+              <a href="author.html#2011">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

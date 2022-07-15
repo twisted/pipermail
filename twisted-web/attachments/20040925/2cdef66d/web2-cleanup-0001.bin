@@ -1,0 +1,316 @@
+﻿Index: responsecode.py
+===================================================================
+--- responsecode.py	(revision 11808)
++++ responsecode.py	(working copy)
+@@ -1,3 +1,6 @@
++# Copyright (c) 2001-2004 Twisted Matrix Laboratories.
++# See LICENSE for details.
++
+ CONTINUE                       = 100
+ SWITCHING                       = 101
+ 
+Index: error.py
+===================================================================
+--- error.py	(revision 11808)
++++ error.py	(working copy)
+@@ -3,58 +3,66 @@
+ # See LICENSE for details.
+ 
+ 
+-"""I am the Twisted.Web error resources and exceptions."""
++"""I am the twisted.web2 error resources and exceptions."""
+ 
+-#t.w imports
+-import resource
+ 
++from twisted.web2 import resource
+ from twisted.web2 import responsecode
+ 
++
+ class Error(Exception):
++    """A generic web related error.
++    
++    code: The response code to set when responding with the error
++    message: The message to use. If None, use the message appropriate for the
++        response code
++    response: The response body to write
++    """
+     def __init__(self, code, message = None, response = None):
+-        message = message or responsecode.RESPONSES.get(code)
+-        Exception.__init__(self, code, message, response)
+         self.status = code
+         self.response = response
++        Exception.__init__(self, code, message or responsecode.RESPONSES.get(code), response)
+     
+     def __str__(self):
+         return '%s %s' % (self[0], self[1])
+ 
++
+ class PageRedirect(Error):
+-    """A request that resulted in a responsecode.redirect """
+-    def __init__(self, code, message = None, response = None, location = None):
+-        message = message or ("%s to %s" % (responsecode.RESPONSES.get(code), location))
+-        Error.__init__(self, code, message, response)
++    """A request that resulted in a redirect """
++    def __init__(self, location, message=None, response=None):
++        Error.__init__(self, responsecode.FOUND,
++            message or ("%s to %s" % (responsecode.FOUND, location)), response)
+         self.location = location
+ 
+-class ErrorPage(resource.Resource):
++
++class ErrorPage(resource.LeafResource):
+     def __init__(self, status, brief, detail):
+-        resource.Resource.__init__(self)
+         self.code = status
+         self.brief = brief
+         self.detail = detail
+ 
+     def render(self, request):
+         request.setResponseCode(self.code)
+-        return ("""<html>
+-        <head><title>%s - %s</title></head>
+-        <body><h1>%s</h1>
+-            <p>%s</p>
+-        </body></html>\n\n""" %
+-                (self.code, self.brief, self.brief, self.detail))
++        return """<html>
++    <head>
++        <title>%s - %s</title>
++    </head>
++    <body>
++        <h1>%s</h1>
++        <p>%s</p>
++    </body>
++</html>
++""" % (self.code, self.brief, self.brief, self.detail)
+ 
+-    def getChild(self, chnam, request):
+-        return self
+ 
+-
+ class NoResource(ErrorPage):
+     def __init__(self, message="Sorry. No luck finding that resource."):
+         ErrorPage.__init__(self, responsecode.NOT_FOUND,
+-                           "No Such Resource",
+-                           message)
++            "No Such Resource", message)
+ 
++
+ class ForbiddenResource(ErrorPage):
+     def __init__(self, message="Sorry, resource is forbidden."):
+         ErrorPage.__init__(self, responsecode.FORBIDDEN,
+-                           "Forbidden Resource",
+-                           message)
++            "Forbidden Resource", message)
++
+Index: script.py
+===================================================================
+--- script.py	(revision 11808)
++++ script.py	(working copy)
+@@ -1,4 +1,3 @@
+-
+ # Copyright (c) 2001-2004 Twisted Matrix Laboratories.
+ # See LICENSE for details.
+ 
+Index: server.py
+===================================================================
+--- server.py	(revision 11808)
++++ server.py	(working copy)
+@@ -9,19 +9,14 @@
+ """
+ 
+ # System Imports
+-
+ try:
+     import cStringIO as StringIO
+ except ImportError:
+     import StringIO
+ 
+-import operator
+-import cgi
+-import copy
+-import time
+-import os
++import operator, cgi, time, urlparse
++
+ from urllib import quote
+-import urlparse
+ try:
+     from twisted.protocols._c_urlarg import unquote
+ except ImportError:
+@@ -33,17 +28,9 @@
+ from twisted import copyright
+ 
+ # Sibling Imports
+-import resource
+-import http
+-import iweb
+-import responsecode
+-from twisted.web2 import http_headers
++from twisted.web2 import resource, http, iweb, responsecode, http_headers
+ 
+ 
+-# Support for other methods may be implemented on a per-resource basis.
+-supportedMethods = ('GET', 'HEAD', 'POST')
+-
+-
+ class UnsupportedMethod(Exception):
+     """Raised by a resource when faced with a strange request method.
+ 
+@@ -63,7 +50,7 @@
+ 
+     def __init__(self, allowedMethods, *args):
+         if not operator.isSequenceType(allowedMethods):
+-            s = ("First argument must be a sequence of supported methodds, "
++            s = ("First argument must be a sequence of supported methods, "
+                  "but my first argument is not a sequence.")
+             raise TypeError, s
+         Exception.__init__(self, allowedMethods, *args)
+@@ -289,7 +276,7 @@
+         request.site = self
+         # Sitepath is used to determine cookie names between distributed
+         # servers and disconnected sites.
+-        request.sitepath = copy.copy(request.prepath)
++        request.sitepath = request.prepath[:]
+         if not request.postpath:
+             return defer.succeed(iweb.IResource(self.resource))
+         print self.resource.__class__
+Index: resource.py
+===================================================================
+--- resource.py	(revision 11808)
++++ resource.py	(working copy)
+@@ -4,67 +4,49 @@
+ # See LICENSE for details.
+ 
+ 
+-"""I hold the lowest-level Resource class."""
++"""I hold the lowest-level Resource class.
++"""
+ 
+-
+-# System Imports
+-from twisted.internet import defer
+-from twisted.python import roots, components, reflect
+ from zope.interface import implements
+ 
+-from twisted.web2 import iweb,http
+-from twisted.web2.iweb import IResource
++from twisted.web2 import iweb, http
+ 
+-class Resource:
++
++class Resource(object):
+     """I define a web-accessible resource.
+ 
+     I serve 2 main purposes; one is to provide a standard representation for
+     what HTTP specification calls an 'entity', and the other is to provide an
+     abstract directory structure for URL retrieval.
+     """
+-
+     implements(iweb.IResource)
+-    
+-    server = None
+ 
+-    def __init__(self):
+-        """Initialize.
+-        """
+-        self.children = {}
+-
+-    # Concrete HTTP interface
+-
+     def locateChild(self, request, segments):
+-        r = self.children.get(segments[0], None)
++        """Return a tuple of (child, segments) representing the Resource
++        below this after consuming the segments which are not returned.
++        """
++        w = getattr(self, 'child_%s' % (segments[0], ), None)
+         
+-        if r:
+-            return r, segments[1:]
+-
+-        w = getattr(self, 'child_%s'%segments[0], None)
+-        
+         if w:
+-            if components.implements(w, iweb.IResource):
++            r = iweb.IResource(w, None)
++            if r:
+                 return w, segments[1:]
+             return w(request), segments[1:]
+ 
+-        r = self.getDynamicChild(segments[0], request)
+-        if r:
+-            return r, segments[1:]
++        factory = getattr(self, 'childFactory', None)
++        if factory is not None:
++            r = factory(request, segments[0])
++            if r:
++                return r, segments[1:]
+      
+-        return error.NoResource(message = segments), []
++        from twisted.web2 import error
++        return error.NoResource(message = segments), ()
+ 
+-    def getDynamicChild(self, path, request):
+-        return None
+-
+     def child_(self, request):
++        """I'm how requests for '' (urls ending in /) get handled :)
+         """
+-            I'm how requests for '' get handled :)
+-        """
+         return self
+ 
+-    def renderError(self, request):
+-        return None
+-        
+     def putChild(self, path, child):
+         """Register a static child.
+ 
+@@ -72,8 +54,7 @@
+         intended to have the root of a folder, e.g. /foo/, you want
+         path to be ''.
+         """
+-        self.children[path] = child
+-        child.server = self.server
++        setattr(self, 'child_%s' % (path, ), child)
+ 
+     def render(self, request):
+         """Render a given resource. See L{IResource}'s render method.
+@@ -99,16 +80,18 @@
+             raise UnsupportedMethod(getattr(self, 'allowedMethods', ()))
+         return m(request)
+ 
+-    def render_HEAD(self, request):
+-        """Default handling of HEAD method.
+-        
+-        I just return self.render_GET(request). When method is HEAD,
+-        the framework will handle this correctly.
+-        """
+-        return self.render_GET(request)
+-components.backwardsCompatImplements(Resource)
++    render_HEAD = property(lambda self: getattr(self, 'render_GET', None), doc="""\
++By default render_HEAD just renders the whole body (by calling render_GET),
++calculates the body size, and eats the body (does not send it to the client).
+ 
++Override this if you want to handle it differently.
++""")
++
++
+ class LeafResource(Resource):
++    """I am a resource which consumes all URL segments below me.
++    The consumed URL segments will be saved as self.postpath.
++    """
+     implements(iweb.IResource)
+ 
+     def __init__(self):
+@@ -118,9 +101,3 @@
+         self.postpath = list(segments)
+         return self, ()
+ 
+-components.backwardsCompatImplements(LeafResource)
+-#t.w imports
+-#This is ugly, I know, but since error.py directly access resource.Resource
+-#during import-time (it subclasses it), the Resource class must be defined
+-#by the time error is imported.
+-import error

@@ -1,0 +1,150 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] reactor.stop() won't, threads and Queue to blame?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20reactor.stop%28%29%20won%27t%2C%20threads%20and%20Queue%20to%20blame%3F&In-Reply-To=1098725522.17420.12.camel%40localhost">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="008905.html">
+   <LINK REL="Next"  HREF="008906.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] reactor.stop() won't, threads and Queue to blame?</H1>
+    <B>Brett Viren</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20reactor.stop%28%29%20won%27t%2C%20threads%20and%20Queue%20to%20blame%3F&In-Reply-To=1098725522.17420.12.camel%40localhost"
+       TITLE="[Twisted-Python] reactor.stop() won't, threads and Queue to blame?">bv at bnl.gov
+       </A><BR>
+    <I>Mon Oct 25 14:56:02 EDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="008905.html">[Twisted-Python] reactor.stop() won't, threads and Queue to blame?
+</A></li>
+        <LI>Next message: <A HREF="008906.html">[Twisted-Python] reactor.stop() won't, threads and Queue to blame?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8907">[ date ]</a>
+              <a href="thread.html#8907">[ thread ]</a>
+              <a href="subject.html#8907">[ subject ]</a>
+              <a href="author.html#8907">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Glyph Lefkowitz &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at divmod.com</A>&gt; writes:
+
+&gt;<i> On Mon, 2004-10-25 at 12:41 -0400, Brett Viren wrote:
+</I>&gt;<i>
+</I>&gt;&gt;<i> In this case the Deferred is used as a return value for Twisted's
+</I>&gt;&gt;<i> XML-RPC server implementation.  I go to this trouble of a CommandQueue
+</I>&gt;&gt;<i> because my system blurs the distinction between server and client and
+</I>&gt;&gt;<i> this was leading to deadlocks.  This CommandQueue should make sure
+</I>&gt;&gt;<i> that all the troublesome communications are atomic.
+</I>&gt;<i>
+</I>&gt;<i> Doing things in threads almost always makes things *less* atomic than
+</I>&gt;<i> just leaving them all in the main reactor thread.  Even if I'm totally
+</I>&gt;<i> mistaken, I feel like I have to ask a few questions to make sure that
+</I>&gt;<i> newbies don't stumble across this thread in the future and think they
+</I>&gt;<i> need to start managing their own threadpools so Twisted won't
+</I>&gt;<i> deadlock ;)
+</I>&gt;<i>
+</I>&gt;<i> When you say you're &quot;blurring the distinction between server and
+</I>&gt;<i> client&quot;, do you mean you're implementing something like an XMLRPC proxy,
+</I>&gt;<i> where the server is itself a client, relaying requests elswhere and
+</I>&gt;<i> waiting for their results?  Or something else?
+</I>
+It is basically as you describe but with some additions.  The primary
+aim is to marshal data from an XML-RPC client to a server using a
+custom protocol while providing status information as well as control.
+
+      XML-RPC       Custom
+data   ----&gt;  proxy ---&gt; data
+source &lt;----  proxy      sink
+               ^  |
+              /|\ |
+               |  |  XML-RPC
+               | \|/
+               |  V
+               GUI
+          Monitor/Control
+                 
+
+The data source listens (is a server) for data requests which include
+a callback URL.  After that, it sends data to (is a client for) the
+proxy which forwards the data to the data sink and sends a
+confirmation to the GUI monitor.  The proxy also sends heartbeats
+fired via reactor.callLater to the GUI.
+
+&gt;<i> Were you running requests in threads before you came up with the
+</I>&gt;<i> CommandQueue abstraction?  If not, what caused the deadlocks?  How was
+</I>&gt;<i> the client/server blurring related to the deadlocks?
+</I>
+Yes.  In the proxy, I handle the XML-RPC requests from the data source
+and the GUI via this class:
+
+class Spawner(threading.Thread):
+    '''Call callable in its own thread, return value is sent into the
+    Spawner.deferred.callback()'''
+
+    def __init__(self,callable,errable=None,**kwds):
+        threading.Thread.__init__(self,**kwds);
+        self.callable = callable
+        if errable is None:
+            errable = self.chirp
+        self.deferred = defer.Deferred()
+        self.deferred.addErrback(errable)
+        self.setDaemon(1)
+        self.start()
+        return
+
+    def chirp(self,*args):
+	print str(args)
+        log.error(str(args))
+        return args
+
+    def run(self):
+        self.deferred.callback(self.callable())
+
+This runs the request in a thread an returns the value via a deferred
+(which is used as the return value for the XML-RPC method).
+
+&gt;<i> Finally, did you consider an approach where, rather than queueing
+</I>&gt;<i> commands, you just executed them synchronously and let the reactor
+</I>&gt;<i> serialize them?  If so, what lead to the decision to change to a
+</I>&gt;<i> thread-based approach?
+</I>
+The basic data proxying must not be interupted.  Some of the control
+requests sent from the GUI can take more than the period between data
+updates and thus block that proxying.
+
+
+It's possible I'm doing something stupid in this design.  Please let
+me know if you have improvements.
+
+Thanks,
+-Brett.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="008905.html">[Twisted-Python] reactor.stop() won't, threads and Queue to blame?
+</A></li>
+	<LI>Next message: <A HREF="008906.html">[Twisted-Python] reactor.stop() won't, threads and Queue to blame?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8907">[ date ]</a>
+              <a href="thread.html#8907">[ thread ]</a>
+              <a href="subject.html#8907">[ subject ]</a>
+              <a href="author.html#8907">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

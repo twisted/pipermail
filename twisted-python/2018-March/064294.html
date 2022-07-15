@@ -1,0 +1,238 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Waiting for a contended resource
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Waiting%20for%20a%20contended%20resource&In-Reply-To=%3CCAEeXt4PvzBp0%2BQnGZhgx1Vo%2BGvieLYpCxDaHOcDW%3DnEpQKE6ew%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="064293.html">
+   <LINK REL="Next"  HREF="064295.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Waiting for a contended resource</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Waiting%20for%20a%20contended%20resource&In-Reply-To=%3CCAEeXt4PvzBp0%2BQnGZhgx1Vo%2BGvieLYpCxDaHOcDW%3DnEpQKE6ew%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Waiting for a contended resource">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Mon Mar 12 14:00:08 MDT 2018</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="064293.html">[Twisted-Python] Waiting for a contended resource
+</A></li>
+        <LI>Next message (by thread): <A HREF="064295.html">[Twisted-Python] Waiting for a contended resource
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64294">[ date ]</a>
+              <a href="thread.html#64294">[ thread ]</a>
+              <a href="subject.html#64294">[ subject ]</a>
+              <a href="author.html#64294">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, Mar 12, 2018 at 3:52 PM, Ilya Skriblovsky &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ilyaskriblovsky at gmail.com</A>
+&gt;<i> wrote:
+</I>
+&gt;<i> Hi, Richard,
+</I>&gt;<i>
+</I>&gt;<i> I've used class like this to cache the result of Expensive Calculation:
+</I>&gt;<i>
+</I>&gt;<i> class DeferredCache:
+</I>&gt;<i>     pending = None
+</I>&gt;<i>     result = None
+</I>&gt;<i>     failure = None
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self, expensive_func):
+</I>&gt;<i>         self.expensive_func = expensive_func
+</I>&gt;<i>
+</I>&gt;<i>     def __call__(self):
+</I>&gt;<i>         if self.pending is None:
+</I>&gt;<i>             def on_ready(result):
+</I>&gt;<i>                 self.result = result
+</I>&gt;<i>             def on_fail(failure):
+</I>&gt;<i>                 self.failure = failure
+</I>&gt;<i>
+</I>&gt;<i>             self.pending = defer.maybeDeferred(self.
+</I>&gt;<i> expensive_func).addCallbacks(on_ready, on_fail)
+</I>&gt;<i>
+</I>&gt;<i>         return self.pending.addCallback(self._return_result)
+</I>&gt;<i>
+</I>&gt;<i>
+</I>This seems like basically a correct answer to me.  However, I suggest one
+small change.
+
+You probably want to create and return a new Deferred for each result.  If
+you don't, then your internal `pending` Deferred is now reachable by
+application code.
+
+As written, an application might (very, very reasonably):
+
+    d = getResource()
+    d.addCallback(long_async_operation)
+
+Now `pending` has `long_async_operation` as a callback on its chain.  This
+will prevent anyone else from getting a result until `long_async_operation`
+is done.
+
+You can fix this by:
+
+    result = Deferred()
+    self.pending.addCallback(self._return_result).chainDeferred(result)
+    return result
+
+Now the application can only reach `result`.  Nothing they do to `result`
+will make much difference to `pending` because `chainDeferred` only puts
+`callback` (and `errback`) onto `pending`'s callback chain.  `callback` and
+`errback` don't wait on anything.
+
+You have to be a little careful with `chainDeferred` because it doesn't
+have the recursion-avoidance logic that implicit chaining has.  However,
+that doesn't matter in this particular case because the chain depth is
+fixed at two (`pending` and `result`).  The problems only arise if you
+extend the chain out in this direction without bound.
+
+Jean-Paul
+
+
+
+&gt;<i>     def _return_result(self, _):
+</I>&gt;<i>         return self.failure or self.result
+</I>&gt;<i>
+</I>&gt;<i> Using it you can get rid of DeferredLocks:
+</I>&gt;<i>
+</I>&gt;<i>     deferred_cache = DeferredCache(do_expensive_calculation)
+</I>&gt;<i>
+</I>&gt;<i>     def getResource():
+</I>&gt;<i>         return deferred_cache()
+</I>&gt;<i>
+</I>&gt;<i> It will start `expensive_func` on the first call. The second and
+</I>&gt;<i> consequtive calls will return deferreds that resolves with the result when
+</I>&gt;<i> expensive_func is done. If you call it when result is already here, it will
+</I>&gt;<i> return alread-fired deferred.
+</I>&gt;<i>
+</I>&gt;<i> Of course, it will require some more work if you need to pass arguments to
+</I>&gt;<i> `expensive_func` and memoize results per arguments values.
+</I>&gt;<i>
+</I>&gt;<i> -- ilya
+</I>&gt;<i>
+</I>&gt;<i> пн, 12 мар. 2018 г. в 22:38, L. Daniel Burr &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ldanielburr at me.com</A>&gt;:
+</I>&gt;<i>
+</I>&gt;&gt;<i> Hi Richard,
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> On March 12, 2018 at 1:49:41 PM, Richard van der Hoff (<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">richard at matrix.org</A>)
+</I>&gt;&gt;<i> wrote:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Hi folks,
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> I thought I'd poll the list on the best way to approach a problem in
+</I>&gt;&gt;<i> Twisted.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> The background is that we have a number of resources which can be
+</I>&gt;&gt;<i> requested by a REST client, and which are calculated on demand. The
+</I>&gt;&gt;<i> calculation is moderately expensive (can take multiple seconds), so the
+</I>&gt;&gt;<i> results of the calculation are cached so multiple lookups of the same
+</I>&gt;&gt;<i> resource are more efficient.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> The problem comes in trying to handle multiple clients requesting the
+</I>&gt;&gt;<i> same resource at once. Obviously if 200 clients all request the same
+</I>&gt;&gt;<i> resource at the same time, we don't want to fire off 200 calculation
+</I>&gt;&gt;<i> requests.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> The approach we adopted was, effectively, to maintain a lock for each
+</I>&gt;&gt;<i> resource:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> &gt; lock = defer.DeferredLock()
+</I>&gt;&gt;<i> &gt; cached_result = None
+</I>&gt;&gt;<i> &gt;
+</I>&gt;&gt;<i> &gt; @defer.inlineCallbacks
+</I>&gt;&gt;<i> &gt; def getResource():
+</I>&gt;&gt;<i> &gt; yield lock.acquire()
+</I>&gt;&gt;<i> &gt; try:
+</I>&gt;&gt;<i> &gt; if cached_result is None:
+</I>&gt;&gt;<i> &gt; cached_result = yield do_expensive_calculation()
+</I>&gt;&gt;<i> &gt; defer.returnValue(cached_result)
+</I>&gt;&gt;<i> &gt; finally:
+</I>&gt;&gt;<i> &gt; lock.release()
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> (Of course one can optimise the above to avoid getting the lock if we
+</I>&gt;&gt;<i> already have the cached result - I've omitted that for simplicity.)
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> That's all very well, but it falls down when we get more than about 200
+</I>&gt;&gt;<i> requests for the same resource: once the calculation completes, we can
+</I>&gt;&gt;<i> suddenly serve all the requests, and the Deferreds returned by
+</I>&gt;&gt;<i> DeferredLock end up chaining together in a way that overflows the stack.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> I reported this as <A HREF="http://twistedmatrix.com/trac/ticket/9304">http://twistedmatrix.com/trac/ticket/9304</A> and, at the
+</I>&gt;&gt;<i> time, worked around it by adding a call to reactor.callLater(0) into our
+</I>&gt;&gt;<i> implementation. However, Jean-Paul's comments on that bug implied that
+</I>&gt;&gt;<i> we were approaching the problem in completely the wrong way, and instead
+</I>&gt;&gt;<i> we should be avoiding queuing up work like this in the first place.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> You mention using callLater to solve this problem, so I’m guessing that
+</I>&gt;&gt;<i> instead of using a lock you are re-scheduling the call to getResource if
+</I>&gt;&gt;<i> there is no cached_result value.  I’ve used this solution plenty of times
+</I>&gt;&gt;<i> across multiple projects, and have found it both simple and reliable.  Is
+</I>&gt;&gt;<i> there some reason why this solution is not desirable in your case?
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> It's worth reiterating that the requests arrive from REST clients which
+</I>&gt;&gt;<i> we have no direct control over. We *could* keep track of the number of
+</I>&gt;&gt;<i> waiting clients, and make the API respond with a 5xx error or similar if
+</I>&gt;&gt;<i> that number gets too high, with the expectation that the client retries
+</I>&gt;&gt;<i> - but one concern would be that the load from the additional HTTP
+</I>&gt;&gt;<i> traffic would outweigh any efficiency gained by not stacking up Deferreds.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Have you validated this concern through load-testing?  You may find that
+</I>&gt;&gt;<i> there is no meaningful negative impact to this approach.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> So, I'd welcome any advice on better ways to approach the problem.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Richard
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Hope this helps,
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> L. Daniel Burr
+</I>&gt;&gt;<i> _______________________________________________
+</I>&gt;&gt;<i> Twisted-Python mailing list
+</I>&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20180312/1cbdd763/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="064293.html">[Twisted-Python] Waiting for a contended resource
+</A></li>
+	<LI>Next message (by thread): <A HREF="064295.html">[Twisted-Python] Waiting for a contended resource
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64294">[ date ]</a>
+              <a href="thread.html#64294">[ thread ]</a>
+              <a href="subject.html#64294">[ subject ]</a>
+              <a href="author.html#64294">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

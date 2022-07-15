@@ -1,0 +1,169 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] xmlrpc doesn't catch XML parsing exceptions
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20xmlrpc%20doesn%27t%20catch%20XML%20parsing%20exceptions&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004362.html">
+   <LINK REL="Next"  HREF="004358.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] xmlrpc doesn't catch XML parsing exceptions</H1>
+    <B>Andrew Dalke</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20xmlrpc%20doesn%27t%20catch%20XML%20parsing%20exceptions&In-Reply-To="
+       TITLE="[Twisted-Python] xmlrpc doesn't catch XML parsing exceptions">dalke at dalkescientific.com
+       </A><BR>
+    <I>Tue Jun  3 01:05:27 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004362.html">[Twisted-Python] ReverseProxy performance??
+</A></li>
+        <LI>Next message: <A HREF="004358.html">[Twisted-Python] ReverseProxy doesn't send X-Forwarded-For header
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4357">[ date ]</a>
+              <a href="thread.html#4357">[ thread ]</a>
+              <a href="subject.html#4357">[ subject ]</a>
+              <a href="author.html#4357">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I used the Twisted code to connect to a URI which wasn't providing 
+XML-RPC
+services but is providing HTML.  The XML-RPC code tried to parse the
+HTML response, and failed.  It reported the failure correctly, but also
+spewed a traceback to stdout.  Here's what stdout looks like
+
+
+Traceback (most recent call last):
+   File &quot;E:\Python22\Lib\site-packages\twisted\internet\default.py&quot;, 
+line 473, in
+  doSelect
+     _logrun(selectable, _drdw, selectable, method, dict)
+   File &quot;E:\Python22\Lib\site-packages\twisted\python\log.py&quot;, line 64, 
+in callWi
+thLogger
+     callWithContext({&quot;system&quot;: lp}, func, *args, **kw)
+   File &quot;E:\Python22\Lib\site-packages\twisted\python\log.py&quot;, line 51, 
+in callWi
+thContext
+     return context.call({ILogContext: newCtx}, func, *args, **kw)
+   File &quot;E:\Python22\Lib\site-packages\twisted\python\context.py&quot;, line 
+32, in ca
+llWithContext
+     return func(*args,**kw)
+--- &lt;exception caught here&gt; ---
+   File &quot;E:\Python22\Lib\site-packages\twisted\internet\default.py&quot;, 
+line 482, in
+  _doReadOrWrite
+     why = getattr(selectable, method)()
+   File &quot;E:\Python22\Lib\site-packages\twisted\internet\tcp.py&quot;, line 
+219, in doR
+ead
+     return self.protocol.dataReceived(data)
+   File &quot;E:\Python22\Lib\site-packages\twisted\protocols\basic.py&quot;, line 
+179, in
+dataReceived
+     return self.rawDataReceived(data)
+   File &quot;E:\Python22\Lib\site-packages\twisted\protocols\http.py&quot;, line 
+341, in r
+awDataReceived
+     self.handleResponseEnd()
+   File &quot;E:\Python22\Lib\site-packages\twisted\protocols\http.py&quot;, line 
+323, in h
+andleResponseEnd
+     self.handleResponse(b)
+   File &quot;E:\Python22\Lib\site-packages\twisted\web\xmlrpc.py&quot;, line 174, 
+in handl
+eResponse
+     self.factory.parseResponse(contents)
+   File &quot;E:\Python22\Lib\site-packages\twisted\web\xmlrpc.py&quot;, line 199, 
+in parse
+Response
+     response = xmlrpclib.loads(contents)
+   File &quot;E:\Python22\lib\xmlrpclib.py&quot;, line 804, in loads
+     p.feed(data)
+   File &quot;E:\Python22\lib\xmlrpclib.py&quot;, line 390, in feed
+     self._parser.Parse(data, 0)
+xml.parsers.expat.ExpatError: mismatched tag: line 10, column
+
+The reason is twisted.web.xmlrpc, which has
+
+     def parseResponse(self, contents):
+         if not self.deferred:
+             return
+         try:
+             response = xmlrpclib.loads(contents)
+         except xmlrpclib.Fault, error:
+             self.deferred.errback(error)
+             self.deferred = None
+         else:
+             self.deferred.callback(response[0][0])
+             self.deferred = None
+
+There's nothing which handles an XML parsing error.
+
+I don't know who to blame here.  I would like a
+
+         except &quot;XML parsing error&quot;, error:
+
+here as well, but there's no way to spell that.  The xmlrpclib code 
+chooses
+the fastest parser available, and the different parsers could throw 
+different
+exceptions.  Eg, the Expat parser throws an ExpatError, which is derived
+directly from Exception, and shares no other base class with
+
+The best I can think of now is to catch anything which isn't a &quot;normal&quot;
+Python exception, that is
+
+         except (StandardError, SystemExit, StopIteration):
+             raise
+         except (xmlrpclib.Fault, Exception), error:
+             self.deferred.errback(error)
+
+(could also use a bare except, but I think that's overkill for this 
+case.)
+Even that's not perfect.  xmllib.Error is derived from RuntimeError(!).
+OTOH, that module is deprecated ....
+
+Oh! Since Fault is derived from exception, could just catch Exception
+instead of the 2-ple I have there.
+
+Let me point out that Twisted did a good job of catching the error at a 
+higher
+level and correctly sending it to my handler, so even if this had 
+occurred in
+production code the app would have kept working as expected.  This is 
+good.
+
+					Andrew
+					<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">dalke at dalkescientific.com</A>
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004362.html">[Twisted-Python] ReverseProxy performance??
+</A></li>
+	<LI>Next message: <A HREF="004358.html">[Twisted-Python] ReverseProxy doesn't send X-Forwarded-For header
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4357">[ date ]</a>
+              <a href="thread.html#4357">[ thread ]</a>
+              <a href="subject.html#4357">[ subject ]</a>
+              <a href="author.html#4357">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

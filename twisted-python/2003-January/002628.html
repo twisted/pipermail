@@ -1,0 +1,184 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Large project (IMS) architecture
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Large%20project%20%28IMS%29%20architecture&In-Reply-To=200301161803.11651.pobrien%40orbtech.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002624.html">
+   <LINK REL="Next"  HREF="002630.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Large project (IMS) architecture</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Large%20project%20%28IMS%29%20architecture&In-Reply-To=200301161803.11651.pobrien%40orbtech.com"
+       TITLE="[Twisted-Python] Large project (IMS) architecture">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Fri Jan 17 04:01:09 EST 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002624.html">[Twisted-Python] Large project (IMS) architecture
+</A></li>
+        <LI>Next message: <A HREF="002630.html">[Twisted-Python] Large project (IMS) architecture
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2628">[ date ]</a>
+              <a href="thread.html#2628">[ thread ]</a>
+              <a href="subject.html#2628">[ subject ]</a>
+              <a href="author.html#2628">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Thu, 16 Jan 2003 18:03:11 -0600, &quot;Patrick K. O'Brien&quot; &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">pobrien at orbtech.com</A>&gt; wrote:
+&gt;<i> I just updated from CVS and read doc/howto/pb-copyable.html. Wow! That is 
+</I>&gt;<i> very cool stuff. I'm convinced that Twisted is the way to go.
+</I>
+Okay, since this has been gnawing on my conscience every time somebody
+mentioned PB in the last month, let me try to at least state this publicly once
+for the record :-)
+
+There is still one protocol-breaking change that I think we will be making to
+PB.  The details are still a little hazy, but I am pretty sure that we can get
+an order of magnitude performance increase (with no appreciable increase in
+memory usage) by memoizing every object created from a Banana'd list rather
+than creating explicit (reference 1 (foo ...)) expressions.
+
+I find it hard to summarize what I mean by this, but for those of you familiar
+with Jelly's implementation details, here's an attempt.
+
+Currently, whenever an object is serialized, if it points to itself, it must be
+&quot;memo-ized&quot; in order to give it a unique ID for the future.  This is best shown
+with an example:
+
+    &gt;&gt;&gt; from twisted.spread.jelly import jelly
+    &gt;&gt;&gt; l = ['hello']
+    &gt;&gt;&gt; l.append(l)
+    &gt;&gt;&gt; jelly(l)
+    ['reference', 1, ['list', 'hello', ['dereference', 1]]]
+
+I believe that the technique we have been using to identify objects that
+participate in circular references is slow and unnecessary.  Each object
+corresponds to a Jelly expression (Python list) whose start has some position
+in the banana stream relative to every other list start.  So in this example,
+the resulting list could be:
+
+    ['list', 'hello', ['dereference', 1]]
+
+and the decoder could still quite easily recognize what the ['dereference', 1]
+was pointing to because the list is the first in the stream.  For a more
+complex example, this is what currently happens.
+
+    &gt;&gt;&gt; from twisted.spread.jelly import jelly
+    &gt;&gt;&gt; m = ['one']
+    &gt;&gt;&gt; m.append(m)
+    &gt;&gt;&gt; n = ['two']
+    &gt;&gt;&gt; n.append(n)
+    &gt;&gt;&gt; l = [n, m]
+    &gt;&gt;&gt; l = [m, n]
+    &gt;&gt;&gt; jelly(l)
+    ['list', ['reference', 1, ['list', 'one', ['dereference', 1]]],
+    ['reference', 2, ['list', 'two', ['dereference', 2]]]]
+
+I'd prefer that produce this instead:
+
+    ['list', ['list', 'one', ['dereference', 2]], ['list', 'two', ['dereference', 4]]]
+
+To see why the numbers &quot;2&quot; and &quot;4&quot; make sense, count left brackets :).
+
+This is technically a change to Jelly, not to PB, but it has ramifications on
+the wire protocol.  In the process of doing this, I plan to add a
+version-negotiation step to PB, similar to what currently exists for Jelly, so
+that any potential future changes of this variety do not cause similar
+problems.
+
+What this MAY break:
+
+  * Version Compatibility.
+  
+  If you have a running PB server, older versions of PB clients will no longer
+  be able to connect.  This may be correctable but is probably not worth the
+  effort, given the dearth of deployed PB services, and the fact that the
+  primary incompatibility will be improved version negotiation so that this
+  won't happen again :).
+  
+  * Things that use jellyFor directly
+  
+  The internal Jellier APIs may change in subtly incompatible ways.  Basic
+  usage of jellyFor will probably still continue to work.
+  
+  * Alternate language implementations of PB
+  
+  These will need to be updated.  Emacs-PB looks to be in a non-working state
+  already :-\ though I've already talked to Itamar about making similar changes
+  to Java-PB, and they shouldn't be too hard.  It already reflects the Python
+  code.
+
+  * Applications using Jelly directly
+
+  If you are using Jelly to store data in files or something like that, this
+  will cause your new versions to be incompatible.  If there are really people
+  doing this then perhaps we need version information for these files as well.
+  
+What this WILL NOT break:
+
+  * Applications using PB at the high level
+  
+  If you have an app that just has objects which are Referenceable, Cacheable
+  and so on, the existing semantics will continue to work, and if you upgrade
+  Twisted on both server and client, both will continue to work with each other
+  as they did before.
+
+  * Applications using Banana directly
+
+  This will have no impact on the Banana APIs or protocol and those look stable
+  for the forseeable future.
+
+Please keep in mind that nobody is working on this yet :-).  It may be that it
+will not break any of the things above, but it will certainly not break the
+last two.
+
+There are other infrastructural changes to PB that I'd like to see (for
+example, making the internal dictionaries use weakrefs rather than __del__) but
+those should be completely transparent to end-users.
+
+I believe this will also make the unified banana+jelly streaming optimization
+(that Bruce has mentioned on IRC a few times) possible, but I'll have to leave
+that to him when I've actually got some code/specs to describe this more
+clearly.
+
+-- 
+ |    &lt;`'&gt;    |  Glyph Lefkowitz: Travelling Sorcerer  |
+ |   &lt; _/ &gt;   |  Lead Developer,  the Twisted project  |
+ |  &lt; ___/ &gt;  |      <A HREF="http://www.twistedmatrix.com">http://www.twistedmatrix.com</A>      |
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: not available
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20030117/75013062/attachment.pgp">http://twistedmatrix.com/pipermail/twisted-python/attachments/20030117/75013062/attachment.pgp</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002624.html">[Twisted-Python] Large project (IMS) architecture
+</A></li>
+	<LI>Next message: <A HREF="002630.html">[Twisted-Python] Large project (IMS) architecture
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2628">[ date ]</a>
+              <a href="thread.html#2628">[ thread ]</a>
+              <a href="subject.html#2628">[ subject ]</a>
+              <a href="author.html#2628">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

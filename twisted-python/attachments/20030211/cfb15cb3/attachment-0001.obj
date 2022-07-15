@@ -1,0 +1,166 @@
+from __future__ import generators
+
+import time, urlparse, socket, sys
+
+from twisted.internet import defer, protocol, error
+from twisted.python import failure, reflect
+from twisted.web import microdom
+from twisted.web.client import getPage
+try:
+    from intellishelf import flow
+except:
+    import flow
+import twisted.web.client
+twisted.web.client.HTTPClientFactory.noisy = None
+
+from twisted.internet import reactor
+
+RECURSION, TIMEOUT = 2, 30.0
+
+# this should so go into twisted somewhere
+def splitURL(url):
+    u = urlparse.urlparse(url)
+    pos = u[1].find(':')
+    if pos == -1:
+        host, port = u[1], 80
+    else:
+        host, port = u[1][:pos], int(u[1][pos+1:])
+    if u[2] == '':
+        file = '/'
+    else:
+        file = u[2]
+    return host, port, file
+        
+def urlstr(host, port, file):
+    if port != 80:
+        port = ':%d' % port
+    else:
+        port = ''
+    return '%s%s%s' % (host, port, file)
+
+def resolveURL(url):
+    lst = []
+    for piece in url.split('#')[0].split('/'):
+        if piece == '..':
+            lst.pop()
+        if piece.endswith('..'):
+            pass
+        else:
+            lst.append(piece)
+    url = '/'.join(lst)
+    if url.endswith('//'):
+        return url[:-1]
+    return url
+
+class ComplicatedWebExample:
+    def __init__(self, url, recursion = 4, timeout = TIMEOUT, maxmicrothreads=32):
+        hpf = splitURL(url)
+        self.links = {hpf:hpf}
+        self.failedLinks = {}
+        self.baseurl = 'http://%s:%s%s' % hpf
+        self.baserecursion = recursion
+        self.basetimeout = timeout
+        self.maxmicrothreads = maxmicrothreads
+        self.curmicrothreads = 0
+
+    def start(self):
+        return self.linkFarmerResult(self.baseurl, self.baserecursion, self.basetimeout)
+        
+    def webFetchMicrodom(self, url, timeout=TIMEOUT):
+        d = getPage(url)
+        result = flow.GetDeferredResult(d)
+        yield result
+        if result.isFailure():
+            yield flow.FinalError(result.get())
+            return
+        yield flow.FinalResult(microdom.parseString(result.get()))
+    webFetchMicrodom = flow.deferredflow(webFetchMicrodom)
+
+    def linkFarmerResult(self, url, recursion=RECURSION, timeout=TIMEOUT):
+        backoff = 0.25
+        while self.curmicrothreads >= self.maxmicrothreads:
+            sys.stdout.write('_'); sys.stdout.flush()
+            yield flow.Sleep(backoff)
+            backoff *= 2
+            backoff = min(backoff, timeout)
+        # non-threadsafe programming is so easy!
+        self.curmicrothreads += 1
+        rval = flow.GetDeferredResult(self.webFetchMicrodom(url, timeout))
+        yield rval
+        sys.stdout.write('.'); sys.stdout.flush()
+        self.curmicrothreads -= 1
+        if rval.isFailure():
+            yield flow.FinalError(rval.get())
+            return
+        rval = rval.get()
+        self.links[splitURL(url)] = 1
+        recursion -= 1
+        microthread_refs = {}
+        if recursion <= 0:
+            return
+        for l in rval.getElementsByTagName('a'):
+            try:
+                href = l.getAttributeNode('href').value
+                if not href or href.startswith('https://'):
+                    continue
+            except:
+                continue
+            if not href.startswith('http://'):
+                href = url + href
+            href = resolveURL(href)
+            hpf = splitURL(href)
+            if hpf in self.links:
+                continue
+            if recursion <= 0:
+                continue
+            yield flow.Sleep(1.0)
+            microthread_refs[self.linkFarmerResult(href, recursion, timeout)] = splitURL(href)
+        resultSink = flow.GetMultipleDeferredResults(microthread_refs.keys())
+        # wait for the "microthreads" to finish
+        while not resultSink.empty():
+            yield resultSink
+            d, result = resultSink.get()
+            if flow.isFailure(result):
+                self.failedLinks[microthread_refs[d]] = result
+    linkFarmerResult = flow.deferredflow(linkFarmerResult)
+
+if __name__ == '__main__':
+    import sys
+    from twisted.python import log
+    import twisted.internet.protocol
+    twisted.internet.protocol._InstanceFactory.noisy = None
+
+    log.startLogging(sys.stdout)
+    
+    url, recursion, timeout = 'http://www.twistedmatrix.com/', RECURSION, TIMEOUT
+    if len(sys.argv) > 1:
+        url = sys.argv[1]
+    if len(sys.argv) > 2:
+        recursion = int(sys.argv[2])
+    if len(sys.argv) > 3:
+        timeout = float(sys.argv[3])
+
+    """Note that because the microthreads all happen at the same time, a recursion of
+    more than 2 or so is probably going to make you run out of file descriptors...
+    """
+
+    print "Fetching all links from %s at a recursion depth of %d (timeout = %.2fs)..." % (url, recursion, timeout)
+
+    example = ComplicatedWebExample(url, recursion=2)
+    def finish(res):
+        if flow.isFailure(res):
+            res.printTraceback()
+        reactor.stop()
+    example.linkFarmerResult(url, recursion, timeout).addBoth(finish)
+
+    reactor.run()
+
+    print "\nI saw these URLs, and they're XHTML compliant"
+    print '-' * 20
+    print '\n'.join([urlstr(*url) for url in example.links.keys()])
+    print '\nThese URLs timed out'
+    print '-' * 20
+    print '\n'.join([urlstr(*url) for url, f in example.failedLinks.items() if flow.isKindOfFailure(f, defer.TimeoutError)])
+    print "\nThese URLs probably weren't XHTML compliant"
+    print '-' * 20
+    print '\n'.join([urlstr(*url) + '\n    ' + reflect.qual(f.type) + ':\n        ' + f.getErrorMessage() for url, f in example.failedLinks.items() if not flow.isKindOfFailure(f, defer.TimeoutError)])

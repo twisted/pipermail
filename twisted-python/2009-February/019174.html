@@ -1,0 +1,428 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Slow Performance of Twisted Script
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Slow%20Performance%20of%20Twisted%20Script&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="019175.html">
+   <LINK REL="Next"  HREF="019176.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Slow Performance of Twisted Script</H1>
+    <B>Thomas Greenwood</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Slow%20Performance%20of%20Twisted%20Script&In-Reply-To="
+       TITLE="[Twisted-Python] Slow Performance of Twisted Script">tg.mufcnotforsale at gmail.com
+       </A><BR>
+    <I>Fri Feb 13 09:58:52 EST 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="019175.html">[Twisted-Python] half-closing SSL connection,	unexpected connectionLost() error
+</A></li>
+        <LI>Next message: <A HREF="019176.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19174">[ date ]</a>
+              <a href="thread.html#19174">[ thread ]</a>
+              <a href="subject.html#19174">[ subject ]</a>
+              <a href="author.html#19174">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi everyone,
+
+I have been developing my first python script and jumped straight into the
+world of twisted. I like the concept but I seem to be doing something very
+wrong. The script takes an NZB file and parses it (using HellaNZB's parser)
+and then makes a specified number of connections to the news server and
+checks that all articles are there using the STAT command. I also know
+nothing about newsservers or nntp so this script is a complete shot in the
+dark. First time with python, first time with twisted and first time with
+nntp seems to equal disaster!
+
+The problem is that the script is very slow, even with 20 simultaneous
+connections to the internet I only produce 111k or so of traffic and only
+achieve 2 article checks per connection per second. On a 24meg connection I
+can download the whole thing quicker than checking it with my script! Any
+ideas why it is so slow?
+
+I have attached the script.
+
+Thanks for any help.
+
+Tom Greenwood
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20090213/d5c5fac5/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20090213/d5c5fac5/attachment.htm</A> 
+-------------- next part --------------
+#!/usr/bin/python
+from twisted.internet import reactor    
+from twisted.internet import protocol
+from NZBHellaParser import NZBParser,  parseNZB
+from twisted.news.nntp import NNTPClient
+import sys,traceback,time
+
+results = None
+allClients = None
+
+class NNTPStatCheck(NNTPClient):
+    &quot;Class to check if the server has all the articles required using as little bandwidth as possible.&quot;
+    nextMessageID = None
+    def __init__(self, _username, _password,  _newsgroup):
+        NNTPClient.__init__(self)
+        self.username = _username
+        self.password = _password
+        self.newsgroup = _newsgroup
+        self.nextMessageID = 0
+        self.currMessageID = None
+        #self.lastTime = 0
+        
+    def getStat(self):
+        #print &quot;Stating for &quot; + self.currMessageID
+        #self.startTime = time.time()
+        self.sendLine('STAT &lt;%s&gt;' % (self.currMessageID, ))
+        self._newState(None, self.getStatFailed, self._stateStat)
+        
+    def connectionLost(self, error):
+        NNTPClient.connectionLost(self)
+        if self.nextMessageID &gt;= len(results):
+            self.factory.readyToStop = True;
+            for client in allClients:
+                if client.readyToStop == False:
+                    return
+            reactor.stop()
+        else:
+            print &quot;Unexpected Connection Loss, Should we try again?? &quot; + str(self.nextMessageID) + &quot;/&quot; + str(len(results))
+                 
+    def connectionMade(self):
+        NNTPClient.connectionMade(self)
+        print 'Connection made, logging in..'
+        self.authInfo()
+    
+    def gotGroup(self, group):
+        #print &quot;GOT GROUP &quot;  + str(group) + &quot;\n&quot;
+        self.statNext()
+        
+    def gotStat(self, stat):
+        #print &quot;GOT STAT %s\n&quot; % str(stat)
+        results[self.currMessageID][self.newsgroup] = True
+        #FIXME: Don't need to check the rest of the groups if we have it
+        
+    def _stateStat(self, (code, message)):
+        #print str(allClients.index(self.factory)) + &quot; &quot; + str(time.time() - self.startTime) + &quot; &quot; + str(time.time() - self.lastTime)
+        #self.lastTime = time.time()
+        if code == 223:
+            self.gotStat((code, message))
+            self._endState()
+            self.tryNext()
+        else:
+            self.getStatFailed(&quot;%s %s&quot; % (str(code) , str(message)))
+            
+    def statNext(self):
+        if self.nextMessageID &lt; len(results):
+            self.currMessageID = results.keys()[self.nextMessageID]
+            self.nextMessageID = (self.nextMessageID + 1)
+            if results[self.currMessageID] [self.newsgroup] is None:
+                self.getStat()
+	    else:
+                self.nextMessageID = (self.nextMessageID + 1)
+                self.statNext()
+        else:
+	    # FIXME: Should now be fixed but sometimes the client got into an unknown state
+            print &quot;Finished, disconnecting from server.&quot;
+            self.quit()
+            
+    def tryNext(self):
+        if self.nextMessageID &lt; len(results):
+            self.fetchGroup(self.newsgroup)
+        else:
+            print &quot;Finished, disconnecting from server.&quot;
+            self.quit()
+                
+    def getStatFailed(self, error):
+        print str(time.time() - self.startTime)
+        try:
+            (code, message) = error.split(&quot; &quot;, 1)
+        except AttributeError:
+            print 'Unknown reply structure: %s\n' % str(error)
+        if code == &quot;430&quot;:
+             self.messageDoesNotExist(error)
+        else:
+            print 'Error occured after stat: %s\n' % str(error)
+        results[self.currMessageID][self.newsgroup] = False
+        self.tryNext()
+        
+    def messageDoesNotExist(self, error):
+        print 'Message ' + self.currMessageID + ' does not exist in group ' + self.newsgroup + '\n'
+    
+    def authInfo(self):
+        self.sendLine('AUTHINFO USER ' + self.username)
+        self._newState(None, self.authInfoFailed, self._authInfoUserResponse)
+
+    def _authInfoUserResponse(self, (code, message)):
+        if code == 381:
+            self.sendLine('AUTHINFO PASS ' + self.password)
+            self._newState(None, self.authInfoFailed, self._authInfoPassResponse)
+        else:
+            self.authInfoFailed('%d %s' % (code, message))
+        self._endState()
+
+    def _authInfoPassResponse(self, (code, message)):
+        if code == 281:
+            self.gotauthInfoOk('%d %s' % (code, message))
+        else:
+            self.authInfoFailed('%d %s' % (code, message))
+        self._endState()
+
+    def gotauthInfoOk(self, message):
+        print 'Logged in, starting stat checks..'
+        self.fetchGroup(self.newsgroup)
+
+    def authInfoFailed(self, error):
+        # FIXME: We use reactor.stop so we dont try and auth incorrectly for ever
+        print 'Error occured whilst attempting auth: %s\n' % error
+        reactor.stop()
+
+        
+class NNTPVerifyFactory(protocol.ClientFactory):
+    readyToStop = False
+    
+    def __init__(self, _username, _password, _newsgroup):
+        self.username = _username
+        self.password = _password
+        self.newsgroup = _newsgroup
+        
+    def clientConnectionFailed(self, connector,  reason):
+        print 'Failed to connect using connector: ' + str(connector) + &quot; because &quot; + str(reason)
+        reactor.stop()
+        
+    def buildProtocol(self, addr):
+        p = NNTPStatCheck(self.username, self.password, self.newsgroup)
+        p.factory = self
+        return p
+        
+def checkFoundArticle(groups):
+    &quot;If Article found returns group found, if not found returns false, if failed returns None&quot;
+    for group, value in groups.iteritems():
+        if value == True:
+          return group
+        elif value == False:
+            return False;
+    return None
+    
+def createDictionaryFromList(list):
+    retVal = {}
+    for item in list:
+        retVal[item] = None
+    return retVal
+
+def calcConnections(numGroups,maxConn):
+    if numGroups == 0:
+        return 0
+    if maxConn == 0:
+        return 0
+
+    if maxConn &lt; numGroups:
+        return 0        
+    else:
+        if (maxConn / numGroups) &gt;= 1:
+            return (maxConn / numGroups)
+	else:
+            return 1
+	    
+def printUsage():
+        print &quot;Usage: NZBVerify.py maxConnections nzbFile&quot;
+        print &quot;  e.g: NZBVerify.py 20 test.nzb&quot;
+        print &quot;\n&quot;
+        print &quot;NZBVerify will distribute the connections between the groups specified in the NZB&quot;
+        print &quot;Your usenet provider will be able to tell you how many maximum connection you can use&quot;
+        print &quot;The value of maxConnections must be at least equal to the number of groups&quot;
+        print &quot;There is very little error handling so if you think its got stuck, it probably has!&quot;
+
+def main():
+    global results,  allClients
+    results = {}
+    allClients = []
+
+    if len(sys.argv) &lt; 3:
+        printUsage()
+        return
+
+    try:
+        maxConns = int(sys.argv[1])
+    except ValueError:
+        print &quot;Please enter a valid integer for maxConnections&quot;
+        printUsage()
+        return
+
+    print &quot;Max connections set to &quot; + str(maxConns)    
+
+    print &quot;Loading NZB File from &quot; + sys.argv[2]
+    try:
+        groups, messageIDs = parseNZB(sys.argv[2])
+    except IOError:
+        print &quot;There was an IO error loading the NZB File. The error follows:\n&quot;
+        print traceback.print_exc()
+        return
+
+    print &quot;Parsed NZB File with &quot; + str(len(messageIDs)) + &quot; articles from &quot; + str(len(groups)) + &quot; groups.&quot;
+
+    connectionsPerGroup = calcConnections(len(groups),maxConns)
+
+    print &quot;Using &quot; + str(connectionsPerGroup) + &quot; connections per group.&quot;
+    
+    if connectionsPerGroup == 0:
+        print &quot;Finished. Can't do anything with no connections per group!&quot;
+        return
+
+    for currMessageID in messageIDs:
+        # FIXME: Need to check if we need to create a new Dictionary instance for each message or if python is clever enough to work it out itself.
+        results[currMessageID] = createDictionaryFromList(groups)
+
+    #FIXME: Can only have as many groups as connections                
+    for group in groups:
+	for i in range(connectionsPerGroup):
+            verifier = NNTPVerifyFactory(&quot;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">tgreenwood at pp.newsgroups.user</A>&quot;, &quot;tomwap1986&quot;, str(group))
+            allClients.append(verifier)
+            reactor.connectTCP(&quot;us.usenet-news.net&quot;, 119, verifier)
+        
+    print &quot;Connecting to server..&quot;
+    reactor.run()
+    print &quot;Got required data from server, analysing..&quot;
+    totalArticles = len(results)
+    totalFound = 0
+    totalNotChecked = 0
+    for currMessageID,  _groups in results.iteritems():
+        result = checkFoundArticle(_groups)
+        if result is None:
+            print &quot;Article Not Checked: &quot; + currMessageID
+            totalNotChecked = (totalNotChecked + 1)
+        elif result is False:
+            print &quot;Article Not Found: &quot; + currMessageID
+        else:
+            print &quot;Found Article: &quot; + currMessageID + &quot; in &quot; + result
+            totalFound = (totalFound + 1)
+    print &quot;Don't take the groups listed above as gospel, it only means that you newsserver said it had it on the server - it may not have cared that we asked for the article in a particular group!&quot;
+    print &quot;All Finished.&quot;
+    print &quot;Found &quot; + str(totalFound) + &quot;, Not Found &quot; + str(totalArticles - (totalFound+totalNotChecked)) + &quot;, Not checked &quot; + str(totalNotChecked)
+    sys.exit(0)
+  
+if __name__ == '__main__':
+    main()
+  
+-------------- next part --------------
+from xml.sax import make_parser
+from xml.sax.handler import ContentHandler, feature_external_ges, feature_namespaces
+
+def parseNZB(fileName):
+    &quot;&quot;&quot; Initialize the queue from the specified nzb file &quot;&quot;&quot;
+    # Create a parser
+    parser = make_parser()
+    
+    # No XML namespaces here
+    parser.setFeature(feature_namespaces, 0)
+    parser.setFeature(feature_external_ges, 0)
+    
+    # Create the handler
+    dh = NZBParser()
+    
+    # Tell the parser to use it
+    parser.setContentHandler(dh)
+
+    # Parse the input
+    parser.parse(fileName)
+
+    return (dh.groups, dh.queue)
+        
+class NZBParser(ContentHandler):
+    &quot;&quot;&quot; Parse an NZB 1.0 file into a list of msgids
+    <A HREF="http://www.newzbin.com/DTD/nzb/nzb-1.0.dtd">http://www.newzbin.com/DTD/nzb/nzb-1.0.dtd</A> &quot;&quot;&quot;
+    def __init__(self):
+        # downloading queue to add NZB segments to
+        self.queue = []
+
+        # nzb file to parse
+        #self.nzb = nzb
+        self.groups = []
+
+        # parsing variables
+        self.file = None
+        self.bytes = None
+        self.number = None
+        self.chars = None
+        self.fileNeedsDownload = None
+        
+        self.fileCount = 0
+        self.segmentCount = 0
+        
+    def startElement(self, name, attrs):
+        if name == 'file':
+            subject = self.parseUnicode(attrs.get('subject'))
+            poster = self.parseUnicode(attrs.get('poster'))
+
+            self.fileCount += 1
+                
+        elif name == 'group':
+            self.chars = []
+                        
+        elif name == 'segment':
+            self.bytes = int(attrs.get('bytes'))
+            self.number = int(attrs.get('number'))
+                        
+            self.chars = []
+        
+    def characters(self, content):
+        if self.chars is not None:
+            self.chars.append(content)
+        
+    def endElement(self, name):
+        if name == 'file':
+            self.file = None
+            self.fileNeedsDownload = None
+                
+        elif name == 'group':
+            newsgroup = self.parseUnicode(''.join(self.chars))
+            
+            if newsgroup not in self.groups:
+                self.groups.append(newsgroup)
+                        
+            self.chars = None
+                
+        elif name == 'segment':
+            self.segmentCount += 1
+
+            messageId = self.parseUnicode(''.join(self.chars))
+            self.queue.append(messageId)
+
+            self.chars = None
+            self.number = None
+            self.bytes = None    
+
+    def parseUnicode(self, unicodeOrStr):
+        if isinstance(unicodeOrStr, unicode):
+            return unicodeOrStr.encode('latin-1')
+        return unicodeOrStr
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="019175.html">[Twisted-Python] half-closing SSL connection,	unexpected connectionLost() error
+</A></li>
+	<LI>Next message: <A HREF="019176.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19174">[ date ]</a>
+              <a href="thread.html#19174">[ thread ]</a>
+              <a href="subject.html#19174">[ subject ]</a>
+              <a href="author.html#19174">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

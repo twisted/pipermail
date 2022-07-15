@@ -1,0 +1,225 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Resolver patch: updated
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Resolver%20patch%3A%20updated&In-Reply-To=%3C20010923130744.0B9E238BF%40darjeeling%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="032896.html">
+   <LINK REL="Next"  HREF="032898.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Resolver patch: updated</H1>
+    <B>Moshe Zadka</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Resolver%20patch%3A%20updated&In-Reply-To=%3C20010923130744.0B9E238BF%40darjeeling%3E"
+       TITLE="[Twisted-Python] Resolver patch: updated">m at moshez.org
+       </A><BR>
+    <I>Sun Sep 23 07:07:44 MDT 2001</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="032896.html">[Twisted-Python] Non-blocking Resolution
+</A></li>
+        <LI>Next message (by thread): <A HREF="032898.html">[Twisted-Python] Release Procedure, Patches and Bugs, oh my!
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#32897">[ date ]</a>
+              <a href="thread.html#32897">[ thread ]</a>
+              <a href="subject.html#32897">[ subject ]</a>
+              <a href="author.html#32897">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Last version had a slight bug, here it is without it.
+
+ 
+Index: twisted/internet/main.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/main.py,v
+retrieving revision 1.27
+diff -u -r1.27 main.py
+--- twisted/internet/main.py	2001/09/19 12:18:09	1.27
++++ twisted/internet/main.py	2001/09/23 13:18:10
+@@ -50,9 +50,13 @@
+         if os.name == &quot;posix&quot;:
+             self.uid = uid or os.getuid()
+             self.gid = gid or os.getgid()
++        self.resolver = DummyResolver()
+ 
+-    persistentVersion = 1
++    persistentVersion = 2
+ 
++    def upgradeToVersion2(self):
++        self.resolver = DummyResolver()
++
+     def upgradeToVersion1(self):
+         &quot;&quot;&quot;Version 1 Persistence Upgrade
+         &quot;&quot;&quot;
+@@ -161,6 +165,7 @@
+     def run(self, save=1):
+         &quot;&quot;&quot;Run this application, running the main loop if necessary.
+         &quot;&quot;&quot;
++        global resolver
+         if not self.running:
+             threadable.dispatcher.own(self)
+             delayeds.extend(self.delayeds)
+@@ -174,6 +179,7 @@
+                     return
+             for service in self.services.values():
+                 service.startService()
++            resolver = self.resolver
+             self.running = 1
+             threadable.dispatcher.disown(self)
+         if not running:
+@@ -192,6 +198,11 @@
+     &quot;&quot;&quot;
+     theTimeouts.later(method, seconds)
+ 
++class DummyResolver:
++
++    def resolve(self, address, success, fail):
++        fail()
++
+ reads = {}
+ writes = {}
+ running = None
+@@ -199,6 +210,7 @@
+ if threadable.threaded:
+     delayeds.append(threadtask.theScheduler)
+ shutdowns = [theTimeouts.runEverything]
++resolver = DummyResolver()
+ 
+ def shutDown(a=None, b=None):
+     &quot;&quot;&quot;Run all shutdown callbacks (save all running Applications) and exit.
+@@ -523,6 +535,7 @@
+     # currentPlugins = os.path.abspath(&quot;TwistedPlugins&quot;)
+     allPlugins = [systemPlugins, userPlugins, confPlugins] #, currentPlugins]
+     sys.path.extend(allPlugins)
++
+ 
+ # Sibling Import
+ import process
+Index: twisted/internet/tcp.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/tcp.py,v
+retrieving revision 1.22
+diff -u -r1.22 tcp.py
+--- twisted/internet/tcp.py	2001/09/11 04:08:28	1.22
++++ twisted/internet/tcp.py	2001/09/23 13:18:11
+@@ -28,6 +28,7 @@
+ import socket
+ import sys
+ import traceback
++import string
+ 
+ if os.name == 'nt':
+     EWOULDBLOCK = 10035
+@@ -49,7 +50,7 @@
+ 
+ # Sibling Imports
+ import abstract
+-from main import CONNECTION_LOST, CONNECTION_DONE
++import main
+ 
+ class Connection(abstract.FileDescriptor,
+                  protocol.Transport,
+@@ -79,9 +80,9 @@
+             if se.args[0] == EWOULDBLOCK:
+                 return
+             else:
+-                return CONNECTION_LOST
++                return main.CONNECTION_LOST
+         if not data:
+-            return CONNECTION_LOST
++            return main.CONNECTION_LOST
+         return self.protocol.dataReceived(data)
+ 
+     def writeSomeData(self, data):
+@@ -95,7 +96,7 @@
+         except socket.error, se:
+             if se.args[0] == EWOULDBLOCK:
+                 return 0
+-            return CONNECTION_LOST
++            return main.CONNECTION_LOST
+ 
+     def connectionLost(self):
+         &quot;&quot;&quot;See abstract.FileDescriptor.connectionLost().
+@@ -145,7 +146,7 @@
+         self.port = port
+         Connection.__init__(self, skt, protocol)
+         self.doWrite = self.doConnect
+-        self.doConnect()
++        self.resolveAddress()
+         self.logstr = self.protocol.__class__.__name__+&quot;,client&quot;
+ 	if timeout is not None:
+ 	    main.addTimeout(self.failIfNotConnected, timeout)
+@@ -161,13 +162,32 @@
+         # factored out so as to minimise the code necessary for SecureClient
+         return socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+ 
++    def resolveAddress(self):
++        parts = string.split(self.addr[0], '.')
++        if len(parts) == 4:
++            try:
++                for part in map(int, parts):
++                    if not (0&lt;=part&lt;256):
++                        break
++                else:
++                    self.setRealdAddress(self.addr[0])
++                    return
++            except ValueError:
++                pass
++        main.resolver.resolve(self.addr[0], self.setRealAddress, 
++                                            self.failIfNotConnected)
++
++    def setRealAddress(self, address):
++        self.realAddress = address
++        self.doConnect()
++
+     def doConnect(self):
+         &quot;&quot;&quot;I connect the socket.
+         
+         Then, call the protocol's makeConnection, and start waiting for data.
+         &quot;&quot;&quot;
+         try:
+-            self.socket.connect(self.addr)
++            self.socket.connect((self.realAddress, self.addr[1]))
+         except socket.error, se:
+             if se.args[0] == EMYSTERY:
+                 self.startWriting()
+
+-- 
+The Official Moshe Zadka FAQ: <A HREF="http://moshez.geek">http://moshez.geek</A>
+The Official Moshe Zadka FAQ For Dummies: <A HREF="http://moshez.org">http://moshez.org</A>
+Read the FAQ
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="032896.html">[Twisted-Python] Non-blocking Resolution
+</A></li>
+	<LI>Next message (by thread): <A HREF="032898.html">[Twisted-Python] Release Procedure, Patches and Bugs, oh my!
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#32897">[ date ]</a>
+              <a href="thread.html#32897">[ thread ]</a>
+              <a href="subject.html#32897">[ subject ]</a>
+              <a href="author.html#32897">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

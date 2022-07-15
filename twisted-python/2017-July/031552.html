@@ -1,0 +1,207 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Using Twisted with pytest fixtures
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Using%20Twisted%20with%20pytest%20fixtures&In-Reply-To=%3CCABJ3qSOtfnPnu94yiX7gdjc0a4RCzCrgiNPHx%3DZ%3DXYfTm19FYQ%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="064010.html">
+   <LINK REL="Next"  HREF="064014.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Using Twisted with pytest fixtures</H1>
+    <B>Hamza Sheikh</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Using%20Twisted%20with%20pytest%20fixtures&In-Reply-To=%3CCABJ3qSOtfnPnu94yiX7gdjc0a4RCzCrgiNPHx%3DZ%3DXYfTm19FYQ%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Using Twisted with pytest fixtures">fehrist at codeghar.com
+       </A><BR>
+    <I>Mon Jul 17 11:08:08 MDT 2017</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="064010.html">[Twisted-Python] Failure of twisted.test.test_plugin.DeveloperSetupTests.test_freshPyReplacesStalePyc under pypy2
+</A></li>
+        <LI>Next message (by thread): <A HREF="064014.html">[Twisted-Python] Using Twisted with pytest fixtures
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#31552">[ date ]</a>
+              <a href="thread.html#31552">[ thread ]</a>
+              <a href="subject.html#31552">[ subject ]</a>
+              <a href="author.html#31552">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I use pytest[0] to write integration test automation. If the tests are stripped
+down to their core, they are basically using different network connections and
+protocols to drive multiple applications. Tests use the following Python
+libraries:
+
+* paramiko[2]
+* docker[3]
+* requests[4]
+* pychef[5]
+* pymongo[6]
+* python-qpid-proton[7]
+* websocket-client[8]
+
+I use pytest fixtures[1] heavily. Each of the aforementioned libraries is used
+such that each connection (say SSH) is provided to tests through that fixture.
+This makes writing tests quite simple as a single object can be used to
+maintain a network connection that can be reused across multiple tests in the
+same session. In case the connection needs to be re-established, the class has
+methods to hide that detail from the tests and things just work.
+
+Sample code is presented below:
+
+    # In conftest.py
+    from path_to_lib.ssh import SSH
+    @pytest.fixture(scope=&quot;session&quot;)
+    def ssh_fixture():
+        return SSH(
+            host=hostname_,
+            port=22,
+            username=username_,
+            pem=path_to_pem)
+
+
+    # In path_to_lib/ssh.py
+    import paramiko
+    class SSH(object):
+        def __init__(self, host, port, username, pem):
+            self.host = host
+            self.port = port
+            self.username = username
+            self.pem = pem
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.transport = None
+
+        def _connect(self):
+            self.client.connect(
+                hostname=self.host,
+                username=self.username,
+                key_filename=self.pem,
+                port=self.port)
+
+        def exec_cmd(self, cmd):
+            try:
+                _, stdout, stderr = self.client.exec_command(
+                    cmd,
+                    get_pty=True)
+            except:
+                self._connect()
+                _, stdout, stderr = self.client.exec_command(
+                    cmd,
+                    get_pty=True)
+            return stdout, stderr
+
+    # In path_to_tests/test_foo.py
+    def test_foo(ssh_fixture):
+        cmd = &quot;hostname&quot;
+        stdo, stde = ssh_fixture.exec_cmd(cmd)
+        assert stdo
+
+    # In path_to_tests/test_blah.py
+    def test_blah(ssh_fixture):
+        cmd = &quot;ls /&quot;
+        stdo, stde = ssh_fixture.exec_cmd(cmd)
+        assert stdo
+
+The above sample code is essentially how all other libraries (say for Mongo)
+are used in my tests. Each type of protocol is presented to tests through a
+fixture and tests only need to call certain methods without having to know
+the gory details behind them.
+
+This method provides very readable code. It also makes writing tests much
+easier.
+
+In addition to using these libraries sometimes I need to use the socket library
+to talk to proprietary services using TCP and/or UDP that don't have open
+source libraries available.
+
+The problem is that I have a *lot* of these integration tests that can run for
+a long time (anywhere from 2 hours to 12 hours based on the test set selected)
+(I need to test a *lot* of services and components). This is causing some
+issues when I get my hands dirty with the socket library.
+
+Instead of writing a custom and badly implemented Twisted alternative I thought
+I could use Twisted to replace a bunch of these libraries. Of course, I can't
+replace all of them at once today but I'd much rather start on the path.
+
+As I started getting familiar with the official and community docs I realized
+that most of them deal with writing servers (and sometimes clients). I can't
+find any docs on how people in my situation use Twisted.
+
+&gt;<i>From what I understand -- forgive my beginner-level grasp of the subject
+</I>matter -- once the reactor starts no more listenTCP() or connectTCP()
+(for example) can be added. And until the reactor stops code execution does not
+progress beyond ``reactor.run()``. For example, in the code below, _Done_ is
+not printed until there's a ``reactor.stop()`` somewhere above it.
+
+    blah ...
+    reactor.run()
+    print(&quot;Done&quot;)
+
+
+
+
+My questions for the community:
+
+* How can I use Twisted that fits the way my tests are written?
+* If I have to rewrite my tests to fit the Twisted model, do I start the
+  reactor every time for each test and stop it at the end?
+* Are there any known issues with start/stop reactor multiple times in a
+  single, long-running process?
+* Are there any good examples of using Twisted in integration tests that I
+  have failed to find?
+
+
+
+
+[0] <A HREF="https://docs.pytest.org/en/latest/">https://docs.pytest.org/en/latest/</A>
+[1] <A HREF="https://docs.pytest.org/en/latest/fixture.html">https://docs.pytest.org/en/latest/fixture.html</A>
+[2] <A HREF="https://pypi.org/project/paramiko/">https://pypi.org/project/paramiko/</A>
+[3] <A HREF="https://pypi.org/project/docker/">https://pypi.org/project/docker/</A>
+[4] <A HREF="https://pypi.org/project/requests/">https://pypi.org/project/requests/</A>
+[5] <A HREF="https://pypi.org/project/PyChef/">https://pypi.org/project/PyChef/</A>
+[6] <A HREF="https://pypi.org/project/pymongo/">https://pypi.org/project/pymongo/</A>
+[7] <A HREF="https://pypi.org/project/python-qpid-proton/">https://pypi.org/project/python-qpid-proton/</A>
+[8] <A HREF="https://pypi.org/project/websocket-client/">https://pypi.org/project/websocket-client/</A>
+
+
+Thanks in advance.
+
+Hamza Sheikh
+Twitter: @aikchar
+
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="064010.html">[Twisted-Python] Failure of twisted.test.test_plugin.DeveloperSetupTests.test_freshPyReplacesStalePyc under pypy2
+</A></li>
+	<LI>Next message (by thread): <A HREF="064014.html">[Twisted-Python] Using Twisted with pytest fixtures
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#31552">[ date ]</a>
+              <a href="thread.html#31552">[ thread ]</a>
+              <a href="subject.html#31552">[ subject ]</a>
+              <a href="author.html#31552">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,827 @@
+"""Multicast DNS for Twisted and Python.
+
+Version 0.5 by Tim "Screwtape" Allen <screwtape@froup.com>
+
+This module tries to implement the Multicast DNS specification, a way for host
+on the local link to cooperatively establish DNS-like services without having
+to set up a central DNS server. Multicast DNS is an important core technology
+in Apple's Rendezvous (which everyone else calls ZeroConf), the other one is
+DNS-SD, or DNS-based Service Discovery.
+
+Multicast DNS is much like regular DNS, except that queries are broadcast to
+all Multicast-DNS-enabled hosts on the local link instead of sent to a central
+DNS server. Since every host can hear a query, any number of hosts may reply
+independantly. Since any number of hosts can be sending and receiving DNS
+traffic at any given time, a standard for reply caching is very important.
+
+This code was developed more or less straight from the Multicast DNS draft at
+www.multicastdns.org and tested against the Rendezvous implementation in Apple
+Mac OS X 10.2.6. Since I suspect both were written by the same guy, I expect
+they'll be quite consistent.
+
+Notes:
+    The mDNS spec has lots of details about how queries and known-answer
+    sections are to be split up if the collection is too large to fit in a
+    single packet. This is currently entirely ignored.
+
+    From Section 13 of the standards draft:
+        A client with an active outstanding query will issue a query packet
+        when one or more of the resource record(s) in its cache is (are)
+        half-way to expiry.
+
+    But both non-trivial query types described imply that an active query will
+    send out continuous query packets anyway... what gives?
+"""
+
+# TODO: Merge the DNSAnswerCache and the MulticastDNSKernel into a single
+# Kernel object, and design a nice API for Observing the cache, instead of the
+# raw message flow.
+
+import time
+import bisect
+
+from twisted.internet import reactor, defer
+from twisted.names import common, dns
+
+from twisted.application import internet
+
+
+# TODO: Invent some nice, new, flexible resolver interfaces that we can use to
+# describe the extra capabilities of a multicast resolver - above and beyond
+# the regular resolver interface, I think there should be an interface for the
+# 'post a query n times with s seconds between each query, after all the
+# queries are posted return whatever results have shown up' style of query, an
+# interface for the 'post a query every s seconds until I tell you to stop, and
+# call this callback every time you get a relevant result' style of query, and
+# an interface for the self-publishing abilities of mDNS (there's already a
+# standard for clients to push new DNS records to an ordinary DNS server,
+# perhaps a Twisted implementation of that protocol could implement that
+# interface too)
+
+
+# Utility functions.
+
+def now():
+    """Returns an integer that increments every second."""
+    return int(time.time())
+
+def buildKey(name, type, cls):
+    """Makes a hashable key from the components of a DNS query."""
+    return (str(name), type, cls)
+
+def recordsMatch(rn, rt, rc, on, ot, oc):
+    """Returns 1 if the given record specifiers match, otherwise 0.
+
+    rn, rt, and rc should be the name, type, and cls values for a DNS record
+    we've recieved from the network.
+    
+    on, ot, and oc should be either name, type, and cls values for an exact
+    match, or None for 'any'.
+    """
+
+    #print "Testing (%s, %s, %s)" % (rn, rt, rc)
+    #print "against (%s, %s, %s)" % (on, ot, oc)
+
+    if on is not None                           and rn != on: return 0
+    if ot is not None and ot != dns.ALL_RECORDS and rt != ot: return 0
+    if oc is not None and oc != dns.ANY         and rc != oc: return 0
+
+    return 1
+
+def prettyMessage(m):
+    """Returns a human-readable string describing the contents of a Message."""
+    res = ''
+
+    if m.answer:
+        t = 'response'
+    else:
+        t = 'query'
+    
+    res += 'Got a %s with %d queries and %d answers\n' % \
+        (t, len(m.queries), len(m.answers))
+    
+    if m.queries:
+        res += "  Tell me about:\n"
+        for q in m.queries:
+            res += "    %s\n" % str(q)
+    
+    if m.answers:
+        res += "  Here's what I know:\n"
+        for a in m.answers:
+            if a.cls & 0x8000:
+                t = " (flush others)"
+            else:
+                t = ""
+            res += "    %s: %s%s\n" % (str(a.name), str(a.payload), t)
+
+    return res
+
+
+class MultiValueDictionary:
+    """A dictionary that can contain more than one value per key.
+
+    Getting a key returns a list of all matching values.
+
+    Setting a value for a key adds that value to the list of values for that
+    key.
+
+    Deleting a key removes all matching values. If you want to delete a single
+    value from a key, use the removeValueFromKey() method.
+    """
+
+    def __init__(self):
+        self.innerDict = {}
+
+    def __setitem__(self, key, value):
+
+        if key in self.innerDict:
+            self.innerDict[key].append(value)
+        else:
+            self.innerDict[key] = [value]
+
+    def __getitem__(self, key):
+        return self.innerDict[key]
+
+    def __delitem__(self, key):
+        del self.innerDict[key]
+
+    def __contains__(self, key):
+        return (key in self.innerDict)
+
+    def __str__(self):
+        """Returns a pretty, human-readable description of this object."""
+        res = ""
+        
+        try:
+            for key in self.innerDict:
+                res += str(key) \
+                    + ":\n\t" \
+                    + ",\n\t".join([str(v) for v in self.innerDict[key]]) \
+                    + "\n"
+        except KeyError:
+            return "{}"
+
+        return res
+
+    def __repr__(self):
+        return repr(self.innerDict)
+
+    def __len__(self):
+        return len(self.innerDict)
+
+    def iteritems(self):
+        return self.innerDict.iteritems()
+
+    def iterkeys(self):
+        return self.innerDict.iterkeys()
+
+    def itervalues(self):
+        return self.innerDict.itervalues()
+
+    def removeValueFromKey(self, value, key):
+        """Removes the given value from the list of values stored under key.
+
+        If the given key doesn't exist, KeyError is raised.
+
+        If the given value doesn't exist in that key, ValueError is raised.
+        """
+
+        # I realise the order of parameters seems backwards, but it goes quite
+        # nicely with the name of the function.
+
+        if key not in self.innerDict:
+            raise KeyError()
+
+        if value not in self.innerDict[key]:
+            raise ValueError()
+
+        self.innerDict[key].remove(value)
+
+        if len(self.innerDict[key]) == 0:
+            del self.innerDict[key]
+
+class Responder:
+
+    def respond(self):
+        """Returns answers to a query in the form of twisted.names.dns.Message"""
+
+class CachedRecord:
+    """Our internal representation of a DNS record.
+
+    Twisted's RRHeader object represents a DNS Resource Record as it appears in
+    a DNS message. It stores almost everything we need for our cache
+    management, but it doesn't store a transmission timestamp. Therefore we
+    use this class to store all the values we're interested in, and convert
+    back to an RRHeader as necessary.
+    """
+
+    def __init__(self, rr):
+        # The mDNS spec defines the MSB of the rrclass as the 'flush cache'
+        # bit. This code is in compliance with section 13.3 of the mDNS draft.
+        if rr.cls & 0x8000:
+            self.cls = rr.cls & 0x7FFF
+            self.flushprev = 1
+        else:
+            self.cls = rr.cls
+            self.flushprev = 0
+
+        self.name = str(rr.name)
+        self.type = rr.type
+
+        self.key = (self.name, self.type, self.cls)
+
+        self.seen = now()
+        self.ttl = rr.ttl
+        self.payload = rr.payload
+
+    def __eq__(self, other):
+
+        return (self.name == other.name 
+            and self.type == other.type
+            and self.cls == other.cls
+            and self.payload == other.payload)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+    
+    def __str__(self):
+
+        return '<%s %s %s %ds flush=%d>' % (
+            self.name,
+            dns.QUERY_TYPES[self.type],
+            dns.QUERY_CLASSES[self.cls],
+            self.getTTL(),
+            self.flushprev)
+
+    def getName(self):
+        """Returns the name this record describes."""
+        return self.name
+
+    def getType(self):
+        """Returns the numeric type code of this record."""
+        return self.type
+
+    def getCls(self):
+        """Returns the numeric class code of this record."""
+        return self.cls
+
+    def getKey(self):
+        """Returns a nice hashable value for this record."""
+        return self.key
+
+    def __hash__(self):
+        return hash(self.key)
+
+    def getTTL(self):
+        """Returns the number of seconds between now and expiry."""
+        return self.seen + self.ttl - now()
+
+    def getExpiry(self):
+        """Returns the timestamp at which this record expires."""
+        return self.seen + self.ttl
+
+    def getAge(self):
+        """Returns number of seconds elapsed since this record was refreshed."""
+        return now() - self.seen
+
+    def getPayload(self):
+        """Returns the actual content of this record."""
+        return self.payload
+
+    def asRRHeader(self):
+        """Returns a twisted.protocols.dns.RRHeader representing this record."""
+        return dns.RRHeader(
+                self.name,
+                self.type,
+                self.cls,
+                self.getTTL(),
+                self.payload)
+
+    def flushPrevious(self):
+        """Returns 1 if this record should be the only proper value.
+
+        An mDNS responder will send out records with the 'flush previous' bit
+        set if it believes it should be the only source of that record. For
+        example, a host would likely claim exclusive ownership of its hostname
+        address record.
+        """
+        return self.flushprev
+
+class ResponderAlreadyPresent(Exception):
+    pass
+    
+class ResponderNotFound(KeyError):
+    pass
+
+class ObserverAlreadyPresent(Exception): 
+    pass
+
+class ObserverNotFound(KeyError): 
+    pass
+
+
+class Kernel:
+    """Multicast DNS primitives and basic support logic.
+    
+    This class listens to the multicast DNS port and takes note of all the
+    answers it hears. It also can send multicast DNS queries into the wild blue
+    yonder. It even provides an observer interface so that you, too, can listen
+    in to the stream of DNS records being transmitted over the network.
+    
+    However, it does not have any way to correllate queries with results, or
+    any similar things that would make it directly useful to an end-user
+    application. Instead, other resolver classes should be built on it.
+    
+    This class keeps an internal cache of all the DNS records it observes, in
+    accordance with Section 13 of the mDNS specification.
+    """
+
+    # TODO: If there's a nice, simple way of detecting it from Python, we
+    # should flush cache entries if the host's network topology changes (our
+    # cable was unplugged) or if they are suddenly invalid (their cable was
+    # unplugged).
+
+    def __init__(self, multicastAddress="224.0.0.251", multicastPort = 5353):
+        self.address = multicastAddress
+        self.port = multicastPort
+        
+        self.protocol = dns.DNSDatagramProtocol(self)
+        reactor.listenMulticast(multicastPort, self.protocol, listenMultiple=True)
+        self.protocol.transport.joinGroup(multicastAddress)
+
+        self.answers = MultiValueDictionary()
+
+        self.expiryTimes = []     # This will be a sorted list
+        self.nextExpiryTask = None
+
+        self.observers = {}
+        self.responders = {}
+
+    def __scheduleCacheManagement(self):
+        """Internal method.
+
+        Decide when the next expiry is going to happen, and schedule an expiry
+        to happen for that time.
+        """
+
+        if self.nextExpiryTask is not None:
+            self.nextExpiryTask.cancel()
+            self.nextExpiryTask = None
+
+        if len(self.expiryTimes) > 0:
+            nextExpiryTime = self.expiryTimes[0][0]
+        
+            wait = nextExpiryTime - now()
+            self.nextExpiryTask = reactor.callLater(wait, self.__runCacheExpiry)
+
+    def __runCacheExpiry(self):
+        """Internal method.
+
+        Removes expired entries from the cache. This method should be scheduled
+        to occur exactly when an expiry is due, but __scheduleCacheManagement.
+        """
+
+        self.nextExpiryTask = None
+
+        if len(self.expiryTimes) == 0: return
+
+        while len(self.expiryTimes) > 0 and self.expiryTimes[0][0] <= now():
+            cr = self.expiryTimes[0][1]
+            self.__fireCallbacks(cr, "expired")
+            self.__flushRecord(cr)
+
+        self.__scheduleCacheManagement()
+        
+    def __respondToQuery(self,query):
+        """Internal method.
+        
+        Only one responder should handle a query.
+        """
+        response = self.responders[query].respond()
+        self.protocol.writeMessage(response , (self.address, self.port) )
+        
+    def __cacheRecord(self, cr):
+        """Internal method.
+        
+        Adds the given resource-record to the cache.
+        
+        cr should be an instance of CachedRecord.
+        """
+
+        print 'Adding record:', str(cr)
+
+        if cr.flushPrevious(): self.__flushRecordsForKey(cr.getKey())
+
+        isUpdate = 0
+
+        # Check if the new resource record's payload matches the payload of any
+        # existing record. If it does, this is an update, not an adding.
+        if cr.getKey() in self.answers and cr in self.answers[cr.getKey()]:
+            self.__fireCallbacks(cr, "updated")
+            self.__flushRecord(cr)
+            isUpdate = 1
+
+        self.answers[cr.getKey()] = cr
+        bisect.insort(self.expiryTimes, (cr.getExpiry(), cr) )
+
+        if not isUpdate:
+            self.__fireCallbacks(cr, "added")
+
+        self.__scheduleCacheManagement()
+
+    def __flushRecord(self, cr):
+        """Internal method.
+        
+        Removes the resource record represented by cr from the cache.
+
+        Note: cr must be an instance of CachedRecord that has been passed to 
+        __cacheRecord().
+        """
+
+        print 'Flushing record:', cr
+
+        self.answers.removeValueFromKey(cr, cr.getKey())
+
+        try:
+            self.expiryTimes.remove( (cr.getExpiry(), cr) )
+        except ValueError:
+            # If the expiry time has passed, cr might not be in this list.
+            pass
+
+        self.__scheduleCacheManagement()
+
+    def __flushRecordsForKey(self, key):
+        """Internal method.
+        
+        Removes all records for the given key more than a second old.
+        
+        This is in compliance with section 13.3 of the mDNS Draft."""
+
+        print 'Flushing records with key:', str(key)
+        
+        if key not in self.answers: return
+
+        for cr in self.answers[key][:]:
+            if cr.getAge() > 1:
+                self.__fireCallbacks(cr, "removed")
+                self.__flushRecord(cr)
+
+    def __fireCallbacks(self, cr, event):
+        """Internal Method.
+
+        cr is an instance of CachedRecord from the Kernel's record cache.
+
+        event is a string describing what just happened.
+        """
+        # Search the list of observers for any callbacks we can call.
+        for item in self.observers.items()[:]:
+            (name, type, cls, callback), (args, kwargs) = item
+
+            if recordsMatch(cr.getName(), cr.getType(), cr.getCls(),
+                            name,         type,         cls):
+                callback(cr.asRRHeader(), event, *args, **kwargs)
+
+    def messageReceived(self, m, proto, addr):
+        """Internal method.
+
+        This method is called by the DNS datagram protocol whenever a new DNS
+        message is received.
+        """
+
+        print prettyMessage(m),
+
+        # If this is a DNS response, we can trust the answers in it.
+        if m.answer:
+            for rec in m.answers:
+                cr = CachedRecord(rec)
+                self.__cacheRecord(cr)
+        else:
+            # This is a DNS query, and any attached Answers should be distrusted.
+            for q in m.queries:
+                #print 'Query: %s, %i, %i' % (q.name.name, q.type, q.cls)
+                self.__respondToQuery(q)
+
+    def showCache(self):
+        """Debugging method."""
+        print self.answers
+
+    def sendQuery(self, queries):
+        """Sends a query packet, including any known answers from the cache.
+        
+        queries should be a list of (name, type, cls) tuples.
+        """
+
+        # Multicast DNS messages are allowed to be up to the MTU size, minus
+        # headers. Ethernet's 1500 MTU - 40 byte IPv6 header - 8 byte UDP
+        # header == 1452.
+        m = dns.Message(maxSize=1452)
+
+        for name, type, cls in queries:
+            if name is None: qname = ''
+            else: qname = name
+            if type is None: qtype = dns.ALL_RECORDS
+            else: qtype = type
+            if cls is None: qcls = dns.ANY
+            else: qcls = cls
+
+            m.addQuery(qname, qtype, qcls)
+
+            # FIXME: When looking up Known Answers, take Section 7 into
+            # account.
+            m.answers.extend(
+                self.getCachedResults(name, type, cls)
+            )
+
+        self.protocol.writeMessage(m, (self.address, self.port) )
+
+    def getCachedResults(self, name, type, cls):
+        """Finds any resource records matching the given name, type, and class.
+
+        Returns an empty list if no matching records are found.
+
+        Note: These will not be the original RRHeader instances, but
+        reconstructed RRHeader objects that contain the appropriate
+        information.
+        """
+
+        key = buildKey(name, type, cls)
+
+        res = []
+
+        # If the given key is directly in the database, it must not be a
+        # pattern, so it must be the only match in the database.
+        if key in self.answers:
+            res = self.answers[key]
+        else:
+            #print "Examing %d records in the cache..." % len(self.answers)
+
+            # Test all the keys in the database to see if they match.
+            for key in self.answers.iterkeys():
+                if recordsMatch(key[0], key[1], key[2], name, type, cls):
+                    res.extend(self.answers[key])
+
+        res = [cr.asRRHeader() for cr in res]
+
+        #print "Found matches:", res
+
+        return res
+        
+    def addResponder(self, name, type, cls, callback):
+        """Registers a callback to be called when matching queries come in.
+        
+        When we see a DNS Query come in off the network that matches the given
+        name, type and class the given call back will be called to produce answers.
+        
+        Callbacks passed to this function take not arguments.
+        """
+        query = dns.Query( name, type, cls )
+
+        if query in self.responders:
+            raise ResponderAlreadyPresent
+
+        self.responders[query] = callback
+        
+        print 'responders:' 
+        for q in self.responders.keys():
+            print q
+
+    def removeResponder(self, name, type, cls, callback):
+        """De-registers a callback.
+        
+        If the given callback is not registered as an responder for the given
+        (name, type, cls) tuple, an exception is raised."""
+
+        query = dns.Query(name, type, cls)
+
+        if query not in self.responders:
+            raise ResponderNotFound
+
+        del self.responders[query]
+
+    def addObserver(self, name, type, cls, callback, *args, **kwargs):
+        """Registers a callback to be called when matching records come in.
+
+        When we see a DNS record come in off the network that matches the given
+        name, type, and class, or we remove one from the cache that does so,
+        then the given callback will be called.
+
+        Callbacks passed to this function must take (at least) two parameters.
+        The first will be in instance of twisted.names.dns.RRHeader, the
+        record in question. The second will be a string describing what just
+        happened to that record - one of 'added', 'updated', 'expired' or
+        'removed'. Any extra parameters given to the addObserver call that
+        registered the callback will be passed to the callback, too.
+
+        'added' means that the given record has been freshly recieved from the
+        network.
+
+        'updated' means that the record was already in the cache, but a new
+        copy was just recieved from the network. This typically happens when
+        the TTL is refreshed.
+
+        'expired' means that the record's time-to-live has expired.
+
+        'removed' means that the record has been forced out of the cache by
+        another record that claims to be the exclusive true source of
+        information about a given (name, type, cls) tuple.
+
+        When a server begins to serve a new service, an 'added' event will
+        occur. When a server stops offering a service, first an 'updated' event
+        will set the TTL to zero, and then an 'expired' event will actually
+        remove it.
+
+        A given (name, type, cls, callback) tuple can only be registered once,
+        otherwise an exception is raised.
+        """
+
+        obs = (name, type, cls, callback)
+
+        if obs in self.observers:
+            raise ObserverAlreadyPresent
+
+        self.observers[obs] = (args, kwargs)
+
+    def removeObserver(self, name, type, cls, callback):
+        """De-registers a callback.
+        
+        If the given callback is not registered as an observer for the given
+        (name, type, cls) tuple, an exception is raised."""
+
+        obs = (name, type, cls, callback)
+
+        if obs not in self.observers:
+            raise ObserverNotFound
+
+        del self.observers[obs]
+
+class Resolver(common.ResolverBase):
+    """A traditional DNS-style interface to the multicast DNS system.
+    
+    This class is designed to be a drop-in replacement for an instance of
+    twisted.names.client.Resolver, it takes queries and returns deferreds that
+    will timeout or produce the desired results. It largely behaves according
+    to Section 6.2 of the mDNS specification.
+
+    However, since we are not talking to an ordinary, authoritative DNS server,
+    there are certain differences you should be aware of. 
+    
+     * Multicast DNS queries are never guaranteed to be complete - there's
+       always a chance that another relevant reply might arrive soon.
+       Therefore, the deferreds this class returns will always trigger when the
+       timeout expires, never before.
+     * Multicast DNS results are always recieved from the host in question, 
+       so they're always authoritative.
+     * Multicast DNS results can be constructed from many answers from many
+       hosts, so the 'additional information follows' bit makes no sense.
+     * Multicast DNS zones have no SOA record.
+     * Multicast DNS zones cannot do zone transfers.
+    """
+
+    def __init__(self, kernel, timeout = 10):
+        """Constructs an mDNS resolver.
+
+        kernel is an instance of MulticastDNSKernel.
+        """
+
+        common.ResolverBase.__init__(self)
+
+        self.kernel = kernel
+        self.timeout = timeout
+
+    def __queryTimeoutHandler(self, deferred, name, type, cls):
+
+        answers = self.kernel.getCachedResults(name, type, cls)
+        
+        if len(answers) > 0:
+            deferred.callback(answers)
+        else:
+            # Section 19.1: In multicast responses, ... the Query ID MUST be
+            # set to zero on transmission, and MUST be ignored on reception.
+            deferred.errback(dns.DNSQueryTimeoutError(0))
+
+    def _lookup(self, name, cls, type, timeout):
+
+        if timeout is None:
+            timeout = self.timeout
+
+        # Send a query packet to goad relevant mDNS responders on the network.
+        self.kernel.sendQuery( [(name, type, cls)] )
+        
+        d = defer.Deferred()
+        d.setTimeout(timeout, self.__queryTimeoutHandler, name, type, cls)
+
+        # Functions that call _lookup() expect the deferred to return a
+        # three-tuple of the answers, a flag that says this information is
+        # authoritative, and a flag that says this information will be followed
+        # by more information.
+        #
+        # Those two flags don't really make sense in the context of mDNS, so
+        # we'll fake them.
+        #
+        # FIXME: I've greatly misunderstood the various 'authoritative' flags
+        # and headers. Look into this more closely.
+
+        d.addCallback( lambda ans: (ans, 1, 0) )
+
+        return d
+
+class Browser:
+    """A live Multicast DNS query.
+
+    When an instance of this class is created, it will start issuing periodic
+    queries to the other hosts on the network. Whenever an answer message is
+    received from another host, it is passed along to any registered callbacks.
+
+    This is the class you want to use if you wish to present a list of
+    currently available services to a user. Note that while this class is
+    active, a reasonable amount of network traffic is being generated, so don't
+    leave it running *too* long.
+
+    This class defines a __del__ method, so try not to get it involved in any
+    circular references.
+    """
+
+    def __init__(self, kernel, name, type, cls, period = 5):
+        """Creates an instance of a live Multicast DNS query.
+
+        kernel is an instance of Kernel.
+        name is a string, the name to be found.
+        type is an integer, the numeric type of the record to be found.
+        cls is an integer, the numeric class of the record to be found.
+        period is an integer, the number of seconds between queries.
+
+        Short periods mean that intermittent connectivity problems won't have
+        too much effect, but do generate much more traffic. Multicast DNS
+        servers will send out gratuitous answer messages to advertise new
+        records and remove old ones, so callbacks will still recieve timely
+        updates even if the period is long.
+        """
+        self.kernel = kernel
+        self.name = name
+        self.type = type
+        self.cls = cls
+        self.period = period
+        self.queryTask = None
+
+        self.observers = {}
+
+        self.kernel.addObserver(name, type, cls, self.__incomingAnswer)
+        self.__sendQuery()
+
+    def __del__(self):
+        """De-register this object from the kernel and Twisted's reactor."""
+        self.kernel.removeObserver(self.name, self.type, self.cls, self.__incomingAnswer)
+        if self.queryTask is not None:
+            self.queryTask.cancel()
+
+    def __sendQuery(self):
+        """Internal method.
+        
+        Send a multicast query and schedule the next one.
+        """
+
+        self.kernel.sendQuery( [(self.name, self.type, self.cls)] )
+        self.queryTask = reactor.callLater(self.period, self.__sendQuery)
+
+    def __incomingAnswer(self, answer, event):
+        """Internal method.
+
+        We got a record from the kernel, forward it on to our observers.
+        """
+
+        for obs, (args, kwargs) in self.observers.items()[:]:
+            obs(answer, event, *args, **kwargs)
+
+    def addObserver(self, callback, *args, **kwargs):
+        """Add an observer to this browser.
+
+        callback is any Python callable. It should take at least two
+        parameters, a twisted.protocols.dns.RRHeader object
+        representing the new record and a string describing the event. The
+        describing string will be one of 'added', 'updated', 'expired', or
+        'removed'. For more information see the documentation to
+        Kernel.addObserver().
+
+        Any extra arguments to addObserver will be passed to the callback,
+        after the record.
+
+        When addObserver is first called, the callback will be passed the
+        current list of known records for the current query, one by one. After
+        that, callback will be called whenever a relevant new record is
+        recieved from the network.
+        """
+
+        if callback in self.observers:
+            raise ObserverAlreadyPresent
+        
+        self.observers[callback] = (args, kwargs)
+
+        currentResults = self.kernel.getCachedResults(self.name, self.type, self.cls)
+        for result in currentResults:
+            callback(result, 'added', *args, **kwargs)
+
+    def removeObserver(self, callback):
+        if callback not in self.observers:
+            raise ObserverNotFound
+
+        del self.observers[callback]

@@ -1,0 +1,138 @@
+Index: twisted/news/database.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/news/database.py,v
+retrieving revision 1.15
+diff -u -r1.15 database.py
+--- twisted/news/database.py	3 Oct 2002 14:40:32 -0000	1.15
++++ twisted/news/database.py	19 Oct 2002 15:54:26 -0000
+@@ -34,6 +34,7 @@
+ from twisted.persisted import dirdbm
+ 
+ import getpass, pickle, time, socket, md5, string
++import smtplib
+ 
+ ERR_NOGROUP, ERR_NOARTICLE = range(2, 4)  # XXX - put NNTP values here (I guess?)
+ 
+@@ -221,9 +222,9 @@
+ 
+     sharedDBs = {}
+ 
+-    def __init__(self, filename, groups = None):
++    def __init__(self, filename, groups = None, moderators = None):
+         self.datafile = filename
+-        self.load(filename, groups)
++        self.load(filename, groups, moderators)
+ 
+     def listRequest(self):
+         "Returns a list of 4-tuples: (name, max index, min index, flags)"
+@@ -235,7 +236,10 @@
+                 high = max(self.db[i].keys()) + 1
+             else:
+                 low = high = 0
+-            flags = 'y'
++            if self.db['moderators'].has_key(i):
++                flags = 'm'
++            else:
++                flags = 'y'
+             r.append((i, high, low, flags))
+         return defer.succeed(r)
+ 
+@@ -250,6 +254,25 @@
+         groups = string.split(a.getHeader('Newsgroups'))
+         xref = []
+ 
++        # first see if any groups are moderated.  if so, nothing gets posted,
++        # but the whole messages gets forwarded to the moderator address
++        moderator = None
++        for group in groups:
++            moderator = self.db['moderators'].get(group)
++            if moderator:
++                break
++        # Moderated postings go through as long as they have an Approved
++        # header, regardless of what the value is
++        if moderator and not a.getHeader('Approved'):
++            a.putHeader('To', moderator)
++            s = smtplib.SMTP()
++            s.connect()
++            s.sendmail('twisted@%s' % socket.gethostname(),
++                       [moderator],
++                       a.textHeaders() + a.body)
++            s.quit()
++            return defer.succeed(None)
++
+         for group in groups:
+             if self.db.has_key(group):
+                 if len(self.db[group].keys()):
+@@ -360,7 +383,7 @@
+         pickle.dump(self.db, open(self.datafile, 'w'))
+ 
+ 
+-    def load(self, filename, groups = None):
++    def load(self, filename, groups = None, moderators = None):
+         if PickleStorage.sharedDBs.has_key(filename):
+             self.db = PickleStorage.sharedDBs[filename]
+         else:
+@@ -373,6 +396,11 @@
+                 if groups is not None:
+                     for i in groups:
+                         self.db[i] = {}
++                if moderators is not None:
++                    dmod = {}
++                    for g, m in moderators:
++                        dmod[g] = m
++                    self.db['moderators'] = dmod
+                 self.flush()
+ 
+ 
+Index: twisted/news/news.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/news/news.py,v
+retrieving revision 1.8
+diff -u -r1.8 news.py
+--- twisted/news/news.py	16 Oct 2002 04:27:39 -0000	1.8
++++ twisted/news/news.py	19 Oct 2002 15:54:26 -0000
+@@ -89,7 +89,7 @@
+ 
+ 
+     def buildProtocol(self, connection):
+-        p = self.protocol(self.remoteHosts)
++        p = self.protocol()
+         p.factory = self
+         return p
+ 
+Index: twisted/tap/news.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/tap/news.py,v
+retrieving revision 1.10
+diff -u -r1.10 news.py
+--- twisted/tap/news.py	8 Oct 2002 15:53:51 -0000	1.10
++++ twisted/tap/news.py	19 Oct 2002 15:54:26 -0000
+@@ -62,15 +62,23 @@
+ 
+         # XXX - Hrm.
+         ["groups",     "g", "groups.list",   "File containing group list"],
+-        ["servers",    "s", "servers.list",  "File containing server list"]
++        ["servers",    "s", "servers.list",  "File containing server list"],
++        ["moderators", "m", "moderators.list",
++         "File containing moderators list"],
+     ]
+ 
+     def postOptions(self):
+         # XXX - Hmmm.
+-        self['groups'] = [g.strip() for g in open(self['groups']).readlines() if not g.startswith('#')]
+-        self['servers'] = [s.strip() for s in open(self['servers']).readlines() if not s.startswith('#')]
+-
+-        self.db = database.PickleStorage(filename, self['groups'])
++        filename = self['file']
++        self['groups'] = [g.strip() for g in open(self['groups']).readlines()
++                          if not g.startswith('#')]
++        self['servers'] = [s.strip() for s in open(self['servers']).readlines()
++                           if not s.startswith('#')]
++        self['moderators'] = [s.split()
++                              for s in open(self['moderators']).readlines()
++                              if not s.startswith('#')]
++        self.db = database.PickleStorage(filename, self['groups'],
++                                         self['moderators'])
+ 
+ 
+ class Options(usage.Options):

@@ -1,0 +1,187 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] spawnProcess - reapProcess not retrying on failures
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20spawnProcess%20-%20reapProcess%20not%20retrying%20on%0A%20failures&In-Reply-To=%3C20140903175517.20413.1988429554.divmod.xquotient.1845%40top%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="028709.html">
+   <LINK REL="Next"  HREF="028712.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] spawnProcess - reapProcess not retrying on failures</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20spawnProcess%20-%20reapProcess%20not%20retrying%20on%0A%20failures&In-Reply-To=%3C20140903175517.20413.1988429554.divmod.xquotient.1845%40top%3E"
+       TITLE="[Twisted-Python] spawnProcess - reapProcess not retrying on failures">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Wed Sep  3 11:55:17 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="028709.html">[Twisted-Python] spawnProcess - reapProcess not retrying on	failures
+</A></li>
+        <LI>Next message: <A HREF="028712.html">[Twisted-Python] spawnProcess - reapProcess not retrying on failures
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28711">[ date ]</a>
+              <a href="thread.html#28711">[ thread ]</a>
+              <a href="subject.html#28711">[ subject ]</a>
+              <a href="author.html#28711">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 03:27 pm, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">adi at roiban.ro</A> wrote:
+&gt;<i>On 3 September 2014 14:39,  &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A>&gt; wrote:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>Yes.  Providing more fine-grain control over signal handlers would be 
+</I>&gt;&gt;<i>a fine
+</I>&gt;&gt;<i>improvement.
+</I>&gt;<i>
+</I>&gt;<i>Do you have any suggestion for how the calls should be made?
+</I>&gt;<i>
+</I>&gt;<i>reactor.run(installSignalHandlers=True,  installStopHandlers=False)
+</I>
+Perhaps.
+&gt;<i>or
+</I>&gt;<i>
+</I>&gt;<i>reactor.installStopHandlers = False
+</I>&gt;<i>reactor.run()
+</I>
+Probably not this one.  Setting attributes on random things is kind of 
+sad. :)
+
+It might be nice to try to be somewhat flexible - in case there's some 
+reason to change what signals the reactor wants to handle in the future. 
+Perhaps:
+
+    reactor.run(installSignalHandlers={SIGCHLD})
+
+An entirely different direction could be to make this bit of 
+configuration into initialization for the reactor.
+
+    from twisted.internet.epollreactor import install
+    install(installSignalHandlers={SIGCHLD})
+
+    from twisted.internet import reactor
+    ...
+    reactor.run()
+
+By keeping these details away from `IReactorCore.run`, that method 
+remains maximally useful.  For example, if you could set up the reactor 
+this way, a normal `twistd` plugin would still be able to benefit from 
+your choice, even with twistd's naive call of `reactor.run()` with no 
+extra arguments.
+
+Application code calling these `install` functions is already supported 
+(it's how you select a specific reactor, after all).  Some of the 
+install functions even accept arguments already.
+
+This would actually eliminate another existing issue - 
+`IReactorCore.run` is actually defined to take no arguments.  The 
+implementations ignore this because someone thought it was important to 
+be able to disable installation of signal handlers.
+&gt;<i>
+</I>&gt;&gt;<i>Another fine improvement would be making child processes work even if 
+</I>&gt;&gt;<i>a
+</I>&gt;&gt;<i>SIGCHLD handler cannot be installed (for example, by polling children
+</I>&gt;&gt;<i>periodically, by using wait() in a sidecar process, or by using a 
+</I>&gt;&gt;<i>better
+</I>&gt;&gt;<i>system-specific child process monitoring API (eg kqueue's 
+</I>&gt;&gt;<i>EVFILT_PROC)).
+</I>&gt;<i>
+</I>&gt;<i>I see that GlibReactorBase inherits from PosixReactorBase so it should
+</I>&gt;<i>install the SIGCHLD handler... this should not be the reason why gtk2
+</I>&gt;<i>reactor don't work.
+</I>
+Gtk messes with signals too.  There are confusing order-of-execution 
+dependencies and Gtk changes subtly from release to release, re-breaking 
+things after we fix them or changing them to be broken in a different 
+way.
+
+So that's *why* it probably doesn't work with Gtk2 reactor - if not 
+*how*. ;)
+
+I think I missed the explanation of what in particular wasn't working 
+with Gtk2 reactor though.
+&gt;<i>As a poor man's fix and Unix independent fix maybe we can call
+</I>&gt;<i>reapAllProcess in a task.LoopingCall...
+</I>&gt;<i>What are the reasons why SIGCHLD handler cannot be installed?
+</I>
+Either because you want to run the reactor in a non-main thread (where 
+Python won't let you install signal handlers for the good reason that 
+mixing signals and threads has crazy behavior) or because you want to 
+use a different library that depends on having its own SIGCHLD handler 
+and you're not interested in Twisted's process support.
+&gt;<i>I am asking since I hope it could help me understant where and how to
+</I>&gt;<i>enable the poor man's fix... and how to fill the bug report.
+</I>&gt;<i>
+</I>&gt;<i>kqueue's EVFILT_PROC would be great, but I guess that we still need a
+</I>&gt;<i>general fix
+</I>
+Perhaps, perhaps not.  A general fix might be less code but having half 
+a dozen specialized fixes, one for each reactor, would also still fix 
+the problem.  The different reactor implementations are essentially the 
+big piles of specialized fixes needed to do non-blocking I/O on 
+different platforms.  This would just be a little more of the same.
+
+The sidecar process is an example of a general fix, though.  The idea 
+there is that Twisted itself runs a private child process (perhaps only 
+when the first call to spawnProcess is made).  It talks to that process 
+using a file descriptor.  That process can install a SIGCHLD handler 
+(because Twisted owns it, application developers don't get to say they 
+don't want one installed) or use another more invasive strategy for 
+child process management.  When you want to spawn a process, the main 
+process tells the sidecar to do it.  The sidecar relays traffic between 
+the child and the original parent (or does something involving passing 
+file descriptors across processes).
+
+This removes the need to ever install a SIGCHLD handler in the main 
+process.  It also probably enables some optimizations (reapProcesses is 
+O(N!) on the number of child processes right now) that are very tricky 
+or impossible otherwise.
+
+Jean-Paul
+&gt;<i>---------
+</I>&gt;<i>
+</I>&gt;<i>For the record: Right now, to ignore SIGINT, SIGTERM, SIGBREAK handles
+</I>&gt;<i>but keep SIGCHLD I do:
+</I>&gt;<i>
+</I>&gt;<i># Patch base reactor to not install SIGINT, SIGTERM and SIGBREAK 
+</I>&gt;<i>handlers
+</I>&gt;<i>_SignalReactorMixin._handleSignals = lambda self: None
+</I>&gt;<i>reactor.run()
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>--
+</I>&gt;<i>Adi Roiban
+</I>
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="028709.html">[Twisted-Python] spawnProcess - reapProcess not retrying on	failures
+</A></li>
+	<LI>Next message: <A HREF="028712.html">[Twisted-Python] spawnProcess - reapProcess not retrying on failures
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28711">[ date ]</a>
+              <a href="thread.html#28711">[ thread ]</a>
+              <a href="subject.html#28711">[ subject ]</a>
+              <a href="author.html#28711">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

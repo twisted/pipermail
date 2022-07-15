@@ -1,0 +1,211 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Why does this not work?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Why%20does%20this%20not%20work%3F&In-Reply-To=%3C20031211170305.GA4844%40vercingetorix.caesar.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="039248.html">
+   <LINK REL="Next"  HREF="039254.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Why does this not work?</H1>
+    <B>Valentino Volonghi aka Dialtone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Why%20does%20this%20not%20work%3F&In-Reply-To=%3C20031211170305.GA4844%40vercingetorix.caesar.org%3E"
+       TITLE="[Twisted-Python] Why does this not work?">dialtone at aruba.it
+       </A><BR>
+    <I>Thu Dec 11 10:03:05 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="039248.html">[Twisted-Python] startService not called in finger14.py ?
+</A></li>
+        <LI>Next message (by thread): <A HREF="039254.html">[Twisted-Python] Why does this not work?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39249">[ date ]</a>
+              <a href="thread.html#39249">[ thread ]</a>
+              <a href="subject.html#39249">[ subject ]</a>
+              <a href="author.html#39249">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I don't get why this version of my software does not work...  The
+previous version did not use service.Service but directly
+protocol.ServerFactory and it worked right.
+
+Basically this software is a server to which you can connect and
+manage some database, actually now it only supports sqlite but it will
+support more and more soon I hope.
+
+######################################## CODE HERE ################
+VERSION = 0.1
+
+from twisted.application import internet, service
+from twisted.internet import protocol, reactor, defer
+from twisted.protocols import basic
+
+import sqlite
+
+def catchError(err):
+    return &quot;Internal Server&quot;
+
+class DBUniversalProtocol(basic.LineReceiver):
+    def send_results(self, q_results):
+        if q_results:
+            print &quot;Sending data...&quot;,
+            self.transport.write(str(q_results) +'\r\n')
+            print &quot;OK&quot;
+
+    def connectionMade(self):
+        self.factory.connect_to_DB()
+
+    def connectionLost(self, reason):
+        print &quot;Connection closed by client... &quot;,
+        self.factory.conn.commit()
+        self.factory.cursor.close()
+        self.factory.conn.close()
+        print &quot;Reset done.&quot;
+
+    def lineReceived(self, line):
+        d = self.factory.dispatch_function(line)
+        d.addErrback(catchError)
+        d.addCallback(self.send_results)        
+
+class DBUniversalService(service.Service):
+    def __init__(self):
+        print &quot;DB Universal Server, v.&quot;, VERSION, &quot;(c) Valentino Volonghi&quot;
+        print &quot;Licensed under the Lesser General Public License v2.1&quot;
+        print &quot;Written by Valentino Volonghi and released without any warranties&quot;
+        
+        self.dispatcher = {'set_query':self.set_query,
+                           'get_many':self.get_many,
+                           'get_all':self.get_all,
+                           'get_one':self.get_one
+                          }
+        self.conn = None
+        self.cursor = None
+
+    def getDBUniversalFactory(self):
+        f = protocol.ServerFactory()
+        f.protocol = DBUniversalProtocol
+        f.dispatch_function = self.dispatch_function
+        f.conn = self.conn
+        f.cursor = self.cursor
+        f.connect_to_DB = self.connect_to_DB
+        return f
+
+    def dispatch_function(self, line):
+        # Every line sent to this server is made of some parts:
+        # &quot;FUN_TO_CALL:ARGS_IF_ANY\r\n&quot;
+        # Be sure to always use this format standard otherwise
+        # You won't have the expected behaviour
+        
+        fun = line.split(&quot;:&quot;)[0]
+        callable = self.dispatcher.get(fun.strip(), None)
+        if not callable:
+            return defer.succeed(self.error())
+        else:
+            return defer.succeed(callable(line))
+
+    def set_query(self, line):
+        arg = line.split(&quot;:&quot;)[1]
+        self.SQL = arg
+        return self.run_query()
+
+    def get_many(self, line):
+        arg = line.split(&quot;:&quot;)[1]
+        try:
+            NUM = int(arg)
+        except:
+            return defer.succeed(self.error())
+        return defer.succeed(self.cursor.fetchmany(NUM))
+
+    def get_all(self, line):
+        return defer.succeed(self.cursor.fetchall())
+
+    def get_one(self, line):
+        return defer.succeed(self.cursor.fetchone())
+
+    def error(self):
+        return &quot;Operation Failed!&quot;
+
+    def allOK(self):
+        return &quot;OK&quot;
+    
+    def run_query(self):
+        print &quot;Checking the query (%s)... &quot; %(self.SQL.strip()),
+        isCorrect = self.check_query(self.SQL)        
+        if isCorrect:
+            print &quot; OK&quot;
+            self.cursor.execute(self.SQL)
+            return defer.succeed(self.allOK())
+        else:
+            print &quot; Failed&quot;
+            return defer.succeed(self.error())
+
+    def check_query(self, to_check):
+        res = to_check.split(&quot;\r\n&quot;)
+        if len(res) &gt; 2: return 0
+        if res[0][-1] != &quot;;&quot;: return 0
+        return 1
+
+    def connect_to_DB(self):
+        print &quot;Connecting to DB... &quot;,
+        self.conn = sqlite.connect(&quot;test.db&quot;)
+        self.cursor = self.conn.cursor()
+        print &quot;OK&quot;
+
+#############################################
+MYPORT = 6000
+application = service.Application('dbi_face', uid=1000, gid=1000)
+f = DBUniversalService()
+serviceCollection = service.IServiceCollection(application)
+internet.TCPServer(MYPORT, f.getDBUniversalFactory()
+                   ).setServiceParent(serviceCollection)
+#############################################
+Are these last lines right or are they wrong?
+
+I've not really understood the meaning of the last lines,
+while I understand the meaning of:
+
+reactor.listenTCP(MYPORT, DBUniversalServer())
+reactor.run()
+
+I must say I based my &quot;upgrade&quot; to finger listings.
+
+Thanks for your help
+
+-- 
+Valentino Volonghi, Regia SpA, Milan
+Linux User #310274, Gentoo Proud User
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="039248.html">[Twisted-Python] startService not called in finger14.py ?
+</A></li>
+	<LI>Next message (by thread): <A HREF="039254.html">[Twisted-Python] Why does this not work?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39249">[ date ]</a>
+              <a href="thread.html#39249">[ thread ]</a>
+              <a href="subject.html#39249">[ subject ]</a>
+              <a href="author.html#39249">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

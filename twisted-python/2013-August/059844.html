@@ -1,0 +1,189 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Raising exception from a Deferred canceller.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Raising%20exception%20from%20a%20Deferred%20canceller.&In-Reply-To=%3C20130829120033.26068.1550902512.divmod.xquotient.328%40top%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="059845.html">
+   <LINK REL="Next"  HREF="059850.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Raising exception from a Deferred canceller.</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Raising%20exception%20from%20a%20Deferred%20canceller.&In-Reply-To=%3C20130829120033.26068.1550902512.divmod.xquotient.328%40top%3E"
+       TITLE="[Twisted-Python] Raising exception from a Deferred canceller.">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Thu Aug 29 06:00:33 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="059845.html">[Twisted-Python] Raising exception from a Deferred canceller.
+</A></li>
+        <LI>Next message (by thread): <A HREF="059850.html">[Twisted-Python] Raising exception from a Deferred canceller.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59844">[ date ]</a>
+              <a href="thread.html#59844">[ thread ]</a>
+              <a href="subject.html#59844">[ subject ]</a>
+              <a href="author.html#59844">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 09:27 am, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">kylerzhang11 at gmail.com</A> wrote:
+&gt;<i>Hi,
+</I>&gt;<i>
+</I>&gt;<i>As itamar mentioned in ticket #6676 &lt;<A HREF="http://tm.tl/#6676">http://tm.tl/#6676</A>&gt;, If a 
+</I>&gt;<i>cancellation
+</I>&gt;<i>function for a Deferred throws an exception(the cancel() method of
+</I>&gt;<i>Deferred won’t
+</I>&gt;<i>throw exceptions, but the canceller may), behavior is undefined. If the
+</I>&gt;<i>cancellation function throws an exception it is currently not caught, 
+</I>&gt;<i>and
+</I>&gt;<i>cancellation does not occur.
+</I>&gt;<i>
+</I>&gt;<i>We can catch the exception and log it, and fallback to just firing 
+</I>&gt;<i>Deferred
+</I>&gt;<i>withCancelledError. This won’t break any old code. But an exception
+</I>&gt;<i>raising from the cancellation function often means the cancellation is
+</I>&gt;<i>failed.
+</I>
+Keep in mind that the Deferred cancellation API is a &quot;best effort&quot; API. 
+There are no guarantees that anything can be cancelled.  Consider the 
+fact that 90% or more of Deferreds out there don't even have 
+cancellation implemented for them yet and that before Deferred 
+cancellation was introduced, 100% of Deferreds were uncancellable. :)
+&gt;<i>
+</I>&gt;<i>Another option we have is taking this opportunity to make the 
+</I>&gt;<i>cancellation
+</I>&gt;<i>being able to fail. There is the motivation:
+</I>&gt;<i>
+</I>&gt;<i>There are cases where a Deferred is uncancellable. For example, we can 
+</I>&gt;<i>call
+</I>&gt;<i>twisted.mail.imap4.IMAP4Client.delete to delete a mailbox. When the
+</I>&gt;<i>operation is waiting in the queue, we can cancel it by removing it from 
+</I>&gt;<i>the
+</I>&gt;<i>queue. However, when the operation is already sent and is waiting for 
+</I>&gt;<i>the
+</I>&gt;<i>response, it becomes uncancellable.
+</I>&gt;<i>
+</I>&gt;<i>If we allow the canceller(NOT the cancel() method of the Deferred) to 
+</I>&gt;<i>raise
+</I>&gt;<i>an exception, we can tell the user the cancellation is failed and the
+</I>&gt;<i>Deferredwon’t be fired with a CancelledError.
+</I>&gt;<i>
+</I>&gt;<i>Raising an exception from cancel() may break the old code. So we can 
+</I>&gt;<i>catch
+</I>&gt;<i>the exception raised by the canceller, then return a False without 
+</I>&gt;<i>firing
+</I>&gt;<i>theDeferred to tell the user that the cancellation is failed.
+</I>
+It's true that introducing an exception where previously there was no 
+exception is likely to break things.
+
+However, *hiding* the failure in a return code that has to be checked 
+everywhere is not a solution to this problem.  The cancellation has 
+still failed - the only difference returning False instead of raising an 
+exception makes is that most code won't bother to check the return value 
+and will miss out on the fact that cancellation has failed.
+
+This mostly just breaks things differently (in a way that's much harder 
+to track down than a missing exception handler).
+&gt;<i>In order to avoid missing unexpected exceptions, we can create a
+</I>&gt;<i>CancellationFailedError. When the canceller raises 
+</I>&gt;<i>CancellationFailedError,
+</I>&gt;<i>we catch it and return False. When the canceller raises others 
+</I>&gt;<i>exceptions,
+</I>&gt;<i>we catch it, log it then return False.
+</I>&gt;<i>
+</I>&gt;<i>Something like this:
+</I>&gt;<i>
+</I>&gt;<i>def cancel(self):
+</I>&gt;<i>    if not self.called:
+</I>&gt;<i>        canceller = self._canceller
+</I>&gt;<i>        if canceller:
+</I>&gt;<i>            try:
+</I>&gt;<i>                canceller(self)
+</I>&gt;<i>            except CancellationFailedError:
+</I>&gt;<i>                return False
+</I>&gt;<i>            except Exception:
+</I>&gt;<i>                log.err(None, &quot;Unexpected exception from canceller.&quot;)
+</I>&gt;<i>                return False
+</I>&gt;<i>        else:
+</I>&gt;<i>            # Arrange to eat the callback that will eventually be fired
+</I>&gt;<i>            # since there was no real canceller.
+</I>&gt;<i>            self._suppressAlreadyCalled = True
+</I>&gt;<i>        if not self.called:
+</I>&gt;<i>            # There was no canceller, or the canceller didn't call
+</I>&gt;<i>            # callback or errback.
+</I>&gt;<i>            self.errback(failure.Failure(CancelledError()))
+</I>&gt;<i>        return True
+</I>&gt;<i>    elif isinstance(self.result, Deferred):
+</I>&gt;<i>        # Waiting for another deferred -- cancel it instead.
+</I>&gt;<i>        return self.result.cancel()
+</I>&gt;<i>    else:
+</I>&gt;<i>        return False
+</I>&gt;<i>
+</I>&gt;<i>This won’t break any code by raising an exception from cancel(), 
+</I>&gt;<i>although
+</I>&gt;<i>some code may rely on cancel() not returning any value.
+</I>&gt;<i>
+</I>&gt;<i>So, what’s your opinion on raising an exception from the canceller?
+</I>
+What about a third option - if a cancellation function raises an 
+exception, fail the Deferred with that exception.
+
+This:
+
+  1) avoids raising an exception from Deferred.cancel (and avoids 
+encoding error information in the return value of that method, forcing 
+application code to start checking for error return values)
+
+  2) Satisfies the expectation of the application code that cancelling 
+the Deferred will cause it to fire &quot;soon&quot; - with roughly the same 
+quality as if the Deferred had no canceller implemented at all.
+
+  3) Probably makes the implementation bug apparent by making the 
+exception available to errbacks on the Deferred.
+
+I'm not entirely convinced (3) is ideal - it may be that the Deferred 
+should actually fire with CancelledError in this case, just as it would 
+without a canceller, and the exception raised by the canceller should 
+just be logged (somewhat like what your code above does - but after 
+logging the error the Deferred should actually be cancelled).
+
+This has the same benefits, but puts the information about the 
+implementation into the application's log file rather than forcing 
+application-supplied errbacks to handle it somehow.
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="059845.html">[Twisted-Python] Raising exception from a Deferred canceller.
+</A></li>
+	<LI>Next message (by thread): <A HREF="059850.html">[Twisted-Python] Raising exception from a Deferred canceller.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59844">[ date ]</a>
+              <a href="thread.html#59844">[ thread ]</a>
+              <a href="subject.html#59844">[ subject ]</a>
+              <a href="author.html#59844">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

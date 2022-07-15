@@ -1,0 +1,153 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] How to send a UDP datagram
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20to%20send%20a%20UDP%20datagram&In-Reply-To=5.1.0.14.0.20050924175523.02adc0f0%40mail.adelphia.net">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="011491.html">
+   <LINK REL="Next"  HREF="011493.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] How to send a UDP datagram</H1>
+    <B>Jp Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20to%20send%20a%20UDP%20datagram&In-Reply-To=5.1.0.14.0.20050924175523.02adc0f0%40mail.adelphia.net"
+       TITLE="[Twisted-Python] How to send a UDP datagram">exarkun at divmod.com
+       </A><BR>
+    <I>Sat Sep 24 19:33:11 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="011491.html">[Twisted-Python] How to send a UDP datagram
+</A></li>
+        <LI>Next message: <A HREF="011493.html">[Twisted-Python] unsafe tracebacks in PB
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11492">[ date ]</a>
+              <a href="thread.html#11492">[ thread ]</a>
+              <a href="subject.html#11492">[ subject ]</a>
+              <a href="author.html#11492">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sat, 24 Sep 2005 18:28:54 -0400, Drake Smith &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">drakesmith at adelphia.net</A>&gt; wrote:
+&gt;<i>
+</I>&gt;<i> [snip]
+</I>&gt;<i>
+</I>&gt;<i>Jp,
+</I>&gt;<i>
+</I>&gt;<i>Thank you for the extra effort to show us OO novices how to control the loop 
+</I>&gt;<i>from outside the protocol class. I've read several inquiries to this effect 
+</I>&gt;<i>but nobody has ever explained it.
+</I>&gt;<i>
+</I>&gt;<i>I generalized your example to give me what I want: the ability to invoke UDP 
+</I>&gt;<i>datagram messages from outside the protocol class:
+</I>
+For the most part, your code looks good.  The one thing it gets somewhat incorrect is that it does not wait for the protocol to become connected before attempting to use its transport.
+
+&gt;<i>
+</I>&gt;<i>from twisted.internet import protocol, reactor, defer
+</I>&gt;<i>
+</I>&gt;<i>class UDPsender(protocol.DatagramProtocol):
+</I>&gt;<i>     def __init__(self, onStart):
+</I>&gt;<i>         self.onStart = onStart
+</I>&gt;<i>
+</I>&gt;<i>     def startProtocol(self):
+</I>&gt;<i>         self.onStart.callback(self)
+</I>
+  Only after startProtocol has been called is `self.transport' bound to something meaningful.  That's the reason for the Deferred here - so you know when you can start using the protocol instance.  Until this Deferred fires, there's no connection to write bytes too.
+
+  With SelectReactor (and perhaps all the other currently implemented reactors), startProtocol may get called synchronously as a result of listenUDP (that is, before listenUDP returns) - but this is not guaranteed, so it's best not to rely on it.
+
+&gt;<i>
+</I>&gt;<i>     def sendMsg(self, data, (host, port)):
+</I>&gt;<i>         self.transport.write(data, (host, port))
+</I>&gt;<i>
+</I>&gt;<i>class DatagramSender(object):
+</I>&gt;<i>     def start(self):
+</I>&gt;<i>         d = defer.Deferred()
+</I>&gt;<i>         d.addCallback(self._listening)
+</I>&gt;<i>         self._port = reactor.listenUDP(0, UDPsender(d))
+</I>&gt;<i>
+</I>&gt;<i>     def _listening(self, proto):
+</I>&gt;<i>         global myProto
+</I>&gt;<i>         myProto = proto
+</I>&gt;<i>
+</I>&gt;<i>     def sendMsg(self, data, (host, port)):
+</I>&gt;<i>         global myProto
+</I>&gt;<i>         myProto.sendMsg(data, (host, port))
+</I>&gt;<i>
+</I>&gt;<i>     def stop(self):
+</I>&gt;<i>         self._call.stop()
+</I>&gt;<i>         self._port.stopListening()
+</I>&gt;<i>
+</I>&gt;<i>ds = DatagramSender()
+</I>&gt;<i>ds.start()
+</I>&gt;<i>ds.sendMsg(&quot;hello port 20006&quot;, (&quot;127.0.0.1&quot;, 20006))
+</I>&gt;<i>ds.sendMsg(&quot;hello port 20007&quot;, (&quot;127.0.0.1&quot;, 20007))
+</I>
+  The above two lines are the ones that might explode if listenUDP doesn't give its protocol a transport synchronously.  To get them to execute at the correct time, you might try adding &quot;return d&quot; to the end of the definition of start, and then changing the above to:
+
+    ds = DatagramSender()
+    d = ds.start()
+    def startSendingStuff(ignored):
+        ds.sendMsg(&quot;hello port 20006&quot;, (&quot;127.0.0.1&quot;, 20006))
+        ds.sendMsg(&quot;hello port 20007&quot;, (&quot;127.0.0.1&quot;, 20007))
+
+&gt;<i>reactor.run()
+</I>&gt;<i>
+</I>&gt;<i>I tried a simpler implementation.....
+</I>&gt;<i>
+</I>&gt;<i>from twisted.internet import protocol, reactor
+</I>&gt;<i>
+</I>&gt;<i>class UDPsender(protocol.DatagramProtocol):
+</I>&gt;<i>
+</I>&gt;<i>     def sendMsg(self, data, (host, port)):
+</I>&gt;<i>         self.transport.write(data, (host, port))
+</I>&gt;<i>
+</I>&gt;<i>ds = UDPsender()
+</I>&gt;<i>ds.sendMsg(&quot;hello port 20006&quot;, (&quot;127.0.0.1&quot;, 20006))
+</I>&gt;<i>ds.sendMsg(&quot;hello port 20007&quot;, (&quot;127.0.0.1&quot;, 20007))
+</I>&gt;<i>reactor.run()
+</I>&gt;<i>
+</I>&gt;<i>.....but I get the infamous &quot;AttributeError: 'NoneType' object has no 
+</I>&gt;<i>attribute 'write'&quot; error. I'll stay with the former version. It's not 
+</I>&gt;<i>exactly as compact as &quot;mySocket.sendto(data, addr)&quot; but I know it will cause 
+</I>&gt;<i>me less headaches as my program evolves.
+</I>
+If you just add in a &quot;reactor.listenUDP(0, ds)&quot; before the call to sendMsg, the above should work, though the same caveat about synchronous listenUDP/startProtocol interaction applies.
+
+If you prefer, you can fold the `start' method (and supporting methods) into UDPSender - I only created two separate classes to demonstrate that the functionality could in fact be separated.
+
+&gt;<i>
+</I>&gt;<i>Jp: I see your name a lot within the Python community. Thanks for all your 
+</I>&gt;<i>attentiveness to us new comers.
+</I>
+Glad to be of help :)
+
+Jp
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="011491.html">[Twisted-Python] How to send a UDP datagram
+</A></li>
+	<LI>Next message: <A HREF="011493.html">[Twisted-Python] unsafe tracebacks in PB
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11492">[ date ]</a>
+              <a href="thread.html#11492">[ thread ]</a>
+              <a href="subject.html#11492">[ subject ]</a>
+              <a href="author.html#11492">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

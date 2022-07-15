@@ -1,0 +1,177 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Simple multiplex-relayer with
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Simple%20multiplex-relayer%20with&In-Reply-To=20041126090444.GB2779%40borg.intra.stinghorn.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009123.html">
+   <LINK REL="Next"  HREF="009134.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Simple multiplex-relayer with</H1>
+    <B>Jp Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Simple%20multiplex-relayer%20with&In-Reply-To=20041126090444.GB2779%40borg.intra.stinghorn.com"
+       TITLE="[Twisted-Python] Simple multiplex-relayer with">exarkun at divmod.com
+       </A><BR>
+    <I>Fri Nov 26 12:57:35 EST 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009123.html">[Twisted-Python] Simple multiplex-relayer with	twisted.protocols.smtp?
+</A></li>
+        <LI>Next message: <A HREF="009134.html">[Twisted-Python] Simple multiplex-relayer with
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9125">[ date ]</a>
+              <a href="thread.html#9125">[ thread ]</a>
+              <a href="subject.html#9125">[ subject ]</a>
+              <a href="author.html#9125">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, 26 Nov 2004 11:04:44 +0200, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">bostik at stinghorn.com</A> (Mika Bostrom) wrote:
+&gt;<i>  Good day, hackers.
+</I>&gt;<i> 
+</I>&gt;<i>   I'm trying to implement a rather simple, localhost-bound mail relay
+</I>&gt;<i> with Twisted. The setup is follows:
+</I>&gt;<i> 
+</I>&gt;<i> [snip]
+</I>&gt;<i> 
+</I>&gt;<i>   Code:
+</I>&gt;<i> 
+</I>&gt;<i> [--snip--]
+</I>&gt;<i> #!/usr/bin/python
+</I>&gt;<i> 
+</I>&gt;<i> from twisted.internet import reactor, protocol, defer
+</I>&gt;<i> from twisted.protocols import smtp
+</I>&gt;<i> from twisted.python import log
+</I>&gt;<i> import sys
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> class RelayUtility:
+</I>&gt;<i>   &quot;&quot;&quot;Utility class for holding runtime values&quot;&quot;&quot;
+</I>&gt;<i>   
+</I>&gt;<i>   def __init__(self):
+</I>&gt;<i>     self.maxconns =3D 20
+</I>&gt;<i>     self.active =3D 0
+</I>&gt;<i>   
+</I>&gt;<i> class RelayMessage(smtp.IMessage):
+</I>&gt;<i>   def __init__(self):
+</I>&gt;<i>     smtp.IMessage.__init__(self)
+</I>&gt;<i>     self.msg =3D []
+</I>&gt;<i> 
+</I>
+  The above class is the most obvious problem I see here.  Interfaces are not meant to be subclassed in this manner.  What you really want is something more like:
+
+    class RelayMessage:
+        __implements__ = smtp.IMessage
+
+        def lineReceived(self, line):
+            # Do something with the line; perhaps buffer it in memory,
+            # perhaps try and send it to another connection.
+
+        def eomReceived(self):
+            # The message has been fully received; flush the buffer or take
+            # whatever other action is appropriate to ensure message delivery.
+            # Return a Deferred that fires when the message has been successfully
+            # delivered.
+
+        def connectionLost(self):
+            # Discard message content, delivery is a failure
+
+&gt;<i>   
+</I>&gt;<i> 
+</I>&gt;<i> class RelayProtocol(smtp.ESMTP):
+</I>&gt;<i>   &quot;&quot;&quot;Relayer; sucks the mail in&quot;&quot;&quot;
+</I>&gt;<i>   
+</I>&gt;<i>   def __init__(self):
+</I>&gt;<i>     self.util =3D util
+</I>&gt;<i>     # Normal operations
+</I>&gt;<i>     smtp.ESMTP.__init__(self)
+</I>&gt;<i>     self.host =3D &quot;nowhere.dot.invalid&quot;
+</I>&gt;<i> 
+</I>&gt;<i>   def connectionLost(self, reason):
+</I>&gt;<i>     self.util.active -=3D 1
+</I>&gt;<i> 
+</I>&gt;<i>   def connectionMade(self):
+</I>&gt;<i>     # The easiest way. Increments upon connection, decrements
+</I>&gt;<i>     # upon disconnection; In case of full queue, just kick the client
+</I>&gt;<i>     self.util.active +=3D 1
+</I>&gt;<i>     if (self.util.active &lt;=3D self.util.maxconns):
+</I>&gt;<i>       smtp.ESMTP.connectionMade(self)
+</I>&gt;<i>     else:
+</I>&gt;<i>       self.sendCode(430, &quot;Queue full. Try again later.&quot;)
+</I>&gt;<i>       self.transport.loseConnection()
+</I>&gt;<i> 
+</I>&gt;<i>     
+</I>&gt;<i>   # This can't be right
+</I>&gt;<i>   def validateFrom(self, helo, origin):
+</I>&gt;<i>     return smtp.Address(origin, None)
+</I>&gt;<i> 
+</I>&gt;<i>   # This is certainly not right, DATA barks
+</I>&gt;<i>   def validateTo(self, user):
+</I>&gt;<i>     return RelayMessage
+</I>
+  You _could_ do things this way, but a preferable way is probably:
+
+    class RelayDeliveryFactory:
+        __implements__ = smtp.IMessageDeliveryFactory
+
+        def getMessageDelivery(self):
+            return RelayDelivery()
+
+    class RelayDelivery:
+        __implements__ = smtp.IMessageDelivery
+
+        def receivedHeader(self, helo, origin, recipients):
+            return &quot;Received: something&quot;
+
+        def validateFrom(self, helo, origin):
+            return origin
+
+        def validateTo(self, user):
+            return RelayMessage
+
+&gt;<i> 
+</I>&gt;<i> class RelayFactory(smtp.SMTPFactory):
+</I>&gt;<i>   protocol =3D RelayProtocol
+</I>&gt;<i> 
+</I>
+  Then add this buildProtocol method:
+
+    def buildProtocol(self, addr):
+        p = smtp.SMTPFactory.buildProtocol(self, addr)
+        p.deliveryFactory = RelayDeliveryFactory()
+        return p
+
+  ESMTP will call getMessageDelivery on its deliveryFactory attribute, now that it isn't None.  On the object it returns, it will call receivedHeader, validateFrom, and validateTo.  And on the object returned by calling the object returned by validateTo, it will pass the contents of the message being delivered, letting you relay it wherever is appropriate.
+
+  Hope this helps,
+
+  Jp
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009123.html">[Twisted-Python] Simple multiplex-relayer with	twisted.protocols.smtp?
+</A></li>
+	<LI>Next message: <A HREF="009134.html">[Twisted-Python] Simple multiplex-relayer with
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9125">[ date ]</a>
+              <a href="thread.html#9125">[ thread ]</a>
+              <a href="subject.html#9125">[ subject ]</a>
+              <a href="author.html#9125">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

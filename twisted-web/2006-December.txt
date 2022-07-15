@@ -1,0 +1,4330 @@
+From iacovou at gmail.com  Fri Dec  1 07:35:34 2006
+From: iacovou at gmail.com (kgi)
+Date: Fri Dec  1 07:35:57 2006
+Subject: [Twisted-web] How to nest LiveElements? (getting a
+	MissingRenderMethod error)
+Message-ID: <200612011535.34432.iacovou@gmail.com>
+
+
+Hi there.
+
+I've got a web app that was originally written as a bunch of LiveElements at 
+the top level of a LivePage. I want to clean up this code and restructure it 
+such that several of the LiveElements are more modular; this entails making 
+some of the LiveElements contain other LiveElements.
+
+Now, I could have *sworn* I've done this before, but whatever I try to do now 
+I get a nevow.errors.MissingRenderMethod exception.
+
+At the end of this email is a cut-down example that exhibits the behaviour. 
+OuterWidget and InnerWidget are two LiveElement objects; they can both exist 
+happily in the LivePage, but if you uncomment the div containing an 
+innerWidget rendering directive (around line 28) you get:
+
+          File "/usr/lib/python2.4/site-packages/nevow/flat/ten.py", line 70, 
+in serialize
+            return partialflatten(context, obj)
+          File "/usr/lib/python2.4/site-packages/nevow/flat/ten.py", line 61, 
+in partialflatten
+            return flattener(obj, context)
+          File "/usr/lib/python2.4/site-packages/nevow/flat/flatstan.py", line 
+261, in DirectiveSerializer
+            renderer = rendererFactory.renderer(context, original.name)
+          File "/usr/lib/python2.4/site-packages/nevow/page.py", line 78, in 
+renderer
+            raise MissingRenderMethod(self, name)
+        nevow.errors.MissingRenderMethod: (<OuterWidget object at 
+0xb763482c>, 'innerWidget')
+
+Can anyone shed any light on this?
+
+There are also seemingly three styles for render methods that I've found. The 
+third was kind of guessed from the documentation of nevow.page.Element; I'm 
+not sure I've used it correctly, but I seem to recall reading that the 
+special "render_" prefixes will be going away and replaced by a renderer() 
+registration method, like the expose() method for athena callables.
+
+Which is the preferred form?
+
+    def render_innerWidget ( self, ctx, data ):
+        elem = InnerWidget()
+        elem.setFragmentParent ( self )
+        return elem
+
+   def render_innerWidget ( self, ctx, data ):
+        elem = InnerWidget()
+        elem.setFragmentParent ( self )
+        return ctx.tag[f]
+
+   from nevow.page import renderer
+   def innerWidget ( self, request, tag ):
+        elem = InnerWidget()
+        elem.setFragmentParent ( self )
+        return elem
+   renderer(items)
+
+Thanks,
+
+Ricky
+
+--
+
+
+# Run using 'twistd -noy file.py'; point browser to localhost:8080
+
+from nevow import athena
+from nevow import stan
+from nevow import loaders
+from nevow import tags as T
+from nevow import flat
+from nevow import static
+
+
+class InnerWidget ( athena.LiveElement ):
+
+    docFactory = loaders.stan (
+        T.div (
+            render = T.directive ( 'liveElement' ),
+            ) [
+                T.p ( _class = 'bar' ) [ "This is InnerWidget text" ]
+            ]
+    )
+
+
+class OuterWidget ( athena.LiveElement ):
+
+    docFactory = loaders.stan (
+        T.div (
+            render = T.directive ( 'liveElement' ),
+            ) [
+                T.p ( _class = "foo" ) [ "This is OuterWidget text" ],
+                # I can't create an InnerWidget inside the OuterWidget.
+                # T.div ( render = T.directive ( "innerWidget" ) ),
+            ]
+    )
+
+    def render_innerWidget ( self, ctx, data ):
+        elem = InnerWidget()
+        elem.setFragmentParent ( self )
+        return ctx.tag[f]
+
+
+class WebApp ( athena.LivePage ):
+
+    DOCTYPE_XHTML = (
+        '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" '
+        '"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">'
+    )
+
+    _css = T.link (
+        rel = "stylesheet", type = "text/css", href = "css/style.css"
+    )
+
+    docFactory = loaders.stan (
+        [
+            T.xml ( DOCTYPE_XHTML ),
+            T.html [
+                T.head ( render = T.directive ( 'liveglue' ) ) [ _css ],
+                T.body [
+                    T.div ( render = T.directive ( 'outerWidget') ),
+
+                    # But I can create an InnerWidget at the top-level, inside
+                    # athena.LivePage.
+                    T.div ( render = T.directive ( 'innerWidget') ),
+                ]
+            ]
+        ]
+    )
+    
+    addSlash = True
+
+    def render_outerWidget ( self, ctx, data ):
+        f = OuterWidget()
+        f.setFragmentParent(self)
+        return ctx.tag[f]
+
+
+    def render_innerWidget ( self, ctx, data ):
+        f = InnerWidget()
+        f.setFragmentParent(self)
+        return ctx.tag[f]
+
+
+    def child_css ( self, ctx ):
+        return static.File ( 'css' )
+
+
+    def child_js ( self, ctx ):
+        return static.File ( 'js' )
+
+    
+from twisted.application import service, internet
+from nevow import appserver
+
+res = WebApp()
+
+site = appserver.NevowSite ( res )
+
+application = service.Application ( "WebApp" )
+webService = internet.TCPServer ( 8080, site )
+webService.setServiceParent ( application )
+
+--
+
+
+From exarkun at divmod.com  Fri Dec  1 08:20:24 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec  1 08:20:27 2006
+Subject: [Twisted-web] How to nest LiveElements? (getting a
+	MissingRenderMethod error)
+In-Reply-To: <200612011535.34432.iacovou@gmail.com>
+Message-ID: <20061201142024.20948.1899970984.divmod.quotient.53258@ohm>
+
+On Fri, 1 Dec 2006 15:35:34 +0200, kgi <iacovou@gmail.com> wrote:
+>
+>Hi there.
+>
+>I've got a web app that was originally written as a bunch of LiveElements at
+>the top level of a LivePage. I want to clean up this code and restructure it
+>such that several of the LiveElements are more modular; this entails making
+>some of the LiveElements contain other LiveElements.
+>
+>Now, I could have *sworn* I've done this before, but whatever I try to do now
+>I get a nevow.errors.MissingRenderMethod exception.
+>
+>At the end of this email is a cut-down example that exhibits the behaviour.
+>OuterWidget and InnerWidget are two LiveElement objects; they can both exist
+>happily in the LivePage, but if you uncomment the div containing an
+>innerWidget rendering directive (around line 28) you get:
+>
+>          File "/usr/lib/python2.4/site-packages/nevow/flat/ten.py", line 70,
+>in serialize
+>            return partialflatten(context, obj)
+>          File "/usr/lib/python2.4/site-packages/nevow/flat/ten.py", line 61,
+>in partialflatten
+>            return flattener(obj, context)
+>          File "/usr/lib/python2.4/site-packages/nevow/flat/flatstan.py", line
+>261, in DirectiveSerializer
+>            renderer = rendererFactory.renderer(context, original.name)
+>          File "/usr/lib/python2.4/site-packages/nevow/page.py", line 78, in
+>renderer
+>            raise MissingRenderMethod(self, name)
+>        nevow.errors.MissingRenderMethod: (<OuterWidget object at
+>0xb763482c>, 'innerWidget')
+>
+>Can anyone shed any light on this?
+>
+>There are also seemingly three styles for render methods that I've found. The
+>third was kind of guessed from the documentation of nevow.page.Element; I'm
+>not sure I've used it correctly, but I seem to recall reading that the
+>special "render_" prefixes will be going away and replaced by a renderer()
+>registration method, like the expose() method for athena callables.
+
+All Element renderers _must_ use renderer().  All Fragment/Page renderers
+_must_ use the "render_" prefix.  All Athena callables _must_ use expose().
+
+No other approach will work at all.
+
+>
+>Which is the preferred form?
+>
+>    def render_innerWidget ( self, ctx, data ):
+>        elem = InnerWidget()
+>        elem.setFragmentParent ( self )
+>        return elem
+>
+>   def render_innerWidget ( self, ctx, data ):
+>        elem = InnerWidget()
+>        elem.setFragmentParent ( self )
+>        return ctx.tag[f]
+
+Either of these is usable on a Fragment or Page class.  Whether you wrap
+the result in ctx.tag or not depends on whether you want to preserve the
+tag on which the render directive was defined.
+
+>
+>   from nevow.page import renderer
+>   def innerWidget ( self, request, tag ):
+>        elem = InnerWidget()
+>        elem.setFragmentParent ( self )
+>        return elem
+>   renderer(items)
+
+Like the other examples, you could return ctx.tag[elem] here.  The
+difference between Fragment and Element or render_* and renderer() has
+no bearing on that choice.
+
+Hope this helps,
+
+Jean-Paul
+
+From iacovou at gmail.com  Fri Dec  1 08:49:49 2006
+From: iacovou at gmail.com (kgi)
+Date: Fri Dec  1 08:50:04 2006
+Subject: [Twisted-web] How to nest LiveElements? (getting a
+	MissingRenderMethod error)
+In-Reply-To: <20061201142024.20948.1899970984.divmod.quotient.53258@ohm>
+References: <20061201142024.20948.1899970984.divmod.quotient.53258@ohm>
+Message-ID: <200612011649.50072.iacovou@gmail.com>
+
+On Friday 01 December 2006 16:20, Jean-Paul Calderone wrote:
+> On Fri, 1 Dec 2006 15:35:34 +0200, kgi <iacovou@gmail.com> wrote:
+> All Element renderers _must_ use renderer().  All Fragment/Page renderers
+> _must_ use the "render_" prefix.  All Athena callables _must_ use expose().
+>
+> No other approach will work at all.
+
+Hi JP; thanks for your reply. That has got it working!
+
+Can I ask, what's the high-level, hand-wavey, fuzzy-feeling distinction 
+between a Page and an Element?
+
+I just think of them both as "things in which I define a docFactory and which 
+magically render themselves", which is why I hit this problem: I had assumed 
+that whichever I should use should be applicable to both Pages and Elements, 
+since in both cases I was defining stan in a docFactory.
+
+I had tried various combinations of using ("render_"|renderer()) and returning 
+(ctx.tag[elem]|elem), but it never occurred to me to use different syntax for 
+Pages and Elements.
+
+> >   from nevow.page import renderer
+> >   def innerWidget ( self, request, tag ):
+> >        ...
+> >        return elem
+> >   renderer(innerWidget)
+>
+> Like the other examples, you could return ctx.tag[elem] here.
+
+Do you mean, tag[elem], since these render methods receive (request,tag) 
+rather than (ctx,data)?
+
+Thanks,
+
+Ricky
+
+From p.mayers at imperial.ac.uk  Fri Dec  1 08:56:46 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Fri Dec  1 08:56:55 2006
+Subject: [Twisted-web] T.directive -> function/method names in stan
+Message-ID: <457042AE.4010006@imperial.ac.uk>
+
+The formal code contains (in the examples.main module) this construct:
+
+T.body[
+     T.h1(data=T.directive('title'), render=rend.data),
+     T.p(data=T.directive('description'), render=rend.data),
+     T.directive('form example'),
+],
+
+Can someone point me at the bit of nevow code that results in that calling:
+
+class anexample:
+   def form_example(self, ctx):
+     # stuff
+
+The stan flattener container a DirectiveSerializer that just looks for 
+an IRendererFactory on the context and calls factory.renderer(ctx, name) 
+but as far as I can tell it ought to end up calling:
+
+   page.render_form('example')
+
+From exarkun at divmod.com  Fri Dec  1 09:52:32 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec  1 09:52:34 2006
+Subject: [Twisted-web] How to nest LiveElements? (getting a
+	MissingRenderMethod error)
+In-Reply-To: <200612011649.50072.iacovou@gmail.com>
+Message-ID: <20061201155232.20948.975578491.divmod.quotient.53350@ohm>
+
+On Fri, 1 Dec 2006 16:49:49 +0200, kgi <iacovou@gmail.com> wrote:
+>On Friday 01 December 2006 16:20, Jean-Paul Calderone wrote:
+>> On Fri, 1 Dec 2006 15:35:34 +0200, kgi <iacovou@gmail.com> wrote:
+>> All Element renderers _must_ use renderer().  All Fragment/Page renderers
+>> _must_ use the "render_" prefix.  All Athena callables _must_ use expose().
+>>
+>> No other approach will work at all.
+>
+>Hi JP; thanks for your reply. That has got it working!
+>
+>Can I ask, what's the high-level, hand-wavey, fuzzy-feeling distinction
+>between a Page and an Element?
+
+A more accurate parallel to draw is one between Fragment and Element.  Page
+is the top dog for now: it is the IResource implementation in Nevow, and you
+have to have an IResource implementation as the very base component involved
+in rendering a page.  Since the renderers on a Page can return either
+Fragments or Elements, you can then construct the rest of your page out of
+a collection of other classes (as I'm sure you well know :).
+
+The difference between Fragment and Element is just this: Fragment renderers
+are passed a context, Element renderers are not.
+
+This is the first step in a long process of eliminating the context from
+Nevow.  At some very distant time (years hence, likely), Page and Fragment
+will be removed, to be replaced by classes which present APIs which do not
+involve the context.  Right now, there is no substitute for Page, but
+Element is the substitute for Fragment.
+
+The difference in the way render methods are dispatched between Fragment and
+Element is somewhat incidental to this.  At some future time, it may be
+possible to customize Element so that it also dispatches to render_, since
+this isn't really an essential part of the change Element actually exists to
+facilitate.
+
+> [snip]
+>
+>> >   from nevow.page import renderer
+>> >   def innerWidget ( self, request, tag ):
+>> >        ...
+>> >        return elem
+>> >   renderer(innerWidget)
+>>
+>> Like the other examples, you could return ctx.tag[elem] here.
+>
+>Do you mean, tag[elem], since these render methods receive (request,tag)
+>rather than (ctx,data)?
+
+Oops!  Yes, exactly that. :)
+
+Jean-Paul
+
+From exarkun at divmod.com  Fri Dec  1 09:56:08 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec  1 09:56:10 2006
+Subject: [Twisted-web] T.directive -> function/method names in stan
+In-Reply-To: <457042AE.4010006@imperial.ac.uk>
+Message-ID: <20061201155608.20948.1664018093.divmod.quotient.53355@ohm>
+
+On Fri, 01 Dec 2006 14:56:46 +0000, Phil Mayers <p.mayers@imperial.ac.uk> wrote:
+>The formal code contains (in the examples.main module) this construct:
+>
+>T.body[
+>     T.h1(data=T.directive('title'), render=rend.data),
+>     T.p(data=T.directive('description'), render=rend.data),
+>     T.directive('form example'),
+>],
+>
+>Can someone point me at the bit of nevow code that results in that calling:
+>
+>class anexample:
+>   def form_example(self, ctx):
+>     # stuff
+>
+>The stan flattener container a DirectiveSerializer that just looks for an 
+>IRendererFactory on the context and calls factory.renderer(ctx, name) but as 
+>far as I can tell it ought to end up calling:
+>
+>   page.render_form('example')
+>
+
+Indeed that is what Nevow does.  Then, Formal takes over: it has a render_form method which looks up form_* methods and dispatches to them.
+
+Jean-Paul
+
+From mwh at python.net  Fri Dec  1 10:05:02 2006
+From: mwh at python.net (Michael Hudson)
+Date: Fri Dec  1 10:08:00 2006
+Subject: [Twisted-web] Re: T.directive -> function/method names in stan
+References: <457042AE.4010006@imperial.ac.uk>
+Message-ID: <87bqmnhaa9.fsf@starship.python.net>
+
+Phil Mayers <p.mayers@imperial.ac.uk> writes:
+
+> The formal code contains (in the examples.main module) this construct:
+>
+> T.body[
+>     T.h1(data=T.directive('title'), render=rend.data),
+>     T.p(data=T.directive('description'), render=rend.data),
+>     T.directive('form example'),
+> ],
+>
+> Can someone point me at the bit of nevow code that results in that calling:
+>
+> class anexample:
+>   def form_example(self, ctx):
+>     # stuff
+>
+> The stan flattener container a DirectiveSerializer that just looks for
+> an IRendererFactory on the context and calls factory.renderer(ctx,
+> name) but as far as I can tell it ought to end up calling:
+>
+>   page.render_form('example')
+
+It does call that, I think :-) But the page inherits from
+forms.ResourceMixin, so the call goes here:
+
+http://forms-project.pollenation.net/cgi-bin/trac.cgi/browser/trunk/formal/form.py#L522
+
+Cheers,
+mwh
+
+-- 
+    . <- the point                                your article -> .
+    |------------------------- a long way ------------------------|
+                                       -- Christophe Rhodes, ucam.chat
+
+
+From p.mayers at imperial.ac.uk  Fri Dec  1 10:24:34 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Fri Dec  1 10:24:48 2006
+Subject: [Twisted-web] T.directive -> function/method names in stan
+In-Reply-To: <20061201155608.20948.1664018093.divmod.quotient.53355@ohm>
+References: <20061201155608.20948.1664018093.divmod.quotient.53355@ohm>
+Message-ID: <45705742.8030502@imperial.ac.uk>
+
+Jean-Paul Calderone wrote:
+
+> 
+> Indeed that is what Nevow does.  Then, Formal takes over: it has a 
+> render_form method which looks up form_* methods and dispatches to them.
+> 
+> Jean-Paul
+
+Doh (slaps forehead).
+
+Thanks both Jean-Paul and Michael for pointing this out. I thought I was 
+hallucinating some new behaviour of Nevow!
+
+From iacovou at gmail.com  Fri Dec  1 12:08:39 2006
+From: iacovou at gmail.com (kgi)
+Date: Fri Dec  1 12:09:01 2006
+Subject: [Twisted-web] How to nest LiveElements? (getting a
+	MissingRenderMethod error)
+In-Reply-To: <20061201155232.20948.975578491.divmod.quotient.53350@ohm>
+References: <20061201155232.20948.975578491.divmod.quotient.53350@ohm>
+Message-ID: <200612012008.39181.iacovou@gmail.com>
+
+On Friday 01 December 2006 17:52, Jean-Paul Calderone wrote:
+
+> The difference between Fragment and Element is just this: Fragment
+> renderers are passed a context, Element renderers are not.
+> [...]
+> The difference in the way render methods are dispatched between Fragment
+> and Element is somewhat incidental to this.  At some future time, it may be
+> possible to customize Element so that it also dispatches to render_, since
+> this isn't really an essential part of the change Element actually exists
+> to facilitate.
+
+OK, so it's not some Deep Architectural Reason; it's just that "Elements are 
+not Fragments", and they use a slightly different syntax. Thanks for the 
+clarification.
+
+I do have one more question on this subject of LiveElements, if you don't mind 
+imparting some more wisdom.
+
+When I'm completely stumped by something, I try and grep through the various 
+Divmod sources to try and find an idiomatic usage (or even one that 
+says, "TODO: We really should fix this one day" :-) ).
+
+One surprising result was that most of the LiveElement-derived classes don't 
+generally have a docFactory defined, but rather implement INavigableFragment 
+and implement non-GUI 'business logic' (e.g. looking up and storing things in 
+a DB), although they do return renderable elements from their renderer 
+methods.
+
+An example of this would be the FromAddressConfigFragment class in 
+Quotient/xquotient/compose.py
+
+What is the reason behind this approach? My approach has generally been to 
+build a bunch of GUI-neutral 'business logic' objects and access these from 
+the GUI layer (thereby theoretically allowing the GUI to be changed, blah, 
+blah, not that I've ever heard of a successful GUI change, mind.).
+
+I guess one advantage of the approach in the Divmod sources is that you 
+minimise "interface duplication": you don't have client-side JS calling 
+server-side LiveElement.doStuff(), which has to call 
+BusinessObject.doStuff().
+
+Are there other motives and reasons I've completely failed to think of?
+
+Regards,
+
+Ricky
+
+From exarkun at divmod.com  Fri Dec  1 16:25:19 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec  1 16:25:21 2006
+Subject: [Twisted-web] How to nest LiveElements? (getting a
+	MissingRenderMethod error)
+In-Reply-To: <200612012008.39181.iacovou@gmail.com>
+Message-ID: <20061201222519.20948.581265601.divmod.quotient.53761@ohm>
+
+On Fri, 1 Dec 2006 20:08:39 +0200, kgi <iacovou@gmail.com> wrote:
+>On Friday 01 December 2006 17:52, Jean-Paul Calderone wrote:
+>
+>> The difference between Fragment and Element is just this: Fragment
+>> renderers are passed a context, Element renderers are not.
+>> [...]
+>> The difference in the way render methods are dispatched between Fragment
+>> and Element is somewhat incidental to this.  At some future time, it may be
+>> possible to customize Element so that it also dispatches to render_, since
+>> this isn't really an essential part of the change Element actually exists
+>> to facilitate.
+>
+>OK, so it's not some Deep Architectural Reason; it's just that "Elements are
+>not Fragments", and they use a slightly different syntax. Thanks for the
+>clarification.
+>
+>I do have one more question on this subject of LiveElements, if you don't mind
+>imparting some more wisdom.
+
+I can try. ;)
+
+>
+>When I'm completely stumped by something, I try and grep through the various
+>Divmod sources to try and find an idiomatic usage (or even one that
+>says, "TODO: We really should fix this one day" :-) ).
+>
+>One surprising result was that most of the LiveElement-derived classes don't
+>generally have a docFactory defined, but rather implement INavigableFragment
+>and implement non-GUI 'business logic' (e.g. looking up and storing things in
+>a DB), although they do return renderable elements from their renderer
+>methods.
+>
+>An example of this would be the FromAddressConfigFragment class in
+>Quotient/xquotient/compose.py
+>
+>What is the reason behind this approach? My approach has generally been to
+>build a bunch of GUI-neutral 'business logic' objects and access these from
+>the GUI layer (thereby theoretically allowing the GUI to be changed, blah,
+>blah, not that I've ever heard of a successful GUI change, mind.).
+
+There isn't really any strong justification for the way much of that code 
+is factored.  It would probably be better if it separated view from model 
+more consistently.
+
+>
+>I guess one advantage of the approach in the Divmod sources is that you
+>minimise "interface duplication": you don't have client-side JS calling
+>server-side LiveElement.doStuff(), which has to call
+>BusinessObject.doStuff().
+
+But at the cost of making things harder to test and understand. ;)  Ideally
+there would be a way to eliminate duplication and keep view and model 
+separate.  I don't think we've completely figured out how to do that yet, 
+though.
+
+>
+>Are there other motives and reasons I've completely failed to think of?
+>
+
+As I mentioned, the main reason here is probably just expendiency.  We have 
+way too many things to do, and sometimes we cut some corners.
+
+Jean-Paul
+
+From shakhshir at gmail.com  Sun Dec  3 15:05:33 2006
+From: shakhshir at gmail.com (Saad Shakhshir)
+Date: Sun Dec  3 15:05:35 2006
+Subject: [Twisted-web] Is Nevow Development Still Active?
+Message-ID: <230d1df80612031305r7a1d2673r964888a75e12e6cd@mail.gmail.com>
+
+Hi, I just took a look at the nevow-commits mailing list and noticed that
+there hasn't been any activity since April this year.  Is Nevow development
+still active and if it is, where is the best place to keep up to date on
+what's happening with it?
+
+thanks,
+Saad
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061203/bce49958/attachment.htm
+From exarkun at divmod.com  Sun Dec  3 15:50:58 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Sun Dec  3 15:51:12 2006
+Subject: [Twisted-web] Is Nevow Development Still Active?
+In-Reply-To: <230d1df80612031305r7a1d2673r964888a75e12e6cd@mail.gmail.com>
+Message-ID: <20061203215058.20948.1494447387.divmod.quotient.56453@ohm>
+
+On Sun, 3 Dec 2006 16:05:33 -0500, Saad Shakhshir <shakhshir@gmail.com> wrote:
+>Hi, I just took a look at the nevow-commits mailing list and noticed that
+>there hasn't been any activity since April this year.  Is Nevow development
+>still active and if it is, where is the best place to keep up to date on
+>what's happening with it?
+
+Take a look at
+
+  http://divmod.org/trac/log/trunk/Nevow
+
+or
+
+  http://divmod.net/users/mailman.twistd/listinfo/divmod-commits
+
+Jean-Paul
+
+From p.mayers at imperial.ac.uk  Sun Dec  3 18:08:05 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Sun Dec  3 18:08:16 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+Message-ID: <457366E5.1050507@imperial.ac.uk>
+
+Why?
+
+http://divmod.org/trac/browser/trunk/Nevow/nevow/js/Nevow/Athena/__init__.js#L570
+
+From exarkun at divmod.com  Sun Dec  3 18:12:17 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Sun Dec  3 18:12:21 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+In-Reply-To: <457366E5.1050507@imperial.ac.uk>
+Message-ID: <20061204001217.20948.1277854251.divmod.quotient.56590@ohm>
+
+On Mon, 04 Dec 2006 00:08:05 +0000, Phil Mayers <p.mayers@imperial.ac.uk> wrote:
+>Why?
+>
+>http://divmod.org/trac/browser/trunk/Nevow/nevow/js/Nevow/Athena/__init__.js#L570
+
+Lack of time to implement something different.
+
+Jean-Paul
+
+From p.mayers at imperial.ac.uk  Sun Dec  3 18:31:42 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Sun Dec  3 18:31:47 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+In-Reply-To: <20061204001217.20948.1277854251.divmod.quotient.56590@ohm>
+References: <20061204001217.20948.1277854251.divmod.quotient.56590@ohm>
+Message-ID: <45736C6E.6060100@imperial.ac.uk>
+
+Jean-Paul Calderone wrote:
+> On Mon, 04 Dec 2006 00:08:05 +0000, Phil Mayers 
+> <p.mayers@imperial.ac.uk> wrote:
+>> Why?
+>>
+>> http://divmod.org/trac/browser/trunk/Nevow/nevow/js/Nevow/Athena/__init__.js#L570 
+>>
+> 
+> Lack of time to implement something different.
+
+Ok, I guess what I'm asking is - why is it ever necessary for the client 
+to execute a close of the live connection via the keyboard (other than 
+debugging of course) and will anything break if I comment that out?
+
+I'm guessing not.
+
+From glyph at divmod.com  Sun Dec  3 20:07:49 2006
+From: glyph at divmod.com (glyph@divmod.com)
+Date: Sun Dec  3 20:07:55 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+Message-ID: <20061204020749.11053.788070980.divmod.xquotient.2026@joule.divmod.com>
+
+On 12:31 am, p.mayers@imperial.ac.uk wrote:
+>Jean-Paul Calderone wrote:
+>>On Mon, 04 Dec 2006 00:08:05 +0000, Phil Mayers <p.mayers@imperial.ac.uk> 
+>>wrote:
+>>>Why?
+>>>
+>>>http://divmod.org/trac/browser/trunk/Nevow/nevow/js/Nevow/Athena/__init__.js#L570
+>>
+>>Lack of time to implement something different.
+>
+>Ok, I guess what I'm asking is - why is it ever necessary for the client to 
+>execute a close of the live connection via the keyboard (other than 
+>debugging of course) and will anything break if I comment that out?
+>
+>I'm guessing not.
+
+If escape isn't handled, then sometimes it will invoke the "stop" button, which causes random non-deterministic connection failures which aren't immediately reported.  I don't entirely understand the situation, but an immediate failure is better than what was happening before.
+
+I believe this is actually fixable, but as JP says, we don't have time at the moment.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061204/ef9b2848/attachment.htm
+From p.mayers at imperial.ac.uk  Mon Dec  4 11:28:46 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Mon Dec  4 11:28:53 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+In-Reply-To: <20061204020749.11053.788070980.divmod.xquotient.2026@joule.divmod.com>
+References: <20061204020749.11053.788070980.divmod.xquotient.2026@joule.divmod.com>
+Message-ID: <45745ACE.2050002@imperial.ac.uk>
+
+glyph@divmod.com wrote:
+> On 12:31 am, p.mayers@imperial.ac.uk wrote:
+>  >Jean-Paul Calderone wrote:
+>  >>On Mon, 04 Dec 2006 00:08:05 +0000, Phil Mayers 
+> <p.mayers@imperial.ac.uk>
+>  >>wrote:
+>  >>>Why?
+>  >>>
+>  >>>http://divmod.org/trac/browser/trunk/Nevow/nevow/js/Nevow/Athena/__init__.js#L570
+>  >>
+>  >>Lack of time to implement something different.
+>  >
+>  >Ok, I guess what I'm asking is - why is it ever necessary for the 
+> client to
+>  >execute a close of the live connection via the keyboard (other than
+>  >debugging of course) and will anything break if I comment that out?
+>  >
+>  >I'm guessing not.
+> 
+> If escape isn't handled, then sometimes it will invoke the "stop" 
+> button, which causes random non-deterministic connection failures which 
+> aren't immediately reported.  I don't entirely understand the situation, 
+> but an immediate failure is better than what was happening before.
+> 
+> I believe this is actually fixable, but as JP says, we don't have time 
+> at the moment.
+
+Hrm. Interesting. Ok. It's hardly a critical problem, thanks for taking 
+the time to reply (FWIW I was handling escape to trigger closure of an 
+autocomplete dropdown <div>)
+
+Do you happen to know what browsers the escape==stop behaviour occurs 
+under? I might take a look at it.
+
+From corydodt+hello at gmail.com  Mon Dec  4 16:25:51 2006
+From: corydodt+hello at gmail.com (Cory Dodt)
+Date: Mon Dec  4 16:25:55 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+In-Reply-To: <45745ACE.2050002@imperial.ac.uk>
+References: <20061204020749.11053.788070980.divmod.xquotient.2026@joule.divmod.com>
+	<45745ACE.2050002@imperial.ac.uk>
+Message-ID: <c16a94ff0612041425w1f25caadkf1f5960b5037870a@mail.gmail.com>
+
+Can't we just stopPropagation/preventDefault on keycode 27?
+
+C
+
+
+On 12/4/06, Phil Mayers <p.mayers@imperial.ac.uk> wrote:
+>
+> glyph@divmod.com wrote:
+> > On 12:31 am, p.mayers@imperial.ac.uk wrote:
+> >  >Jean-Paul Calderone wrote:
+> >  >>On Mon, 04 Dec 2006 00:08:05 +0000, Phil Mayers
+> > <p.mayers@imperial.ac.uk>
+> >  >>wrote:
+> >  >>>Why?
+> >  >>>
+> >  >>>
+> http://divmod.org/trac/browser/trunk/Nevow/nevow/js/Nevow/Athena/__init__.js#L570
+> >  >>
+> >  >>Lack of time to implement something different.
+> >  >
+> >  >Ok, I guess what I'm asking is - why is it ever necessary for the
+> > client to
+> >  >execute a close of the live connection via the keyboard (other than
+> >  >debugging of course) and will anything break if I comment that out?
+> >  >
+> >  >I'm guessing not.
+> >
+> > If escape isn't handled, then sometimes it will invoke the "stop"
+> > button, which causes random non-deterministic connection failures which
+> > aren't immediately reported.  I don't entirely understand the situation,
+> > but an immediate failure is better than what was happening before.
+> >
+> > I believe this is actually fixable, but as JP says, we don't have time
+> > at the moment.
+>
+> Hrm. Interesting. Ok. It's hardly a critical problem, thanks for taking
+> the time to reply (FWIW I was handling escape to trigger closure of an
+> autocomplete dropdown <div>)
+>
+> Do you happen to know what browsers the escape==stop behaviour occurs
+> under? I might take a look at it.
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061204/90662b8b/attachment.htm
+From exarkun at divmod.com  Mon Dec  4 17:01:30 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon Dec  4 17:01:32 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+In-Reply-To: <c16a94ff0612041425w1f25caadkf1f5960b5037870a@mail.gmail.com>
+Message-ID: <20061204230130.20948.637028365.divmod.quotient.57927@ohm>
+
+On Mon, 4 Dec 2006 14:25:51 -0800, Cory Dodt <corydodt+hello@gmail.com> wrote:
+>Can't we just stopPropagation/preventDefault on keycode 27?
+>
+>C
+>
+
+If you're interested in hacking in this area, please go ahead. :)  What
+I would _actually_ like is for all of these behaviors (escape handling,
+startup behavior, disconnect behavior, etc) to be defined on a client-side
+page class specified by the server-side LivePage.  Then each application
+can trivially define the desired behavior itself.
+
+I thought I'd started on this a while back, and perhaps I did, but I can't
+find the code now.  It should be much work, anyway, as it is mostly a
+refactoring of existing code.
+
+Jean-Paul
+
+From exarkun at divmod.com  Mon Dec  4 17:42:19 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon Dec  4 17:42:22 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+In-Reply-To: <20061204230130.20948.637028365.divmod.quotient.57927@ohm>
+Message-ID: <20061204234219.20948.1386170385.divmod.quotient.57974@ohm>
+
+On Mon, 4 Dec 2006 18:01:30 -0500, Jean-Paul Calderone <exarkun@divmod.com> wrote:
+> [snip]
+>find the code now.  It should be much work, anyway, as it is mostly a
+
+_shouldn't_.
+
+> [snip]
+>
+>Jean-Paul
+>
+
+From p.mayers at imperial.ac.uk  Tue Dec  5 12:43:32 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Tue Dec  5 12:43:41 2006
+Subject: [Twisted-web] Athena closed the live connection when escape is hit
+In-Reply-To: <c16a94ff0612041425w1f25caadkf1f5960b5037870a@mail.gmail.com>
+References: <20061204020749.11053.788070980.divmod.xquotient.2026@joule.divmod.com>	<45745ACE.2050002@imperial.ac.uk>
+	<c16a94ff0612041425w1f25caadkf1f5960b5037870a@mail.gmail.com>
+Message-ID: <4575BDD4.4000608@imperial.ac.uk>
+
+Cory Dodt wrote:
+> Can't we just stopPropagation/preventDefault on keycode 27?
+
+For what it's worth, I was using MochiKit's signal and event 
+normalisation mechanism, and had:
+
+<input type="text" id="foo" />
+
+With:
+
+function myonkeydown(event) {
+   var key = event.key()['string'];
+   /* some stuff, then */
+   if (key=='KEY_ESCAPE')
+     event.stop();
+}
+
+connect('foo', 'onkeydown', myonkeydown);
+
+MochiKit's event.stop() is documented as (and looking in the code, does) 
+call stopPropagation and preventDefault. It did neither, so perhaps 
+escape is handled specially or perhaps I just need to also handle 
+'onkeypress'
+
+HTH
+
+From saidesertrose2004 at gmail.com  Thu Dec  7 08:10:33 2006
+From: saidesertrose2004 at gmail.com (PAPPU Sai Venkatakrishnan)
+Date: Thu Dec  7 08:10:38 2006
+Subject: [Twisted-web] Error importing reactor from twisted.internet
+Message-ID: <a80376f20612070610r6b1ce4ffq159b0d7e9d358db5@mail.gmail.com>
+
+Hi,
+I am newly learning twisted use it in my development projects. I installed
+twisted in my machine imported the reactor from twisted.internet.
+
+But I got an error stating internet.protocol is not present.
+
+Traceback (most recent call last):
+  File "<pyshell#2>", line 1, in -toplevel-
+    from twisted.internet import reactor
+  File "C:\Python24\Scripts\twisted.py", line 1, in -toplevel-
+    from twisted.internet.protocol import protocol
+ImportError: No module named internet.protocol
+
+I am not sure as the necessary paths are in the PYTHONPATH as well. Please
+help me to resolve this issue.
+
+Thank you for your support.
+
+Regards,
+Sai
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061207/545624a7/attachment.htm
+From radix at twistedmatrix.com  Thu Dec  7 08:15:53 2006
+From: radix at twistedmatrix.com (Christopher Armstrong)
+Date: Thu Dec  7 08:15:56 2006
+Subject: [Twisted-web] Error importing reactor from twisted.internet
+In-Reply-To: <a80376f20612070610r6b1ce4ffq159b0d7e9d358db5@mail.gmail.com>
+References: <a80376f20612070610r6b1ce4ffq159b0d7e9d358db5@mail.gmail.com>
+Message-ID: <60ed19d40612070615o7288fccal8255fee06ab51a15@mail.gmail.com>
+
+On 12/7/06, PAPPU Sai Venkatakrishnan <saidesertrose2004@gmail.com> wrote:
+> Hi,
+> I am newly learning twisted use it in my development projects. I installed
+> twisted in my machine imported the reactor from twisted.internet.
+>
+> But I got an error stating internet.protocol is not present.
+>
+> Traceback (most recent call last):
+>   File "<pyshell#2>", line 1, in -toplevel-
+>     from twisted.internet import reactor
+>   File "C:\Python24\Scripts\twisted.py", line 1, in
+> -toplevel-
+>     from twisted.internet.protocol import protocol
+> ImportError: No module named internet.protocol
+
+The file "C:\Python24\Scripts\twisted.py" shouldn't be there. What is
+it? Python is mistaking it for the "twisted" package.
+
+-- 
+Christopher Armstrong
+International Man of Twistery
+http://radix.twistedmatrix.com/
+http://twistedmatrix.com/
+http://canonical.com/
+
+From saidesertrose2004 at gmail.com  Thu Dec  7 08:21:40 2006
+From: saidesertrose2004 at gmail.com (PAPPU Sai Venkatakrishnan)
+Date: Thu Dec  7 08:21:44 2006
+Subject: [Twisted-web] Error importing reactor from twisted.internet
+In-Reply-To: <60ed19d40612070615o7288fccal8255fee06ab51a15@mail.gmail.com>
+References: <a80376f20612070610r6b1ce4ffq159b0d7e9d358db5@mail.gmail.com>
+	<60ed19d40612070615o7288fccal8255fee06ab51a15@mail.gmail.com>
+Message-ID: <a80376f20612070621jb19ccf6ted947cf66ed56f@mail.gmail.com>
+
+I am not sure about that. I also thought about the same and deleted the file
+in scripts once. But once I import the module in twisted the compiled module
+gets created.
+
+Hey thank you, just  noticed that there was file named twisted I created
+before installing the framework. Python was trying to compile that instead
+of the framework. Now I deleted it and it is working fine. Sorry mistake on
+my side must have looked better.
+
+Thank you :-)
+
+Regards,
+Sai
+
+
+On 12/7/06, Christopher Armstrong <radix@twistedmatrix.com> wrote:
+>
+> On 12/7/06, PAPPU Sai Venkatakrishnan <saidesertrose2004@gmail.com> wrote:
+> > Hi,
+> > I am newly learning twisted use it in my development projects. I
+> installed
+> > twisted in my machine imported the reactor from twisted.internet.
+> >
+> > But I got an error stating internet.protocol is not present.
+> >
+> > Traceback (most recent call last):
+> >   File "<pyshell#2>", line 1, in -toplevel-
+> >     from twisted.internet import reactor
+> >   File "C:\Python24\Scripts\twisted.py", line 1, in
+> > -toplevel-
+> >     from twisted.internet.protocol import protocol
+> > ImportError: No module named internet.protocol
+>
+> The file "C:\Python24\Scripts\twisted.py" shouldn't be there. What is
+> it? Python is mistaking it for the "twisted" package.
+>
+> --
+> Christopher Armstrong
+> International Man of Twistery
+> http://radix.twistedmatrix.com/
+> http://twistedmatrix.com/
+> http://canonical.com/
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061207/1943557f/attachment.htm
+From saidesertrose2004 at gmail.com  Fri Dec  8 03:49:53 2006
+From: saidesertrose2004 at gmail.com (PAPPU Sai Venkatakrishnan)
+Date: Fri Dec  8 03:49:59 2006
+Subject: [Twisted-web] Listening to SOAP messages in a web service
+Message-ID: <a80376f20612080149x7b84b51dn9e7f211b43892b94@mail.gmail.com>
+
+Hi,
+I am working on twisted framework to create a test harness for testing and
+monitoring web services. The idea is to non intrusively monitor SOAP
+requests sent to or from a webservice and log them. I approached the problem
+by creating a miniature proxy server to log the HTTP requests through the
+machine at the port in which the webservice is listening. But since the
+webservice is already using the port the proxy is not able to run.
+
+Is there a way in which I can listen to the SOAP messages traffic in a
+webservice using twisted? Please let me know your ideas.
+
+Thank you.
+
+Regards,
+Sai
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061208/e904dbaa/attachment.htm
+From ppergame at gmail.com  Fri Dec  8 10:32:22 2006
+From: ppergame at gmail.com (Pavel Pergamenshchik)
+Date: Fri Dec  8 10:32:30 2006
+Subject: [Twisted-web] Listening to SOAP messages in a web service
+In-Reply-To: <a80376f20612080149x7b84b51dn9e7f211b43892b94@mail.gmail.com>
+References: <a80376f20612080149x7b84b51dn9e7f211b43892b94@mail.gmail.com>
+Message-ID: <4a5c1b500612080832y7c989d76nf453070dd09be072@mail.gmail.com>
+
+On 12/8/06, PAPPU Sai Venkatakrishnan <saidesertrose2004@gmail.com> wrote:
+>
+> Hi,
+> I am working on twisted framework to create a test harness for testing and
+> monitoring web services. The idea is to non intrusively monitor SOAP
+> requests sent to or from a webservice and log them. I approached the problem
+> by creating a miniature proxy server to log the HTTP requests through the
+> machine at the port in which the webservice is listening. But since the
+> webservice is already using the port the proxy is not able to run.
+>
+> Is there a way in which I can listen to the SOAP messages traffic in a
+> webservice using twisted? Please let me know your ideas.
+>
+
+If you are running Linux on the server, you can use the iptables transparent
+proxy (iptables target REDIRECT) to intercept SOAP requests to your proxy.
+REDIRECT can only forward requests to the local host. You can get the
+original destination address with getsockopt option SO_ORIGINAL_DST.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061208/1097227b/attachment.htm
+From manlio_perillo at libero.it  Sat Dec  9 08:34:12 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Sat Dec  9 08:34:21 2006
+Subject: [Twisted-web] twisted log files and awstats
+Message-ID: <457AC964.8020302@libero.it>
+
+Is it possibile to analize twisted.web log files with awstats and how?
+
+
+
+Thanks and regards   Manlio Perillo
+
+
+From noah.gift at gmail.com  Sat Dec  9 13:33:15 2006
+From: noah.gift at gmail.com (Noah Gift)
+Date: Sat Dec  9 13:33:22 2006
+Subject: [Twisted-web] twisted log files
+Message-ID: <e91cc0270612091133j1f6d58f5s187ecf6eac18c6e8@mail.gmail.com>
+
+I am not sure if awstats directly parses twisted log files, but I recently
+wrote a chunk of python code to re-parse sections of the awstats output and
+control when it was run etc.  It got me thinking that it would be great to
+have a python version of awstats, perhaps integrated into a web application
+framework.  That is the problem with using awstats with python as awstats is
+all perl and the config file is just huge around 1500 lines I think.
+
+Noah Gift
+
+On 12/9/06, twisted-web-request@twistedmatrix.com <
+twisted-web-request@twistedmatrix.com> wrote:
+>
+> Send Twisted-web mailing list submissions to
+>         twisted-web@twistedmatrix.com
+>
+> To subscribe or unsubscribe via the World Wide Web, visit
+>         http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> or, via email, send a message with subject or body 'help' to
+>         twisted-web-request@twistedmatrix.com
+>
+> You can reach the person managing the list at
+>         twisted-web-owner@twistedmatrix.com
+>
+> When replying, please edit your Subject line so it is more specific
+> than "Re: Contents of Twisted-web digest..."
+>
+>
+> Today's Topics:
+>
+>    1. twisted log files and awstats (Manlio Perillo)
+>
+>
+>
+> ---------- Forwarded message ----------
+> From: Manlio Perillo <manlio_perillo@libero.it>
+> To: twisted-web@twistedmatrix.com
+> Date: Sat, 09 Dec 2006 15:34:12 +0100
+> Subject: [Twisted-web] twisted log files and awstats
+> Is it possibile to analize twisted.web log files with awstats and how?
+>
+>
+>
+> Thanks and regards   Manlio Perillo
+>
+>
+>
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061209/2302ca0c/attachment.htm
+From manlio_perillo at libero.it  Sun Dec 10 05:55:18 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Sun Dec 10 05:55:23 2006
+Subject: [Twisted-web] twisted log files
+In-Reply-To: <e91cc0270612091133j1f6d58f5s187ecf6eac18c6e8@mail.gmail.com>
+References: <e91cc0270612091133j1f6d58f5s187ecf6eac18c6e8@mail.gmail.com>
+Message-ID: <457BF5A6.2090001@libero.it>
+
+Noah Gift ha scritto:
+> I am not sure if awstats directly parses twisted log files, 
+
+I'm rather sure that it can not parse Twisted log file but there are two 
+solution:
+
+1) write a custom logger that produce log in a "well know" format
+2) add support to Twisted log file in awstats.
+    This should be only a matter to find the correct format string and
+    check if the log contains all the informations that awstats needs.
+
+> but I 
+> recently wrote a chunk of python code to re-parse sections of the 
+> awstats output and control when it was run etc.  It got me thinking that 
+> it would be great to have a python version of awstats, perhaps 
+> integrated into a web application framework.  
+
+Not sure this is a good idea.
+For every request you have to update the database.
+
+It is better to have an external process that parse the log file.
+
+By the way: why it is not possible to choose log file policy?
+The log file created by twistd will rotate on its own and I do not want 
+this.
+I think that twistd should have an option for controlling such behaviour.
+
+
+> That is the problem with 
+> using awstats with python as awstats is all perl and the config file is 
+> just huge around 1500 lines I think.
+>
+
+
+
+Regards   Manlio Perillo
+
+From exarkun at divmod.com  Sun Dec 10 10:40:03 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Sun Dec 10 10:40:06 2006
+Subject: [Twisted-web] twisted log files
+In-Reply-To: <457BF5A6.2090001@libero.it>
+Message-ID: <20061210164003.20948.163615454.divmod.quotient.66084@ohm>
+
+On Sun, 10 Dec 2006 12:55:18 +0100, Manlio Perillo <manlio_perillo@libero.it> wrote:
+>Noah Gift ha scritto:
+>>I am not sure if awstats directly parses twisted log files,
+>
+>I'm rather sure that it can not parse Twisted log file but there are two 
+>solution:
+
+Twisted Web will produce apache common log formatted logfiles if you ask
+it to.  Look at the arguments Site takes.
+
+> [snip]
+>
+>By the way: why it is not possible to choose log file policy?
+>The log file created by twistd will rotate on its own and I do not want 
+>this.
+>I think that twistd should have an option for controlling such behaviour.
+
+Patches accepted.
+
+Jean-Paul
+
+From manlio_perillo at libero.it  Sun Dec 10 11:23:47 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Sun Dec 10 11:23:53 2006
+Subject: [Twisted-web] twisted log files
+In-Reply-To: <20061210164003.20948.163615454.divmod.quotient.66084@ohm>
+References: <20061210164003.20948.163615454.divmod.quotient.66084@ohm>
+Message-ID: <457C42A3.3080106@libero.it>
+
+Jean-Paul Calderone ha scritto:
+> On Sun, 10 Dec 2006 12:55:18 +0100, Manlio Perillo 
+> <manlio_perillo@libero.it> wrote:
+>> Noah Gift ha scritto:
+>>> I am not sure if awstats directly parses twisted log files,
+>>
+>> I'm rather sure that it can not parse Twisted log file but there are 
+>> two solution:
+> 
+> Twisted Web will produce apache common log formatted logfiles if you ask
+> it to.  Look at the arguments Site takes.
+> 
+
+
+twisted.web.server.Site:
+    def __init__(self, resource, logPath=None, timeout=60*60*12):
+  	        """Initialize.
+  	        """
+
+I can't see any options for changing log format.
+
+The only thing I can change is the log method in HTTPFactory:
+
+     def log(self, request):
+         """Log a request's result to the logfile, by default in 
+combined log format."""
+         if hasattr(self, "logFile"):
+             line = '%s - - %s "%s" %d %s "%s" "%s"\n' % (
+                 request.getClientIP(),
+                 # request.getUser() or "-", # the remote user is almost 
+never important
+                 _logDateTime,
+                 '%s %s %s' % (self._escape(request.method),
+                               self._escape(request.uri),
+                               self._escape(request.clientproto)),
+                 request.code,
+                 request.sentLength or "-",
+                 self._escape(request.getHeader("referer") or "-"),
+                 self._escape(request.getHeader("user-agent") or "-"))
+             self.logFile.write(line)
+
+
+The combined log format should be supported by awstats.
+
+
+
+Regards  Manlio Perillo
+
+
+From dreid at dreid.org  Sun Dec 10 12:40:52 2006
+From: dreid at dreid.org (David Reid)
+Date: Sun Dec 10 12:41:16 2006
+Subject: [Twisted-web] twisted log files
+In-Reply-To: <457C42A3.3080106@libero.it>
+References: <20061210164003.20948.163615454.divmod.quotient.66084@ohm>
+	<457C42A3.3080106@libero.it>
+Message-ID: <10EA2688-8BCB-4CC6-9D32-2601D697F09C@dreid.org>
+
+
+On Dec 10, 2006, at 9:23 AM, Manlio Perillo wrote:
+
+> Jean-Paul Calderone ha scritto:
+>> On Sun, 10 Dec 2006 12:55:18 +0100, Manlio Perillo  
+>> <manlio_perillo@libero.it> wrote:
+>>> Noah Gift ha scritto:
+>>>> I am not sure if awstats directly parses twisted log files,
+>>>
+>>> I'm rather sure that it can not parse Twisted log file but there  
+>>> are two solution:
+>> Twisted Web will produce apache common log formatted logfiles if  
+>> you ask
+>> it to.  Look at the arguments Site takes.
+>
+>
+> twisted.web.server.Site:
+>    def __init__(self, resource, logPath=None, timeout=60*60*12):
+>  	        """Initialize.
+>  	        """
+
+Specify the logPath and you should get a CLF logfile at that path.
+>
+
+> The combined log format should be supported by awstats.
+
+It is.
+
+>
+> Regards  Manlio Perillo
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+David Reid
+http://dreid.org/
+
+
+
+From saidesertrose2004 at gmail.com  Sun Dec 10 22:57:03 2006
+From: saidesertrose2004 at gmail.com (PAPPU Sai Venkatakrishnan)
+Date: Sun Dec 10 22:57:07 2006
+Subject: [Twisted-web] Listening to SOAP messages in a web service
+In-Reply-To: <4a5c1b500612080832y7c989d76nf453070dd09be072@mail.gmail.com>
+References: <a80376f20612080149x7b84b51dn9e7f211b43892b94@mail.gmail.com>
+	<4a5c1b500612080832y7c989d76nf453070dd09be072@mail.gmail.com>
+Message-ID: <a80376f20612102057n18695f00m65f3276706674b6a@mail.gmail.com>
+
+Hi,
+Thank you for the answer. But there is the problem, sice it is an SOA based
+solution I have to make it platform non specific as this can be implemented
+on any.
+
+Thabts one of the main reasons I chose python as it gives me an abstraction
+from platform specific details.
+
+Regards,
+Sai
+
+
+On 12/8/06, Pavel Pergamenshchik <ppergame@gmail.com> wrote:
+>
+> On 12/8/06, PAPPU Sai Venkatakrishnan <saidesertrose2004@gmail.com> wrote:
+>
+> > Hi,
+> > I am working on twisted framework to create a test harness for testing
+> > and monitoring web services. The idea is to non intrusively monitor SOAP
+> > requests sent to or from a webservice and log them. I approached the problem
+> > by creating a miniature proxy server to log the HTTP requests through the
+> > machine at the port in which the webservice is listening. But since the
+> > webservice is already using the port the proxy is not able to run.
+> >
+> > Is there a way in which I can listen to the SOAP messages traffic in a
+> > webservice using twisted? Please let me know your ideas.
+> >
+>
+> If you are running Linux on the server, you can use the iptables
+> transparent proxy (iptables target REDIRECT) to intercept SOAP requests to
+> your proxy. REDIRECT can only forward requests to the local host. You can
+> get the original destination address with getsockopt option SO_ORIGINAL_DST.
+>
+>
+>
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061211/847883c3/attachment.htm
+From mailinglists at smartology.nl  Tue Dec 12 10:27:50 2006
+From: mailinglists at smartology.nl (Remi Cool)
+Date: Tue Dec 12 10:28:12 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+Message-ID: <457ED886.60004@smartology.nl>
+
+Hello,
+
+Is it possible to run a nevow site and and serve XMLRPC (or SOAP)
+requests on a single port?
+I've tried to make it work some time ago, but to no avail.
+
+Anyone?
+
+- Remi -
+
+From stephen.c.waterbury at nasa.gov  Tue Dec 12 13:57:05 2006
+From: stephen.c.waterbury at nasa.gov (Stephen Waterbury)
+Date: Tue Dec 12 13:57:18 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <457ED886.60004@smartology.nl>
+References: <457ED886.60004@smartology.nl>
+Message-ID: <457F0991.1080708@nasa.gov>
+
+Remi Cool wrote:
+> Is it possible to run a nevow site and and serve XMLRPC (or SOAP)
+> requests on a single port?
+> I've tried to make it work some time ago, but to no avail.
+
+I've attached an example extracted (with names changed to protect the
+guilty) from my app's tac file, which gives one possible approach ...
+in my case I've only set up xmlrpc and a static web site, but I
+think adding a Nevow service would not be much different in
+principle.
+
+Gracefully handling a web client wandering into the xmlrpc area
+or vice versa is left as an exercise to the reader, but I don't
+expect it would be all that difficult.
+
+There may be a more elegant way to do this -- commentary from the
+twisted gurus is welcome (as always :).
+
+Steve
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: example.py
+Type: text/x-python
+Size: 991 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20061212/4e59457f/example.py
+From mircea at ag-projects.com  Wed Dec 13 09:59:52 2006
+From: mircea at ag-projects.com (Mircea Amarascu)
+Date: Wed Dec 13 07:59:40 2006
+Subject: [Twisted-web] web2 and database handling
+Message-ID: <45802378.6000605@ag-projects.com>
+
+Hello,
+
+I want to attach the result of a database SELECT query to the response of
+a HTTP GET request.
+
+In twisted.web I've done it this way:
+
+------------------------------
+from twisted.web import resource, server, http
+from twisted.enterprise import adbapi
+
+class Site(resource.Resource):
+     ...
+   
+    def render(self, request):
+        query = "SELECT data FROM test"
+        self.db.runQuery(query).addCallback(
+            self._gotData, request).addErrback(
+            self._dbError, request)
+        return server.NOT_DONE_YET
+
+    def _gotData(self, results, request):
+        request.write("%s" % data[0])
+        request.write(body)
+        request.finish()
+
+    def _dbError(self, failure, request):
+        request.setResponseCode(http.INTERNAL_SERVER_ERROR)
+        request.write("Error fetching data.")
+        request.finish()
+------------------------------
+
+What is the best way to perform the same operation in web2? A
+web2.server.NOT_DONE_YET constant is not defined.
+
+In other words, how could I return a defer-related response
+instead of a simple http.Response object ?
+
+Thank you.
+
+From lukasz.biedrycki at gmail.com  Wed Dec 13 08:31:03 2006
+From: lukasz.biedrycki at gmail.com (=?ISO-8859-2?Q?=A3ukasz_Biedrycki?=)
+Date: Wed Dec 13 08:31:07 2006
+Subject: [Twisted-web] web2 and database handling
+In-Reply-To: <45802378.6000605@ag-projects.com>
+References: <45802378.6000605@ag-projects.com>
+Message-ID: <c8103d0612130631h580acd06i919e0f34db522123@mail.gmail.com>
+
+On 13/12/06, Mircea Amarascu <mircea@ag-projects.com> wrote:
+> Hello,
+>
+> I want to attach the result of a database SELECT query to the response of
+> a HTTP GET request.
+>
+> In twisted.web I've done it this way:
+>
+> ------------------------------
+> from twisted.web import resource, server, http
+> from twisted.enterprise import adbapi
+>
+> class Site(resource.Resource):
+>      ...
+>
+>     def render(self, request):
+>         query = "SELECT data FROM test"
+>         self.db.runQuery(query).addCallback(
+>             self._gotData, request).addErrback(
+>             self._dbError, request)
+>         return server.NOT_DONE_YET
+
+Hi,
+I've resolved it replacing
+return server.NOT_DONE_YET
+with
+return defer.Deferred()
+
+But I'm not sure is this a best way.
+
+
+>
+>     def _gotData(self, results, request):
+>         request.write("%s" % data[0])
+>         request.write(body)
+>         request.finish()
+>
+>     def _dbError(self, failure, request):
+>         request.setResponseCode(http.INTERNAL_SERVER_ERROR)
+>         request.write("Error fetching data.")
+>         request.finish()
+> ------------------------------
+>
+> What is the best way to perform the same operation in web2? A
+> web2.server.NOT_DONE_YET constant is not defined.
+>
+> In other words, how could I return a defer-related response
+> instead of a simple http.Response object ?
+>
+> Thank you.
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+-- 
+Regards,
+?ukasz "Lou" Biedrycki
+
+"Hard work often pays off after time,
+ but laziness always pays off now."
+From christian.simms at gmail.com  Wed Dec 13 10:48:56 2006
+From: christian.simms at gmail.com (christian simms)
+Date: Wed Dec 13 10:49:01 2006
+Subject: [Twisted-web] web2 and database handling
+In-Reply-To: <c8103d0612130631h580acd06i919e0f34db522123@mail.gmail.com>
+References: <45802378.6000605@ag-projects.com>
+	<c8103d0612130631h580acd06i919e0f34db522123@mail.gmail.com>
+Message-ID: <cd8fa6f90612130848v34cbbc72r590ae2716f9d6f0a@mail.gmail.com>
+
+On 12/13/06, ?ukasz Biedrycki <lukasz.biedrycki@gmail.com> wrote:
+> On 13/12/06, Mircea Amarascu <mircea@ag-projects.com> wrote:
+> > Hello,
+> >
+> > I want to attach the result of a database SELECT query to the response of
+> > a HTTP GET request.
+> >
+> > In twisted.web I've done it this way:
+> >
+> > ------------------------------
+> > from twisted.web import resource, server, http
+> > from twisted.enterprise import adbapi
+> >
+> > class Site(resource.Resource):
+> >      ...
+> >
+> >     def render(self, request):
+> >         query = "SELECT data FROM test"
+> >         self.db.runQuery(query).addCallback(
+> >             self._gotData, request).addErrback(
+> >             self._dbError, request)
+> >         return server.NOT_DONE_YET
+>
+> Hi,
+> I've resolved it replacing
+> return server.NOT_DONE_YET
+> with
+> return defer.Deferred()
+>
+> But I'm not sure is this a best way.
+>
+>
+> >
+> >     def _gotData(self, results, request):
+> >         request.write("%s" % data[0])
+> >         request.write(body)
+> >         request.finish()
+> >
+> >     def _dbError(self, failure, request):
+> >         request.setResponseCode(http.INTERNAL_SERVER_ERROR)
+> >         request.write("Error fetching data.")
+> >         request.finish()
+> > ------------------------------
+> >
+> > What is the best way to perform the same operation in web2? A
+> > web2.server.NOT_DONE_YET constant is not defined.
+> >
+> > In other words, how could I return a defer-related response
+> > instead of a simple http.Response object ?
+> >
+> > Thank you.
+> >
+> > _______________________________________________
+> > Twisted-web mailing list
+> > Twisted-web@twistedmatrix.com
+> > http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> >
+>
+>
+> --
+> Regards,
+> ?ukasz "Lou" Biedrycki
+>
+> "Hard work often pays off after time,
+>  but laziness always pays off now."
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+I think a better way is to directly return your Deferred to the render
+method, like so:
+
+------------------------------
+from twisted.web import resource, server, http
+from twisted.enterprise import adbapi
+
+class Site(resource.Resource):
+    ...
+
+   def render(self, request):
+       query = "SELECT data FROM test"
+       return self.db.runQuery(query).addCallback(
+           self._gotData, request).addErrback(
+           self._dbError, request)
+
+   def _gotData(self, results, request):
+       return [ "%s" % data[0] +
+              request.write(body)
+       ]
+
+   def _dbError(self, failure, request):
+       request.setResponseCode(http.INTERNAL_SERVER_ERROR)
+       return "Error fetching data."
+------------------------------
+
+Cheers,
+Christian
+From dreid at dreid.org  Wed Dec 13 11:18:59 2006
+From: dreid at dreid.org (David Reid)
+Date: Wed Dec 13 12:02:48 2006
+Subject: [Twisted-web] web2 and database handling
+In-Reply-To: <45802378.6000605@ag-projects.com>
+References: <45802378.6000605@ag-projects.com>
+Message-ID: <0AA50F19-0A38-43CD-8324-64B146DD47AC@dreid.org>
+
+
+On Dec 13, 2006, at 7:59 AM, Mircea Amarascu wrote:
+
+> Hello,
+>
+> I want to attach the result of a database SELECT query to the  
+> response of
+> a HTTP GET request.
+>
+> In twisted.web I've done it this way:
+>
+> ------------------------------
+> from twisted.web import resource, server, http
+> from twisted.enterprise import adbapi
+>
+> class Site(resource.Resource):
+>     ...
+>      def render(self, request):
+>        query = "SELECT data FROM test"
+>        self.db.runQuery(query).addCallback(
+>            self._gotData, request).addErrback(
+>            self._dbError, request)
+>        return server.NOT_DONE_YET
+>
+>    def _gotData(self, results, request):
+>        request.write("%s" % data[0])
+>        request.write(body)
+>        request.finish()
+>
+>    def _dbError(self, failure, request):
+>        request.setResponseCode(http.INTERNAL_SERVER_ERROR)
+>        request.write("Error fetching data.")
+>        request.finish()
+> ------------------------------
+>
+> What is the best way to perform the same operation in web2? A
+> web2.server.NOT_DONE_YET constant is not defined.
+>
+> In other words, how could I return a defer-related response
+> instead of a simple http.Response object ?
+>
+> Thank you.
+
+
+You can return a defer.Deferred() that'll be fired with an  
+http.Response.  Alternatively if you have a lot of data, it may be  
+useful to return an http.Response immediately, and use a stream  
+object to write the data incrementally.  (see twisted.web2.stream for  
+information on this)  Please note however that the stream API is not  
+finalized, and in fact a new alternative implementation is just  
+awaiting it's author having time to finish it.
+
+-David
+
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+David Reid
+http://dreid.org/
+
+
+
+From waterbug at pangalactic.us  Wed Dec 13 18:56:09 2006
+From: waterbug at pangalactic.us (Stephen Waterbury)
+Date: Wed Dec 13 18:55:57 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <457F0991.1080708@nasa.gov>
+References: <457ED886.60004@smartology.nl> <457F0991.1080708@nasa.gov>
+Message-ID: <4580A129.7090005@pangalactic.us>
+
+Stephen Waterbury wrote:
+> Remi Cool wrote:
+>> Is it possible to run a nevow site and and serve XMLRPC (or SOAP)
+>> requests on a single port?
+>> I've tried to make it work some time ago, but to no avail.
+> 
+> I've attached an example extracted (with names changed to protect the
+> guilty) from my app's tac file, which gives one possible approach ...
+
+Hmm ... now that I've experimented with NevowSite, I see
+that my post was useless (I also notice your post of the same
+question back in May apparently went unanswered).
+
+Apologies for the wasted bandwidth.  I'm sure it's possible to do
+but probably won't be pretty and is best avoided if possible --
+separate ports, better!
+
+Steve
+
+
+
+From p.mayers at imperial.ac.uk  Thu Dec 14 04:55:57 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Thu Dec 14 04:56:11 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <457ED886.60004@smartology.nl>
+References: <457ED886.60004@smartology.nl>
+Message-ID: <45812DBD.3010505@imperial.ac.uk>
+
+Remi Cool wrote:
+> Hello,
+> 
+> Is it possible to run a nevow site and and serve XMLRPC (or SOAP)
+> requests on a single port?
+> I've tried to make it work some time ago, but to no avail.
+
+I believe you can do this:
+
+class Xrpc(xmlrpc.XMLRPC):
+   def xmlrpc_echo(self, arg):
+     return arg
+
+xrpc = Xrpc()
+page = NevowRootPage()
+page.putChild('RPC2', xrpc)
+
+From marian.schubert at gmail.com  Thu Dec 14 05:17:51 2006
+From: marian.schubert at gmail.com (Marian Schubert)
+Date: Thu Dec 14 05:17:55 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <45812DBD.3010505@imperial.ac.uk>
+References: <457ED886.60004@smartology.nl> <45812DBD.3010505@imperial.ac.uk>
+Message-ID: <a0839b890612140317gce9da53l9911cf21038126cc@mail.gmail.com>
+
+On 12/14/06, Phil Mayers <p.mayers@imperial.ac.uk> wrote:
+> Remi Cool wrote:
+> > Hello,
+> >
+> > Is it possible to run a nevow site and and serve XMLRPC (or SOAP)
+> > requests on a single port?
+> > I've tried to make it work some time ago, but to no avail.
+>
+> I believe you can do this:
+>
+> class Xrpc(xmlrpc.XMLRPC):
+>    def xmlrpc_echo(self, arg):
+>      return arg
+>
+> xrpc = Xrpc()
+> page = NevowRootPage()
+> page.putChild('RPC2', xrpc)
+
+just make sure xmlrpc resource isn't behind nevow.guard
+
+cu,
+Maio
+
+From p.mayers at imperial.ac.uk  Thu Dec 14 05:45:34 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Thu Dec 14 05:45:40 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <a0839b890612140317gce9da53l9911cf21038126cc@mail.gmail.com>
+References: <457ED886.60004@smartology.nl> <45812DBD.3010505@imperial.ac.uk>
+	<a0839b890612140317gce9da53l9911cf21038126cc@mail.gmail.com>
+Message-ID: <4581395E.7010407@imperial.ac.uk>
+
+Marian Schubert wrote:
+>> I believe you can do this:
+>>
+>> class Xrpc(xmlrpc.XMLRPC):
+>>    def xmlrpc_echo(self, arg):
+>>      return arg
+>>
+>> xrpc = Xrpc()
+>> page = NevowRootPage()
+>> page.putChild('RPC2', xrpc)
+> 
+> just make sure xmlrpc resource isn't behind nevow.guard
+
+It's a shame you can't persuade guard by URL arguments to not try an 
+HTTP redirect to HTML login, but issue an HTTP auth challenge.
+
+Bizarrely nevow guard will accept http auth credentials if they're 
+given, but I don't know of a single HTTP client that will submit them 
+without getting the 401 first.
+
+From simon at hedberg.net  Thu Dec 14 06:13:21 2006
+From: simon at hedberg.net (Simon Hedberg)
+Date: Thu Dec 14 06:13:31 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <4581395E.7010407@imperial.ac.uk>
+Message-ID: <000201c71f79$3f9bd6b0$38aa20d4@hp>
+
+Phil Mayers wrote:
+> Marian Schubert wrote:
+>>> I believe you can do this:
+>>> 
+>>> class Xrpc(xmlrpc.XMLRPC):
+>>>    def xmlrpc_echo(self, arg):
+>>>      return arg
+>>> 
+>>> xrpc = Xrpc()
+>>> page = NevowRootPage()
+>>> page.putChild('RPC2', xrpc)
+>> 
+>> just make sure xmlrpc resource isn't behind nevow.guard
+> 
+> It's a shame you can't persuade guard by URL arguments to not try an
+> HTTP redirect to HTML login, but issue an HTTP auth challenge.
+> 
+> Bizarrely nevow guard will accept http auth credentials if they're
+> given, but I don't know of a single HTTP client that will submit them
+> without getting the 401 first.
+> 
+> _______________________________________________
+
+You can solve this by modifying locateChild in your root resource and
+returning a 401 when needed. 
+
+if not loggedin:
+   if childSegments[0] == "RPC2":
+      return AuthReq(), ()
+   return login.LoginPage(), ()
+
+class AuthReq:
+    """A simple 401 (Auth required) page.
+    """
+    __implements__ = inevow.IResource, 
+
+    notAuth = "<html><head><title>Authentication
+required</title><head><body>This resource is protected.</body></html>"
+    original = None
+
+    def locateChild(self, ctx, segments):
+        return None, ()
+
+    def renderHTTP(self, ctx):
+        request = inevow.IRequest(ctx)
+        request.setResponseCode(401)
+        request.setHeader('WWW-Authenticate', 'Basic
+realm="rpc@yourhost.com"')
+        return self.notAuth
+
+    def __nonzero__(self):
+        return False
+
+Hope this helps.
+/Simon 
+
+
+From waterbug at pangalactic.us  Thu Dec 14 07:44:24 2006
+From: waterbug at pangalactic.us (Stephen Waterbury)
+Date: Thu Dec 14 07:44:13 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <45812DBD.3010505@imperial.ac.uk>
+References: <457ED886.60004@smartology.nl> <45812DBD.3010505@imperial.ac.uk>
+Message-ID: <45815538.50004@pangalactic.us>
+
+Phil Mayers wrote:
+> Remi Cool wrote:
+>> Hello,
+>>
+>> Is it possible to run a nevow site and and serve XMLRPC (or SOAP)
+>> requests on a single port?
+>> I've tried to make it work some time ago, but to no avail.
+> 
+> I believe you can do this:
+> 
+> class Xrpc(xmlrpc.XMLRPC):
+>   def xmlrpc_echo(self, arg):
+>     return arg
+> 
+> xrpc = Xrpc()
+> page = NevowRootPage()
+> page.putChild('RPC2', xrpc)
+
+That's what I had in my suggestion.  It does give you an xml-rpc
+service, sure, but the problem is that NevowSite tries to render
+every request it gets, so you'll need to specify a renderer for
+the xml-rpc resources that will pass them through unaltered.
+
+But, as I mentioned, you probably also want to do some checking
+to prevent browsers from getting xml-rpc gibberish and xml-rpc
+clients from getting rendered xhtml ... possibly by giving them
+different auth realms.
+
+Steve
+
+From dreid at dreid.org  Thu Dec 14 09:53:47 2006
+From: dreid at dreid.org (David Reid)
+Date: Thu Dec 14 09:54:06 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <4581395E.7010407@imperial.ac.uk>
+References: <457ED886.60004@smartology.nl> <45812DBD.3010505@imperial.ac.uk>
+	<a0839b890612140317gce9da53l9911cf21038126cc@mail.gmail.com>
+	<4581395E.7010407@imperial.ac.uk>
+Message-ID: <9D92419A-CED0-4EA2-B8F7-24BEED1EBB1D@dreid.org>
+
+
+On Dec 14, 2006, at 3:45 AM, Phil Mayers wrote:
+
+> Marian Schubert wrote:
+>>> I believe you can do this:
+>>>
+>>> class Xrpc(xmlrpc.XMLRPC):
+>>>    def xmlrpc_echo(self, arg):
+>>>      return arg
+>>>
+>>> xrpc = Xrpc()
+>>> page = NevowRootPage()
+>>> page.putChild('RPC2', xrpc)
+>> just make sure xmlrpc resource isn't behind nevow.guard
+>
+> It's a shame you can't persuade guard by URL arguments to not try  
+> an HTTP redirect to HTML login, but issue an HTTP auth challenge.
+>
+> Bizarrely nevow guard will accept http auth credentials if they're  
+> given, but I don't know of a single HTTP client that will submit  
+> them without getting the 401 first.
+
+Most programatic clients can be told to submit basic auth credentials  
+without a 401, but digest and negotiate are much harder.  It doesn't  
+matter though, because nevow.guard only supports basic auth afaik.  I  
+seem to recall that xmlrpclib supports http://user:pass@host/  
+syntax.  twisted.web.xmlrpc.Proxy also supports this, as well as  
+explicit keyword arguments for user and password.
+
+-
+David Reid
+http://dreid.org/
+
+
+
+From glyph at divmod.com  Thu Dec 14 10:59:34 2006
+From: glyph at divmod.com (glyph@divmod.com)
+Date: Thu Dec 14 10:59:45 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+Message-ID: <20061214165934.14681.571899370.divmod.xquotient.254@joule.divmod.com>
+
+On 11:45 am, p.mayers@imperial.ac.uk wrote:
+
+>Bizarrely nevow guard will accept http auth credentials if they're given, 
+>but I don't know of a single HTTP client that will submit them without 
+>getting the 401 first.
+
+wget.
+
+Or any browser that will accept http://user@host/ URLs, for that matter.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061214/b898c1d0/attachment.htm
+From mailinglists at smartology.nl  Fri Dec 15 01:19:48 2006
+From: mailinglists at smartology.nl (Remi Cool)
+Date: Fri Dec 15 01:17:59 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <45812DBD.3010505@imperial.ac.uk>
+References: <457ED886.60004@smartology.nl> <45812DBD.3010505@imperial.ac.uk>
+Message-ID: <45824C94.8080303@smartology.nl>
+
+Phil Mayers wrote:
+> Remi Cool wrote:
+>> Hello,
+>>
+>> Is it possible to run a nevow site and and serve XMLRPC (or SOAP)
+>> requests on a single port?
+>> I've tried to make it work some time ago, but to no avail.
+>
+> I believe you can do this:
+>
+> class Xrpc(xmlrpc.XMLRPC):
+>   def xmlrpc_echo(self, arg):
+>     return arg
+>
+> xrpc = Xrpc()
+> page = NevowRootPage()
+> page.putChild('RPC2', xrpc)
+>
+Thanks for all the reactions, I will put the suggested solution to the
+test. Any info on guard is also very useful :)
+
+I only have to deal with a browser based upon gecko (xulrunner
+application) ... so it's not for general internet use. It is important
+that the overhead is kept to a minimum though.
+
+Remi
+
+From hxianping at gmail.com  Fri Dec 15 01:51:59 2006
+From: hxianping at gmail.com (Steve Han)
+Date: Fri Dec 15 01:52:05 2006
+Subject: [Twisted-web] How to test my twisted applications on the local
+	mechine?
+Message-ID: <702805a90612142351k62d245ecge535d21c2ac1a83e@mail.gmail.com>
+
+I just work on "Writting Servers" from scratch.I want to know how to test my
+first protocol like any "Hello World!" test.
+
+Any ideas?Thanks a lot.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061215/b4871a03/attachment.html
+From lukasz.biedrycki at gmail.com  Fri Dec 15 03:12:23 2006
+From: lukasz.biedrycki at gmail.com (=?ISO-8859-2?Q?=A3ukasz_Biedrycki?=)
+Date: Fri Dec 15 03:12:43 2006
+Subject: [Twisted-web] How to test my twisted applications on the local
+	mechine?
+In-Reply-To: <702805a90612142351k62d245ecge535d21c2ac1a83e@mail.gmail.com>
+References: <702805a90612142351k62d245ecge535d21c2ac1a83e@mail.gmail.com>
+Message-ID: <c8103d0612150112g6d36b4a0x84a84d0e6b1f9d15@mail.gmail.com>
+
+Have you tried to use telnet??
+
+On 15/12/06, Steve Han <hxianping@gmail.com> wrote:
+> I just work on "Writting Servers" from scratch.I want to know how to test my
+> first protocol like any "Hello World!" test.
+>
+>  Any ideas?Thanks a lot.
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+>
+
+
+-- 
+Regards,
+?ukasz "Lou" Biedrycki
+
+"Hard work often pays off after time,
+ but laziness always pays off now."
+From manlio_perillo at libero.it  Fri Dec 15 04:56:55 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 04:57:01 2006
+Subject: [Twisted-web] [Nevow] template performance
+Message-ID: <45827F77.4060803@libero.it>
+
+First let me say that I really like Nevow template system.
+Once you became expert with it, it proves to be really flexible.
+
+The problem is the performance.
+I have done a simple test with the rendering of a table 5 * 20, Nevow 
+against Django, and Nevow is much slower.
+
+The problem is that, I think, there are a lot of objects adaptation.
+
+Is it possible to use that same model used by django.template?
+
+You pass a context (that is a dictionary usable like a stack: push/pop) 
+to the render function.
+All the data directive will search the data in the context (like djando, 
+first dictionary lookup, then attribute lookup, and so).
+
+As an example n:data='x.y' ==> ctx['x']['y'].
+A rend.Page.renderHTTP can build a context from the instance dictionary.
+
+
+
+Thanks and regards  Manlio Perillo
+
+From alvinwang at gmail.com  Fri Dec 15 05:07:29 2006
+From: alvinwang at gmail.com (Alvin Wang)
+Date: Fri Dec 15 05:07:34 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <45827F77.4060803@libero.it>
+References: <45827F77.4060803@libero.it>
+Message-ID: <77d044440612150307j11e9a1d1l933a625c46001227@mail.gmail.com>
+
+Just curious.  How much slower?
+
+Thanks
+alvin
+
+On 12/15/06, Manlio Perillo <manlio_perillo@libero.it> wrote:
+>
+> First let me say that I really like Nevow template system.
+> Once you became expert with it, it proves to be really flexible.
+>
+> The problem is the performance.
+> I have done a simple test with the rendering of a table 5 * 20, Nevow
+> against Django, and Nevow is much slower.
+>
+> The problem is that, I think, there are a lot of objects adaptation.
+>
+> Is it possible to use that same model used by django.template?
+>
+> You pass a context (that is a dictionary usable like a stack: push/pop)
+> to the render function.
+> All the data directive will search the data in the context (like djando,
+> first dictionary lookup, then attribute lookup, and so).
+>
+> As an example n:data='x.y' ==> ctx['x']['y'].
+> A rend.Page.renderHTTP can build a context from the instance dictionary.
+>
+>
+>
+> Thanks and regards  Manlio Perillo
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web@twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+
+-- 
+Alvin Wang
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061215/4fd644ac/attachment.htm
+From p.mayers at imperial.ac.uk  Fri Dec 15 06:04:40 2006
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Fri Dec 15 06:04:44 2006
+Subject: [Twisted-web] Run Nevow and XMLRPC on a single port?
+In-Reply-To: <20061214165934.14681.571899370.divmod.xquotient.254@joule.divmod.com>
+References: <20061214165934.14681.571899370.divmod.xquotient.254@joule.divmod.com>
+Message-ID: <45828F58.8010908@imperial.ac.uk>
+
+glyph@divmod.com wrote:
+> On 11:45 am, p.mayers@imperial.ac.uk wrote:
+> 
+>  >Bizarrely nevow guard will accept http auth credentials if they're given,
+>  >but I don't know of a single HTTP client that will submit them without
+>  >getting the 401 first.
+> 
+> wget.
+> 
+> Or any browser that will accept http://user@host/ URLs, for that matter.
+
+wget does do that, my mistake.
+
+Firefox 1.5.0.8 does not appear to, at least on the settings I have it 
+(the defaults AFAIK). And obviously IE removed it (in their "wisdom". Sigh)
+
+The guard in web2 is loads better anyway (I see Apple implemented 
+kerberos/negotiate auth in their CalDav t.web2 server). Not that this 
+helps the original poster of course.
+
+From mithrandi-twisted-web at mithrandi.za.net  Fri Dec 15 06:05:49 2006
+From: mithrandi-twisted-web at mithrandi.za.net (Tristan Seligmann)
+Date: Fri Dec 15 06:06:01 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <45827F77.4060803@libero.it>
+References: <45827F77.4060803@libero.it>
+Message-ID: <20061215120548.GA26542@mithrandi.za.net>
+
+* Manlio Perillo <manlio_perillo@libero.it> [2006-12-15 11:56:55 +0100]:
+
+> First let me say that I really like Nevow template system.
+> Once you became expert with it, it proves to be really flexible.
+> 
+> The problem is the performance.
+> I have done a simple test with the rendering of a table 5 * 20, Nevow 
+> against Django, and Nevow is much slower.
+> 
+> The problem is that, I think, there are a lot of objects adaptation.
+
+Can you be more specific about this? What objects are being adapted, and
+why do you think this is the cause of slowness?
+-- 
+mithrandi, i Ainil en-Balandor, a faer Ambar
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 197 bytes
+Desc: Digital signature
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20061215/9efcb758/attachment.pgp
+From manlio_perillo at libero.it  Fri Dec 15 06:07:49 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 06:08:04 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <77d044440612150307j11e9a1d1l933a625c46001227@mail.gmail.com>
+References: <45827F77.4060803@libero.it>
+	<77d044440612150307j11e9a1d1l933a625c46001227@mail.gmail.com>
+Message-ID: <45829015.8090308@libero.it>
+
+Alvin Wang ha scritto:
+> Just curious.  How much slower?
+> 
+
+10 times!
+
+manlio@synapsis:~/projects/tests/django$ python static.py
+33.58 usec/pass
+
+manlio@synapsis:~/projects/tests/nevow$ python static.py
+344.71 usec/pass
+
+On a Dell Inspiron 6400 with an Intel Duo Core 2 7200 processor.
+
+
+
+
+Here is the Python code:
+
+import timeit
+import random
+from nevow import inevow, rend, loaders
+
+COLS = 5
+ROWS = 20
+
+class Main(rend.Page):
+     docFactory = loaders.xmlfile("template.xhtml")
+
+
+     def data_header(self, ctx, data):
+         return range(COLS)
+
+     def data_table(self, ctx, data):
+         return  [
+             [random.random() for j in range(COLS)]
+             for i in range(ROWS)
+             ]
+
+main = Main()
+
+t = timeit.Timer("main.renderSynchronously()",
+                  "from __main__ import main")
+print "%.2f usec/pass" % (10000 * t.timeit(number=1000) / 1000)
+
+and the template:
+
+<!DOCTYPE html
+   PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+   "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml"
+       xmlns:n="http://nevow.com/ns/nevow/0.1"
+       lang="en" xml:lang="">
+   <head>
+     <title>Test Nevow performance</title>
+   </head>
+   <body>
+     <table>
+       <caption>RandomTable</caption>
+       <thead>
+         <tr n:render="sequence" n:data="header">
+           <th n:pattern="item" n:render="string" />
+         </tr>
+       </thead>
+       <tbody n:render="sequence" n:data="table">
+         <tr n:pattern="item" n:render="sequence">
+           <td n:pattern="item" n:render="string" />
+         </tr>
+       </tbody>
+     </table>
+   </body>
+</html>
+
+
+Now here is the Django code:
+
+import timeit
+import random
+
+from twisted.python import util
+from django.conf import settings
+
+# Ugh!
+settings.configure(TEMPLATE_DIRS=[util.sibpath(__file__, '')])
+
+from django.shortcuts import render_to_response
+from django.db import connection
+
+COLS = 5
+ROWS = 20
+
+def view():
+     header = range(COLS)
+     table = [
+             [random.random() for j in range(COLS)]
+             for i in range(ROWS)
+             ]
+
+     return render_to_response('template.xhtml',
+                               {"table": table, "header": header})
+
+
+t = timeit.Timer("view()", "from __main__ import view")
+print "%.2f usec/pass" % (10000 * t.timeit(number=1000) / 1000)
+
+and the template:
+
+<!DOCTYPE html
+   PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+   "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml"
+       xmlns:n="http://nevow.com/ns/nevow/0.1"
+       lang="en" xml:lang="en">
+   <head>
+     <title>Test Django performance</title>
+   </head>
+   <body>
+     <table>
+       <caption>RandomTable</caption>
+       <thead>
+         <tr>
+           {% for i in header %}
+             <th>{{ i }}</li>
+           {% endfor %}
+         </tr>
+       </thead>
+       <tbody>
+         {% for i in table %}
+           <tr>
+             {% for j in i %}
+               <td>{{ j }}</td>
+             {% endfor %}
+           </tr>
+         {% endfor %}
+       </tbody>
+     </table>
+   </body>
+</html>
+
+
+
+Regards  Manlio Perillo
+
+From mwh at python.net  Fri Dec 15 06:21:05 2006
+From: mwh at python.net (Michael Hudson)
+Date: Fri Dec 15 06:21:45 2006
+Subject: [Twisted-web] Re: [Nevow] template performance
+References: <45827F77.4060803@libero.it>
+Message-ID: <87lkl92vv2.fsf@starship.python.net>
+
+Manlio Perillo <manlio_perillo@libero.it> writes:
+
+> First let me say that I really like Nevow template system.
+> Once you became expert with it, it proves to be really flexible.
+>
+> The problem is the performance.
+> I have done a simple test with the rendering of a table 5 * 20, Nevow
+> against Django, and Nevow is much slower.
+>
+> The problem is that, I think, there are a lot of objects adaptation.
+
+How confident are you about that?  When I was last playing this game,
+it seemed to be copying lots and lots of stuff that was the main
+source of the slowdown, and I got a factor of 2 speedup by dint of a
+hack:
+
+http://codespeak.net/svn/user/mwh/pydoctor/trunk/pydoctor/nevowhtml/__init__.py
+
+> Is it possible to use that same model used by django.template?
+>
+> You pass a context (that is a dictionary usable like a stack:
+> push/pop) to the render function.
+> All the data directive will search the data in the context (like
+> djando, first dictionary lookup, then attribute lookup, and so).
+>
+> As an example n:data='x.y' ==> ctx['x']['y'].
+> A rend.Page.renderHTTP can build a context from the instance dictionary.
+
+I'm not sure I understand.  You can implement IResource.renderHTTP
+however you like, I guess...
+
+Cheers,
+mwh
+
+-- 
+  Need to Know is usually an interesting UK digest of things that
+  happened last week or might happen next week. [...] This week,
+  nothing happened, and we don't care.
+                           -- NTK Now, 2000-12-29, http://www.ntk.net/
+
+
+From manlio_perillo at libero.it  Fri Dec 15 06:33:55 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 06:34:05 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <20061215120548.GA26542@mithrandi.za.net>
+References: <45827F77.4060803@libero.it>
+	<20061215120548.GA26542@mithrandi.za.net>
+Message-ID: <45829633.9020300@libero.it>
+
+Tristan Seligmann ha scritto:
+> * Manlio Perillo <manlio_perillo@libero.it> [2006-12-15 11:56:55 +0100]:
+> 
+>> First let me say that I really like Nevow template system.
+>> Once you became expert with it, it proves to be really flexible.
+>>
+>> The problem is the performance.
+>> I have done a simple test with the rendering of a table 5 * 20, Nevow 
+>> against Django, and Nevow is much slower.
+>>
+>> The problem is that, I think, there are a lot of objects adaptation.
+> 
+> Can you be more specific about this? What objects are being adapted, and
+> why do you think this is the cause of slowness?
+> 
+
+I'm not sure on what's the problem.
+
+However if I render this template (without data):
+
+<!DOCTYPE html
+   PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+   "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml"
+       xmlns:n="http://nevow.com/ns/nevow/0.1"
+       lang="en" xml:lang="en">
+   <head>
+     <title>Test performance</title>
+   </head>
+   <body>
+     <p>Some test</p>
+   </body>
+</html>
+
+
+
+I got ( 100000 * t.timeit(number=10000) / 10000) )
+
+manlio@synapsis:~/projects/tests/nevow$ python static2.py
+9.85 usec/pass
+
+manlio@synapsis:~/projects/tests/django$ python static2.py
+13.31 usec/pass
+
+
+Nevow for every data object calls inevow.IContainer.child.
+The problem can be here, since it is called 25 times (the number of rows 
+in the table)
+
+
+
+Regards  Manlio Perillo
+
+From manlio_perillo at libero.it  Fri Dec 15 06:40:57 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 06:41:03 2006
+Subject: [Twisted-web] Re: [Nevow] template performance
+In-Reply-To: <87lkl92vv2.fsf@starship.python.net>
+References: <45827F77.4060803@libero.it> <87lkl92vv2.fsf@starship.python.net>
+Message-ID: <458297D9.8020305@libero.it>
+
+Michael Hudson ha scritto:
+> Manlio Perillo <manlio_perillo@libero.it> writes:
+> 
+>> First let me say that I really like Nevow template system.
+>> Once you became expert with it, it proves to be really flexible.
+>>
+>> The problem is the performance.
+>> I have done a simple test with the rendering of a table 5 * 20, Nevow
+>> against Django, and Nevow is much slower.
+>>
+>> The problem is that, I think, there are a lot of objects adaptation.
+> 
+> How confident are you about that?  
+
+A bit.
+
+> [...]
+
+>> A rend.Page.renderHTTP can build a context from the instance dictionary.
+> 
+> I'm not sure I understand.  You can implement IResource.renderHTTP
+> however you like, I guess...
+> 
+
+
+def renderHTTP(self, request):
+   return flatten(self.docFactory, context=self.__dict__)
+
+
+
+Regards  Manlio Perillo
+
+
+From mithrandi-twisted-web at mithrandi.za.net  Fri Dec 15 07:01:46 2006
+From: mithrandi-twisted-web at mithrandi.za.net (Tristan Seligmann)
+Date: Fri Dec 15 07:01:55 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <45829633.9020300@libero.it>
+References: <45827F77.4060803@libero.it>
+	<20061215120548.GA26542@mithrandi.za.net>
+	<45829633.9020300@libero.it>
+Message-ID: <20061215130146.GD26542@mithrandi.za.net>
+
+* Manlio Perillo <manlio_perillo@libero.it> [2006-12-15 13:33:55 +0100]:
+
+> manlio@synapsis:~/projects/tests/nevow$ python static2.py
+> 9.85 usec/pass
+> 
+> manlio@synapsis:~/projects/tests/django$ python static2.py
+> 13.31 usec/pass
+
+Is this python 2.4 or 2.5? The string handling speed-ups in 2.5 have a
+fairly substantial impact on Nevow rendering speed, I believe.
+
+> Nevow for every data object calls inevow.IContainer.child.
+> The problem can be here, since it is called 25 times (the number of rows 
+> in the table)
+
+That's easy enough to fix, just don't use data specials :)
+-- 
+mithrandi, i Ainil en-Balandor, a faer Ambar
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 197 bytes
+Desc: Digital signature
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20061215/2ddaf27c/attachment.pgp
+From exarkun at divmod.com  Fri Dec 15 07:03:28 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec 15 07:03:30 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <45827F77.4060803@libero.it>
+Message-ID: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+
+On Fri, 15 Dec 2006 11:56:55 +0100, Manlio Perillo <manlio_perillo@libero.it> wrote:
+>First let me say that I really like Nevow template system.
+>Once you became expert with it, it proves to be really flexible.
+>
+>The problem is the performance.
+>I have done a simple test with the rendering of a table 5 * 20, Nevow 
+>against Django, and Nevow is much slower.
+>
+>The problem is that, I think, there are a lot of objects adaptation.
+>
+>Is it possible to use that same model used by django.template?
+>
+>You pass a context (that is a dictionary usable like a stack: push/pop) to 
+>the render function.
+>All the data directive will search the data in the context (like djando, 
+>first dictionary lookup, then attribute lookup, and so).
+>
+>As an example n:data='x.y' ==> ctx['x']['y'].
+>A rend.Page.renderHTTP can build a context from the instance dictionary.
+>
+
+Optimization can be a complicated undertaking.  I urge you to take a look
+at the cProfile module included with Python 2.5 or the "lsprof" distribution
+of the same module for Python 2.4.  When you have evidence of a particular
+bottleneck, please post again.  If you have already collected profiling data,
+please include it whenever you post about performance.
+
+Jean-Paul
+
+From manlio_perillo at libero.it  Fri Dec 15 07:44:50 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 07:44:58 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <20061215130146.GD26542@mithrandi.za.net>
+References: <45827F77.4060803@libero.it>	<20061215120548.GA26542@mithrandi.za.net>	<45829633.9020300@libero.it>
+	<20061215130146.GD26542@mithrandi.za.net>
+Message-ID: <4582A6D2.4030307@libero.it>
+
+Tristan Seligmann ha scritto:
+> * Manlio Perillo <manlio_perillo@libero.it> [2006-12-15 13:33:55 +0100]:
+> 
+>> manlio@synapsis:~/projects/tests/nevow$ python static2.py
+>> 9.85 usec/pass
+>>
+>> manlio@synapsis:~/projects/tests/django$ python static2.py
+>> 13.31 usec/pass
+> 
+> Is this python 2.4 or 2.5? The string handling speed-ups in 2.5 have a
+> fairly substantial impact on Nevow rendering speed, I believe.
+> 
+
+Python 2.4.
+However Python 2.5 should speed up Django, too.
+
+>> Nevow for every data object calls inevow.IContainer.child.
+>> The problem can be here, since it is called 25 times (the number of rows 
+>> in the table)
+> 
+> That's easy enough to fix, just don't use data specials :)
+> 
+
+Right!
+
+
+class Main(rend.Page):
+     docFactory = loaders.xmlfile("template3.xhtml")
+
+
+     def render_header(self, ctx, data):
+         def renderRow(data):
+             for i in data:
+                 yield tags.th[str(i)]
+
+         data = range(COLS)
+         return ctx.tag[renderRow(data)]
+
+     def render_table(self, ctx, data):
+         def renderRow(data):
+             for i in data:
+                 yield tags.td[str(i)]
+
+         def renderTable(data):
+             for i in data:
+                 yield tags.tr[renderRow(i)]
+
+         data =  [
+             [random.random() for j in range(COLS)]
+             for i in range(ROWS)
+             ]
+         return ctx.tag[renderTable(data)]
+
+<!DOCTYPE html
+   PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+   "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml"
+       xmlns:n="http://nevow.com/ns/nevow/0.1"
+       lang="en" xml:lang="">
+   <head>
+     <title>Test Nevow performance</title>
+   </head>
+   <body>
+     <table>
+       <caption>RandomTable</caption>
+       <thead>
+         <tr n:render="header" />
+       </thead>
+       <tbody n:render="table" />
+     </table>
+   </body>
+</html>
+
+
+manlio@synapsis:~/projects/tests/nevow$ python static3.py
+75.71 usec/pass
+
+
+4.5 times faster!
+
+
+I suspect that using directly flat.flatten is even better but, then, 
+what's the use of the templating system?
+
+
+
+P.S.
+Django.template does not escapes string.
+If I add the filter escape, performance drops from
+33.58 usec/pass to 47.16 usec/pass.
+
+
+
+Regards  Manlio Perillo
+
+From manlio_perillo at libero.it  Fri Dec 15 08:43:44 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 08:43:57 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+Message-ID: <4582B4A0.70307@libero.it>
+
+Jean-Paul Calderone ha scritto:
+> On Fri, 15 Dec 2006 11:56:55 +0100, Manlio Perillo 
+> <manlio_perillo@libero.it> wrote:
+> [...]
+>> Is it possible to use that same model used by django.template?
+>>
+>> You pass a context (that is a dictionary usable like a stack: 
+>> push/pop) to the render function.
+>> All the data directive will search the data in the context (like 
+>> djando, first dictionary lookup, then attribute lookup, and so).
+>>
+>> As an example n:data='x.y' ==> ctx['x']['y'].
+>> A rend.Page.renderHTTP can build a context from the instance dictionary.
+>>
+> 
+> Optimization can be a complicated undertaking.  
+
+I'm not asking for optimization.
+I'm asking for a possible rewriting of how rend.Page (and flat) works.
+
+
+
+Regards  Manlio Perillo
+
+From exarkun at divmod.com  Fri Dec 15 08:59:15 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec 15 08:59:16 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582B4A0.70307@libero.it>
+Message-ID: <20061215145915.20948.1631063119.divmod.quotient.73959@ohm>
+
+On Fri, 15 Dec 2006 15:43:44 +0100, Manlio Perillo <manlio_perillo@libero.it> wrote:
+>Jean-Paul Calderone ha scritto:
+>>On Fri, 15 Dec 2006 11:56:55 +0100, Manlio Perillo 
+>><manlio_perillo@libero.it> wrote:
+>>[...]
+>>>Is it possible to use that same model used by django.template?
+>>>
+>>>You pass a context (that is a dictionary usable like a stack: push/pop) to 
+>>>the render function.
+>>>All the data directive will search the data in the context (like djando, 
+>>>first dictionary lookup, then attribute lookup, and so).
+>>>
+>>>As an example n:data='x.y' ==> ctx['x']['y'].
+>>>A rend.Page.renderHTTP can build a context from the instance dictionary.
+>>
+>>Optimization can be a complicated undertaking.
+>
+>I'm not asking for optimization.
+
+You are.  You pointed out something which you thought was slow.  You
+suggested a different way to accomplish something much the same.  You
+place greater value on one than the other because of performance reasons.
+That's what "optimization" means.
+
+>I'm asking for a possible rewriting of how rend.Page (and flat) works.
+>
+
+The context is being removed, so that will happen.  Since the way you
+described continues to expose the context as an application level API,
+I don't think that is how the rewrite will go.
+
+Jean-Paul
+
+From ldanielburr at mac.com  Fri Dec 15 09:04:28 2006
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Fri Dec 15 09:04:38 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582B4A0.70307@libero.it>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+	<4582B4A0.70307@libero.it>
+Message-ID: <op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+On Fri, 15 Dec 2006 08:43:44 -0600, Manlio Perillo  
+<manlio_perillo@libero.it> wrote:
+
+> Jean-Paul Calderone ha scritto:
+>> On Fri, 15 Dec 2006 11:56:55 +0100, Manlio Perillo  
+>> <manlio_perillo@libero.it> wrote:
+>> [...]
+>>> Is it possible to use that same model used by django.template?
+>>>
+>>> You pass a context (that is a dictionary usable like a stack:  
+>>> push/pop) to the render function.
+>>> All the data directive will search the data in the context (like  
+>>> djando, first dictionary lookup, then attribute lookup, and so).
+>>>
+>>> As an example n:data='x.y' ==> ctx['x']['y'].
+>>> A rend.Page.renderHTTP can build a context from the instance  
+>>> dictionary.
+>>>
+>>  Optimization can be a complicated undertaking.
+>
+> I'm not asking for optimization.
+> I'm asking for a possible rewriting of how rend.Page (and flat) works.
+>
+
+Re-writing rend,Page and flat to improve execution speed would most
+certainly be considered optimization.  I'm not sure why you think
+otherwise; could you please explain?
+
+Note that I am confident that we'd all like Nevow to be faster, but
+optimization requires a lot more than just a cursory analysis.  I
+get the impression from reading your post that you think your
+request is simple/trivial, and perhaps it seems that way, but there
+is a lot more to this.
+
+What you have done, so far, is to measure raw serialization speed,
+and in so doing, you've found that Django is faster.  That part
+is fine, but the conclusion you've drawn is questionable.  Do you
+know if the difference in speed actually makes any difference in
+a real web application?  I'll bet that other factors, such as
+database access and network latency generally account for the
+majority of time that it takes for a request to be serviced.
+
+Please understand, I am not trying to offend you or tell you that
+Nevow doesn't need improving; everyone agrees that it could be a
+lot better.  I am just trying to point out that your observations
+regarding serialization speed have not been made in a context that
+demonstrates a serious need to rewrite rend.Page and flat.flatten.
+
+Put another way, there are lots of automobiles in the world that
+go faster than my automobile, but unless my automobile is so slow
+that it overwhelms all other factors (traffic, for example), I
+don't really need to fix it, and could better spend my time on
+other things, like finding a better route to work.
+
+Hope this helps,
+
+L. Daniel Burr
+
+From manlio_perillo at libero.it  Fri Dec 15 09:11:46 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 09:12:00 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <20061215145915.20948.1631063119.divmod.quotient.73959@ohm>
+References: <20061215145915.20948.1631063119.divmod.quotient.73959@ohm>
+Message-ID: <4582BB32.8080604@libero.it>
+
+Jean-Paul Calderone ha scritto:
+> On Fri, 15 Dec 2006 15:43:44 +0100, Manlio Perillo 
+> <manlio_perillo@libero.it> wrote:
+>> Jean-Paul Calderone ha scritto:
+>>> On Fri, 15 Dec 2006 11:56:55 +0100, Manlio Perillo 
+>>> <manlio_perillo@libero.it> wrote:
+>>> [...]
+>>>> Is it possible to use that same model used by django.template?
+>>>>
+>>>> You pass a context (that is a dictionary usable like a stack: 
+>>>> push/pop) to the render function.
+>>>> All the data directive will search the data in the context (like 
+>>>> djando, first dictionary lookup, then attribute lookup, and so).
+>>>>
+>>>> As an example n:data='x.y' ==> ctx['x']['y'].
+>>>> A rend.Page.renderHTTP can build a context from the instance 
+>>>> dictionary.
+>>>
+>>> Optimization can be a complicated undertaking.
+>>
+>> I'm not asking for optimization.
+> 
+> You are.  You pointed out something which you thought was slow.  
+
+Well, its a fact (unless my tests are wrong).
+
+> You
+> suggested a different way to accomplish something much the same. 
+
+I'm not sure if it will be the same.
+
+> You
+> place greater value on one than the other because of performance reasons.
+> That's what "optimization" means.
+> 
+>> I'm asking for a possible rewriting of how rend.Page (and flat) works.
+>>
+> 
+> The context is being removed, so that will happen.  
+
+Ok, but how is going this branch of development?
+
+> Since the way you
+> described continues to expose the context as an application level API,
+> I don't think that is how the rewrite will go.
+> 
+
+I'm talking about a different context.
+A context that holds data.
+
+context = {'table': ..., 'header': ..., 'request': request}
+return flat.flatten(node, context)
+
+
+Now stan use object adaptation (locate/remember) for obtaing the data 
+requested by a data directive.
+
+
+
+Regards  Manlio Perillo
+
+From exarkun at divmod.com  Fri Dec 15 09:28:31 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec 15 09:28:33 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582BB32.8080604@libero.it>
+Message-ID: <20061215152831.20948.566567740.divmod.quotient.73990@ohm>
+
+On Fri, 15 Dec 2006 16:11:46 +0100, Manlio Perillo <manlio_perillo@libero.it> wrote:
+>Jean-Paul Calderone ha scritto:
+>>On Fri, 15 Dec 2006 15:43:44 +0100, Manlio Perillo 
+>><manlio_perillo@libero.it> wrote:
+>>>Jean-Paul Calderone ha scritto:
+>>>>On Fri, 15 Dec 2006 11:56:55 +0100, Manlio Perillo 
+>>>><manlio_perillo@libero.it> wrote:
+>>>>[...]
+>>>>>Is it possible to use that same model used by django.template?
+>>>>>
+>>>>>You pass a context (that is a dictionary usable like a stack: push/pop) 
+>>>>>to the render function.
+>>>>>All the data directive will search the data in the context (like djando, 
+>>>>>first dictionary lookup, then attribute lookup, and so).
+>>>>>
+>>>>>As an example n:data='x.y' ==> ctx['x']['y'].
+>>>>>A rend.Page.renderHTTP can build a context from the instance dictionary.
+>>>>
+>>>>Optimization can be a complicated undertaking.
+>>>
+>>>I'm not asking for optimization.
+>>
+>>You are.  You pointed out something which you thought was slow.
+>
+>Well, its a fact (unless my tests are wrong).
+
+I didn't say it wasn't.
+
+>>You
+>>suggested a different way to accomplish something much the same.
+>
+>I'm not sure if it will be the same.
+
+It's a means of passing objects to different parts of Python code
+responsible for rendering a template.  That's what the existing
+context code is for.  They're basically the same thing.
+
+>>You
+>>place greater value on one than the other because of performance reasons.
+>>That's what "optimization" means.
+>>>I'm asking for a possible rewriting of how rend.Page (and flat) works.
+>>
+>>The context is being removed, so that will happen.
+>
+>Ok, but how is going this branch of development?
+
+It's not really going anywhere at the moment, presumably because
+everyone has more important things to work on.
+
+>>Since the way you
+>>described continues to expose the context as an application level API,
+>>I don't think that is how the rewrite will go.
+>
+>I'm talking about a different context.
+
+Um, okay.
+
+>A context that holds data.
+
+I don't know what that means.  I don't think you can put anything
+except data into a data structure.
+
+>
+>context = {'table': ..., 'header': ..., 'request': request}
+>return flat.flatten(node, context)
+>
+>
+>Now stan use object adaptation (locate/remember) for obtaing the data 
+>requested by a data directive.
+>
+
+There will be no context nor any locate or remember methods in the
+rewritten system.  They are a bad idea, completely independent from
+performance concerns.
+
+Jean-Paul
+
+From manlio_perillo at libero.it  Fri Dec 15 09:34:07 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 09:34:17 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>	<4582B4A0.70307@libero.it>
+	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+Message-ID: <4582C06F.50605@libero.it>
+
+L. Daniel Burr ha scritto:
+> [...]
+> Re-writing rend,Page and flat to improve execution speed would most
+> certainly be considered optimization. 
+
+Ok, lets consider it an optimization.
+
+> Note that I am confident that we'd all like Nevow to be faster, but
+> optimization requires a lot more than just a cursory analysis.  I
+> get the impression from reading your post that you think your
+> request is simple/trivial, and perhaps it seems that way, but there
+> is a lot more to this.
+> 
+
+My first question was:
+"Is it possible to use that same model used by django.template?"
+
+I have posted my test results only later.
+
+> What you have done, so far, is to measure raw serialization speed,
+> and in so doing, you've found that Django is faster.  That part
+> is fine, but the conclusion you've drawn is questionable.  Do you
+> know if the difference in speed actually makes any difference in
+> a real web application?  I'll bet that other factors, such as
+> database access and network latency generally account for the
+> majority of time that it takes for a request to be serviced.
+> 
+
+The first test I have done was to compare the two web servers (Nevow + 
+Twisted Web and Django + Lighttpd), obtaining the random data from a 
+database.
+
+Again, Nevow was much slower than Django.
+
+> Please understand, I am not trying to offend you or tell you that
+> Nevow doesn't need improving; everyone agrees that it could be a
+> lot better.  I am just trying to point out that your observations
+> regarding serialization speed have not been made in a context that
+> demonstrates a serious need to rewrite rend.Page and flat.flatten.
+> 
+
+I ask again: Nevow uses a lot of object adaptation.
+Is this really necessary?
+
+
+
+Regards  Manlio Perillo
+
+From manlio_perillo at libero.it  Fri Dec 15 09:41:01 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 09:41:11 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <20061215152831.20948.566567740.divmod.quotient.73990@ohm>
+References: <20061215152831.20948.566567740.divmod.quotient.73990@ohm>
+Message-ID: <4582C20D.6070200@libero.it>
+
+Jean-Paul Calderone ha scritto:
+> [...]
+>> I'm talking about a different context.
+> 
+> Um, okay.
+> 
+>> A context that holds data.
+> 
+> I don't know what that means.  I don't think you can put anything
+> except data into a data structure.
+> 
+
+Now Woven/Page context does not contains the data that should be used by 
+a data directive.
+
+It contains locate/remember methods so that you register data container 
+from somewhere else.
+
+>>
+>> context = {'table': ..., 'header': ..., 'request': request}
+>> return flat.flatten(node, context)
+>>
+>>
+>> Now stan use object adaptation (locate/remember) for obtaing the data 
+>> requested by a data directive.
+>>
+> 
+> There will be no context nor any locate or remember methods in the
+> rewritten system.  They are a bad idea, completely independent from
+> performance concerns.
+> 
+
+
+Ok, this is what i was trying to say.
+Can you please post an example on how to use the new system?
+
+
+
+
+Regards  Manlio Perillo
+
+From manlio_perillo at libero.it  Fri Dec 15 09:51:59 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 09:52:22 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>	<4582B4A0.70307@libero.it>
+	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+Message-ID: <4582C49F.1000002@libero.it>
+
+L. Daniel Burr ha scritto:
+> On Fri, 15 Dec 2006 08:43:44 -0600, Manlio Perillo 
+> <manlio_perillo@libero.it> wrote:
+> [...]
+
+> What you have done, so far, is to measure raw serialization speed,
+> and in so doing, you've found that Django is faster.  
+
+
+One more thing.
+
+This is not only a question Django vs Nevow.
+
+If you read one of my previous messages, you will find that using data 
+directives for rendering a table will slow down the rendering by a 
+factor equal to 4.5.
+
+
+Regards  Manlio Perillo
+
+
+
+From exarkun at divmod.com  Fri Dec 15 09:54:41 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec 15 09:54:43 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582C20D.6070200@libero.it>
+Message-ID: <20061215155441.20948.385144088.divmod.quotient.74022@ohm>
+
+On Fri, 15 Dec 2006 16:41:01 +0100, Manlio Perillo <manlio_perillo@libero.it> wrote:
+> [snip]
+>>
+>>There will be no context nor any locate or remember methods in the
+>>rewritten system.  They are a bad idea, completely independent from
+>>performance concerns.
+>
+>
+>Ok, this is what i was trying to say.
+>Can you please post an example on how to use the new system?
+>
+
+The plan is that render methods will take a request and a tag as
+arguments.  There isn't a plan for data factories macro factories.
+
+If you look at nevow.page.Element, you will see what the replacement
+for nevow.rend.Fragment looks like.  The replacement for nevow.rend.Page
+should be somewhat analogous.
+
+Jean-Paul
+
+From ldanielburr at mac.com  Fri Dec 15 09:55:16 2006
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Fri Dec 15 09:55:23 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582C06F.50605@libero.it>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+	<4582B4A0.70307@libero.it>
+	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582C06F.50605@libero.it>
+Message-ID: <op.tklyie1x3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+On Fri, 15 Dec 2006 09:34:07 -0600, Manlio Perillo  
+<manlio_perillo@libero.it> wrote:
+
+> L. Daniel Burr ha scritto:
+>> [...]
+>> Re-writing rend,Page and flat to improve execution speed would most
+>> certainly be considered optimization.
+>
+> Ok, lets consider it an optimization.
+>
+>> Note that I am confident that we'd all like Nevow to be faster, but
+>> optimization requires a lot more than just a cursory analysis.  I
+>> get the impression from reading your post that you think your
+>> request is simple/trivial, and perhaps it seems that way, but there
+>> is a lot more to this.
+>>
+>
+> My first question was:
+> "Is it possible to use that same model used by django.template?"
+>
+
+Sure, but you posed that question for a reason.  You didn't ask it
+because you thought it would be fun, you asked it because you found
+django to be faster, and wanted to use the same technique as django
+in order to make nevow faster.
+
+> I have posted my test results only later.
+>
+
+See above.  You wouldn't have asked the question if you didn't want
+an optimization to be performed.
+
+>> What you have done, so far, is to measure raw serialization speed,
+>> and in so doing, you've found that Django is faster.  That part
+>> is fine, but the conclusion you've drawn is questionable.  Do you
+>> know if the difference in speed actually makes any difference in
+>> a real web application?  I'll bet that other factors, such as
+>> database access and network latency generally account for the
+>> majority of time that it takes for a request to be serviced.
+>>
+>
+> The first test I have done was to compare the two web servers (Nevow +  
+> Twisted Web and Django + Lighttpd), obtaining the random data from a  
+> database.
+>
+> Again, Nevow was much slower than Django.
+>
+
+Ok, that's great.  Can you please provide the numbers?  What was the
+concurrency level used?
+
+>> Please understand, I am not trying to offend you or tell you that
+>> Nevow doesn't need improving; everyone agrees that it could be a
+>> lot better.  I am just trying to point out that your observations
+>> regarding serialization speed have not been made in a context that
+>> demonstrates a serious need to rewrite rend.Page and flat.flatten.
+>>
+>
+> I ask again: Nevow uses a lot of object adaptation.
+> Is this really necessary?
+>
+
+Please google for posts to this list regarding adaptation and various
+rendering-speed concerns by one Andrea Arcangeli.  In his case, he
+found Cheetah to be much faster than Nevow, just as you found Django
+to be much faster than Nevow.  The long and short of it is that yes,
+object adaptation is more expensive that not using any adaptation
+at all.
+
+The real question is, do you care enough to become familiar with the
+branch in which the context-removal changes are being made, and to
+help in moving that work forward?
+
+>
+> Regards  Manlio Perillo
+>
+
+Hope this helps,
+
+L. Daniel Burr
+
+From ldanielburr at mac.com  Fri Dec 15 10:00:43 2006
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Fri Dec 15 10:00:54 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582C49F.1000002@libero.it>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+	<4582B4A0.70307@libero.it>
+	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582C49F.1000002@libero.it>
+Message-ID: <op.tklyrhbq3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+On Fri, 15 Dec 2006 09:51:59 -0600, Manlio Perillo  
+<manlio_perillo@libero.it> wrote:
+
+> L. Daniel Burr ha scritto:
+>> On Fri, 15 Dec 2006 08:43:44 -0600, Manlio Perillo  
+>> <manlio_perillo@libero.it> wrote:
+>> [...]
+>
+>> What you have done, so far, is to measure raw serialization speed,
+>> and in so doing, you've found that Django is faster.
+>
+>
+> One more thing.
+>
+> This is not only a question Django vs Nevow.
+>
+
+I fully understand that.  You could have used Cheetah, or Clearsilver, or
+any of a number of template engines, and found similar results.
+
+> If you read one of my previous messages, you will find that using data  
+> directives for rendering a table will slow down the rendering by a  
+> factor equal to 4.5.
+>
+
+Yes, I understand that too.  I will point out that I have *never* used
+a data directive in any of my applications.  I'm not sure why you feel
+that you need them.  The fact that they are going away at some point is
+a very good thing, in my opinion.
+
+Given that data directives are going away, why even worry about this?
+
+>
+> Regards  Manlio Perillo
+
+Hope this helps,
+
+L. Daniel Burr
+
+From manlio_perillo at libero.it  Fri Dec 15 10:22:46 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 10:22:58 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <20061215155441.20948.385144088.divmod.quotient.74022@ohm>
+References: <20061215155441.20948.385144088.divmod.quotient.74022@ohm>
+Message-ID: <4582CBD6.8060504@libero.it>
+
+Jean-Paul Calderone ha scritto:
+> On Fri, 15 Dec 2006 16:41:01 +0100, Manlio Perillo 
+> <manlio_perillo@libero.it> wrote:
+>> [snip]
+>>>
+>>> There will be no context nor any locate or remember methods in the
+>>> rewritten system.  They are a bad idea, completely independent from
+>>> performance concerns.
+>>
+>>
+>> Ok, this is what i was trying to say.
+>> Can you please post an example on how to use the new system?
+>>
+> 
+> The plan is that render methods will take a request and a tag as
+> arguments.  There isn't a plan for data factories macro factories.
+> 
+
+Wait.
+Does this means that I can no more render a table with the sequence 
+renderer?
+Should the table be entirely rendered in Python code?
+
+I don't like this.
+
+One more thing: will macro be supported?
+
+Without macros it will be a problem to compose pages, unless I write 
+them entirely in Python (and I *don not* want this).
+
+
+
+Thanks and regards  Manlio Perillo
+
+From manlio_perillo at libero.it  Fri Dec 15 10:31:55 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 10:32:05 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <op.tklyrhbq3oj628@l-daniel-burrs-powerbook-g4-17.local>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>	<4582B4A0.70307@libero.it>	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>	<4582C49F.1000002@libero.it>
+	<op.tklyrhbq3oj628@l-daniel-burrs-powerbook-g4-17.local>
+Message-ID: <4582CDFB.8010304@libero.it>
+
+L. Daniel Burr ha scritto:
+> [...]
+> 
+> Yes, I understand that too.  I will point out that I have *never* used
+> a data directive in any of my applications.  I'm not sure why you feel
+> that you need them.  
+
+Because I want to write XHTML code as much as possible.
+This is possible with Djando and it is "fast", why it should not be 
+possible with Nevow?
+
+> The fact that they are going away at some point is
+> a very good thing, in my opinion.
+> 
+
+If data directive are going away and I will no more be able to write:
+
+    <table>
+       <caption>RandomTable</caption>
+       <thead>
+         <tr n:render="sequence" n:data="header">
+           <th n:pattern="item" n:render="string" />
+         </tr>
+       </thead>
+       <tbody n:render="sequence" n:data="table">
+         <tr n:pattern="item" n:render="sequence">
+           <td n:pattern="item" n:render="string" />
+         </tr>
+       </tbody>
+     </table>
+
+I will migrate to twisted web2 + django template, where I can write:
+
+     <table>
+       <caption>RandomTable</caption>
+       <thead>
+         <tr>
+           {% for i in header %}
+             <th>{{ i }}</li>
+           {% endfor %}
+         </tr>
+       </thead>
+       <tbody>
+         {% for i in table %}
+           <tr>
+             {% for j in i %}
+               <td>{{ j }}</td>
+             {% endfor %}
+           </tr>
+         {% endfor %}
+       </tbody>
+     </table>
+
+
+
+
+However I want to be sure.
+Maybe I'm using Nevow in the wrong way.
+
+How do you render a table like the one in the example?
+
+
+
+
+Thanks and regards  Manlio Perillo
+
+From exarkun at divmod.com  Fri Dec 15 11:02:53 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec 15 11:03:00 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582CBD6.8060504@libero.it>
+Message-ID: <20061215170253.20948.1484321433.divmod.quotient.74116@ohm>
+
+On Fri, 15 Dec 2006 17:22:46 +0100, Manlio Perillo <manlio_perillo@libero.it> wrote:
+>Jean-Paul Calderone ha scritto:
+>>On Fri, 15 Dec 2006 16:41:01 +0100, Manlio Perillo 
+>><manlio_perillo@libero.it> wrote:
+>>>[snip]
+>>>>
+>>>>There will be no context nor any locate or remember methods in the
+>>>>rewritten system.  They are a bad idea, completely independent from
+>>>>performance concerns.
+>>>
+>>>
+>>>Ok, this is what i was trying to say.
+>>>Can you please post an example on how to use the new system?
+>>
+>>The plan is that render methods will take a request and a tag as
+>>arguments.  There isn't a plan for data factories macro factories.
+>
+>Wait.
+>Does this means that I can no more render a table with the sequence 
+>renderer?
+
+Most likely it does not mean this.
+
+Jean-Paul
+
+From manlio_perillo at libero.it  Fri Dec 15 11:11:11 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 11:11:29 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <20061215170253.20948.1484321433.divmod.quotient.74116@ohm>
+References: <20061215170253.20948.1484321433.divmod.quotient.74116@ohm>
+Message-ID: <4582D72F.6070008@libero.it>
+
+Jean-Paul Calderone ha scritto:
+> On Fri, 15 Dec 2006 17:22:46 +0100, Manlio Perillo 
+> [...]
+>>
+>> Wait.
+>> Does this means that I can no more render a table with the sequence 
+>> renderer?
+> 
+> Most likely it does not mean this.
+> 
+
+Please, let me understand.
+How will I (and I should now) render a table using as much XHML code as 
+possible?
+
+
+
+
+Regards   Manlio Perillo
+
+
+From exarkun at divmod.com  Fri Dec 15 11:26:42 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri Dec 15 11:26:43 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582D72F.6070008@libero.it>
+Message-ID: <20061215172642.20948.497348203.divmod.quotient.74151@ohm>
+
+On Fri, 15 Dec 2006 18:11:11 +0100, Manlio Perillo <manlio_perillo@libero.it> wrote:
+>Jean-Paul Calderone ha scritto:
+>>On Fri, 15 Dec 2006 17:22:46 +0100, Manlio Perillo [...]
+>>>
+>>>Wait.
+>>>Does this means that I can no more render a table with the sequence 
+>>>renderer?
+>>
+>>Most likely it does not mean this.
+>
+>Please, let me understand.
+>How will I (and I should now) render a table using as much XHML code as 
+>possible?
+>
+
+Maybe like this:
+
+http://twistedmatrix.com/trac/browser/sandbox/exarkun/merit/trunk/merit/resourceweb.py?rev=18554#L131
+
+I have not explored much further than that yet.  If you have any
+suggestions, feel free to make them.
+
+Jean-Paul
+
+From manlio_perillo at libero.it  Fri Dec 15 11:56:21 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 11:56:28 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <20061215172642.20948.497348203.divmod.quotient.74151@ohm>
+References: <20061215172642.20948.497348203.divmod.quotient.74151@ohm>
+Message-ID: <4582E1C5.6070701@libero.it>
+
+Jean-Paul Calderone ha scritto:
+> On Fri, 15 Dec 2006 18:11:11 +0100, Manlio Perillo 
+> <manlio_perillo@libero.it> wrote:
+>> Jean-Paul Calderone ha scritto:
+>>> On Fri, 15 Dec 2006 17:22:46 +0100, Manlio Perillo [...]
+>>>>
+>>>> Wait.
+>>>> Does this means that I can no more render a table with the sequence 
+>>>> renderer?
+>>>
+>>> Most likely it does not mean this.
+>>
+>> Please, let me understand.
+>> How will I (and I should now) render a table using as much XHML code 
+>> as possible?
+>>
+> 
+> Maybe like this:
+> 
+> http://twistedmatrix.com/trac/browser/sandbox/exarkun/merit/trunk/merit/resourceweb.py?rev=18554#L131 
+> 
+
+
+Ok, thanks.
+There are some useful patterns.
+It's very unfortunate that this things are not well documented.
+
+
+> 
+> I have not explored much further than that yet.  If you have any
+> suggestions, feel free to make them.
+> 
+
+I don't (still) know if this will be really useful, but I would like to 
+have something like:
+
+class MyPage(page.Element):
+    def __init(self):
+        self.x = {'y': 1}
+        self.x = data(self.x)
+
+
+<p n:render="string" n:data="x.y" />  ==>
+<p>1</p>
+
+
+For the sequence renderer, the solution used by Django is to "push" the 
+loop variable into the context (used as a stack).
+The problem is that in Nevow template we can not name this variable.
+
+This means that one have to do:
+<ul n:render="sequence" n:data="list">
+    <li n:data="@sequence" n:render="string" />
+</ul>
+
+
+
+Regards  Manlio Perillo
+
+From ldanielburr at mac.com  Fri Dec 15 12:11:29 2006
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Fri Dec 15 12:11:41 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582CDFB.8010304@libero.it>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+	<4582B4A0.70307@libero.it>
+	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582C49F.1000002@libero.it>
+	<op.tklyrhbq3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582CDFB.8010304@libero.it>
+Message-ID: <op.tkl4tfds3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+On Fri, 15 Dec 2006 10:31:55 -0600, Manlio Perillo  
+<manlio_perillo@libero.it> wrote:
+
+> L. Daniel Burr ha scritto:
+>> [...]
+>>  Yes, I understand that too.  I will point out that I have *never* used
+>> a data directive in any of my applications.  I'm not sure why you feel
+>> that you need them.
+>
+> Because I want to write XHTML code as much as possible.
+> This is possible with Djando and it is "fast", why it should not be  
+> possible with Nevow?
+>
+>> The fact that they are going away at some point is
+>> a very good thing, in my opinion.
+>>
+>
+> If data directive are going away and I will no more be able to write:
+>
+>     <table>
+>        <caption>RandomTable</caption>
+>        <thead>
+>          <tr n:render="sequence" n:data="header">
+>            <th n:pattern="item" n:render="string" />
+>          </tr>
+>        </thead>
+>        <tbody n:render="sequence" n:data="table">
+>          <tr n:pattern="item" n:render="sequence">
+>            <td n:pattern="item" n:render="string" />
+>          </tr>
+>        </tbody>
+>      </table>
+>
+
+You can still have patterns, and you can still render tables.
+
+> I will migrate to twisted web2 + django template, where I can write:
+>
+>      <table>
+>        <caption>RandomTable</caption>
+>        <thead>
+>          <tr>
+>            {% for i in header %}
+>              <th>{{ i }}</li>
+>            {% endfor %}
+>          </tr>
+>        </thead>
+>        <tbody>
+>          {% for i in table %}
+>            <tr>
+>              {% for j in i %}
+>                <td>{{ j }}</td>
+>              {% endfor %}
+>            </tr>
+>          {% endfor %}
+>        </tbody>
+>      </table>
+>
+
+I will note that this is most definitely *not* XHTML, so your
+statement "...want to write XHTML code as much as possible."
+doesn't make sense.  The nevow template would probably pass
+XHTML validation, but this Django template surely won't, so
+I don't understand your point.
+
+Moreover, you've embedded iteration logic in the Django
+template, so if some idea of "XHTML purity" is driving you,
+the the Django approach, while faster, is less pure.
+
+>
+>
+>
+> However I want to be sure.
+> Maybe I'm using Nevow in the wrong way.
+>
+> How do you render a table like the one in the example?
+>
+
+You could do something like this (untested):
+
+template.xhtml:
+
+<table xmlns="http://www.w3.org/1999/xhtml"
+	xmlns:n="http://nevow.com/ns/nevow/0.1">
+
+     <caption>RandomTable</caption>
+
+     <thead>
+         <tr n:render="headers">
+             <th n:pattern="item">
+                 <n:slot name="content"/>
+             </th>
+         </tr>
+     </thead>
+
+     <tfoot/>
+
+     <tbody n:render="rows">
+         <tr n:pattern="item">
+             <td n:pattern="item">
+                 <n:slot name="content"/>
+             </td>
+         </tr>
+     </tbody>
+
+</table>
+
+
+ from nevow import flat, loaders, page
+
+
+class MyTable(page.Element):
+     docFactory = loaders.xmlfile('template.xhtml')
+
+     def headers(self, request, tag):
+         headerPattern = tag.patternGenerator('item')
+         columns = []
+         for i in range(5):
+             header = headerPattern()
+             header.fillSlots('content', i)
+             columns.append(header)
+         return tag.clear()[columns]
+
+     def rows(self, request, tag):
+         rowPattern = tag.patternGenerator('item')
+         rows = []
+         for i in range(10):
+             row = rowPattern()
+             cells = []
+             cellPattern = row.patternGenerator('item')
+             for j in range(5):
+                 cell = cellPattern()
+                 cell.fillSlots('content', j)
+                 cells.append(cell)
+             rows.append(row.clear()[cells])
+         return tag.clear()[rows]
+
+     page.renderer(headers, rows)
+
+
+This is one possible way to do it, and it works now,
+with the current nevow release.
+
+Note that the template is generally similar to your
+original one, and we've kept the looping out of the
+template.
+
+The most important thing is to stop thinking in terms
+of data types (render="sequence", render="string"),
+and just write render methods that deal with app-level
+concepts (headers, rows).
+
+An important point to make here, is that the code I
+provided above is based on the same code used to
+implement the "sequence" directive, so there is really
+nothing magical going on.
+
+>
+>
+>
+> Thanks and regards  Manlio Perillo
+
+Hope this helps,
+
+L. Daniel Burr
+
+From manlio_perillo at libero.it  Fri Dec 15 12:34:53 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Fri Dec 15 12:35:01 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <op.tkl4tfds3oj628@l-daniel-burrs-powerbook-g4-17.local>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>	<4582B4A0.70307@libero.it>	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>	<4582C49F.1000002@libero.it>	<op.tklyrhbq3oj628@l-daniel-burrs-powerbook-g4-17.local>	<4582CDFB.8010304@libero.it>
+	<op.tkl4tfds3oj628@l-daniel-burrs-powerbook-g4-17.local>
+Message-ID: <4582EACD.6080404@libero.it>
+
+L. Daniel Burr ha scritto:
+> [...]
+> 
+>> I will migrate to twisted web2 + django template, where I can write:
+>>
+>>      <table>
+>>        <caption>RandomTable</caption>
+>>        <thead>
+>>          <tr>
+>>            {% for i in header %}
+>>              <th>{{ i }}</li>
+>>            {% endfor %}
+>>          </tr>
+>>        </thead>
+>>        <tbody>
+>>          {% for i in table %}
+>>            <tr>
+>>              {% for j in i %}
+>>                <td>{{ j }}</td>
+>>              {% endfor %}
+>>            </tr>
+>>          {% endfor %}
+>>        </tbody>
+>>      </table>
+>>
+> 
+> I will note that this is most definitely *not* XHTML, so your
+> statement "...want to write XHTML code as much as possible."
+> doesn't make sense.  The nevow template would probably pass
+> XHTML validation, but this Django template surely won't, so
+> I don't understand your point.
+> 
+
+The point is that in the template it should be "visible" the XHTML that 
+will result.
+
+As an example, this code:
+
+           <ul nevow:pattern="sums-container">
+	    <nevow:slot name="elements" />
+	  </ul>
+	  <li nevow:pattern="sums-element">
+	    <nevow:slot name="date" />
+	    <nevow:slot name="value" />
+	  </li>
+  	
+  	  <ul nevow:pattern="methods-container">
+  	    <nevow:slot name="elements" />
+  	  </ul>
+  	  <li nevow:pattern="methods-element">
+  	    <nevow:slot name="method" />
+  	    <nevow:slot name="value" />
+  	  </li>
+  	
+  	  <div>
+  	    Wallclock duration totals (seconds)
+  	    <nevow:invisible nevow:render="totalWallClock" />
+  	  </div>
+
+
+give me no clue on how the renderized page will look.
+
+
+> Moreover, you've embedded iteration logic in the Django
+> template, so if some idea of "XHTML purity" is driving you,
+> the the Django approach, while faster, is less pure.
+> 
+
+Nevow has a better solution: the sequence renderer.
+But it will go away.
+
+ > [...]
+> 
+> The most important thing is to stop thinking in terms
+> of data types (render="sequence", render="string"),
+> and just write render methods that deal with app-level
+> concepts (headers, rows).
+> 
+> An important point to make here, is that the code I
+> provided above is based on the same code used to
+> implement the "sequence" directive, so there is really
+> nothing magical going on.
+> 
+
+
+Ok, but what about reusability?
+Now for every table (in theory) I have to reimplement the sequence logic.
+
+Well, I'm sure that it is possible to write generic/reusable code for 
+rendering tables.
+
+
+ > Hope this helps,
+
+Yes, thanks.
+I will try to use slots instead of data.
+
+
+P.S.
+How tested/stable is the new(?) page module?
+
+
+
+Regards  Manlio Perillo
+
+From ldanielburr at mac.com  Fri Dec 15 12:56:02 2006
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Fri Dec 15 12:56:07 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4582EACD.6080404@libero.it>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+	<4582B4A0.70307@libero.it>
+	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582C49F.1000002@libero.it>
+	<op.tklyrhbq3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582CDFB.8010304@libero.it>
+	<op.tkl4tfds3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582EACD.6080404@libero.it>
+Message-ID: <op.tkl6voiv3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+On Fri, 15 Dec 2006 12:34:53 -0600, Manlio Perillo  
+<manlio_perillo@libero.it> wrote:
+[...]
+>
+> The point is that in the template it should be "visible" the XHTML that  
+> will result.
+>
+> As an example, this code:
+>
+>            <ul nevow:pattern="sums-container">
+> 	    <nevow:slot name="elements" />
+> 	  </ul>
+> 	  <li nevow:pattern="sums-element">
+> 	    <nevow:slot name="date" />
+> 	    <nevow:slot name="value" />
+> 	  </li>
+>   	
+>   	  <ul nevow:pattern="methods-container">
+>   	    <nevow:slot name="elements" />
+>   	  </ul>
+>   	  <li nevow:pattern="methods-element">
+>   	    <nevow:slot name="method" />
+>   	    <nevow:slot name="value" />
+>   	  </li>
+>   	
+>   	  <div>
+>   	    Wallclock duration totals (seconds)
+>   	    <nevow:invisible nevow:render="totalWallClock" />
+>   	  </div>
+>
+>
+> give me no clue on how the renderized page will look.
+>
+
+Sure, but that is nothing like the example I provided you.
+In my example, it is clear that the header row contains
+1 or more th elements, and that the tbody element will
+contain 1 or more tr elements, each having 1 or more td
+elements.
+
+I agree that your example above doesn't read as clearly,
+but I'm sure you can write that in a style similar to
+what I used for the table example.
+
+>
+>> Moreover, you've embedded iteration logic in the Django
+>> template, so if some idea of "XHTML purity" is driving you,
+>> the the Django approach, while faster, is less pure.
+>>
+>
+> Nevow has a better solution: the sequence renderer.
+> But it will go away.
+>
+
+The sequence renderer is basically doing the same thing
+as the code I used in the "headers" and "rows" methods.
+We aren't talking about some large class/function that
+is complicated to reproduce.  Adding a sequence renderer
+that complies with the upcoming changes to nevow is not
+going to be difficult.
+
+Even if no direct substitute is provided, nothing is
+stopping you from adding your own, or better yet, being
+the person to contribute a new sequence renderer.  I think
+it would be a good thing to do.
+
+>  > [...]
+>>  The most important thing is to stop thinking in terms
+>> of data types (render="sequence", render="string"),
+>> and just write render methods that deal with app-level
+>> concepts (headers, rows).
+>>  An important point to make here, is that the code I
+>> provided above is based on the same code used to
+>> implement the "sequence" directive, so there is really
+>> nothing magical going on.
+>>
+>
+>
+> Ok, but what about reusability?
+> Now for every table (in theory) I have to reimplement the sequence logic.
+>
+
+See above.  The existing sequence renderer is just a few lines of code,
+not a magical entity.  Why reimplement it for each table?
+
+> Well, I'm sure that it is possible to write generic/reusable code for  
+> rendering tables.
+>
+
+Absolutely.  The code I provided in my example *is* a generic table
+element, that you could stick in any page.  Just add some methods for
+querying your DB and you have a reusable element, that will render
+arbitrary data in tabular format.
+
+>
+>  > Hope this helps,
+>
+> Yes, thanks.
+> I will try to use slots instead of data.
+>
+
+Slots are a good solution, because they work today, and will allow you
+to switch to the context-less version of nevow when it is released,
+without any major breakage.
+
+>
+> P.S.
+> How tested/stable is the new(?) page module?
+>
+
+I have used page.Element in a production environment for months now.
+I switched from using rend.Fragment to page.Element as soon as it was
+available, and things have worked perfectly, at least for me.
+
+>
+>
+> Regards  Manlio Perillo
+
+Hope this helps,
+
+L. Daniel Burr
+
+From manlio_perillo at libero.it  Sat Dec 16 03:31:53 2006
+From: manlio_perillo at libero.it (Manlio Perillo)
+Date: Sat Dec 16 03:38:10 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <op.tkl6voiv3oj628@l-daniel-burrs-powerbook-g4-17.local>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>	<4582B4A0.70307@libero.it>	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>	<4582C49F.1000002@libero.it>	<op.tklyrhbq3oj628@l-daniel-burrs-powerbook-g4-17.local>	<4582CDFB.8010304@libero.it>	<op.tkl4tfds3oj628@l-daniel-burrs-powerbook-g4-17.local>	<4582EACD.6080404@libero.it>
+	<op.tkl6voiv3oj628@l-daniel-burrs-powerbook-g4-17.local>
+Message-ID: <4583BD09.2070103@libero.it>
+
+L. Daniel Burr ha scritto:
+> On Fri, 15 Dec 2006 12:34:53 -0600, Manlio Perillo 
+> <manlio_perillo@libero.it> wrote:
+> [...]
+
+>>
+>> P.S.
+>> How tested/stable is the new(?) page module?
+>>
+> 
+> I have used page.Element in a production environment for months now.
+> I switched from using rend.Fragment to page.Element as soon as it was
+> available, and things have worked perfectly, at least for me.
+> 
+>>
+
+
+One more question: is formal compatible with page.Element?
+
+
+
+Thanks and regards  Manlio Perillo
+
+From ldanielburr at mac.com  Sat Dec 16 09:27:15 2006
+From: ldanielburr at mac.com (L. Daniel Burr)
+Date: Sat Dec 16 09:30:10 2006
+Subject: [Twisted-web] [Nevow] template performance
+In-Reply-To: <4583BD09.2070103@libero.it>
+References: <20061215130328.20948.560361427.divmod.quotient.73840@ohm>
+	<4582B4A0.70307@libero.it>
+	<op.tklv5qzh3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582C49F.1000002@libero.it>
+	<op.tklyrhbq3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582CDFB.8010304@libero.it>
+	<op.tkl4tfds3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4582EACD.6080404@libero.it>
+	<op.tkl6voiv3oj628@l-daniel-burrs-powerbook-g4-17.local>
+	<4583BD09.2070103@libero.it>
+Message-ID: <op.tknrvpfy3oj628@l-daniel-burrs-powerbook-g4-17.local>
+
+On Sat, 16 Dec 2006 03:31:53 -0600, Manlio Perillo  
+<manlio_perillo@libero.it> wrote:
+
+> L. Daniel Burr ha scritto:
+>> On Fri, 15 Dec 2006 12:34:53 -0600, Manlio Perillo  
+>> <manlio_perillo@libero.it> wrote:
+>> [...]
+>
+>>>
+>>> P.S.
+>>> How tested/stable is the new(?) page module?
+>>>
+>>  I have used page.Element in a production environment for months now.
+>> I switched from using rend.Fragment to page.Element as soon as it was
+>> available, and things have worked perfectly, at least for me.
+>>
+>>>
+>
+>
+> One more question: is formal compatible with page.Element?
+>
+
+Not at this time.  As far as I know, formal is still using rend.Fragment  
+for
+its Field and Group objects, among other things.  Changing formal to use
+page.Element is not terribly difficult, but somebody would need to see if
+the formal developers are interested in changing at this time.
+
+I think formal will be more likely to change once the context-removal
+work is actually finished in nevow; until then, I doubt there is any
+real urgency.
+
+>
+>
+> Thanks and regards  Manlio Perillo
+
+L. Daniel Burr
+
+From ellisonbg.net at gmail.com  Wed Dec 20 20:27:45 2006
+From: ellisonbg.net at gmail.com (Brian Granger)
+Date: Wed Dec 20 20:27:50 2006
+Subject: [Twisted-web] Is web2 client ready for...
+Message-ID: <6ce0ac130612201827w5ceb8e41g42f0eb853b06588b@mail.gmail.com>
+
+Hi,
+
+I need to implement a REST-style web service that has 1) persistent
+connections and 2) pipelining.  From reading the web2 source code it
+looks like the client/server can now do this.  Is this the case.  To
+enable pipelining, do I simply make the change?
+
+class HTTPClientProtocol(basic.LineReceiver, policies.TimeoutMixin, object):
+    """A HTTP 1.1 Client with request pipelining support."""
+
+    chanRequest = None
+    maxHeaderLength = 10240
+    firstLine = 1
+    readPersistent = PERSIST_NO_PIPELINE
+
+----->
+
+    readPersistent = PERSIST_PIPELINE
+
+Thanks!
+
+Brian
+
+From mailinglists at smartology.nl  Thu Dec 28 03:02:49 2006
+From: mailinglists at smartology.nl (Remi Cool)
+Date: Thu Dec 28 03:03:18 2006
+Subject: [Twisted-web] XML-RPC server returns text/html on fault
+Message-ID: <45938839.9060907@smartology.nl>
+
+I've run into a problem with a twisted XML-RPC server.
+
+When you request a (xml-rpc) function that doesn't exist, the response
+from the twisted server has the wrong content type so that the xml-rpc
+client can't handle it properly.
+
+(using a simple python xml-rpc client - verbose=True)
+
+reply: 'HTTP/1.0 200 OK\r\n'
+header: Date: Thu, 28 Dec 2006 08:50:36 GMT
+header: Content-length: 282
+header: Content-type: text/html; charset=UTF-8
+header: Server: TwistedWeb/2.2.0
+body: "<?xml
+version='1.0'?>\n<methodResponse>\n<fault>\n<value><struct>\n<member>\n<name>faultCode</name>\n<value><int>8001</int></value>\n</member>\n<member>\n<name>faultString</name>\n<value><string>function
+echos not
+found</string></value>\n</member>\n</struct></value>\n</fault>\n</methodResponse>\n"
+ERROR <Fault 8001: 'function echos not found'>
+
+How can I change this behaviour so that it returns a proper xml-rpc
+response with a text/xml content-type header?
+
+- Remi -
+
+From hxianping at gmail.com  Sat Dec 30 00:34:11 2006
+From: hxianping at gmail.com (Steve Han)
+Date: Sat Dec 30 00:34:15 2006
+Subject: [Twisted-web] 8080:address already in use?
+Message-ID: <702805a90612292234h5dee07b1v45f4b540baef61e6@mail.gmail.com>
+
+I deleted all .tap files in the work directory,then mktap telnet and twistd
+localhost 8080,testing on telnet localhost 8080 get message as the
+following:
+......
+2006/12/30 14:31 CST [-] twisted.internet.error.CannotListenError: Couldn't
+listen on any:8080: (98, 'Address already in use').
+
+How to free the port 8080?
+Thank a lot.
+
+Steve Han
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061230/137a32d6/attachment.htm
+From hxianping at gmail.com  Sat Dec 30 00:59:41 2006
+From: hxianping at gmail.com (Steve Han)
+Date: Sat Dec 30 00:59:43 2006
+Subject: [Twisted-web] How a script make a .tap file(a server)?
+Message-ID: <702805a90612292259w6f353bb3yc951288e88fc404@mail.gmail.com>
+
+I am working on an example from here
+<http://www-128.ibm.com/developerworks/cn/linux/network/l-twist/part1/index.html>
+
+from twisted.internet.app import Application
+from twisted.internet.protocol import Protocol, Factory
+
+class Fibonacci(Protocol):
+    """Serve a sequence of Fibonacci numbers to all requesters"""
+
+def dataReceived(self, data):
+        self.factory.new = self.factory.a + self.factory.b
+        self.transport.write('%d' % self.factory.new)
+        self.factory.a = self.factory.b
+        self.factory.b = self.factory.new
+
+def main():
+    import fib_server    # Use script as namespace
+    f = Factory()
+    f.protocol = fib_server.Fibonacci
+    f.a, f.b = 1, 1
+    application = Application("Fibonacci")
+    application.listenTCP(8888, f)
+    application.save()
+
+if'__main__' == __name__:
+    main()
+
+I have questions as the following:
+
+
+   1. I could not find where in the code above make a .tap file?
+   2. testing on "twistd -f Fibonacci.tap" got message "Failed to load
+   application: No module named fib_server".Can we use script as namespace?
+   3.
+
+Steve Han
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061230/7c90750d/attachment.htm
+From hxianping at gmail.com  Sat Dec 30 20:20:45 2006
+From: hxianping at gmail.com (Steve Han)
+Date: Sat Dec 30 20:20:47 2006
+Subject: [Twisted-web] How to free port 8080?
+Message-ID: <702805a90612301820p1029257fpd2e33435bdf3e560@mail.gmail.com>
+
+I have deleted all .tap files in the work directory(a *.tap would use
+8080?),then "mktap telnet -p 8080 ..." and "twistd -f telnet.tap",testing on
+"telnet localhost 8080" get message as the following:
+......
+2006/12/30 14:31 CST [-] twisted.internet.error.CannotLi stenError: Couldn't
+listen on any:8080: (98, 'Address already in use').
+
+How to free the port 8080?
+
+-- 
+Steve Han
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20061231/aa1ca33e/attachment.htm
+From exarkun at divmod.com  Sat Dec 30 20:27:44 2006
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Sat Dec 30 20:27:47 2006
+Subject: [Twisted-web] How to free port 8080?
+In-Reply-To: <702805a90612301820p1029257fpd2e33435bdf3e560@mail.gmail.com>
+Message-ID: <20061231022744.11447.120242870.divmod.quotient.3103@ohm>
+
+On Sun, 31 Dec 2006 10:20:45 +0800, Steve Han <hxianping@gmail.com> wrote:
+>I have deleted all .tap files in the work directory(a *.tap would use
+>8080?),then "mktap telnet -p 8080 ..." and "twistd -f telnet.tap",testing on
+>"telnet localhost 8080" get message as the following:
+>......
+>2006/12/30 14:31 CST [-] twisted.internet.error.CannotLi stenError: Couldn't
+>listen on any:8080: (98, 'Address already in use').
+>
+>How to free the port 8080?
+
+TAP files are just files.
+
+You are running a program which is using port 8080.  Perhaps it is a Twisted
+program which you previously ran and never shut down.  Perhaps it is another
+program entirely.  Whatever the case, you have to find the program and cause
+it to release the port, probably by exiting.
+
+If you are using Linux, lsof, fuser, or netstat may be of use.
+
+Jean-Paul
+
+From marco.giusti at gmail.com  Sat Dec 30 20:33:52 2006
+From: marco.giusti at gmail.com (Marco Giusti)
+Date: Sat Dec 30 20:32:26 2006
+Subject: [Twisted-web] How to free port 8080?
+In-Reply-To: <702805a90612301820p1029257fpd2e33435bdf3e560@mail.gmail.com>
+References: <702805a90612301820p1029257fpd2e33435bdf3e560@mail.gmail.com>
+Message-ID: <20061231023352.GA20095@localhost>
+
+On Sun, Dec 31, 2006 at 10:20:45AM +0800, Steve Han wrote:
+>I have deleted all .tap files in the work directory(a *.tap would use
+>8080?),then "mktap telnet -p 8080 ..." and "twistd -f telnet.tap",testing on
+>"telnet localhost 8080" get message as the following:
+>......
+>2006/12/30 14:31 CST [-] twisted.internet.error.CannotLi stenError: Couldn't
+>listen on any:8080: (98, 'Address already in use').
+>
+>How to free the port 8080?
+
+deleting all *.tap you cannot kill the process that is using that port.
+
+$ netstat -tp | grep 8080
+
+see which process/pid id using that port and then kill it
+
+$ kill xxxx
+
+
+-- 
+reply to `python -c "print 'moc.liamg@itsuig.ocram'[::-1]"`
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: Digital signature
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20061231/147ab831/attachment.pgp

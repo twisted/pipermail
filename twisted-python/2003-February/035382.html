@@ -1,0 +1,204 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Problems using win32eventreactor()
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Problems%20using%20win32eventreactor%28%29&In-Reply-To=%3C1045127902.27311.51.camel%40oneiros%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035308.html">
+   <LINK REL="Next"  HREF="035301.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Problems using win32eventreactor()</H1>
+    <B>Dave Peticolas</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Problems%20using%20win32eventreactor%28%29&In-Reply-To=%3C1045127902.27311.51.camel%40oneiros%3E"
+       TITLE="[Twisted-Python] Problems using win32eventreactor()">dave at krondo.com
+       </A><BR>
+    <I>Thu Feb 13 02:18:23 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035308.html">[Twisted-Python] Problems using win32eventreactor()
+</A></li>
+        <LI>Next message (by thread): <A HREF="035301.html">[Twisted-Python] Will twisted be using generators new in Python 2.3?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35382">[ date ]</a>
+              <a href="thread.html#35382">[ thread ]</a>
+              <a href="subject.html#35382">[ subject ]</a>
+              <a href="author.html#35382">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, 2003-02-10 at 20:54, Itamar Shtull-Trauring wrote:
+&gt;<i> On Mon, 10 Feb 2003 21:01:42 -0500
+</I>&gt;<i> &quot;Jeff Grimmett&quot; &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">grimmtooth at softhome.net</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> &gt; This generates an error message at the win32eventreactor.install()
+</I>&gt;<i> &gt; line:
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt;     assert not sys.modules.has_key('twisted.internet.reactor'), \
+</I>&gt;<i> &gt; AssertionError: reactor already installed
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt; What am I missing?
+</I>&gt;<i> 
+</I>&gt;<i> win32eventreactor.install() should be the *first* thing in your module
+</I>&gt;<i> or app. It has to be run before any other code is, or someone might
+</I>&gt;<i> &quot;from twisted.internet import reactor&quot;, which installs the default
+</I>&gt;<i> reactor.
+</I>
+This also confused me (and another developer new to Twisted) when
+we first encountered it. You normally don't expect import order to
+matter, especially for seemingly different namespaces (t.i.reactor
+versus t.i.win32eventreactor, for example). I realize that
+win32eventreactor.install() is messing with the modules namespace,
+but you don't know that without delving deep into the code.
+
+I've come up with a patch to eliminate the need to remember
+a special import order. Since the reactor mechanism is so basic
+to Twisted, I am attaching it for review rather than committing
+it, although it does pass 'trial' for the default reactor and
+several others.
+
+The gtk2reactor trial is failing to even finish, but that
+seems to be unrelated to this patch. Are others seeing this
+behavior?
+
+thanks,
+dave
+
+-------------- next part --------------
+? bin/_trial_temp
+Index: twisted/internet/default.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/default.py,v
+retrieving revision 1.63
+diff -u -r1.63 default.py
+--- twisted/internet/default.py	3 Feb 2003 23:53:30 -0000	1.63
++++ twisted/internet/default.py	13 Feb 2003 01:13:25 -0000
+@@ -500,11 +500,31 @@
+         return readers
+ 
+ 
++class StubReactor:
++    &quot;&quot;&quot;A placeholder reactor.&quot;&quot;&quot;
++
++    realReactor = None
++
++    def installReactor(self, reactor):
++        self.realReactor = reactor
++
++    def reactorInstalled(self):
++        return self.realReactor is not None
++
++    def __getattr__(self, key):
++        if self.realReactor is None:
++            del sys.modules['twisted.internet.reactor']
++            reactor = install()
++            self.installReactor(reactor)
++        return getattr(self.realReactor, key)
++
++
+ def install():
+     &quot;&quot;&quot;Configure the twisted mainloop to be run using the select() reactor.
+     &quot;&quot;&quot;
+     reactor = SelectReactor(1)
+     main.installReactor(reactor)
++    return reactor
+ 
+ 
+-__all__ = [&quot;install&quot;, &quot;PosixReactorBase&quot;, &quot;SelectReactor&quot;]
++__all__ = [&quot;install&quot;, &quot;PosixReactorBase&quot;, &quot;SelectReactor&quot;, &quot;StubReactor&quot;]
+Index: twisted/internet/main.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/main.py,v
+retrieving revision 1.86
+diff -u -r1.86 main.py
+--- twisted/internet/main.py	15 Oct 2002 18:32:37 -0000	1.86
++++ twisted/internet/main.py	13 Feb 2003 01:13:26 -0000
+@@ -111,9 +111,14 @@
+     global iterate, addTimeout, wakeUp
+     # this stuff should be common to all reactors.
+     import twisted.internet
++    import default
+     import sys
+-    assert not sys.modules.has_key('twisted.internet.reactor'), \
+-           &quot;reactor already installed&quot;
++    if sys.modules.has_key('twisted.internet.reactor'):
++        current = sys.modules['twisted.internet.reactor']
++        assert (isinstance(current, default.StubReactor) and
++                not current.reactorInstalled()), \
++                &quot;reactor already installed&quot;
++        current.installReactor(reactor)
+     twisted.internet.reactor = reactor
+     sys.modules['twisted.internet.reactor'] = reactor
+ 
+Index: twisted/internet/reactor.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/internet/reactor.py,v
+retrieving revision 1.4
+diff -u -r1.4 reactor.py
+--- twisted/internet/reactor.py	1 Sep 2002 10:41:06 -0000	1.4
++++ twisted/internet/reactor.py	13 Feb 2003 01:13:26 -0000
+@@ -13,17 +13,23 @@
+ # You should have received a copy of the GNU Lesser General Public
+ # License along with this library; if not, write to the Free Software
+ # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
+ &quot;&quot;&quot;
+ See twisted.internet.interfaces.IReactor*.
+ &quot;&quot;&quot;
++
+ import sys
+ del sys.modules['twisted.internet.reactor']
++
+ from twisted.python import runtime
++
+ if runtime.platform.getType() == 'java':
+     from twisted.internet import javareactor
+     javareactor.install()
+ else:
+-    #from twisted.python import log
+-    #log.msg(&quot;Installing SelectReactor, since unspecified.&quot;)
++    import sys
++    import twisted.internet
+     from twisted.internet import default
+-    default.install()
++    reactor = default.StubReactor()
++    twisted.internet.reactor = reactor
++    sys.modules['twisted.internet.reactor'] = reactor
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: This is a digitally signed message part
+URL: &lt;/pipermail/twisted-python/attachments/20030213/a6fd1e4f/attachment.sig&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035308.html">[Twisted-Python] Problems using win32eventreactor()
+</A></li>
+	<LI>Next message (by thread): <A HREF="035301.html">[Twisted-Python] Will twisted be using generators new in Python 2.3?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35382">[ date ]</a>
+              <a href="thread.html#35382">[ thread ]</a>
+              <a href="subject.html#35382">[ subject ]</a>
+              <a href="author.html#35382">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

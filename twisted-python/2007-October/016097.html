@@ -1,0 +1,272 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] reactor.spawnProcess() - differences between	Python &amp; Bash deaths
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20reactor.spawnProcess%28%29%20-%20differences%20between%0A%09Python%20%26%20Bash%20deaths&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="016099.html">
+   <LINK REL="Next"  HREF="016098.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] reactor.spawnProcess() - differences between	Python &amp; Bash deaths</H1>
+    <B>Brendan Boerner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20reactor.spawnProcess%28%29%20-%20differences%20between%0A%09Python%20%26%20Bash%20deaths&In-Reply-To="
+       TITLE="[Twisted-Python] reactor.spawnProcess() - differences between	Python &amp; Bash deaths">bboerner at rgmadvisors.com
+       </A><BR>
+    <I>Mon Oct  1 13:12:28 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="016099.html">[Twisted-Python] Project design questions
+</A></li>
+        <LI>Next message: <A HREF="016098.html">[Twisted-Python] Project design questions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16097">[ date ]</a>
+              <a href="thread.html#16097">[ thread ]</a>
+              <a href="subject.html#16097">[ subject ]</a>
+              <a href="author.html#16097">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+I'm seeing (or not seeing :-) ) behavior which I cannot explain.
+
+Attached are two .py scripts and a bash script -
+
+echo.bash - echo a message
+echo.py - echo a message
+py_spawn.py - launch either echo.bash or echo.py using
+reactor.spawnProcess().
+
+If I have py_spawn.py launch echo.bash and then kill the '/bin/bash
+./echo.bash' process using a SIGTERM py_spawn reports:
+
+error: errorMessage: A process has ended with a probable error  
+condition: process ended by signal 15.
+error: exitCode: None
+error: signal: 15
+error: status: 15
+processEnded, status &lt;twisted.python.failure.Failure &lt;class  
+'twisted.internet.error.ProcessTerminated'&gt;&gt;
+
+Which is what I expect.
+
+If instead I launch echo.py and then kill the
+'/opt/local/bin/python2.5 ./echo.py -m message' process py_spawn
+reports:
+
+error: exitCode: 0
+error: signal: None
+error: status: 0
+processEnded, status &lt;twisted.python.failure.Failure &lt;class  
+'twisted.internet.error.ProcessDone'&gt;&gt;
+
+which is not what I expect.  In particular I am 99% certain that this
+is relatively recent behaviour which showed up only last week - prior
+to that I was seeing that if I killed a spawned .py process that I'd
+see that it was terminated with a signal 15 ala the bash case.
+
+I've tested this on Mac and Debian boxes with identical results.
+
+Any suggestions or insights are appreciated.
+
+Regards,
+Brendan
+
+--- py_spawn.py ---
+#! /opt/local/bin/python2.5
+
+from twisted.internet import error, reactor, defer, protocol
+
+import getopt
+import pickle
+import pprint
+import subprocess
+import signal
+import sys
+
+Dumper = pprint.pformat
+
+class MyProcessProtocol(protocol.ProcessProtocol):
+
+     def __init__(self):
+         self.outdata = &quot;&quot;
+         self.errdata = &quot;&quot;
+         pass
+
+     def connectionMade(self):
+         print &quot;connectionMade!&quot;
+
+     def outReceived(self, data):
+         print &quot;outReceived! with %d bytes!&quot; % len(data)
+         self.outdata = self.outdata + data
+
+     def errReceived(self, data):
+         print &quot;errReceived! with %d bytes!&quot; % len(data)
+         self.errdata = self.errdata + data
+
+     def inConnectionLost(self):
+         print &quot;inConnectionLost! stdin is closed! (we probably did it)&quot;
+
+     def outConnectionLost(self):
+         print &quot;outConnectionLost! The child closed their stdout!&quot;
+         print &quot;I saw them write:\n&quot;, self.outdata
+
+     def errConnectionLost(self):
+         print &quot;errConnectionLost! The child closed their stderr.&quot;
+         print &quot;I saw them write:\n&quot;, self.errdata
+
+     def processEnded(self, status):
+         print &quot;debug: type(status): %s&quot; % type(status.value)
+         print &quot;debug: isinstance(status.value, error.ProcessDone): % 
+s&quot; % \
+             isinstance(status.value, error.ProcessDone)
+         print &quot;debug: isinstance(status.value,  
+error.ProcessTerminated): %s&quot; % \
+             isinstance(status.value, error.ProcessTerminated)
+
+         if isinstance(status.value, error.ProcessDone):
+             print &quot;error: exitCode: %s&quot; % status.value.exitCode
+             print &quot;error: signal: %s&quot; % status.value.signal
+             print &quot;error: status: %s&quot; % status.value.status
+
+         elif isinstance(status.value, error.ProcessTerminated):
+             print &quot;error: errorMessage: %s&quot; % status.getErrorMessage()
+             print &quot;error: exitCode: %s&quot; % status.value.exitCode
+             print &quot;error: signal: %s&quot; % status.value.signal
+             print &quot;error: status: %s&quot; % status.value.status
+
+         print &quot;processEnded, status %s&quot; % repr(status)
+         print &quot;quitting&quot;
+         reactor.stop()
+
+def usage():
+     print &quot;Usage: py_spawn.py&quot;
+
+def main():
+
+     processProtocol = MyProcessProtocol()
+
+     # killing the bash process using SIGTERM results in:
+     # error: errorMessage: A process has ended with a probable error  
+condition: process ended by signal 15.
+     # error: exitCode: None
+     # error: signal: 15
+     # error: status: 15
+     # processEnded, status &lt;twisted.python.failure.Failure &lt;class  
+'twisted.internet.error.ProcessTerminated'&gt;&gt;
+
+     reactor.spawnProcess(processProtocol, 'bash', [&quot;bash&quot;, &quot;-c&quot;,  
+&quot;echo.bash&quot;], env=None)
+
+     # killing the bash process using SIGTERM results in:
+     # error: exitCode: 0
+     # error: signal: None
+     # error: status: 0
+     # processEnded, status &lt;twisted.python.failure.Failure &lt;class  
+'twisted.internet.error.ProcessDone'&gt;&gt;
+
+     #reactor.spawnProcess(processProtocol, 'bash', [&quot;bash&quot;, &quot;-c&quot;, &quot;./ 
+echo.py -m message&quot;], env=None)
+
+     reactor.run()
+
+if __name__ == &quot;__main__&quot;:
+     main()
+
+
+--- echo.py ---
+#!/opt/local/bin/python2.5
+
+
+from optparse import OptionParser, OptParseError
+
+from twisted.internet import reactor
+from twisted.spread import pb
+from zope.interface import implements
+
+import pprint
+import sys
+
+Dumper = pprint.pformat
+
+def run(duration, message):
+
+     duration -= 1
+     print &quot;duration: %d, message: %s&quot; % (duration, message)
+     if duration != 0:
+         reactor.callLater(1, run, duration, message)
+     else:
+         reactor.stop()
+
+def main():
+     print &quot;debug: args: %s&quot; % sys.argv[1:]
+     try:
+         duration = 0
+         message = &quot;No message&quot;
+
+         parser = OptionParser()
+         parser.add_option(&quot;-d&quot;, &quot;--duration=&quot;, dest=&quot;duration&quot;,
+             metavar=&quot;INT&quot;,
+             default=duration,
+             help=&quot;How long to run, 0 will run forever [default: % 
+default]&quot;)
+         parser.add_option(&quot;-m&quot;, &quot;--message=&quot;, dest=&quot;message&quot;,
+             default=message,
+             help=&quot;Message to display [default: %default]&quot;)
+
+         (opts, args) = parser.parse_args()
+         duration = int(opts.duration)
+         message = opts.message
+
+         print &quot;debug: opts: %s, args: %s&quot; % (opts, args)
+
+     except OptParseError, e:
+         # print help information and exit:
+         print &quot;exception: %s&quot; % e
+         sys.exit(2)
+
+     reactor.callLater(0, run, duration, message)
+     reactor.run()
+
+if __name__ == &quot;__main__&quot;:
+     main()
+
+
+--- echo.bash ---
+#!/bin/bash
+
+while true; do
+     echo -n &quot;This is a message &quot;;
+     date;
+     sleep 1;
+done
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="016099.html">[Twisted-Python] Project design questions
+</A></li>
+	<LI>Next message: <A HREF="016098.html">[Twisted-Python] Project design questions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16097">[ date ]</a>
+              <a href="thread.html#16097">[ thread ]</a>
+              <a href="subject.html#16097">[ subject ]</a>
+              <a href="author.html#16097">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,169 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] carbon-relay eating CPU - EAGAIN (Resource	temporarily unavailable)?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20carbon-relay%20eating%20CPU%20-%20EAGAIN%20%28Resource%0A%09temporarily%20unavailable%29%3F&In-Reply-To=%3CCAFQpocqEfiY4HNPFqnFXfW23aYK1keo%2BtAWOiZAy6iwVA39q3Q%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="060258.html">
+   <LINK REL="Next"  HREF="060239.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] carbon-relay eating CPU - EAGAIN (Resource	temporarily unavailable)?</H1>
+    <B>Quan Tong Anh</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20carbon-relay%20eating%20CPU%20-%20EAGAIN%20%28Resource%0A%09temporarily%20unavailable%29%3F&In-Reply-To=%3CCAFQpocqEfiY4HNPFqnFXfW23aYK1keo%2BtAWOiZAy6iwVA39q3Q%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] carbon-relay eating CPU - EAGAIN (Resource	temporarily unavailable)?">anhquankitty at gmail.com
+       </A><BR>
+    <I>Mon Nov 25 21:05:24 MST 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="060258.html">[Twisted-Python] IMAP4 Proxy to add headers and modify body of	an incoming message
+</A></li>
+        <LI>Next message (by thread): <A HREF="060239.html">[Twisted-Python] carbon-relay eating CPU - EAGAIN (Resource temporarily unavailable)?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27777">[ date ]</a>
+              <a href="thread.html#27777">[ thread ]</a>
+              <a href="subject.html#27777">[ subject ]</a>
+              <a href="author.html#27777">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE> - Python 2.7.3
+ - [twisted, version 13.1.0]
+ - xen-domU
+
+`atop` shows that `carbon-relay` is eating 80, 90% USRCPU. From the
+`strace`:
+
+    accept(7, {sa_family=AF_INET, sin_port=htons(60649),
+sin_addr=inet_addr(&quot;192.237.222.81&quot;)}, [16]) = 257
+    accept(7, {sa_family=AF_INET, sin_port=htons(51564),
+sin_addr=inet_addr(&quot;166.78.1.48&quot;)}, [16]) = 257
+    accept(7, 0x7ffff4679550, [16])         = -1 EAGAIN (Resource
+temporarily unavailable)
+    accept(7, {sa_family=AF_INET, sin_port=htons(33654),
+sin_addr=inet_addr(&quot;198.61.194.248&quot;)}, [16]) = 257
+    accept(7, {sa_family=AF_INET, sin_port=htons(50037),
+sin_addr=inet_addr(&quot;166.78.181.204&quot;)}, [16]) = 257
+    accept(7, 0x7ffff4679550, [16])         = -1 EAGAIN (Resource
+temporarily unavailable)
+
+The strange thing is: even restart the service, it seems stuck at fd 7
+everytime running `strace`. Does it mean this fd is not being cleanup
+properly?
+
+I have increased the number of open files:
+
+**/proc/2891/limits**
+
+    Limit                     Soft Limit           Hard Limit
+Units
+    Max cpu time              unlimited            unlimited
+ seconds
+    Max file size             unlimited            unlimited
+ bytes
+    Max data size             unlimited            unlimited
+ bytes
+    Max stack size            8388608              unlimited
+ bytes
+    Max core file size        0                    unlimited
+ bytes
+    Max resident set          unlimited            unlimited
+ bytes
+    Max processes             15834                15834
+ processes
+    Max open files            16384                16384
+ files
+    Max locked memory         65536                65536
+ bytes
+    Max address space         unlimited            unlimited
+ bytes
+    Max file locks            unlimited            unlimited
+ locks
+    Max pending signals       15834                15834
+ signals
+    Max msgqueue size         819200               819200
+bytes
+    Max nice priority         0                    0
+    Max realtime priority     0                    0
+    Max realtime timeout      unlimited            unlimited            us
+
+
+then it decreases down to ~ 50%.
+
+My problem looks like similar to this [thread](
+<A HREF="http://twistedmatrix.com/pipermail/twisted-python/2008-September/018361.html">http://twistedmatrix.com/pipermail/twisted-python/2008-September/018361.html</A>)
+but since we have a few sockets in TIME_WAIT state, I don't think that
+enable the `tw_recycle` can help. About the `tcp_syncookies`, I don't see
+any related message in the syslog.
+
+This is what I get when trying to start `carbon-relay` in debug mode:
+
+    26/11/2013 02:22:14 :: [listener] MetricPickleReceiver connection with
+50.56.249.127:48772 lost: Connection to the other side was lost in a
+non-clean fashion: Connection lost.
+    26/11/2013 02:22:14 :: [listener] MetricPickleReceiver connection with
+198.101.241.101:50672 lost: Connection to the other side was lost in a
+non-clean fashion: Connection lost.
+    26/11/2013 02:22:14 :: [listener] MetricPickleReceiver connection with
+166.78.2.167:43346 lost: Connection to the other side was lost in a
+non-clean fashion: Connection lost.
+
+This is from `twisted`:
+
+    class ConnectionLost(ConnectionClosed):
+        &quot;&quot;&quot;Connection to the other side was lost in a non-clean fashion&quot;&quot;&quot;
+
+        def __str__(self):
+            s = self.__doc__.strip().splitlines()[0]
+            if self.args:
+                s = '%s: %s' % (s, ' '.join(self.args))
+            s = '%s.' % s
+            return s
+
+I also have tried to [debug with `gdb`](
+<A HREF="https://wiki.python.org/moin/DebuggingWithGdb">https://wiki.python.org/moin/DebuggingWithGdb</A>) but `pystack` returns
+nothing.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20131126/70aae0d4/attachment-0001.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20131126/70aae0d4/attachment-0001.html</A>&gt;
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="060258.html">[Twisted-Python] IMAP4 Proxy to add headers and modify body of	an incoming message
+</A></li>
+	<LI>Next message (by thread): <A HREF="060239.html">[Twisted-Python] carbon-relay eating CPU - EAGAIN (Resource temporarily unavailable)?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#27777">[ date ]</a>
+              <a href="thread.html#27777">[ thread ]</a>
+              <a href="subject.html#27777">[ subject ]</a>
+              <a href="author.html#27777">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

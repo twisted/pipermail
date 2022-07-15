@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.0 (GNU/Linux)
+
+iD8DBQA9qeFovVGR4uSOE2wRAuFHAJ99feb3oCWE1WkcQ5Cji8QDlojFVwCdGNF4
+p17HtkDtLxPAwmaPCxSSmxc=
+=CFFX
+-----END PGP SIGNATURE-----

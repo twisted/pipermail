@@ -1,0 +1,224 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] How can I change the HTTP request to avoid gzip
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20How%20can%20I%20change%20the%20HTTP%20request%20to%20avoid%20gzip&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004033.html">
+   <LINK REL="Next"  HREF="004035.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] How can I change the HTTP request to avoid gzip</H1>
+    <B>Radu Dragusin</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20How%20can%20I%20change%20the%20HTTP%20request%20to%20avoid%20gzip&In-Reply-To="
+       TITLE="[Twisted-web] How can I change the HTTP request to avoid gzip">radudragusin at gmail.com
+       </A><BR>
+    <I>Mon Dec 15 22:31:45 EST 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004033.html">[Twisted-web] ASN1_TIME_to_generalizedtime error on windows box
+</A></li>
+        <LI>Next message: <A HREF="004035.html">[Twisted-web] How can I change the HTTP request to avoid gzip
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4034">[ date ]</a>
+              <a href="thread.html#4034">[ thread ]</a>
+              <a href="subject.html#4034">[ subject ]</a>
+              <a href="author.html#4034">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I have a HTTP Proxy made with twisted.web and want to change the request
+that the browser sends to the Proxy such that I erase the value of the
+'accept-encoding' key from 'gzip,deflate' to ' '.
+
+I use the example from the Tisted Book:
+
+By adding the overriden process method in WordCountProxyRequest I can get
+the request header but have found no way to set a key, value pair.
+I want make the server think that the browser does not support gzip because
+twisted seems to not support gzip as the response from www.google.com and
+many (but not all) sites appears still encoded. www.dpreview.com seems not
+to gzip the response, and so the resonse is processed correctly.
+
+What can I do to either correctly decode gzip responses or modify the
+'accept-encoding' value to nothing so the server does not compress the
+response?
+
+Thank you!
+*Example 4-8. wordcountproxy.py*
+
+import sgmllib, re
+from twisted.web import proxy, http
+import sys
+from twisted.python import log
+log.startLogging(sys.stdout)
+
+WEB_PORT =3D 8000
+PROXY_PORT =3D 8001
+
+class WordParser(sgmllib.SGMLParser):
+    def __init__(self):
+        sgmllib.SGMLParser.__init__(self)
+        self.chardata =3D []
+        self.inBody =3D False
+
+    def start_body(self, attrs):
+        self.inBody =3D True
+
+    def end_body(self):
+        self.inBody =3D False
+
+    def handle_data(self, data):
+        if self.inBody:
+            self.chardata.append(data)
+
+    def getWords(self):
+        # extract words
+        wordFinder =3D re.compile(r'\w*')
+        words =3D wordFinder.findall(&quot;&quot;.join(self.chardata))
+        words =3D filter(lambda word: word.strip( ), words)
+        print &quot;WORDS ARE&quot;, words
+        return words
+
+class WordCounter(object):
+    ignoredWords =3D &quot;the a of in from to this that and or but is was be
+can could i you they we at&quot;.split( )
+
+    def __init__(self):
+        self.words =3D {}
+
+    def addWords(self, words):
+        for word in words:
+            word =3D word.lower( )
+            if not word in self.ignoredWords:
+                currentCount =3D self.words.get(word, 0)
+                self.words[word] =3D currentCount + 1
+
+class WordCountProxyClient(proxy.ProxyClient):
+    def handleHeader(self, key, value):
+        proxy.ProxyClient.handleHeader(self, key, value)
+        if key.lower( ) =3D=3D &quot;content-type&quot;:
+            if value.split(';')[0] =3D=3D 'text/html':
+                self.parser =3D WordParser( )
+
+    def handleResponsePart(self, data):
+        proxy.ProxyClient.handleResponsePart(self, data)
+        if hasattr(self, 'parser'): self.parser.feed(data)
+
+
+    def handleResponseEnd(self):
+        proxy.ProxyClient.handleResponseEnd(self)
+        if hasattr(self, 'parser'):
+            self.parser.close( )
+            self.father.wordCounter.addWords(self.parser.getWords( ))
+            del(self.parser)
+
+class WordCountProxyClientFactory(proxy.ProxyClientFactory):
+    def buildProtocol(self, addr):
+        client =3D proxy.ProxyClientFactory.buildProtocol(self, addr)
+        # upgrade proxy.proxyClient object to WordCountProxyClient
+        client.__class__ =3D WordCountProxyClient
+        return client
+
+class WordCountProxyRequest(proxy.ProxyRequest):
+    protocols =3D {'http': WordCountProxyClientFactory}
+
+    def __init__(self, wordCounter, *args):
+        self.wordCounter =3D wordCounter
+        proxy.ProxyRequest.__init__(self, *args)
+
+*    def process(self):
+        proxy.ProxyRequest.process(self)
+        print &quot;received_headers&quot;, proxy.ProxyRequest.getAllHeaders(self)*
+
+class WordCountProxy(proxy.Proxy):
+    def __init__(self, wordCounter):
+        self.wordCounter =3D wordCounter
+        proxy.Proxy.__init__(self)
+
+    def requestFactory(self, *args):
+        return WordCountProxyRequest(self.wordCounter, *args)
+
+class WordCountProxyFactory(http.HTTPFactory):
+    def __init__(self, wordCounter):
+        self.wordCounter =3D wordCounter
+        http.HTTPFactory.__init__(self)
+
+    def buildProtocol(self, addr):
+        protocol =3D WordCountProxy(self.wordCounter)
+        return protocol
+
+# classes for web reporting interface
+class WebReportRequest(http.Request):
+    def __init__(self, wordCounter, *args):
+        self.wordCounter =3D wordCounter
+        http.Request.__init__(self, *args)
+
+    def process(self):
+        self.setHeader(&quot;Content-Type&quot;, &quot;text/html&quot;)
+        words =3D self.wordCounter.words.items( )
+        words.sort(lambda (w1, c1), (w2, c2): cmp(c2, c1))
+        for word, count in words:
+            self.write(&quot;&lt;li&gt;%s %s&lt;/li&gt;&quot; % (word, count))
+        self.finish( )
+
+class WebReportChannel(http.HTTPChannel):
+    def __init__(self, wordCounter):
+        self.wordCounter =3D wordCounter
+        http.HTTPChannel.__init__(self)
+
+    def requestFactory(self, *args):
+        return WebReportRequest(self.wordCounter, *args)
+
+class WebReportFactory(http.HTTPFactory):
+    def __init__(self, wordCounter):
+        self.wordCounter =3D wordCounter
+        http.HTTPFactory.__init__(self)
+
+    def buildProtocol(self, addr):
+        return WebReportChannel(self.wordCounter)
+
+if __name__ =3D=3D &quot;__main__&quot;:
+    from twisted.internet import reactor
+    counter =3D WordCounter( )
+    prox =3D WordCountProxyFactory(counter)
+    reactor.listenTCP(PROXY_PORT, prox)
+    reactor.listenTCP(WEB_PORT, WebReportFactory(counter))
+    reactor.run( )
+
+
+
+-- =
+
+Radu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-web/attachments/20081216/ee=">http://twistedmatrix.com/pipermail/twisted-web/attachments/20081216/ee=</A>
+2bdc5e/attachment.htm
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004033.html">[Twisted-web] ASN1_TIME_to_generalizedtime error on windows box
+</A></li>
+	<LI>Next message: <A HREF="004035.html">[Twisted-web] How can I change the HTTP request to avoid gzip
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4034">[ date ]</a>
+              <a href="thread.html#4034">[ thread ]</a>
+              <a href="subject.html#4034">[ subject ]</a>
+              <a href="author.html#4034">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

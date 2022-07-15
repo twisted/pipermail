@@ -1,0 +1,188 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Advice on porting Python application to Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Advice%20on%20porting%20Python%20application%20to%20Twisted&In-Reply-To=%3CCAL%2BxXwOxKQN2_iOHq%3DdFSGbi9RVY-imZtVsi4N762Hs3e-uWFw%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="027360.html">
+   <LINK REL="Next"  HREF="059830.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Advice on porting Python application to Twisted</H1>
+    <B>Matt Haggard</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Advice%20on%20porting%20Python%20application%20to%20Twisted&In-Reply-To=%3CCAL%2BxXwOxKQN2_iOHq%3DdFSGbi9RVY-imZtVsi4N762Hs3e-uWFw%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Advice on porting Python application to Twisted">haggardii at gmail.com
+       </A><BR>
+    <I>Tue Aug 27 10:31:24 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="027360.html">[Twisted-Python] Advice on porting Python application to Twisted
+</A></li>
+        <LI>Next message (by thread): <A HREF="059830.html">[Twisted-Python] Advice on porting Python application to Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59827">[ date ]</a>
+              <a href="thread.html#59827">[ thread ]</a>
+              <a href="subject.html#59827">[ subject ]</a>
+              <a href="author.html#59827">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Mon, Aug 26, 2013 at 9:06 PM, Matthew Humphrey &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">mhumphrey at gmail.com</A>&gt; wrote:
+&gt;<i> 2) A thread that runs a loop which manages the hardware. It does this with a
+</I>&gt;<i> simple state machine composed of a base class and subclasses for all the
+</I>&gt;<i> states that the hardware can be in (starting, idle, displaying status on the
+</I>&gt;<i> lcd, dispensing a treat, recovering from treat dispense cycle, shutting
+</I>&gt;<i> down). After initializing the hardware and the initial state, the thread
+</I>&gt;<i> loops continuously calling a &quot;timeTick&quot; event to the current state. WIthin
+</I>&gt;<i> the states, the code looks at various hardware status (like whether a button
+</I>&gt;<i> is pressed) and decides to take action or to trigger transition to another
+</I>&gt;<i> state.
+</I>
+I am not familiar with how you communicate with hardware on a
+Raspberry PI.  Can you link to your existing code?  In my brief
+reading this morning, I'm guessing you might be using the RPi.GPIO
+library?  If so, I'm looking at
+<A HREF="https://code.google.com/p/raspberry-gpio-python/wiki/Inputs">https://code.google.com/p/raspberry-gpio-python/wiki/Inputs</A> which
+indicates that wait_for_edge() or event_detected() might be useful
+(instead of a &quot;continuously called a 'timeTick' event&quot;).  But I'm not
+sure what thread the callbacks to those functions are called in.
+
+I've also come across
+<A HREF="https://www.kernel.org/doc/Documentation/gpio.txt">https://www.kernel.org/doc/Documentation/gpio.txt</A> which makes me think
+it would be possible to register the GPIO events with the Twisted
+reactor (but I've never done that and don't have a Pi to test with).
+Perhaps it's time to buy one.
+
+&gt;<i> 3) A thread that runs continuously capturing images from a webcam. This
+</I>&gt;<i> thread captures low resolution images continuously, and compares sucessive
+</I>&gt;<i> frames to see if there is significant number of different pixels (motion
+</I>&gt;<i> detect). If so, it captures a higher resolution image, updates a symbolic
+</I>&gt;<i> link to point to the most recent image captured, and deletes any excessive
+</I>&gt;<i> files from previous captures. The images captured for the motion detect are
+</I>&gt;<i> handled by executing a process and capturing the stdout. The higher res
+</I>&gt;<i> images captured by executing a process that writes directly to a file.
+</I>
+Someone with more intelligence than me should answer this, but here's
+my attempt:
+
+You can do this without threads since you're just spawning processes
+for the image captures.  I'm assuming you only want to capture as many
+low res images as you can process. Here's one way to do it:
+
+from twisted.internet import reactor, task, defer
+from twisted.internet.utils import getProcessOutput
+from twisted.python import log
+from twisted.python.filepath import FilePath
+
+
+class ImageCapturer:
+
+    lowres_args = ('/path/to/lowres_args',)
+    highres_args = ('/path/to/highres_args', ['/path/to/outpufile'])
+
+    def __init__(self):
+        self._last_image = None
+
+
+    def getLowResImage(self):
+        return getProcessOutput(*self.lowres_args)
+
+
+    def getHighResImage(self):
+        log.msg('getting high res image')
+        d = getProcessOutput(*self.highres_args)
+        d.addCallback(log.msg)
+        return d
+
+
+    def start(self):
+        self.doCycle()
+
+
+    def doCycle(self):
+        d = self.getLowResImage()
+        d.addCallback(self.processLowResImage)
+        d.addCallback(self.finishCycle)
+        return d
+
+
+    def finishCycle(self, _ignored):
+        self.doCycle()
+
+
+    def processLowResImage(self, image):
+        if self._last_image:
+            if self.isDifferentEnough(self._last_image, image):
+                # if it's bad for the lowres script and the highres script
+                # to run at the same time, you may want to wait for the high
+                # res script to finish (this code doesn't do that).
+                self.getHighResImage()
+
+        self._last_image = image
+
+
+    def isDifferentEnough(self, image1, image2):
+        &quot;&quot;&quot;
+        Compare the two images for differences.  Return True if it warrents
+        a high res capture.
+
+        If this is a long-running function, you could send it off to a thread
+        with deferToThread.
+        &quot;&quot;&quot;
+        return image1 != image2
+
+def example(reactor):
+    # for example
+    capturer = ImageCapturer()
+
+    # since I don't have an image capture script, I'll just list a directory.
+    # low res directory capture :)
+    capturer.lowres_args = ('/bin/ls', ['/tmp/'])
+
+    # high res directory capture :)
+    capturer.highres_args = ('/bin/ls', ['-al', '/tmp/'])
+    capturer.start()
+
+    # add and remove a file
+    tmpfile = FilePath('/tmp/foo')
+    reactor.callLater(1, tmpfile.setContent, 'foo')
+    reactor.callLater(2, tmpfile.remove)
+    return task.deferLater(reactor, 10, lambda:None)
+
+if __name__ == '__main__':
+    import sys
+    log.startLogging(sys.stdout)
+    task.react(example)
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="027360.html">[Twisted-Python] Advice on porting Python application to Twisted
+</A></li>
+	<LI>Next message (by thread): <A HREF="059830.html">[Twisted-Python] Advice on porting Python application to Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59827">[ date ]</a>
+              <a href="thread.html#59827">[ thread ]</a>
+              <a href="subject.html#59827">[ subject ]</a>
+              <a href="author.html#59827">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

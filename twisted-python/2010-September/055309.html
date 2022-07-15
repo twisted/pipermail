@@ -1,0 +1,149 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Telnet MCCP Transport
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Telnet%20MCCP%20Transport&In-Reply-To=%3C20100905134908.2058.913926742.divmod.xquotient.445%40localhost.localdomain%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="055307.html">
+   <LINK REL="Next"  HREF="055308.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Telnet MCCP Transport</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Telnet%20MCCP%20Transport&In-Reply-To=%3C20100905134908.2058.913926742.divmod.xquotient.445%40localhost.localdomain%3E"
+       TITLE="[Twisted-Python] Telnet MCCP Transport">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Sun Sep  5 07:49:08 MDT 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="055307.html">[Twisted-Python] Telnet MCCP Transport
+</A></li>
+        <LI>Next message (by thread): <A HREF="055308.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55309">[ date ]</a>
+              <a href="thread.html#55309">[ thread ]</a>
+              <a href="subject.html#55309">[ subject ]</a>
+              <a href="author.html#55309">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 4 Sep, 01:19 pm, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">simonvermeersch at gmail.com</A> wrote:
+&gt;<i>Hello everyone,
+</I>&gt;<i>
+</I>&gt;<i>I couldn't find an implementation of MCCP (Mud Client Compression
+</I>&gt;<i>Protocol) using Twisted so I made my own, which I'm sharing if anyone
+</I>&gt;<i>else has a use for it.
+</I>&gt;<i>
+</I>&gt;<i>You can find a description of MCCP here:
+</I>&gt;<i><A HREF="http://www.mudstandards.org/MCCP_Specification">http://www.mudstandards.org/MCCP_Specification</A>
+</I>&gt;<i>
+</I>&gt;<i>Since I'm fairly new to Twisted I would appreciate any input about how
+</I>&gt;<i>to improve this if you find a better/cleaner way to do it.
+</I>&gt;<i>
+</I>&gt;<i>import zlib
+</I>&gt;<i>from twisted.conch.telnet import TelnetTransport
+</I>&gt;<i>from twisted.conch.telnet import DO, DONT
+</I>&gt;<i>
+</I>&gt;<i>COMPRESS2 = chr(86)
+</I>&gt;<i>
+</I>&gt;<i>class MCCPTelnetTransport(TelnetTransport):
+</I>&gt;<i>    def connectionMade(self):
+</I>&gt;<i>        self.zlib = None
+</I>&gt;<i>        TelnetTransport.connectionMade(self)
+</I>&gt;<i>        self.will(COMPRESS2)
+</I>&gt;<i>
+</I>&gt;<i>    def commandReceived(self, command, argument):
+</I>&gt;<i>        if argument == COMPRESS2:
+</I>&gt;<i>            if command == DO:
+</I>&gt;<i>                self.requestNegotiation(COMPRESS2, &quot;&quot;)
+</I>&gt;<i>                self.zlib = zlib.compressobj()
+</I>&gt;<i>            elif command == DONT:
+</I>&gt;<i>                pass
+</I>&gt;<i>        else:
+</I>&gt;<i>            TelnetTransport.commandReceived(self, command, argument)
+</I>&gt;<i>
+</I>&gt;<i>    def write(self, data):
+</I>&gt;<i>        data = data.replace('\n', '\r\n')
+</I>&gt;<i>        if self.zlib:
+</I>&gt;<i>            data = self.zlib.compress(data)
+</I>&gt;<i>            data += self.zlib.flush(zlib.Z_SYNC_FLUSH)
+</I>&gt;<i>        self.transport.write(data)
+</I>
+This approach has some drawbacks:
+
+  * Duplication of the logic in TelnetTransport.write.  In this case, the 
+duplication appears to be imprecise: the original escapes IAC as well as 
+does newline translation, but your version only does the latter.
+
+  * If there's some other similar option you decide you want to support, 
+you'll probably have to implement it by adding the feature directly to 
+this class.  Since MCCPTelnetTransport is a TelnetTransport subclass, 
+you won't be able to compose it with another similar class in any way 
+(either through inheritance or composition).  This has slightly 
+unfortunate code re-use consequences.
+
+  * If you ever put a transport.write() call into connectionMade, I think 
+the result will be a corrupted transport (if the server supports MCCP). 
+This is because the bytes will be sent uncompressed because the server 
+will not have yet had a chance to send the DO COMPRESS2 response, so the 
+zlib object will not yet exist.
+
+Only one idea really comes to mind for an implementation without (at 
+least some of) these drawbacks, and it may not really be worth the 
+trouble.  The idea is that you would start off with an extra compression 
+protocol in the stack.  It would act as a transport to TelnetTransport 
+and as a protocol to whatever lower level transport (eg tcp) you're 
+using.  It would have methods for enabling and disabling compression 
+which you could call from your option negotiation methods.
+
+  * Since it would have a write method which sometimes compressed bytes 
+before passing them on, you wouldn't have to override 
+TelnetTransport.write, so you wouldn't have the duplication of code 
+there.
+
+  * Since most of the code would be on a separate class, it *might* be 
+easier to re-use.  Although since it creates a new interface that your 
+TelnetTransport subclass wants to use, this might not be true (you might 
+always need to use the two classes together, and they might break if you 
+inserted extra classes between them).
+
+  * It could buffer writes while negotiations were pending.  Although you 
+could also just implement this yourself on MCCPTelnetTransport.
+
+So, maybe a wash.  It might just be better to fix the problems with your 
+current approach and move on.
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="055307.html">[Twisted-Python] Telnet MCCP Transport
+</A></li>
+	<LI>Next message (by thread): <A HREF="055308.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55309">[ date ]</a>
+              <a href="thread.html#55309">[ thread ]</a>
+              <a href="subject.html#55309">[ subject ]</a>
+              <a href="author.html#55309">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

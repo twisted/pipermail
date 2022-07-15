@@ -1,0 +1,218 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> how winnt fileops work and what to do about it (was Re:	[Twisted-Python] Twisted windows hackers - help the tests to pass!)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20how%20winnt%20fileops%20work%20and%20what%20to%20do%20about%20it%20%28was%20Re%3A%0A%09%5BTwisted-Python%5D%20Twisted%20windows%20hackers%20-%20help%20the%20tests%20to%20pass%21%29&In-Reply-To=%3C0aff01c60df7%24c588adf0%246402a8c0%40dcore%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="044764.html">
+   <LINK REL="Next"  HREF="044770.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>how winnt fileops work and what to do about it (was Re:	[Twisted-Python] Twisted windows hackers - help the tests to pass!)</H1>
+    <B>Paul G</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20how%20winnt%20fileops%20work%20and%20what%20to%20do%20about%20it%20%28was%20Re%3A%0A%09%5BTwisted-Python%5D%20Twisted%20windows%20hackers%20-%20help%20the%20tests%20to%20pass%21%29&In-Reply-To=%3C0aff01c60df7%24c588adf0%246402a8c0%40dcore%3E"
+       TITLE="how winnt fileops work and what to do about it (was Re:	[Twisted-Python] Twisted windows hackers - help the tests to pass!)">paul-lists at perforge.com
+       </A><BR>
+    <I>Sat Dec 31 03:48:43 MST 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="044764.html">[Twisted-Python] Twisted windows hackers - help the tests to pass!
+</A></li>
+        <LI>Next message (by thread): <A HREF="044770.html">[Twisted-Python] Re: plus mode was Re: how winnt fileops work and what to do about it
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44766">[ date ]</a>
+              <a href="thread.html#44766">[ thread ]</a>
+              <a href="subject.html#44766">[ subject ]</a>
+              <a href="author.html#44766">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+ok, i can actually chime in here because i've done filesystems work on 
+windows (don't ask ;). now, it's been a while, but i should remember things 
+reasonably accurately (i hope). see below for comments:
+
+----- Original Message ----- 
+From: Moof
+To: <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python at twistedmatrix.com</A>
+Sent: Saturday, December 31, 2005 2:15 AM
+Subject: Re: [Twisted-Python] Twisted windows hackers - help the tests to 
+pass!
+
+
+&gt;<i> It's not so much a misconfiguration, as an issue with the fact that trial 
+</I>&gt;<i> on Window s is failing to rename its _trial_temp folder,
+</I>&gt;<i> because there are files inside it that are open. I've opened a bug on it 
+</I>&gt;<i> over on &lt; <A HREF="http://twistedmatrix.com/bugs/issue1387">http://twistedmatrix.com/bugs/issue1387</A>&gt;.
+</I>
+it is incorrect to state that file deletion will always fail when the file 
+is open. let me explain how nt/ntfs/win32 does this, because it's highly 
+'strange' to folks from a posix background. this may be way more info than 
+you were looking for, but i'm going to type it out anyway so that someone 
+can then make the call on how to deal with the issue.
+
+for functionality implemented in the kernel, such as ntfs, windows has 2 api 
+layers: win32 (you see CreateFile() here) and the native nt api. win32 is 
+implemented in usermode, while the native api is implemented as a kernel 
+service, which is exposed to userspace code with the Zw prefix (ie 
+ZwCreateFile()). sometimes the win32 api calls map directly, sometimes they 
+are multiplexed (ie one win32 api call may use multiple native api calls to 
+do the work). what happens here is undocumented (at least officially and 
+without an nda). what is important is that some calls allow you to do things 
+which win32 does not expose; most popular ones deal with io completion (this 
+is how you cancel async i/o on windows nt).
+
+now, on to the meat: the win32 CreateFile() is actually a jack-of-all-trades 
+call (horrible design), used for file creation, opening *and authorization*. 
+we're not interested in ACLs in this case, but we are interested in locks - 
+locks in nt are compulsory (as opposed to purely advisory in posix) and 
+violating one will result in an auth failure. now, disregarding the ability 
+to take out range locks (locks on a byterange within a file), CreateFile() 
+takes out certain locks based on the sharemode (iirc, not sure) parameter. 
+the rules here are funky, iirc, but the one we care about is 
+FILE_SHARE_DELETE. *unless* this flag is set in sharemode passed to 
+CreateFile(), all attempts to open this file for deletion (see, 
+authorization) going forward will fail.
+
+it will fail when the file is opened exclusively. CreateFile takes a 
+parameter called sharemode, iirc, which can be a combination of 
+FILE_SHARE_READ, FILE_SHARE_WRITE, and FILE_SHARE_DELETE. *unless* 
+FILE_SHARE_DELETE is set in the flag parameter, a lock preventing deletion 
+gets taken out and you get to enjoy all the wonders of compulsory locking 
+you are hitting.
+
+here's why i think this happens: win32 DeleteFile() does *not* actually use 
+ZwDeleteFile() native call to delete a file. instead, it does a CreateFile() 
+(or ZwCreateFile(), could be either) to open the file (and get a handle to 
+it), telling it the desired access is DELETE. then it does a 
+ZwSetFileInformation(), which it tells it wants to set 'disposition' and 
+passes in the appropriate disposition info struct with the DELETE 
+disposition set. you can't cheat this, because ZwSetInformation() will fail 
+if the handle doesn't have DELETE rights, and you won't get them if the file 
+isn't opened with FILE_SHARE_DELETE. bummer. the reason this is all so 
+roundabout is that the file whose disposition is set to DELETE doesn't 
+actually get deleted until the last handle is ZwClose()'d - this is where 
+the deletion takes place. now, this is from memory, so don't hold me to it 
+exactly, but the jist of it should be correct.
+
+the interesting, albeit non-obvious, question is: what does ZwDeleteFile() 
+do? it takes either a handle *or a path* and deletes it *right away*, 
+without waiting for handles to be closed. now, i don't know whether it 
+bypasses the ZwCreateFile() and hence the DELETE check, but there's a chance 
+that it is the call ZwClose() makes internally when it does a delete based 
+on the disposition (this guess would be supported by the fact that 
+ZwCreateFile() and a few other fs calls are documented in msdn/ddk, but 
+ZwDeleteFile() is not) and hence doesn't hit this check. what is even more 
+interesting is that, in win32, the only way to remove a directory is using 
+RemoveDirectory(), which requires the directory to be empty. you have to 
+recursively delete all contents, either by hand or using SHFileOperation, 
+iirc. this is the op that hits your open files problem. i remember seeing 
+code (this part i didn't work on, but did read brielfy) which deleted 
+directories with ZwDeleteFile() and there was no resurive content deletion 
+code, so i suspect that you could delete a non-empty directory this way. 
+neither of this is valid ntfs usage, so doing it may not be kosher.
+
+whatever the case may be, those two options are available if you can stomach 
+them.
+
+&gt;<i> It's
+</I>&gt;<i> going to need a rethink on how _trial_temp works, because my instant 
+</I>&gt;<i> thought on how to solve was &quot;symlinks&quot; and python
+</I>&gt;<i> doesn't support them on windows, mostly because windows' own support of 
+</I>&gt;<i> them is a tad on the &quot;dont' ask, don't tell&quot; side of
+</I>&gt;<i> things, and NTFS-only anyway.
+</I>
+NTFS and DFS, but yeah, no FAT (if anyone cares). symlinks in ntfs can be 
+implemented using what's called 'reparse points'. these are actually quite 
+powerful - you can attach either a static transformation or code (you need a 
+driver for this, iirc) to a certain dentry  these symlinks are called 
+'junctions', but they work only for directories. currently, all of this is 
+extremely hairy to use. there are also hardlinks, which you can actually 
+create with the win32 api, but they are only for files  moreover, none of 
+this behaves like symlinks and hardlinks in terms of finer semantics (ie 
+unlinking). junctions are most closely related to mount --bind, rather than 
+symlinks, for example.
+
+
+with all of the above said, you've basically got these choices (in no 
+particular order) to deal with the issue at hand:
+
+1. change the offending code not to do this rename
+2. instead of a rename, create a new directory, do a recursive copy into it 
+from the original and retry removing the original directory asynchronously 
+until it succeeds. obviously, the file handles which are open at that point 
+will be referencing a different copy of the files from the ones which will 
+be opened subsequently.
+3. test whether the zwDeleteFile() behaves in the way i conjrectured it to 
+(wrt files or directories). if so, cause it to be implemented in the pywin32 
+extension and use it to perform the delete.
+4. test whether you can either use ZwSetFileInformation() to rename 
+directories by changing the FILE_NAME attr in the appropriate info structure 
+or use it to move by renaming files which are open, again using the 
+appropriate (but different) structure.
+if so, implement this or cause this to be implemented in pywin32. it is 
+unclear (to me) whether this would result in the pre-move file handles being 
+dead, stale or correct.
+5. instead of opening the files as normal, open them with pywin32's 
+implementation of CreateFile(), specifying the appropriate sharemode. this 
+will allow the rename (move really) to go through, but it is unclear what 
+happens to the preexisting filehandles.
+6. implement, or cause to be implemented, CreateHardlink() in pywin32. 
+create a new directory and recursively hardlink contents of the original 
+into the new directory. asynchronously retry recursive deletion of the 
+original one.
+
+that's all i can think of anyway.
+
+&gt;<i>MFen tracked down an error involving &quot;r+b&quot; mode. Seems windows handling of 
+</I>&gt;<i>it is insane. See &gt;&lt;<A HREF="http://twistedmatrix.com/bugs/issue1386">http://twistedmatrix.com/bugs/issue1386</A>&gt;. This could 
+</I>&gt;<i>well be a python bug, or a feature of windows.
+</I>
+i'm not sure how python does file opens and i/o on windows. with that said, 
+assuming that it uses fopen() from the visual studio c runtime library, 
+there is a quirk in the implementation that might be causing this. if you 
+use any of the + modes, ie a+, r+ or w+. when you switch between reading and 
+writing you need to do an fflush() or fsetpos() (possibly some others like 
+fseek() could work too, don't remember). try doing a file.flush() on your 
+file object somewhere in there and see if that fixes things for you. if it 
+does, this should probably be reported as a python stdlib bug.
+
+it's really late, so pardon the wordiness and possible inaccuracies due to 
+memory lapses.
+
+hth,
+-p 
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="044764.html">[Twisted-Python] Twisted windows hackers - help the tests to pass!
+</A></li>
+	<LI>Next message (by thread): <A HREF="044770.html">[Twisted-Python] Re: plus mode was Re: how winnt fileops work and what to do about it
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44766">[ date ]</a>
+              <a href="thread.html#44766">[ thread ]</a>
+              <a href="subject.html#44766">[ subject ]</a>
+              <a href="author.html#44766">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

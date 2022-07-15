@@ -1,0 +1,192 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Reactor hangs on second call to reactor.run
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Reactor%20hangs%20on%20second%20call%20to%20reactor.run&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="015263.html">
+   <LINK REL="Next"  HREF="015267.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Reactor hangs on second call to reactor.run</H1>
+    <B>Ed Manlove</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Reactor%20hangs%20on%20second%20call%20to%20reactor.run&In-Reply-To="
+       TITLE="[Twisted-Python] Reactor hangs on second call to reactor.run">devPyPlTw at verizon.net
+       </A><BR>
+    <I>Wed Apr 18 21:41:36 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="015263.html">[Twisted-Python] SSL and Perspective Broker - 3rd attempt
+</A></li>
+        <LI>Next message: <A HREF="015267.html">[Twisted-Python] Reactor hangs on second call to reactor.run
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15266">[ date ]</a>
+              <a href="thread.html#15266">[ thread ]</a>
+              <a href="subject.html#15266">[ subject ]</a>
+              <a href="author.html#15266">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I am creating a Plone product which uses Twisted's nntp module to fetch 
+newsgroup postings and display them within my Plone site.  Within a 
+Plone template I call the Plone External Method, XXXnewsreader. The 
+first time I view the page containing this external method it runs fine 
+but the second time it hangs.
+
+I've run the python debugger and it appears to be running an infinite 
+loop within the function mainloop within the class PosixReactorBase.
+
+Can anyone share some ideas about what I may be doing wrong here or why 
+the reactor appears to be stuck in the mainlop func?  Thanks for any 
+assistance in advance.
+
+I am running under Windows XP using Twisted 2.5.0 and using Plone 2.1.3, 
+Zope 2.8.7-final, python 2.3.5.
+
+Ed
+
+
+
+def XXXnewsreader(self):
+     print self.REQUEST.form
+     n = XXXNewsGroup('localhost','local.programming')
+     n.run_XXXNewsGroup()
+     return n.result
+
+
+class XXXDefaultNewsGroupPageProcedure(nntp.NNTPClient):
+
+     def connectionMade(self):
+         #pdb.set_trace()
+         nntp.NNTPClient.connectionMade(self)
+         self.fetchGroup(self.factory.newsgroup)
+
+     def gotGroup(self, groupInfo):
+         estNumMsgs, first, last, groupName, type, status = groupInfo
+         first = int(first)
+         last = int(last)
+         start = max(first, last-self.factory.headerCount);
+         self.headersToFetch = range(start, last+1)
+         self.headerCount = len(self.headersToFetch)
+         self.fetchNextHeader()
+
+     def fetchNextHeader(self):
+         if self.headersToFetch:
+             nextHeaderId = self.headersToFetch.pop(0)
+             print &quot;Fetching header %i of %i...&quot; % (
+                 self.headerCount-len(self.headersToFetch),
+                 self.headerCount),
+             self.fetchHead(nextHeaderId)
+         else:
+             self.quit()
+             self.factory.deferred.callback(self.factory.headers)
+
+     def gotHead(self, header):
+         print &quot;OK&quot;
+         self.factory.handleHeader(header)
+         self.fetchNextHeader()
+
+     def getHeadFailed(self, errorMessage):
+         print errorMessage
+         self.fetchNextHeader()
+
+     def getGroupFailed(self, errorMessage):
+         self.factory.defered.errback(Exception(errorMessage))
+         self.quit()
+         self.transport.loseConnection()
+
+     def connectionLost(self, error):
+         if not self.factory.deferred.called:
+             self.factory.deferred.errback(error)
+
+class XXXDefaultNewsGroupPageFactory(protocol.ClientFactory):
+     protocol = XXXDefaultNewsGroupPageProcedure
+
+     def __init__(self, deferred, newsgroup, headerCount=5):
+         self.newsgroup = newsgroup
+         self.headerCount = headerCount
+         self.headers = []
+         self.deferred = deferred  # defer.Deferred()
+
+     def handleHeader(self, headerData):
+         header = HeaderParser(Message).parsestr(headerData, True);
+         self.headers.append(header)
+         temail = parseaddr(header['from'])
+         realName, emailAddress = temail
+
+class XXXNewsGroup:
+
+     def __init__(self, nntpserver, newsgroup):
+         self.server = nntpserver
+         self.newsgroup = newsgroup
+         self.deferred = defer.Deferred()
+         self.result = ''
+
+     def run_XXXNewsGroup(self):
+         #pdb.set_trace()
+         factory = XXXDefaultNewsGroupPageFactory(self.deferred, 
+self.newsgroup)
+         self.deferred.addCallback(
+             self._toHTMLsuccess).addErrback(
+             self.handleError)
+         self.deferred.addCallback(
+             self.handleSuccess).addErrback(
+             self.handleError)
+         reactor.connectTCP(self.server, 119, factory)
+         reactor.run(installSignalHandlers=0)
+         return self.result
+
+     def _toHTMLsuccess(self, results):
+         str = '&lt;ul&gt;\n'
+
+         for header in results:
+             temail = parseaddr(header['from'])
+             realName, emailAddress = temail
+
+             str += '  &lt;ul&gt;\n'
+             str += '    &lt;li&gt;%s&lt;/li&gt;\n' % header['subject']
+             str += '    &lt;li&gt;%s&lt;/li&gt;\n' % realName
+             str += '    &lt;li&gt;%s&lt;/li&gt;\n' % header['date']
+             str += '  &lt;/ul&gt;\n'
+
+         str += '&lt;/ul&gt;\n'
+         return str
+
+     def handleSuccess(self, result):
+         self.result = result
+         pdb.set_trace()
+         reactor.stop()
+
+     def handleError(self, error):
+         self.result = error.getErrorMessage()
+         print self.result
+         reactor.stop()
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="015263.html">[Twisted-Python] SSL and Perspective Broker - 3rd attempt
+</A></li>
+	<LI>Next message: <A HREF="015267.html">[Twisted-Python] Reactor hangs on second call to reactor.run
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15266">[ date ]</a>
+              <a href="thread.html#15266">[ thread ]</a>
+              <a href="subject.html#15266">[ subject ]</a>
+              <a href="author.html#15266">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

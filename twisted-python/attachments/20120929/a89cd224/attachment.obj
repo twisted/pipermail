@@ -1,0 +1,58 @@
+"""
+If you ever find me totally drunk - kill me pls. ### ARZ
+"""
+
+if __name__ == '__main__':
+    import sock_test
+    raise SystemExit(sock_test.main())
+
+import sys
+
+from twisted.python.log import startLogging
+from twisted.python.filepath import FilePath
+from twisted.internet.protocol import Factory
+from twisted.protocols.basic import LineOnlyReceiver
+from twisted.internet import reactor
+import redis
+import os
+
+socket_path = "/tmp/redis_test.sock"
+pool = redis.ConnectionPool(max_connections=16)
+
+
+class RedisWorkerProtocol(LineOnlyReceiver):
+    def connectionMade(self):
+        self.client = redis.Redis(connection_pool=pool)
+        self.timeoutCall = reactor.callLater(5, self.transport.loseConnection)
+        
+    def dataReceived(self, line):
+        res = self.client.get("ask:%s:this" % line)
+        if res is None:
+            #print line
+            res = ""
+        self.sendLine(res)
+        
+
+
+    def connectionLost(self, reason):
+        #print reason,
+        
+        if self.timeoutCall.active():
+            self.timeoutCall.cancel()
+            self.timeoutCall = None
+
+
+def main():
+    startLogging(sys.stdout)
+    
+    address = FilePath(socket_path)
+
+    if address.exists():
+        raise SystemExit("Cannot listen on an existing path")
+    
+    serverFactory = Factory()
+    serverFactory.protocol = RedisWorkerProtocol
+
+    port = reactor.listenUNIX(address.path, serverFactory)
+    os.chmod(socket_path, 0777);
+    reactor.run()

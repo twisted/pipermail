@@ -1,0 +1,184 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Twisted Python vs. &quot;Blocking&quot; Python: Weird	performance on small operations.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Twisted%20Python%20vs.%20%22Blocking%22%20Python%3A%20Weird%0A%09performance%20on%20small%20operations.&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="020718.html">
+   <LINK REL="Next"  HREF="020677.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Twisted Python vs. &quot;Blocking&quot; Python: Weird	performance on small operations.</H1>
+    <B>Dirk Moors</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Twisted%20Python%20vs.%20%22Blocking%22%20Python%3A%20Weird%0A%09performance%20on%20small%20operations.&In-Reply-To="
+       TITLE="[Twisted-Python] Twisted Python vs. &quot;Blocking&quot; Python: Weird	performance on small operations.">dirkmoors at gmail.com
+       </A><BR>
+    <I>Tue Oct 13 09:18:09 EDT 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="020718.html">[Twisted-Python] CalendarServer
+</A></li>
+        <LI>Next message: <A HREF="020677.html">[Twisted-Python] Twisted Python vs. &quot;Blocking&quot; Python: Weird performance on small operations.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#20676">[ date ]</a>
+              <a href="thread.html#20676">[ thread ]</a>
+              <a href="subject.html#20676">[ subject ]</a>
+              <a href="author.html#20676">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello Everyone!
+My name is Dirk Moors, and since 4 years now, I've been involved in
+developing a cloud computing platform, using Python as the programming
+language. A year ago I discovered Twisted Python, and it got me very
+interested, upto the point where I made the decision to convert our platform
+(in progress) to a Twisted platform. One year later I'm still very
+enthousiastic about the overal performance and stability, but last week I
+encountered something I did't expect;
+
+It appeared that it was less efficient to run small &quot;atomic&quot; operations in
+different deferred-callbacks, when compared to running these &quot;atomic&quot;
+operations together in &quot;blocking&quot; mode. Am I doing something wrong here?
+
+To prove the problem to myself, I created the following example (Full
+source- and test code is attached):
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+import struct
+
+def int2binAsync(anInteger):
+    def packStruct(i):
+        #Packs an integer, result is 4 bytes
+        return struct.pack(&quot;i&quot;, i)
+
+    d = defer.Deferred()
+    d.addCallback(packStruct)
+
+    reactor.callLater(0,
+                      d.callback,
+                      anInteger)
+
+    return d
+
+def bin2intAsync(aBin):
+    def unpackStruct(p):
+        #Unpacks a bytestring into an integer
+        return struct.unpack(&quot;i&quot;, p)[0]
+
+    d = defer.Deferred()
+    d.addCallback(unpackStruct)
+
+    reactor.callLater(0,
+                      d.callback,
+                      aBin)
+    return d
+
+def int2binSync(anInteger):
+    #Packs an integer, result is 4 bytes
+    return struct.pack(&quot;i&quot;, anInteger)
+
+def bin2intSync(aBin):
+    #Unpacks a bytestring into an integer
+    return struct.unpack(&quot;i&quot;, aBin)[0]
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+While running the testcode I got the following results:
+
+(1 run = converting an integer to a byte string, converting that byte string
+back to an integer, and finally checking whether that last integer is the
+same as the input integer.)
+
+*** Starting Synchronous Benchmarks. *(No Twisted =&gt; &quot;blocking&quot; code)*
+  -&gt; Synchronous Benchmark (1 runs) Completed in 0.0 seconds.
+  -&gt; Synchronous Benchmark (10 runs) Completed in 0.0 seconds.
+  -&gt; Synchronous Benchmark (100 runs) Completed in 0.0 seconds.
+  -&gt; Synchronous Benchmark (1000 runs) Completed in 0.00399994850159
+seconds.
+  -&gt; Synchronous Benchmark (10000 runs) Completed in 0.0369999408722
+seconds.
+  -&gt; Synchronous Benchmark (100000 runs) Completed in 0.362999916077
+seconds.
+*** Synchronous Benchmarks Completed in* 0.406000137329* seconds.
+
+*** Starting Asynchronous Benchmarks . *(Twisted =&gt; &quot;non-blocking&quot; code)*
+  -&gt; Asynchronous Benchmark (1 runs) Completed in 34.5090000629 seconds.
+  -&gt; Asynchronous Benchmark (10 runs) Completed in 34.5099999905 seconds.
+  -&gt; Asynchronous Benchmark (100 runs) Completed in 34.5130000114 seconds.
+  -&gt; Asynchronous Benchmark (1000 runs) Completed in 34.5859999657 seconds.
+  -&gt; Asynchronous Benchmark (10000 runs) Completed in 35.2829999924 seconds.
+  -&gt; Asynchronous Benchmark (100000 runs) Completed in 41.492000103 seconds.
+*** Asynchronous Benchmarks Completed in *42.1460001469* seconds.
+
+Am I really seeing factor 100x??
+
+I really hope that I made a huge reasoning error here but I just can't find
+it. If my results are correct then I really need to go and check my entire
+cloud platform for the places where I decided to split functions into atomic
+operations while thinking that it would actually improve the performance
+while on the contrary it did the opposit.
+
+I personaly suspect that I lose my cpu-cycles to the reactor scheduling the
+deferred-callbacks. Would that assumption make any sense?
+The part where I need these conversion functions is in marshalling/protocol
+reading and writing throughout the cloud platform, which implies that these
+functions will be called constantly so I need them to be superfast. I always
+though I had to split the entire marshalling process into small atomic
+(deferred-callback) functions to be efficient, but these figures tell me
+otherwise.
+
+I really hope someone can help me out here.
+
+Thanks in advance,
+Best regards,
+Dirk Moors
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20091013/c6a95abd/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20091013/c6a95abd/attachment.htm</A> 
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: twistedbenchmark.py
+Type: application/octet-stream
+Size: 7679 bytes
+Desc: not available
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20091013/c6a95abd/attachment.obj">http://twistedmatrix.com/pipermail/twisted-python/attachments/20091013/c6a95abd/attachment.obj</A> 
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="020718.html">[Twisted-Python] CalendarServer
+</A></li>
+	<LI>Next message: <A HREF="020677.html">[Twisted-Python] Twisted Python vs. &quot;Blocking&quot; Python: Weird performance on small operations.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#20676">[ date ]</a>
+              <a href="thread.html#20676">[ thread ]</a>
+              <a href="subject.html#20676">[ subject ]</a>
+              <a href="author.html#20676">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

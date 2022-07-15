@@ -1,0 +1,4155 @@
+From spongelavapaul at googlemail.com  Wed Jul  1 06:15:35 2009
+From: spongelavapaul at googlemail.com (Paul Thomas)
+Date: Wed, 1 Jul 2009 11:15:35 +0100
+Subject: [Twisted-web] [Athena] Is ReliableMessageDelivery really necessary?
+Message-ID: <D12F5E7B-F6D5-4689-86E5-FD3ED3D3D637@googlemail.com>
+
+Hi,
+
+I've hit a problem as my app has got bigger (about 30-40 widgets now,  
+all chattering roughly once every 2 seconds) where the reliable  
+message delivery mechanism is spiralling out of control. It seems that  
+the constant back and forth means that large 'baskets' of messages are  
+resent. The more this happens, the busier everything gets until the  
+browser becomes unresponsive.
+
+There's a fix for it: [Divmod-dev] athena duplicate messages issue but  
+I'm slightly concerned about the potential for lost messages - and  
+also confused about how this could happen. Given that HTTP is a  
+reliable connection-oriented transport, where is the gap that messages  
+can fall through?
+
+I think I can cope with lost messages in most cases, so would it be  
+useful to add a kind of 'sendRemote' that was like 'callRemote' but  
+didn't care about a response? Or maybe this already exists and I've  
+missed it?
+
+Paul.
+
+P.S. this app is likely to get more noisy - is it likely that I'll  
+have to abandon Athena for Orbited or similar? I mean, are there  
+architectural differences that will prevent Athena scaling?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090701/87a670ea/attachment.htm 
+
+From jared.gisin at isilon.com  Wed Jul  1 10:12:25 2009
+From: jared.gisin at isilon.com (Jared Gisin)
+Date: Wed, 1 Jul 2009 07:12:25 -0700
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <20090701001648.22176.1376481381.divmod.quotient.11460@henry.divmod.com>
+References: <0C40B34038FD824FACDB387E7788728702C6CF63@seaxch08.desktop.isilon.com>
+	<20090701001648.22176.1376481381.divmod.quotient.11460@henry.divmod.com>
+Message-ID: <0C40B34038FD824FACDB387E7788728702C6D00D@seaxch08.desktop.isilon.com>
+
+I guess the problem that I have is that there's an example for it, where
+you wrap the root object that gets passed into a
+twisted.web.server.Site() instantiation. My application doesn't require
+auth for every thing in the site; only certain subtrees of the Resource
+hierarchy, so how in the world in a Resource's __init__(self): would I
+hook this up to something that I'd pass into self.putChild()
+
+Here, I've modified the realm to hand back the Resource object passed in
+upon authentication.
+
+site = server.Site(
+guard.HTTPAuthSessionWrapper(Portal(APIRealm(Root()), CRED_CHECKERS),
+	CRED_FACTORIES))
+
+
+But suppose I have under Root() a resource V1, then the following
+doesn't work:
+
+class Root(Resource):
+
+    def __init__(self):
+        Resource.__init__(self)
+
+        self.putChild('1', guard.HTTPAuthSessionWrapper(
+                       Portal(APIRealm(V1()), CRED_CHECKERS),
+                          CRED_FACTORIES))
+
+	  Self.putChild('', self)
+
+
+What winds up happening is that it things an instance of
+HTTPAuthSessionWrapper is the child of Root, and when I access a URI
+such as /1?blah, which I expect to render something, it winds up calling
+the render method of that HTTPAuthSessionWrapper, which is wrong. It
+needs to call render of V1(), not it's wrapper. What do I have wrong?
+
+-Jared
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com
+[mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of Jean-Paul
+Calderone
+Sent: Tuesday, June 30, 2009 5:17 PM
+To: Twisted Web World
+Subject: Re: [Twisted-web] HTTPAuthSessionWrapper render
+
+On Tue, 30 Jun 2009 15:38:46 -0700, Jared Gisin <jared.gisin at isilon.com>
+wrote:
+>It seems to be completely broken for wrapping a child resource. You can
+>wrap the site root resource, but not a child?  What am I missing here?
+
+Its render method only ever raises NotImplementedError.  This is because
+it isn't ever supposed to be invoked.  If the code is working correctly,
+then the only thing which will ever happen to an HTTPAuthSessionWrapper
+is that some child of it will be requested.  That child may be rendered.
+
+If you're seeing HTTPAuthSessionWrapper.render get invoked, then it may
+be due to a bug in Twisted or due to a bug in how your code uses the
+wrapper.  Can you provide more details about what you're doing?  Perhaps
+we can track down the cause of the behavior you're observing.
+
+Jean-Paul
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From exarkun at divmod.com  Wed Jul  1 10:48:37 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Wed, 1 Jul 2009 10:48:37 -0400
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <0C40B34038FD824FACDB387E7788728702C6D00D@seaxch08.desktop.isilon.com>
+Message-ID: <20090701144837.22176.805724022.divmod.quotient.11631@henry.divmod.com>
+
+On Wed, 1 Jul 2009 07:12:25 -0700, Jared Gisin <jared.gisin at isilon.com> wrote:
+>I guess the problem that I have is that there's an example for it, where
+>you wrap the root object that gets passed into a
+>twisted.web.server.Site() instantiation. My application doesn't require
+>auth for every thing in the site; only certain subtrees of the Resource
+>hierarchy, so how in the world in a Resource's __init__(self): would I
+>hook this up to something that I'd pass into self.putChild()
+>
+>Here, I've modified the realm to hand back the Resource object passed in
+>upon authentication.
+>
+>site = server.Site(
+>guard.HTTPAuthSessionWrapper(Portal(APIRealm(Root()), CRED_CHECKERS),
+>	CRED_FACTORIES))
+>
+>
+>But suppose I have under Root() a resource V1, then the following
+>doesn't work:
+>
+>class Root(Resource):
+>
+>    def __init__(self):
+>        Resource.__init__(self)
+>
+>        self.putChild('1', guard.HTTPAuthSessionWrapper(
+>                       Portal(APIRealm(V1()), CRED_CHECKERS),
+>                          CRED_FACTORIES))
+>
+>	  Self.putChild('', self)
+>
+>
+>What winds up happening is that it things an instance of
+>HTTPAuthSessionWrapper is the child of Root, and when I access a URI
+>such as /1?blah, which I expect to render something, it winds up calling
+>the render method of that HTTPAuthSessionWrapper, which is wrong. It
+>needs to call render of V1(), not it's wrapper. What do I have wrong?
+
+That sounds like a reasonable thing to be doing, in which case what you
+said about HTTPAuthSessionWrapper.render passing through to the avatar
+sounds like the right behavior.
+
+Can you file a ticket in the issue tracker for this?
+
+Jean-Paul
+
+
+From jared.gisin at isilon.com  Wed Jul  1 16:34:41 2009
+From: jared.gisin at isilon.com (Jared Gisin)
+Date: Wed, 1 Jul 2009 13:34:41 -0700
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <20090701144837.22176.805724022.divmod.quotient.11631@henry.divmod.com>
+References: <0C40B34038FD824FACDB387E7788728702C6D00D@seaxch08.desktop.isilon.com>
+	<20090701144837.22176.805724022.divmod.quotient.11631@henry.divmod.com>
+Message-ID: <0C40B34038FD824FACDB387E7788728702D193E2@seaxch08.desktop.isilon.com>
+
+Yes, I can file a bug.
+
+Is there a reason why this HTTPAuthSessionWrapper isn't a mixin for
+resource.Resource? I've shoehorned it into my own custom subclass of
+resource.Resource that could easily be done as a mixin (though not Ideal
+due to MRO problem if it's in the wrong order). Better would be to
+provide a proper HTTPAuthResource that does it. Thoughts?
+
+-Jared
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com
+[mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of Jean-Paul
+Calderone
+Sent: Wednesday, July 01, 2009 7:49 AM
+To: Twisted Web World
+Subject: Re: [Twisted-web] HTTPAuthSessionWrapper render
+
+On Wed, 1 Jul 2009 07:12:25 -0700, Jared Gisin <jared.gisin at isilon.com>
+wrote:
+>I guess the problem that I have is that there's an example for it,
+where
+>you wrap the root object that gets passed into a
+>twisted.web.server.Site() instantiation. My application doesn't require
+>auth for every thing in the site; only certain subtrees of the Resource
+>hierarchy, so how in the world in a Resource's __init__(self): would I
+>hook this up to something that I'd pass into self.putChild()
+>
+>Here, I've modified the realm to hand back the Resource object passed
+in
+>upon authentication.
+>
+>site = server.Site(
+>guard.HTTPAuthSessionWrapper(Portal(APIRealm(Root()), CRED_CHECKERS),
+>	CRED_FACTORIES))
+>
+>
+>But suppose I have under Root() a resource V1, then the following
+>doesn't work:
+>
+>class Root(Resource):
+>
+>    def __init__(self):
+>        Resource.__init__(self)
+>
+>        self.putChild('1', guard.HTTPAuthSessionWrapper(
+>                       Portal(APIRealm(V1()), CRED_CHECKERS),
+>                          CRED_FACTORIES))
+>
+>	  Self.putChild('', self)
+>
+>
+>What winds up happening is that it things an instance of
+>HTTPAuthSessionWrapper is the child of Root, and when I access a URI
+>such as /1?blah, which I expect to render something, it winds up
+calling
+>the render method of that HTTPAuthSessionWrapper, which is wrong. It
+>needs to call render of V1(), not it's wrapper. What do I have wrong?
+
+That sounds like a reasonable thing to be doing, in which case what you
+said about HTTPAuthSessionWrapper.render passing through to the avatar
+sounds like the right behavior.
+
+Can you file a ticket in the issue tracker for this?
+
+Jean-Paul
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From exarkun at divmod.com  Wed Jul  1 17:19:50 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Wed, 1 Jul 2009 17:19:50 -0400
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <0C40B34038FD824FACDB387E7788728702D193E2@seaxch08.desktop.isilon.com>
+Message-ID: <20090701211950.22176.401822396.divmod.quotient.11773@henry.divmod.com>
+
+On Wed, 1 Jul 2009 13:34:41 -0700, Jared Gisin <jared.gisin at isilon.com> wrote:
+>Yes, I can file a bug.
+>
+>Is there a reason why this HTTPAuthSessionWrapper isn't a mixin for
+>resource.Resource?
+
+As a mixin, what functionality would it be providing?
+
+The functionality it provides now is that arbitrary resources can be
+protected by HTTP authentication without being modified.  I can't quite
+see how a mixin achieve that goal.
+
+>I've shoehorned it into my own custom subclass of
+>resource.Resource that could easily be done as a mixin (though not Ideal
+>due to MRO problem if it's in the wrong order). Better would be to
+>provide a proper HTTPAuthResource that does it. Thoughts?
+
+I'm not really sure what you mean here.  You actually mixed
+HTTPAuthSessionWrapper into a Resource subclass and got it to do something?
+That's surprising, and not the intended use. :)
+
+Jean-Paul
+
+
+From glyph at divmod.com  Wed Jul  1 18:04:19 2009
+From: glyph at divmod.com (glyph at divmod.com)
+Date: Wed, 01 Jul 2009 22:04:19 -0000
+Subject: [Twisted-web] [Athena] Is ReliableMessageDelivery
+	really	necessary?
+In-Reply-To: <D12F5E7B-F6D5-4689-86E5-FD3ED3D3D637@googlemail.com>
+References: <D12F5E7B-F6D5-4689-86E5-FD3ED3D3D637@googlemail.com>
+Message-ID: <20090701220419.12555.313380012.divmod.xquotient.14751@weber.divmod.com>
+
+On 10:15 am, spongelavapaul at googlemail.com wrote:
+>I've hit a problem as my app has got bigger (about 30-40 widgets now, 
+>all chattering roughly once every 2 seconds) where the reliable 
+>message delivery mechanism is spiralling out of control. It seems that 
+>the constant back and forth means that large 'baskets' of messages are 
+>resent. The more this happens, the busier everything gets until the 
+>browser becomes unresponsive.
+
+This is unfortunate, but I'm sure it's fixable.  At least, partially. 
+Client-server communication, especially in JavaScript, isn't free.
+>There's a fix for it: [Divmod-dev] athena duplicate messages issue but 
+>I'm slightly concerned about the potential for lost messages - and 
+>also confused about how this could happen. Given that HTTP is a 
+>reliable connection-oriented transport, where is the gap that messages 
+>can fall through?
+
+HTTP is neither reliable nor connection-oriented :).  TCP is reliable 
+and connection-oriented, but HTTP builds on top of it to produce 
+something which is neither.
+
+"reliable" in this case doesn't mean that the transport is perfect and 
+will deliver everything, but that if you send messages "1, 2, 3", you 
+will get messages "1, 2, 3" in that order or you will get nothing at 
+all.  (Of course you may also get just "1", or "1, 2", but you will 
+never get "3, 1, 2".)
+
+Even if HTTP had a way to initiate the delivery of a message over a 
+channel that was already busy receiving the response to another message 
+(it doesn't) we'd have to contend with the browser APIs for issuing HTTP 
+requests, which leave out significant portions of the actual protocol. 
+For example, browser javascript may never issue more than two concurrent 
+requests to the same host, since the spec says that's all that you can 
+do.
+
+So, what is happening here is that have Nevow attempts to implement a 
+protocol in terms of HTTP messages as individual, unreliable messages, 
+which may be eaten by beasts like transparent proxies and browser 
+runtime bugs, and present to your application a stream of messages which 
+are always in order and never dropped.  This is, as it happens, 
+*exactly* what Orbited does, and Nevow could potentially be implemented 
+on top of Orbited.  However, Nevow's implementation has a bug, and over- 
+zealously re-delivers messages, when frequently re-delivery is not 
+required.  This is rarely a problem except for the noise that it 
+generates in your log files and the performance problems that it 
+creates, which you've noticed, if your message queue starts to back up.
+
+So, my suggestion to you would be to read through the relevant 
+JavaScript code for delivering "baskets" to the server, and try to 
+figure out what exactly is happening, and write a patch to correct this 
+behavior.  It's not trivial, but it's not rocket science either.  If I 
+recall correctly, the problem is that the client will overzealously 
+interrupt its own connection to the server where it is sending a basket 
+of collected messages, in order to free up the HTTP connection to send a 
+*new* message which it has generated.  It would be better if the client 
+would allow for a brief (and actually "brief" probably needs to be 
+pretty long, in the wild) grace period to allow the HTTP request to be 
+fully received and responded to before piling on more work.
+
+Part of the problem here, of course, is that the crappy JavaScript 
+browser HTTP API won't let us tell how much of our request has been 
+uploaded or process the response as it arrives.  So we have to guess 
+what a reasonable timeout would be, rather than have the algorithm 
+operate on actual data.
+
+In other words, you're right: the messages are not actually disappearing 
+into a black hole :).
+
+As far as what you should do: I think you should try to write a patch. 
+It's not trivial, but it's not rocket science either: it's just computer 
+science.  Hopefully my description of the problem is accurate enough to 
+get you started; I'm sure that if you ask for help on this list or on 
+IRC as you're working on it, you will find no shortage of it.  Lots of 
+people have reported this problem over the years but nobody has (as far 
+as I can tell from searching right now) thought to even report the bug 
+as a ticket on divmod.org, let alone contribute a fix for it.
+>I think I can cope with lost messages in most cases, so would it be 
+>useful to add a kind of 'sendRemote' that was like 'callRemote' but 
+>didn't care about a response? Or maybe this already exists and I've 
+>missed it?
+
+Could you cope with these messages arriving arbitrarily out of order?  I 
+am willing to bet not; it would just make your application extremely 
+difficult to test, and it would start spewing exceptions when it started 
+to get more heavily loaded, rather than making the browser unresponsive.
+>P.S. this app is likely to get more noisy - is it likely that I'll 
+>have to abandon Athena for Orbited or similar? I mean, are there 
+>architectural differences that will prevent Athena scaling?
+
+
+From exarkun at divmod.com  Wed Jul  1 17:45:50 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Wed, 1 Jul 2009 17:45:50 -0400
+Subject: [Twisted-web] [Athena] Is ReliableMessageDelivery really
+ necessary?
+In-Reply-To: <D12F5E7B-F6D5-4689-86E5-FD3ED3D3D637@googlemail.com>
+Message-ID: <20090701214550.22176.727267859.divmod.quotient.11784@henry.divmod.com>
+
+On Wed, 1 Jul 2009 11:15:35 +0100, Paul Thomas <spongelavapaul at googlemail.com> wrote:
+>Hi,
+>
+>I've hit a problem as my app has got bigger (about 30-40 widgets now,  all 
+>chattering roughly once every 2 seconds) where the reliable  message 
+>delivery mechanism is spiralling out of control. It seems that  the constant 
+>back and forth means that large 'baskets' of messages are  resent. The more 
+>this happens, the busier everything gets until the  browser becomes 
+>unresponsive.
+
+If you can produce a minimal example which demonstrates this behavior, it
+would probably be very helpful in improving the situation.
+
+>
+>There's a fix for it: [Divmod-dev] athena duplicate messages issue but  I'm 
+>slightly concerned about the potential for lost messages - and  also 
+>confused about how this could happen. Given that HTTP is a  reliable 
+>connection-oriented transport, where is the gap that messages  can fall 
+>through?
+
+Actually, HTTP is not a reliable transport.  The most obvious shortcoming
+it has is that there is no way for a server to know if a client received
+a response or not, but there are others.  So ReliableMessageDelivery is
+necessary.
+
+>
+>I think I can cope with lost messages in most cases, so would it be  useful 
+>to add a kind of 'sendRemote' that was like 'callRemote' but  didn't care 
+>about a response? Or maybe this already exists and I've  missed it?
+
+This is an interesting idea.  I haven't considered having such a feature in
+Athena before.  It may be worth exploring.  The first problem that comes to
+mind is that if any part of a page uses callRemote, sendRemote's advantages
+are largely lost.  This would be because the messages generated by callRemote
+will still need to be sent, so whatever retransmission logic is present in
+ReliableMessageDelivery will still be invoked.
+
+>Paul.
+>
+>P.S. this app is likely to get more noisy - is it likely that I'll  have to 
+>abandon Athena for Orbited or similar? I mean, are there  architectural 
+>differences that will prevent Athena scaling?
+>
+
+I certainly hope that Athena can handle whatever load you intended to put on
+it, or that we can work together to fix whatever problems it has which would
+prevent that. :)
+
+Jean-Paul
+
+
+From jjconti at gmail.com  Wed Jul  1 22:29:03 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Wed, 1 Jul 2009 23:29:03 -0300
+Subject: [Twisted-web] How to know if a LIveElement is alive :)
+In-Reply-To: <f5eea9170906280902q83e2422q15f634f0616de654@mail.gmail.com>
+References: <3f9007680906261256v4d5505chc981b639a10a708a@mail.gmail.com>
+	<3f9007680906261344x64377c27tfd5a8c17c4acd967@mail.gmail.com>
+	<4A457449.3070209@ivsn.com>
+	<3f9007680906261925r7ac8949dyd60ff1042f6665f5@mail.gmail.com>
+	<f5eea9170906280902q83e2422q15f634f0616de654@mail.gmail.com>
+Message-ID: <3f9007680907011929m7e116d7t879d947d22d24046@mail.gmail.com>
+
+Worked great. Thanks.
+
+2009/6/28 Tristan Seligmann <mithrandi at mithrandi.net>:
+> On Sat, Jun 27, 2009 at 4:25 AM, Juanjo Conti<jjconti at gmail.com> wrote:
+>> Thanks! I'll try it.
+>>
+>> So... what is detached for?
+>
+> You can call detach() on a widget in preparation for dynamically
+> removing it from the page; once the detach process is complete,
+> detached() is called.
+>
+> http://divmod.org/trac/ticket/2870 may be a better way to do what you
+> want, once it has been implemented.
+> --
+> mithrandi, i Ainil en-Balandor, a faer Ambar
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+
+-- 
+Juanjo Conti
+
+
+From maillists at ivsn.com  Thu Jul  2 06:36:56 2009
+From: maillists at ivsn.com (Paul Reznicek)
+Date: Thu, 02 Jul 2009 12:36:56 +0200
+Subject: [Twisted-web] Athena Unicode problem with LatinX messages from
+	browser
+Message-ID: <4A4C8DC8.4080606@ivsn.com>
+
+Hello,
+This is only for information if somebody get same problem how to make
+non-ascii JS error visible.
+
+I found per coincidence a weakness in athena message handling.
+This happen, when browser report JS error with non-ascii characters:
+   # ---------------------------
+   Traceback (most recent call last):
+   Failure: nevow.athena.JSException:
+   <JSException instance at 52468224 with str error Traceback (most recent call last):
+
+   File "/usr/lib/python2.6/dist-packages/twisted/python/reflect.py", line 561, in safe_str
+     return str(o)
+
+   UnicodeEncodeError: 'ascii' codec can't encode character u'\xe1' in position 12:
+     ordinal not in range(128)
+   # ---------------------------
+and you do NOT see the error message from browser to fix the problem.
+
+In my case, the message from browser was: "Chybn? hodnota vlastnosti."
+
+To see, what is going on i added to my errBackPrintError function:
+     print '%r' % error
+and get now:
+     ... JSException(u'Error: Chybn\xe1 hodnota vlastnosti.',)
+so I can see, what is going on.
+
+Regards, Paul
+
+
+
+From spongelavapaul at googlemail.com  Fri Jul  3 05:56:28 2009
+From: spongelavapaul at googlemail.com (Paul Thomas)
+Date: Fri, 3 Jul 2009 10:56:28 +0100
+Subject: [Twisted-web] [Athena] Is ReliableMessageDelivery really
+	necessary?
+In-Reply-To: <20090701214550.22176.727267859.divmod.quotient.11784@henry.divmod.com>
+References: <20090701214550.22176.727267859.divmod.quotient.11784@henry.divmod.com>
+Message-ID: <F3E4154B-54BB-4E49-9F59-889CCDEDFA08@googlemail.com>
+
+
+On 1 Jul 2009, at 22:45, Jean-Paul Calderone wrote:
+
+> On Wed, 1 Jul 2009 11:15:35 +0100, Paul Thomas <spongelavapaul at googlemail.com 
+> > wrote:
+>> Hi,
+>>
+>> I've hit a problem as my app has got bigger (about 30-40 widgets  
+>> now,  all
+>> chattering roughly once every 2 seconds) where the reliable  message
+>> delivery mechanism is spiralling out of control. It seems that  the  
+>> constant
+>> back and forth means that large 'baskets' of messages are  resent.  
+>> The more
+>> this happens, the busier everything gets until the  browser becomes
+>> unresponsive.
+>
+> If you can produce a minimal example which demonstrates this  
+> behavior, it
+> would probably be very helpful in improving the situation.
+
+I've been tasked with doing this anyway to help us evaluate other  
+solutions. I'm sure I can convince the boss to make it available.
+
+>>
+>> There's a fix for it: [Divmod-dev] athena duplicate messages issue  
+>> but  I'm
+>> slightly concerned about the potential for lost messages - and  also
+>> confused about how this could happen. Given that HTTP is a  reliable
+>> connection-oriented transport, where is the gap that messages  can  
+>> fall
+>> through?
+>
+> Actually, HTTP is not a reliable transport.  The most obvious  
+> shortcoming
+> it has is that there is no way for a server to know if a client  
+> received
+> a response or not, but there are others.  So ReliableMessageDelivery  
+> is
+> necessary.
+
+Got it.
+
+>>
+>> I think I can cope with lost messages in most cases, so would it  
+>> be  useful
+>> to add a kind of 'sendRemote' that was like 'callRemote' but   
+>> didn't care
+>> about a response? Or maybe this already exists and I've  missed it?
+>
+> This is an interesting idea.  I haven't considered having such a  
+> feature in
+> Athena before.  It may be worth exploring.  The first problem that  
+> comes to
+> mind is that if any part of a page uses callRemote, sendRemote's  
+> advantages
+> are largely lost.  This would be because the messages generated by  
+> callRemote
+> will still need to be sent, so whatever retransmission logic is  
+> present in
+> ReliableMessageDelivery will still be invoked.
+
+Right - and I _would_ need both in the same page. Also, as Glyph  
+points out, I wouldn't like out-of-order messages.
+
+>
+>> Paul.
+>>
+>> P.S. this app is likely to get more noisy - is it likely that I'll   
+>> have to
+>> abandon Athena for Orbited or similar? I mean, are there   
+>> architectural
+>> differences that will prevent Athena scaling?
+>>
+>
+> I certainly hope that Athena can handle whatever load you intended  
+> to put on
+> it, or that we can work together to fix whatever problems it has  
+> which would
+> prevent that. :)
+
+We'll be doing an evaluation soon. Performance will play a part but we  
+also have to consider integration with UI toolkits (jQuery UI etc.).  
+If we do stick with Athena, we'll be providing patches and tests.
+
+Thanks to you both,
+paul.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090703/d0565aae/attachment.htm 
+
+From jjconti at gmail.com  Fri Jul  3 15:42:39 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 3 Jul 2009 16:42:39 -0300
+Subject: [Twisted-web] How to import JQuery from Athena
+Message-ID: <3f9007680907031242w3ce8c687u75f4d24103fdba73@mail.gmail.com>
+
+Hi, I've downloaded the jquery-1.3.2.min.js file from JQuery web page.
+Now I need to import it. How do I do it? With the // import sentence?
+
+Could you supplyme an example?
+
+Thanks,
+
+-- 
+Juanjo Conti
+
+
+From exarkun at divmod.com  Fri Jul  3 15:56:20 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri, 3 Jul 2009 15:56:20 -0400
+Subject: [Twisted-web] How to import JQuery from Athena
+In-Reply-To: <3f9007680907031242w3ce8c687u75f4d24103fdba73@mail.gmail.com>
+Message-ID: <20090703195620.22176.1687899528.divmod.quotient.12563@henry.divmod.com>
+
+On Fri, 3 Jul 2009 16:42:39 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>Hi, I've downloaded the jquery-1.3.2.min.js file from JQuery web page.
+>Now I need to import it. How do I do it? With the // import sentence?
+>
+>Could you supplyme an example?
+
+If you want to use `// import ...?, you need to "package" jQuery.  This is
+covered a bit in the Athena tutorial on the wiki.  In particular, this
+section:
+
+http://divmod.org/trac/wiki/DivmodNevow/Athena/Tutorials/LiveElement#CustomizingBehavior
+
+You don't have to use `// import ...?, though.  You could just put a script
+tag into your page that loads jQuery.
+
+Jean-Paul
+
+
+From jjconti at gmail.com  Fri Jul  3 16:00:50 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 3 Jul 2009 17:00:50 -0300
+Subject: [Twisted-web] How to import JQuery from Athena
+In-Reply-To: <20090703195620.22176.1687899528.divmod.quotient.12563@henry.divmod.com>
+References: <3f9007680907031242w3ce8c687u75f4d24103fdba73@mail.gmail.com>
+	<20090703195620.22176.1687899528.divmod.quotient.12563@henry.divmod.com>
+Message-ID: <3f9007680907031300ud4a778t53693f120dab7d91@mail.gmail.com>
+
+I did it the // import way. Thanks!
+
+2009/7/3 Jean-Paul Calderone <exarkun at divmod.com>:
+> On Fri, 3 Jul 2009 16:42:39 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>>Hi, I've downloaded the jquery-1.3.2.min.js file from JQuery web page.
+>>Now I need to import it. How do I do it? With the // import sentence?
+>>
+>>Could you supplyme an example?
+>
+> If you want to use `// import ...?, you need to "package" jQuery. ?This is
+> covered a bit in the Athena tutorial on the wiki. ?In particular, this
+> section:
+>
+> http://divmod.org/trac/wiki/DivmodNevow/Athena/Tutorials/LiveElement#CustomizingBehavior
+>
+> You don't have to use `// import ...?, though. ?You could just put a script
+> tag into your page that loads jQuery.
+>
+> Jean-Paul
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+
+-- 
+Juanjo Conti
+
+
+From michal.dtz at gmail.com  Sat Jul  4 03:31:27 2009
+From: michal.dtz at gmail.com (=?utf-8?Q?Micha=C5=82_Pasternak?=)
+Date: Sat, 4 Jul 2009 09:31:27 +0200
+Subject: [Twisted-web] Athena Unicode problem with LatinX messages
+	from	browser
+In-Reply-To: <4A4C8DC8.4080606@ivsn.com>
+References: <4A4C8DC8.4080606@ivsn.com>
+Message-ID: <4a4f054c.0af6660a.6800.53ac@mx.google.com>
+
+I think it is a bug, I think I also ran into it some time ago. Could you please file a bug report at http://www.divmod.org/ ?
+
+-- 
+M
+
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com [mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of Paul Reznicek
+Sent: Thursday, July 02, 2009 12:37 PM
+To: Twisted-web at twistedmatrix.com
+Subject: [Twisted-web] Athena Unicode problem with LatinX messages from browser
+
+Hello,
+This is only for information if somebody get same problem how to make
+non-ascii JS error visible.
+
+I found per coincidence a weakness in athena message handling.
+This happen, when browser report JS error with non-ascii characters:
+   # ---------------------------
+   Traceback (most recent call last):
+   Failure: nevow.athena.JSException:
+   <JSException instance at 52468224 with str error Traceback (most recent call last):
+
+   File "/usr/lib/python2.6/dist-packages/twisted/python/reflect.py", line 561, in safe_str
+     return str(o)
+
+   UnicodeEncodeError: 'ascii' codec can't encode character u'\xe1' in position 12:
+     ordinal not in range(128)
+   # ---------------------------
+and you do NOT see the error message from browser to fix the problem.
+
+In my case, the message from browser was: "Chybn? hodnota vlastnosti."
+
+To see, what is going on i added to my errBackPrintError function:
+     print '%r' % error
+and get now:
+     ... JSException(u'Error: Chybn\xe1 hodnota vlastnosti.',)
+so I can see, what is going on.
+
+Regards, Paul
+
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+
+From michal.dtz at gmail.com  Sat Jul  4 03:34:47 2009
+From: michal.dtz at gmail.com (=?iso-8859-2?Q?Micha=B3_Pasternak?=)
+Date: Sat, 4 Jul 2009 09:34:47 +0200
+Subject: [Twisted-web] My $0.25 (was: RE: [Athena] Is
+	ReliableMessageDelivery really	necessary?)
+In-Reply-To: <F3E4154B-54BB-4E49-9F59-889CCDEDFA08@googlemail.com>
+References: <20090701214550.22176.727267859.divmod.quotient.11784@henry.divmod.com>
+	<F3E4154B-54BB-4E49-9F59-889CCDEDFA08@googlemail.com>
+Message-ID: <4a4f0615.0c11660a.54f6.535b@mx.google.com>
+
+Hi,
+
+ 
+
+as you can see here:
+http://www.divmod.org/trac/browser/trunk/Nevow/nevow/athena.py#L800  , if
+incomingMessages is a very, very long list, chances are, that it will block
+for a small amount of time. Also, if you happen to run the web server
+interactively, calling a lot of log.msg(.) functions will print out a lot of
+stuff on the console, which will also take some CPU cycles and GUI
+resources[1]. I think the best approach would be first to remove lines 803 -
+806 ("else: log.msg(.)") and test if the problem of browser lagging still
+exists - of course if you run server and browser on the same machine.
+
+ 
+
+There are some cases, which may lead to accumulation of the messages on
+client, which then lead to lags on the client side (and a lots of log
+messages on the server). Those may be bugs in the application code, but I
+think some of those cases are browser-dependent too (for some code I tested,
+Google Chrome sent a lot of duplicate messages, while Firefox sent none).
+Some people say, that duplicate messages phenomenon may be even
+extension-dependent, as in case of Firefox with FireBug enabled. 
+
+ 
+
+Unfortunately, it seems that none of us is able to provide a minimal code
+sample of described misbehavior. Maybe it would be better just to disable
+those log messages in the release builds or make them optional?
+
+ 
+
+-- 
+
+M
+
+ 
+
+Ad. 1 - . and, even if you log web server output to a file, in this case,
+duplicate message logs may take some space. 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090704/b7d3a1d7/attachment.htm 
+
+From spongelavapaul at googlemail.com  Sat Jul  4 04:19:42 2009
+From: spongelavapaul at googlemail.com (Paul Thomas)
+Date: Sat, 4 Jul 2009 09:19:42 +0100
+Subject: [Twisted-web] My $0.25 (was: RE: [Athena] Is
+	ReliableMessageDelivery really	necessary?)
+In-Reply-To: <4a4f0615.0c11660a.54f6.535b@mx.google.com>
+References: <20090701214550.22176.727267859.divmod.quotient.11784@henry.divmod.com>
+	<F3E4154B-54BB-4E49-9F59-889CCDEDFA08@googlemail.com>
+	<4a4f0615.0c11660a.54f6.535b@mx.google.com>
+Message-ID: <2EDEC0E9-A318-4C01-A573-BF2A1B593A9C@googlemail.com>
+
+
+On 4 Jul 2009, at 08:34, Micha? Pasternak wrote:
+
+> Hi,
+>
+> as you can see here: http://www.divmod.org/trac/browser/trunk/Nevow/nevow/athena.py#L800 
+>   , if incomingMessages is a very, very long list, chances are, that  
+> it will block for a small amount of time. Also, if you happen to run  
+> the web server interactively, calling a lot of log.msg(?) functions  
+> will print out a lot of stuff on the console, which will also take  
+> some CPU cycles and GUI resources[1]. I think the best approach  
+> would be first to remove lines 803 ? 806 (?else: log.msg(?)?)  
+> and test if the problem of browser lagging still exists ? of course  
+> if you run server and browser on the same machine.
+>
+> There are some cases, which may lead to accumulation of the messages  
+> on client, which then lead to lags on the client side (and a lots of  
+> log messages on the server). Those may be bugs in the application  
+> code, but I think some of those cases are browser-dependent too (for  
+> some code I tested, Google Chrome sent a lot of duplicate messages,  
+> while Firefox sent none). Some people say, that duplicate messages  
+> phenomenon may be even extension-dependent, as in case of Firefox  
+> with FireBug enabled.
+>
+> Unfortunately, it seems that none of us is able to provide a minimal  
+> code sample of described misbehavior. Maybe it would be better just  
+> to disable those log messages in the release builds or make them  
+> optional?
+
+I'll certainly look into this, but I believe that the system causing  
+concern was run without a controlling terminal - and I have a  
+suspicion that the offending log was even removed. The system is IO  
+intensive though (hence using twisted in the first place) and we have  
+had instances in the past of accidentally using blocking calls.
+
+I'll report back in a few weeks if we get some real tests going.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090704/e5b492bd/attachment.htm 
+
+From jared.gisin at isilon.com  Mon Jul  6 13:37:39 2009
+From: jared.gisin at isilon.com (Jared Gisin)
+Date: Mon, 6 Jul 2009 10:37:39 -0700
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <20090701211950.22176.401822396.divmod.quotient.11773@henry.divmod.com>
+References: <0C40B34038FD824FACDB387E7788728702D193E2@seaxch08.desktop.isilon.com>
+	<20090701211950.22176.401822396.divmod.quotient.11773@henry.divmod.com>
+Message-ID: <0C40B34038FD824FACDB387E7788728702D19684@seaxch08.desktop.isilon.com>
+
+
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com
+[mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of Jean-Paul
+Calderone
+Sent: Wednesday, July 01, 2009 2:20 PM
+To: Twisted Web World
+Subject: Re: [Twisted-web] HTTPAuthSessionWrapper render
+
+On Wed, 1 Jul 2009 13:34:41 -0700, Jared Gisin <jared.gisin at isilon.com>
+wrote:
+>Yes, I can file a bug.
+>
+>Is there a reason why this HTTPAuthSessionWrapper isn't a mixin for
+>resource.Resource?
+
+As a mixin, what functionality would it be providing?
+
+[JG]: It would be providing resource authentication. You mix it into any
+subclass of resource.Resource and it makes that resource require
+HTTPAuth of some sort.
+
+The functionality it provides now is that arbitrary resources can be
+protected by HTTP authentication without being modified.  I can't quite
+see how a mixin achieve that goal.
+
+[JG]: Which in my experience (lack of proper documentation) doesn't work
+for anything other than what you pass in as the root to site.Site(). Try
+appending a Child resource wrapped in HTTPAuthSessionWrapper and it
+fails to properly call .render() on the wrapped resource. The parent
+find the HTTPAuthSessionWrapper and calls render on that thing, which
+return an Unimplemented, which is my complaint.
+
+>I've shoehorned it into my own custom subclass of
+>resource.Resource that could easily be done as a mixin (though not
+Ideal
+>due to MRO problem if it's in the wrong order). Better would be to
+>provide a proper HTTPAuthResource that does it. Thoughts?
+
+I'm not really sure what you mean here.  You actually mixed
+HTTPAuthSessionWrapper into a Resource subclass and got it to do
+something?
+That's surprising, and not the intended use. :)
+
+[JG]: I didn't mix it in as I copied the functions directly and adapted
+them to work directly in my resource.Resource subclass. I refactored my
+mixin to be a custom resource.Resource that does what I want. It seemed
+to me that HTTP Auth should be provided at the per-resource level. As
+resource.Resource creates a hierarchy of resources, what I want to do is
+mark a particular leaf as requiring HTTP Auth. I might also want to mark
+an entire subtree as requiring auth by setting a flag on the parent
+resource. Then, as the twisted starts parsing thru the URI resource
+children from the root Resource, as soon as it hits a resource that
+requires HTTP Auth, it would go off and perform the HTTP header
+inspection and authentication processing, creating a Portal on the fly
+with the avatar returned by the realm set to the next child. When the
+login calls return, the getChildWithDefault continues on with the next
+child avatar that was passed in to the realm when the requirement for
+Authentication was hit while walking the resource tree for the incoming
+URI. It seems hokey to "wrap" a resource in another resource, when in
+reality, all it's doing is inserting a resource in the hierarchy. Parent
+-> Child becomes Parent -> Wrapper -> Child. IT would seem wiser to have
+a mixin or a proper HTTPAuthResource class that includes this
+functionality without this extra "wrapper" layer. Such a properly
+designed resource could include instantiation parameters that define the
+type of authentication to be performed, passing in cred checkers, a
+realm, portal, whatever is required for that resource. I'm probably
+starting to mix in too much stuff into the base functionality, which as
+I can see is why nevow implements a totally different resource model to
+fit the needs of a web application. Likely I'm just as well off to roll
+my own type of resources that behaves as I see fit for my purposes just
+as nevow did. Either way, better documentation describing how the this
+thing is indented to work would have saved me lots of trouble. I would
+imagine that the core functionality of twisted would be designed to
+support many different uses cases, not a single, undocumented use case.
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From shywolf9982 at gmail.com  Tue Jul  7 09:33:41 2009
+From: shywolf9982 at gmail.com (Simone Deponti)
+Date: Tue, 07 Jul 2009 15:33:41 +0200
+Subject: [Twisted-web] WebDAV
+Message-ID: <h2viav$orh$1@ger.gmane.org>
+
+Hello all,
+
+I was searching for a way to implement a fast, reliable WebDAV server. 
+I've been using Apache so far, but without exciting results, as there 
+are a couple of things (among those, Windows client support) that just 
+don't cut it.
+So, having some twisted programming experience, I thought about giving a 
+twisted solution a try because I remember seeing the dav module inside 
+web2: but looking at trunk, I couldn't find it anymore.
+I thought it had then been backported into web, but no luck there aswell.
+
+Anybody knows about it? And what is the current state? Is it usable, or 
+needs some "loving"?
+
+Greetings
+
+Simone Deponti
+
+
+
+From exarkun at divmod.com  Tue Jul  7 10:54:51 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 7 Jul 2009 10:54:51 -0400
+Subject: [Twisted-web] WebDAV
+In-Reply-To: <h2viav$orh$1@ger.gmane.org>
+Message-ID: <20090707145451.22176.638971624.divmod.quotient.13970@henry.divmod.com>
+
+On Tue, 07 Jul 2009 15:33:41 +0200, Simone Deponti <shywolf9982 at gmail.com> wrote:
+>Hello all,
+>
+>I was searching for a way to implement a fast, reliable WebDAV server.
+>I've been using Apache so far, but without exciting results, as there
+>are a couple of things (among those, Windows client support) that just
+>don't cut it.
+
+Twisted doesn't yet have one of these, unfortunately.
+
+>So, having some twisted programming experience, I thought about giving a
+>twisted solution a try because I remember seeing the dav module inside
+>web2: but looking at trunk, I couldn't find it anymore.
+
+It's been removed from trunk, but it still exists in a branch where (the
+idea goes) it is being maintained and improved and generally pushed towards
+a state where it can be re-added to trunk.
+
+>I thought it had then been backported into web, but no luck there aswell.
+
+This is the idea, and some progress has been made towards achieving it, but this is largely stalled at this point, with lots of work left to do.
+
+>
+>Anybody knows about it? And what is the current state? Is it usable, or
+>needs some "loving"?
+
+For certain purposes, it's usable (at least for whatever purposes Apple is
+putting it to, by definition :).  Here's the code:
+
+  http://twistedmatrix.com/trac/browser/branches/dav-take-two-3081-4
+
+Jean-Paul
+
+
+From exarkun at divmod.com  Tue Jul  7 11:04:15 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 7 Jul 2009 11:04:15 -0400
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <0C40B34038FD824FACDB387E7788728702D19684@seaxch08.desktop.isilon.com>
+Message-ID: <20090707150415.22176.1479439275.divmod.quotient.13971@henry.divmod.com>
+
+On Mon, 6 Jul 2009 10:37:39 -0700, Jared Gisin <jared.gisin at isilon.com> wrote:
+>
+> [snip]
+>
+>[JG]: I didn't mix it in as I copied the functions directly and adapted
+>them to work directly in my resource.Resource subclass. I refactored my
+>mixin to be a custom resource.Resource that does what I want. It seemed
+>to me that HTTP Auth should be provided at the per-resource level. As
+>resource.Resource creates a hierarchy of resources, what I want to do is
+>mark a particular leaf as requiring HTTP Auth. I might also want to mark
+>an entire subtree as requiring auth by setting a flag on the parent
+>resource. Then, as the twisted starts parsing thru the URI resource
+>children from the root Resource, as soon as it hits a resource that
+>requires HTTP Auth, it would go off and perform the HTTP header
+>inspection and authentication processing, creating a Portal on the fly
+>with the avatar returned by the realm set to the next child. When the
+>login calls return, the getChildWithDefault continues on with the next
+>child avatar that was passed in to the realm when the requirement for
+>Authentication was hit while walking the resource tree for the incoming
+>URI. It seems hokey to "wrap" a resource in another resource, when in
+>reality, all it's doing is inserting a resource in the hierarchy. Parent
+>-> Child becomes Parent -> Wrapper -> Child. IT would seem wiser to have
+>a mixin or a proper HTTPAuthResource class that includes this
+>functionality without this extra "wrapper" layer. Such a properly
+>designed resource could include instantiation parameters that define the
+>type of authentication to be performed, passing in cred checkers, a
+>realm, portal, whatever is required for that resource. I'm probably
+>starting to mix in too much stuff into the base functionality, which as
+>I can see is why nevow implements a totally different resource model to
+>fit the needs of a web application. Likely I'm just as well off to roll
+>my own type of resources that behaves as I see fit for my purposes just
+>as nevow did. Either way, better documentation describing how the this
+>thing is indented to work would have saved me lots of trouble. I would
+>imagine that the core functionality of twisted would be designed to
+>support many different uses cases, not a single, undocumented use case.
+>
+
+The gist of this seems to be that you prefer inheritance to composition,
+whereas I (and many other Twisted developers) prefer composition over
+inheritance. :)
+
+Aside from the bug which started this conversation, I think HTTPAuthResource
+can provide all of the functionality you're interested in.
+
+Jean-Paul
+
+
+From jjconti at gmail.com  Tue Jul  7 11:25:00 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Tue, 7 Jul 2009 12:25:00 -0300
+Subject: [Twisted-web] id property modified by Athena
+Message-ID: <3f9007680907070825o4f641a71pb44c4576130f458@mail.gmail.com>
+
+I have this Nevow.Athena code:
+
+<div xmlns:nevow="http://nevow.com/ns/nevow/0.1"
+    xmlns:athena="http://divmod.org/ns/athena/0.7"
+    nevow:render="liveElement">
+
+    <h2>Grafica</h2>
+    <div id="placeholder" style="width:600px;height:300px">****</div>
+</div>
+
+When the live element is rendered, the id is changed to something like
+athena:1-placeholder.
+
+This gived me some headaches using JQuery $(#id) form. Does anyone
+know something about this?
+
+Greets!
+
+PS: I use the name attribute now.
+-- 
+Juanjo Conti
+
+
+From jjconti at gmail.com  Tue Jul  7 11:36:04 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Tue, 7 Jul 2009 12:36:04 -0300
+Subject: [Twisted-web] Athena can handler list
+Message-ID: <3f9007680907070836k59fe36dcn5bf423cca4d6dba5@mail.gmail.com>
+
+Where can I found a list of events Athena can handle?
+
+<athena:handler event="onsubmit" handler="doRead" />
+
+I know onsubmit and onkeypress. I tried to use onload but didnt work :(
+-- 
+Juanjo Conti
+
+
+From exarkun at divmod.com  Tue Jul  7 11:40:43 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 7 Jul 2009 11:40:43 -0400
+Subject: [Twisted-web] id property modified by Athena
+In-Reply-To: <3f9007680907070825o4f641a71pb44c4576130f458@mail.gmail.com>
+Message-ID: <20090707154043.22176.1098670404.divmod.quotient.13977@henry.divmod.com>
+
+On Tue, 7 Jul 2009 12:25:00 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>I have this Nevow.Athena code:
+>
+><div xmlns:nevow="http://nevow.com/ns/nevow/0.1"
+>    xmlns:athena="http://divmod.org/ns/athena/0.7"
+>    nevow:render="liveElement">
+>
+>    <h2>Grafica</h2>
+>    <div id="placeholder" style="width:600px;height:300px">****</div>
+></div>
+>
+>When the live element is rendered, the id is changed to something like
+>athena:1-placeholder.
+>
+>This gived me some headaches using JQuery $(#id) form. Does anyone
+>know something about this?
+
+Athena also provides an API to determine what the id value is rewritten
+to.  See Nevow.Athena.Widget.translateNodeId.  I'm not familiar with the
+JQuery API you're talking about.  Does this help?
+
+Jean-Paul
+
+
+From exarkun at divmod.com  Tue Jul  7 11:43:00 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 7 Jul 2009 11:43:00 -0400
+Subject: [Twisted-web] Athena can handler list
+In-Reply-To: <3f9007680907070836k59fe36dcn5bf423cca4d6dba5@mail.gmail.com>
+Message-ID: <20090707154300.22176.1179694641.divmod.quotient.13978@henry.divmod.com>
+
+On Tue, 7 Jul 2009 12:36:04 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>Where can I found a list of events Athena can handle?
+>
+><athena:handler event="onsubmit" handler="doRead" />
+>
+>I know onsubmit and onkeypress. I tried to use onload but didnt work :(
+
+This depends on the browser.  If the browser supports an event (remember,
+different nodes support different events), then it should work with an
+<athena:handler> tag.  The node the handler is applied to is the one which
+immediately contains the <athena:handler> tag.  IIRC, `onload? is only
+supported on a few elements, eg body.  You might want to override the
+Widget method `loaded? instead.
+
+Jean-Paul
+
+
+From jjconti at gmail.com  Tue Jul  7 11:58:29 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Tue, 7 Jul 2009 12:58:29 -0300
+Subject: [Twisted-web] Athena can handler list
+In-Reply-To: <20090707154300.22176.1179694641.divmod.quotient.13978@henry.divmod.com>
+References: <3f9007680907070836k59fe36dcn5bf423cca4d6dba5@mail.gmail.com>
+	<20090707154300.22176.1179694641.divmod.quotient.13978@henry.divmod.com>
+Message-ID: <3f9007680907070858s11600cfal6ee7c9d99e3e5daf@mail.gmail.com>
+
+2009/7/7 Jean-Paul Calderone <exarkun at divmod.com>:
+> On Tue, 7 Jul 2009 12:36:04 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>>Where can I found a list of events Athena can handle?
+>>
+>><athena:handler event="onsubmit" handler="doRead" />
+>>
+>>I know onsubmit and onkeypress. I tried to use onload but didnt work :(
+>
+> This depends on the browser. ?If the browser supports an event (remember,
+> different nodes support different events), then it should work with an
+> <athena:handler> tag. ?The node the handler is applied to is the one which
+> immediately contains the <athena:handler> tag. ?IIRC, `onload? is only
+> supported on a few elements, eg body. ?You might want to override the
+> Widget method `loaded? instead.
+
+If I define a loeaded methon on my Widget, it'll be called when the
+page is loaded?
+
+-- 
+Juanjo Conti
+
+
+From shywolf9982 at gmail.com  Tue Jul  7 12:25:38 2009
+From: shywolf9982 at gmail.com (Simone Deponti)
+Date: Tue, 07 Jul 2009 18:25:38 +0200
+Subject: [Twisted-web] WebDAV
+In-Reply-To: <20090707145451.22176.638971624.divmod.quotient.13970@henry.divmod.com>
+References: <h2viav$orh$1@ger.gmane.org>
+	<20090707145451.22176.638971624.divmod.quotient.13970@henry.divmod.com>
+Message-ID: <h2vsdd$s3t$1@ger.gmane.org>
+
+On 07/07/2009 04:54 PM, Jean-Paul Calderone wrote:
+>
+> For certain purposes, it's usable (at least for whatever purposes Apple is
+> putting it to, by definition :).  Here's the code:
+>
+>    http://twistedmatrix.com/trac/browser/branches/dav-take-two-3081-4
+>
+
+Thanks a lot. In case I manage to improve it a better, I'll make sure to 
+send back patches.
+My main goal is to make it compatible with Microsoft's client... which 
+might or might not be possible.
+
+
+
+
+From exarkun at divmod.com  Tue Jul  7 12:24:25 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 7 Jul 2009 12:24:25 -0400
+Subject: [Twisted-web] Athena can handler list
+In-Reply-To: <3f9007680907070858s11600cfal6ee7c9d99e3e5daf@mail.gmail.com>
+Message-ID: <20090707162425.22176.1302475278.divmod.quotient.13984@henry.divmod.com>
+
+On Tue, 7 Jul 2009 12:58:29 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>2009/7/7 Jean-Paul Calderone <exarkun at divmod.com>:
+>> On Tue, 7 Jul 2009 12:36:04 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>>>Where can I found a list of events Athena can handle?
+>>>
+>>><athena:handler event="onsubmit" handler="doRead" />
+>>>
+>>>I know onsubmit and onkeypress. I tried to use onload but didnt work :(
+>>
+>> This depends on the browser. ?If the browser supports an event (remember,
+>> different nodes support different events), then it should work with an
+>> <athena:handler> tag. ?The node the handler is applied to is the one which
+>> immediately contains the <athena:handler> tag. ?IIRC, `onload? is only
+>> supported on a few elements, eg body. ?You might want to override the
+>> Widget method `loaded? instead.
+>
+>If I define a loeaded methon on my Widget, it'll be called when the
+>page is loaded?
+>
+
+After the page is fully loaded and after Athena has finished its own
+initialization (like creating your widgets).
+
+Jean-Paul
+
+
+From maillists at ivsn.com  Tue Jul  7 14:58:13 2009
+From: maillists at ivsn.com (Paul Reznicek)
+Date: Tue, 07 Jul 2009 20:58:13 +0200
+Subject: [Twisted-web] Strange Nevow / Athena error
+Message-ID: <4A539AC5.4020004@ivsn.com>
+
+Hello,
+I observe this error few times a day and have no idea about what is causing
+it, neither under which conditions it happen (Nevow-0.9.33):
+
+Traceback (most recent call last):
+   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 195, in addCallback
+     callbackKeywords=kw)
+   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 186, in 
+addCallbacks
+     self._runCallbacks()
+   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 328, in 
+_runCallbacks
+     self.result = callback(self.result, *args, **kw)
+   File "/usr/local/lib/python2.6/dist-packages/nevow/appserver.py", line 163, in 
+gotPageContext
+     pageContext.tag.renderHTTP, pageContext
+--- <exception caught here> ---
+   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 106, in 
+maybeDeferred
+     result = f(*args, **kw)
+   File "/usr/local/lib/python2.6/dist-packages/nevow/athena.py", line 440, in renderHTTP
+     messageData = json.parse(requestContent)
+   File "/usr/local/lib/python2.6/dist-packages/nevow/json.py", line 228, in parse
+     value, tokens = parseValue(tokens)
+   File "/usr/local/lib/python2.6/dist-packages/nevow/json.py", line 130, in parseValue
+     if tokens[0] == '{':
+exceptions.IndexError: list index out of range
+
+I asked some user, but nobody observed problems on the user site,
+any idea, what is wrong?
+
+Regards, Paul
+
+
+From niklas.landsberg at gmail.com  Tue Jul  7 15:09:01 2009
+From: niklas.landsberg at gmail.com (Niklas Landsberg)
+Date: Tue, 7 Jul 2009 21:09:01 +0200
+Subject: [Twisted-web] Strange Nevow / Athena error
+In-Reply-To: <4A539AC5.4020004@ivsn.com>
+References: <4A539AC5.4020004@ivsn.com>
+Message-ID: <e6dae3310907071209g50efbe38t91bbde1c3d67362@mail.gmail.com>
+
+I?ve observed the same error when playing around with twisted behind a
+reverse proxy (apache/nginx).  Are your conditions similar?
+
+On Tue, Jul 7, 2009 at 8:58 PM, Paul Reznicek <maillists at ivsn.com> wrote:
+
+> Hello,
+> I observe this error few times a day and have no idea about what is causing
+> it, neither under which conditions it happen (Nevow-0.9.33):
+>
+> Traceback (most recent call last):
+>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line
+> 195, in addCallback
+>     callbackKeywords=kw)
+>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line
+> 186, in
+> addCallbacks
+>     self._runCallbacks()
+>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line
+> 328, in
+> _runCallbacks
+>     self.result = callback(self.result, *args, **kw)
+>   File "/usr/local/lib/python2.6/dist-packages/nevow/appserver.py", line
+> 163, in
+> gotPageContext
+>     pageContext.tag.renderHTTP, pageContext
+> --- <exception caught here> ---
+>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line
+> 106, in
+> maybeDeferred
+>     result = f(*args, **kw)
+>   File "/usr/local/lib/python2.6/dist-packages/nevow/athena.py", line 440,
+> in renderHTTP
+>     messageData = json.parse(requestContent)
+>   File "/usr/local/lib/python2.6/dist-packages/nevow/json.py", line 228, in
+> parse
+>     value, tokens = parseValue(tokens)
+>   File "/usr/local/lib/python2.6/dist-packages/nevow/json.py", line 130, in
+> parseValue
+>     if tokens[0] == '{':
+> exceptions.IndexError: list index out of range
+>
+> I asked some user, but nobody observed problems on the user site,
+> any idea, what is wrong?
+>
+> Regards, Paul
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090707/72bc1ec1/attachment.htm 
+
+From exarkun at divmod.com  Tue Jul  7 15:12:01 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 7 Jul 2009 15:12:01 -0400
+Subject: [Twisted-web] Strange Nevow / Athena error
+In-Reply-To: <4A539AC5.4020004@ivsn.com>
+Message-ID: <20090707191201.2543.102541479.divmod.quotient.46@henry.divmod.com>
+
+On Tue, 07 Jul 2009 20:58:13 +0200, Paul Reznicek <maillists at ivsn.com> wrote:
+>Hello,
+>I observe this error few times a day and have no idea about what is causing
+>it, neither under which conditions it happen (Nevow-0.9.33):
+>
+>Traceback (most recent call last):
+>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 195, in addCallback
+>     callbackKeywords=kw)
+>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 186, in
+>addCallbacks
+>     self._runCallbacks()
+>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 328, in
+>_runCallbacks
+>     self.result = callback(self.result, *args, **kw)
+>   File "/usr/local/lib/python2.6/dist-packages/nevow/appserver.py", line 163, in
+>gotPageContext
+>     pageContext.tag.renderHTTP, pageContext
+>--- <exception caught here> ---
+>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 106, in
+>maybeDeferred
+>     result = f(*args, **kw)
+>   File "/usr/local/lib/python2.6/dist-packages/nevow/athena.py", line 440, in renderHTTP
+>     messageData = json.parse(requestContent)
+>   File "/usr/local/lib/python2.6/dist-packages/nevow/json.py", line 228, in parse
+>     value, tokens = parseValue(tokens)
+>   File "/usr/local/lib/python2.6/dist-packages/nevow/json.py", line 130, in parseValue
+>     if tokens[0] == '{':
+>exceptions.IndexError: list index out of range
+>
+>I asked some user, but nobody observed problems on the user site,
+>any idea, what is wrong?
+
+This happens whenever the server receives an Athena message which is not
+valid json.  A common reason for this to happen is a proxy sitting between
+the server and client which decides to send a truncated request.  The client
+can recover from this in most cases, so it should be transparent to the user,
+but it gets logged on the server since it's not explicitly handled there.
+
+Just yesterday someone suggested that the server could report this failure
+mode a little more clearly.  That'd be fine with me.
+
+Jean-Paul
+
+
+From maillists at ivsn.com  Tue Jul  7 17:44:53 2009
+From: maillists at ivsn.com (Paul Reznicek)
+Date: Tue, 07 Jul 2009 23:44:53 +0200
+Subject: [Twisted-web] Strange Nevow / Athena error
+In-Reply-To: <20090707191201.2543.102541479.divmod.quotient.46@henry.divmod.com>
+References: <20090707191201.2543.102541479.divmod.quotient.46@henry.divmod.com>
+Message-ID: <4A53C1D5.9090408@ivsn.com>
+
+Jean-Paul Calderone wrote:
+> On Tue, 07 Jul 2009 20:58:13 +0200, Paul Reznicek <maillists at ivsn.com> wrote:
+>> Hello,
+>> I observe this error few times a day and have no idea about what is causing
+>> it, neither under which conditions it happen (Nevow-0.9.33):
+>>
+>> Traceback (most recent call last):
+>>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 195, in addCallback
+>>     callbackKeywords=kw)
+>>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 186, in
+>> addCallbacks
+>>     self._runCallbacks()
+>>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 328, in
+>> _runCallbacks
+>>     self.result = callback(self.result, *args, **kw)
+>>   File "/usr/local/lib/python2.6/dist-packages/nevow/appserver.py", line 163, in
+>> gotPageContext
+>>     pageContext.tag.renderHTTP, pageContext
+>> --- <exception caught here> ---
+>>   File "/usr/lib/python2.6/dist-packages/twisted/internet/defer.py", line 106, in
+>> maybeDeferred
+>>     result = f(*args, **kw)
+>>   File "/usr/local/lib/python2.6/dist-packages/nevow/athena.py", line 440, in renderHTTP
+>>     messageData = json.parse(requestContent)
+>>   File "/usr/local/lib/python2.6/dist-packages/nevow/json.py", line 228, in parse
+>>     value, tokens = parseValue(tokens)
+>>   File "/usr/local/lib/python2.6/dist-packages/nevow/json.py", line 130, in parseValue
+>>     if tokens[0] == '{':
+>> exceptions.IndexError: list index out of range
+>>
+>> I asked some user, but nobody observed problems on the user site,
+>> any idea, what is wrong?
+> 
+> This happens whenever the server receives an Athena message which is not
+> valid json.  A common reason for this to happen is a proxy sitting between
+> the server and client which decides to send a truncated request.  The client
+> can recover from this in most cases, so it should be transparent to the user,
+> but it gets logged on the server since it's not explicitly handled there.
+> 
+> Just yesterday someone suggested that the server could report this failure
+> mode a little more clearly.  That'd be fine with me.
+> 
+> Jean-Paul
+> 
+Yes, the server is behind an Apache proxy, sorry, I forgot to mention.
+Thank you for explanation, one detail more - as long as I've used HTTPS
+to connect to the proxy, I did NOT observed these errors although the
+internal transfer between Apache and server on 8080 is plain http.
+Paul
+
+
+
+From mithrandi at mithrandi.net  Tue Jul  7 23:27:41 2009
+From: mithrandi at mithrandi.net (Tristan Seligmann)
+Date: Wed, 8 Jul 2009 05:27:41 +0200
+Subject: [Twisted-web] Strange Nevow / Athena error
+In-Reply-To: <4A53C1D5.9090408@ivsn.com>
+References: <20090707191201.2543.102541479.divmod.quotient.46@henry.divmod.com>
+	<4A53C1D5.9090408@ivsn.com>
+Message-ID: <f5eea9170907072027k7c6290f1ubbc230f96f67122@mail.gmail.com>
+
+On Tue, Jul 7, 2009 at 11:44 PM, Paul Reznicek<maillists at ivsn.com> wrote:
+> Yes, the server is behind an Apache proxy, sorry, I forgot to mention.
+> Thank you for explanation, one detail more - as long as I've used HTTPS
+> to connect to the proxy, I did NOT observed these errors although the
+> internal transfer between Apache and server on 8080 is plain http.
+> Paul
+
+Is it possible that the /client/ is behind a (possibly transparent)
+proxy? In our environment we've had problems with proxies mangling the
+client's requests in this way (the request that actually makes it
+through has a 0 byte Content-Length); using HTTPS would prevent this
+from happening, since the proxy cannot see / modify the communication
+between the client and the destination web server (Apache, in your
+case). In some cases, this even persists beyond the three retries that
+Athena attempts, causing the client to experience unpredictable and
+unexpected disconnections.
+-- 
+mithrandi, i Ainil en-Balandor, a faer Ambar
+
+
+From daniel.yang.zhenyu at gmail.com  Wed Jul  8 10:59:13 2009
+From: daniel.yang.zhenyu at gmail.com (Daniel Yang)
+Date: Wed, 8 Jul 2009 22:59:13 +0800
+Subject: [Twisted-web] A question with storm orm and Nevow
+Message-ID: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+
+Hi people,
+
+I am using storm orm(twisted-integration) with Nevow.
+There is a question that confuses me a lot:
+(since storm orm(twisted-integration) does db io in a asynchronous way).
+In a render function, before my data returns, what should I return for the
+render function?
+
+does Nevow has something like server.NOT_DONE_YET?
+or there is a "deferred" way to do this?
+
+
+FYI: http://www.divmod.org/trac/wiki/DivmodNevow/Storm
+This article does not help.
+
+Thanks!
+
+
+
+-- 
+-----------------------------------------------
+Yours
+Faithfully
+
+Daniel Yang
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090708/838854b9/attachment.htm 
+
+From karnaugh at karnaugh.za.net  Wed Jul  8 11:21:13 2009
+From: karnaugh at karnaugh.za.net (Colin Alston)
+Date: Wed, 8 Jul 2009 17:21:13 +0200
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+Message-ID: <78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+
+On Wed, Jul 8, 2009 at 4:59 PM, Daniel Yang <daniel.yang.zhenyu at gmail.com>wrote:
+
+> Hi people,
+>
+> I am using storm orm(twisted-integration) with Nevow.
+> There is a question that confuses me a lot:
+> (since storm orm(twisted-integration) does db io in a asynchronous way).
+> In a render function, before my data returns, what should I return for the
+> render function?
+>
+> does Nevow has something like server.NOT_DONE_YET?
+> or there is a "deferred" way to do this?
+>
+
+Hi,
+
+You can simply use a deferred in any render function as you would expect.
+Nevow deals with this for you.
+
+def render_foo(self, ctx, data):
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090708/f023d04b/attachment-0001.htm 
+
+From karnaugh at karnaugh.za.net  Wed Jul  8 11:22:49 2009
+From: karnaugh at karnaugh.za.net (Colin Alston)
+Date: Wed, 8 Jul 2009 17:22:49 +0200
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+	<78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+Message-ID: <78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+
+On Wed, Jul 8, 2009 at 5:21 PM, Colin Alston <karnaugh at karnaugh.za.net>wrote:
+
+> On Wed, Jul 8, 2009 at 4:59 PM, Daniel Yang <daniel.yang.zhenyu at gmail.com>wrote:
+>
+>> Hi people,
+>>
+>> I am using storm orm(twisted-integration) with Nevow.
+>> There is a question that confuses me a lot:
+>> (since storm orm(twisted-integration) does db io in a asynchronous way).
+>> In a render function, before my data returns, what should I return for the
+>> render function?
+>>
+>> does Nevow has something like server.NOT_DONE_YET?
+>> or there is a "deferred" way to do this?
+>>
+>
+> Hi,
+>
+> You can simply use a deferred in any render function as you would expect.
+> Nevow deals with this for you.
+>
+> def render_foo(self, ctx, data):
+>
+
+Wow.. Google mail fails and I'm too used to using TAB when writing code...
+
+def render_foo(self, ctx, data):
+   def continueRendering(results):
+       # do something with results
+       return ctx.tag[whatever]
+
+   return myDeferredDatabaseQuery(some args).addBoth(continueRendering)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090708/34db623a/attachment.htm 
+
+From daniel.yang.zhenyu at gmail.com  Wed Jul  8 21:30:31 2009
+From: daniel.yang.zhenyu at gmail.com (Daniel Yang)
+Date: Thu, 9 Jul 2009 09:30:31 +0800
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+	<78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+	<78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+Message-ID: <615500620907081830l4d4c511eqa8b8189a30895bc7@mail.gmail.com>
+
+Thanks, Colin.
+
+In my case, I have to take 2 steps to get data from database.
+1. execute sql, get a DeferredResult instance.
+2. use DeferredResult.get_all/one() to get the real data.
+
+it is a more complicated process than just one deferred.
+
+Code:
+def test_execute(self):
+    def cb_execute(result):
+        #this result is a DeferredResult, not the actual data.
+        return result.get_one().addCallback(cb_result)
+
+    def cb_result(result):
+        #the data returns
+         print result
+
+    self.store.execute("SELECT title FROM foo WHERE
+id=10").addCallback(cb_execute)
+
+    return ?
+
+What should I return?
+
+I execute sql statements directly using store. Possibly it is not a good
+choice.
+If I use the ORM way:
+
+    def test_get(self):
+        """
+        Try to get an object from the store and check its attributes.
+        """
+        def cb(result):
+            self.assertEquals(result.title, u'Title 30')
+            self.assertEquals(result.id, 10)
+        return self.store.get(Foo, 10).addCallback(cb)
+
+That'd be much easier.
+
+
+On Wed, Jul 8, 2009 at 11:22 PM, Colin Alston <karnaugh at karnaugh.za.net>wrote:
+
+>
+>
+> On Wed, Jul 8, 2009 at 5:21 PM, Colin Alston <karnaugh at karnaugh.za.net>wrote:
+>
+>> On Wed, Jul 8, 2009 at 4:59 PM, Daniel Yang <daniel.yang.zhenyu at gmail.com
+>> > wrote:
+>>
+>>> Hi people,
+>>>
+>>> I am using storm orm(twisted-integration) with Nevow.
+>>> There is a question that confuses me a lot:
+>>> (since storm orm(twisted-integration) does db io in a asynchronous way).
+>>> In a render function, before my data returns, what should I return for
+>>> the render function?
+>>>
+>>> does Nevow has something like server.NOT_DONE_YET?
+>>> or there is a "deferred" way to do this?
+>>>
+>>
+>> Hi,
+>>
+>> You can simply use a deferred in any render function as you would expect.
+>> Nevow deals with this for you.
+>>
+>> def render_foo(self, ctx, data):
+>>
+>
+> Wow.. Google mail fails and I'm too used to using TAB when writing code...
+>
+>
+> def render_foo(self, ctx, data):
+>    def continueRendering(results):
+>        # do something with results
+>        return ctx.tag[whatever]
+>
+>    return myDeferredDatabaseQuery(some args).addBoth(continueRendering)
+>
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+
+
+-- 
+-----------------------------------------------
+Yours
+Faithfully
+
+Daniel Yang
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090709/fe61ae9e/attachment.htm 
+
+From mithrandi at mithrandi.net  Wed Jul  8 21:59:49 2009
+From: mithrandi at mithrandi.net (Tristan Seligmann)
+Date: Thu, 9 Jul 2009 03:59:49 +0200
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <615500620907081830l4d4c511eqa8b8189a30895bc7@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+	<78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+	<78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+	<615500620907081830l4d4c511eqa8b8189a30895bc7@mail.gmail.com>
+Message-ID: <f5eea9170907081859wb10cf22w5a5eeb326a9459a6@mail.gmail.com>
+
+On Thu, Jul 9, 2009 at 3:30 AM, Daniel Yang<daniel.yang.zhenyu at gmail.com> wrote:
+> def test_execute(self):
+
+This looks like a unit test, not Nevow code?
+
+> ?? ?def cb_execute(result):
+> ?? ? ? ?#this result is a?DeferredResult, not the actual data.
+> ?? ? ? ?return result.get_one().addCallback(cb_result)
+> ?? ?def cb_result(result):
+> ?? ? ? ?#the data returns
+> ?? ? ? ??print result
+
+Return your ultimate result here; note that if you're not actually
+going to do anything to result in cb_result, you could just have:
+
+def cb_execute(result):
+    return result.get_one()
+
+> ?? ?self.store.execute("SELECT title FROM foo WHERE id=10").addCallback(cb_execute)
+> ?? ?return ?
+
+return self.store.execute("SELECT title FROM foo WHERE
+id=10").addCallback(cb_execute)
+
+The result returned from cb_result is what will ultimately used by
+whatever invoked test_execute, assuming that it pays attention to the
+return value; I'm not clear how test_execute is being used, so I can't
+say this will work for sure. If test_execute is, for example, a render
+method, then it should work just fine.
+-- 
+mithrandi, i Ainil en-Balandor, a faer Ambar
+
+
+From daniel.yang.zhenyu at gmail.com  Wed Jul  8 22:18:34 2009
+From: daniel.yang.zhenyu at gmail.com (Daniel Yang)
+Date: Thu, 9 Jul 2009 10:18:34 +0800
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <f5eea9170907081859wb10cf22w5a5eeb326a9459a6@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+	<78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+	<78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+	<615500620907081830l4d4c511eqa8b8189a30895bc7@mail.gmail.com>
+	<f5eea9170907081859wb10cf22w5a5eeb326a9459a6@mail.gmail.com>
+Message-ID: <615500620907081918l616b9f3dlf503eced5963f2dd@mail.gmail.com>
+
+Thanks, Tristan and Colin.
+Yes. the code was taken from storm unittests.
+
+I was planning to do some rendering work in cb_result.
+Let me try first.
+
+
+On Thu, Jul 9, 2009 at 9:59 AM, Tristan Seligmann
+<mithrandi at mithrandi.net>wrote:
+
+> On Thu, Jul 9, 2009 at 3:30 AM, Daniel Yang<daniel.yang.zhenyu at gmail.com>
+> wrote:
+> > def test_execute(self):
+>
+> This looks like a unit test, not Nevow code?
+>
+> >     def cb_execute(result):
+> >         #this result is a DeferredResult, not the actual data.
+> >         return result.get_one().addCallback(cb_result)
+> >     def cb_result(result):
+> >         #the data returns
+> >          print result
+>
+> Return your ultimate result here; note that if you're not actually
+> going to do anything to result in cb_result, you could just have:
+>
+> def cb_execute(result):
+>    return result.get_one()
+>
+> >     self.store.execute("SELECT title FROM foo WHERE
+> id=10").addCallback(cb_execute)
+> >     return ?
+>
+> return self.store.execute("SELECT title FROM foo WHERE
+> id=10").addCallback(cb_execute)
+>
+> The result returned from cb_result is what will ultimately used by
+> whatever invoked test_execute, assuming that it pays attention to the
+> return value; I'm not clear how test_execute is being used, so I can't
+> say this will work for sure. If test_execute is, for example, a render
+> method, then it should work just fine.
+> --
+> mithrandi, i Ainil en-Balandor, a faer Ambar
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+
+-- 
+-----------------------------------------------
+Yours
+Faithfully
+
+Daniel Yang
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090709/a2755051/attachment.htm 
+
+From jjconti at gmail.com  Thu Jul  9 13:03:44 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Thu, 9 Jul 2009 14:03:44 -0300
+Subject: [Twisted-web] Cannot render a LivePage more than once
+Message-ID: <3f9007680907091003i5d16b1a1u217f6af9c90ae186@mail.gmail.com>
+
+HI! I'm using LivePage from Nevow.Athena like this:
+
+class TerPage(LivePage):
+    docFactory = loaders.stan(T.html[
+        T.head(render=T.directive('liveglue')),
+        T.body(render=T.directive('myElement'))])
+
+    def beforeRender(self, ctx):
+        d = self.notifyOnDisconnect()
+        d.addErrback(self.disconn)
+
+    def disconn(self, reason):
+        del lectores[hash(self.element)]
+
+    def render_myElement(self, ctx, data):
+        self.element = TempElement()
+        self.element.setFragmentParent(self)
+        return ctx.tag[self.element]
+
+    def child_(self, ctx):
+        return TerPage()
+
+
+site = appserver.NevowSite(TerPage())
+reactor.listenTCP(8009, site)
+
+When I load the page for first time, it's rendered ok. But if I hit
+the reload button or someone access it from other computer, this
+exception is shown:
+
+Cannot render a LivePage more than once.
+
+Could you point me the correct way of doing it?
+
+Thanks,
+
+-- 
+Juanjo Conti
+
+
+From jjconti at gmail.com  Thu Jul  9 14:16:08 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Thu, 9 Jul 2009 15:16:08 -0300
+Subject: [Twisted-web] Cannot render a LivePage more than once
+In-Reply-To: <3f9007680907091003i5d16b1a1u217f6af9c90ae186@mail.gmail.com>
+References: <3f9007680907091003i5d16b1a1u217f6af9c90ae186@mail.gmail.com>
+Message-ID: <3f9007680907091116h7d133487o54d0d54ed9941223@mail.gmail.com>
+
+I've actually realised that the problem is happening when I use this IndexPage:
+
+class IndexPage(rend.Page):
+
+    def __init__ ( self, *args, **kwargs ):
+        rend.Page.__init__ ( self, *args, **kwargs )
+        self.ter = TerPage()
+        self.graph = GraphPage()
+
+
+    docFactory = loaders.stan (
+        T.html [ T.head ( title = 'Indice' ),
+                 T.body [ T.h1 [ "Pagina principal" ],
+                          T.p [ "Ir a ",
+                                T.a ( href = 'ter' ) [ "TER" ],
+                                " or ",
+                                T.a ( href = 'grapf' ) [ "graph" ],
+                                ],
+                          ]
+                 ]
+        )
+
+
+    def child_ter(self, ctx):
+        return self.ter
+
+    def child_graph(self, ctx):
+        return self.graph
+
+from nevow import appserver
+site = appserver.NevowSite(IndexPage())
+reactor.listenTCP(8009, site)
+
+I can reaload the IndexPage, but can't the Terpage or GraphPage.
+
+Thanks,
+
+2009/7/9 Juanjo Conti <jjconti at gmail.com>:
+> HI! I'm using LivePage from Nevow.Athena like this:
+>
+> class TerPage(LivePage):
+> ? ?docFactory = loaders.stan(T.html[
+> ? ? ? ?T.head(render=T.directive('liveglue')),
+> ? ? ? ?T.body(render=T.directive('myElement'))])
+>
+> ? ?def beforeRender(self, ctx):
+> ? ? ? ?d = self.notifyOnDisconnect()
+> ? ? ? ?d.addErrback(self.disconn)
+>
+> ? ?def disconn(self, reason):
+> ? ? ? ?del lectores[hash(self.element)]
+>
+> ? ?def render_myElement(self, ctx, data):
+> ? ? ? ?self.element = TempElement()
+> ? ? ? ?self.element.setFragmentParent(self)
+> ? ? ? ?return ctx.tag[self.element]
+>
+> ? ?def child_(self, ctx):
+> ? ? ? ?return TerPage()
+>
+>
+> site = appserver.NevowSite(TerPage())
+> reactor.listenTCP(8009, site)
+>
+> When I load the page for first time, it's rendered ok. But if I hit
+> the reload button or someone access it from other computer, this
+> exception is shown:
+>
+> Cannot render a LivePage more than once.
+>
+> Could you point me the correct way of doing it?
+>
+> Thanks,
+>
+> --
+> Juanjo Conti
+>
+
+
+
+-- 
+Juanjo Conti
+
+
+From jjconti at gmail.com  Thu Jul  9 14:27:54 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Thu, 9 Jul 2009 15:27:54 -0300
+Subject: [Twisted-web] Cannot render a LivePage more than once
+In-Reply-To: <3f9007680907091116h7d133487o54d0d54ed9941223@mail.gmail.com>
+References: <3f9007680907091003i5d16b1a1u217f6af9c90ae186@mail.gmail.com>
+	<3f9007680907091116h7d133487o54d0d54ed9941223@mail.gmail.com>
+Message-ID: <3f9007680907091127o24c67d51ke6aa31a3489d2b87@mail.gmail.com>
+
+I solved the problem redefining child_ter and child_graph as follow:
+
+    def child_ter(self, ctx):
+        return TerPage()
+
+    def child_graph(self, ctx):
+        return GraphPage()
+
+Thanks,
+
+2009/7/9 Juanjo Conti <jjconti at gmail.com>:
+> I've actually realised that the problem is happening when I use this IndexPage:
+>
+> class IndexPage(rend.Page):
+>
+> ? ?def __init__ ( self, *args, **kwargs ):
+> ? ? ? ?rend.Page.__init__ ( self, *args, **kwargs )
+> ? ? ? ?self.ter = TerPage()
+> ? ? ? ?self.graph = GraphPage()
+>
+>
+> ? ?docFactory = loaders.stan (
+> ? ? ? ?T.html [ T.head ( title = 'Indice' ),
+> ? ? ? ? ? ? ? ? T.body [ T.h1 [ "Pagina principal" ],
+> ? ? ? ? ? ? ? ? ? ? ? ? ?T.p [ "Ir a ",
+> ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?T.a ( href = 'ter' ) [ "TER" ],
+> ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?" or ",
+> ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?T.a ( href = 'grapf' ) [ "graph" ],
+> ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?],
+> ? ? ? ? ? ? ? ? ? ? ? ? ?]
+> ? ? ? ? ? ? ? ? ]
+> ? ? ? ?)
+>
+>
+> ? ?def child_ter(self, ctx):
+> ? ? ? ?return self.ter
+>
+> ? ?def child_graph(self, ctx):
+> ? ? ? ?return self.graph
+>
+> from nevow import appserver
+> site = appserver.NevowSite(IndexPage())
+> reactor.listenTCP(8009, site)
+>
+> I can reaload the IndexPage, but can't the Terpage or GraphPage.
+>
+> Thanks,
+>
+> 2009/7/9 Juanjo Conti <jjconti at gmail.com>:
+>> HI! I'm using LivePage from Nevow.Athena like this:
+>>
+>> class TerPage(LivePage):
+>> ? ?docFactory = loaders.stan(T.html[
+>> ? ? ? ?T.head(render=T.directive('liveglue')),
+>> ? ? ? ?T.body(render=T.directive('myElement'))])
+>>
+>> ? ?def beforeRender(self, ctx):
+>> ? ? ? ?d = self.notifyOnDisconnect()
+>> ? ? ? ?d.addErrback(self.disconn)
+>>
+>> ? ?def disconn(self, reason):
+>> ? ? ? ?del lectores[hash(self.element)]
+>>
+>> ? ?def render_myElement(self, ctx, data):
+>> ? ? ? ?self.element = TempElement()
+>> ? ? ? ?self.element.setFragmentParent(self)
+>> ? ? ? ?return ctx.tag[self.element]
+>>
+>> ? ?def child_(self, ctx):
+>> ? ? ? ?return TerPage()
+>>
+>>
+>> site = appserver.NevowSite(TerPage())
+>> reactor.listenTCP(8009, site)
+>>
+>> When I load the page for first time, it's rendered ok. But if I hit
+>> the reload button or someone access it from other computer, this
+>> exception is shown:
+>>
+>> Cannot render a LivePage more than once.
+>>
+>> Could you point me the correct way of doing it?
+>>
+>> Thanks,
+>>
+>> --
+>> Juanjo Conti
+>>
+>
+>
+>
+> --
+> Juanjo Conti
+>
+
+
+
+-- 
+Juanjo Conti
+
+
+From jjconti at gmail.com  Thu Jul 16 14:04:06 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Thu, 16 Jul 2009 15:04:06 -0300
+Subject: [Twisted-web] Radio button checked error at
+	nevow._flat.FlattenerError
+Message-ID: <3f9007680907161104r2a44f02fgb1f23d68dd3e713f@mail.gmail.com>
+
+I founded out that if I have <input type="radio" name="consignas"
+value="1" checked /> in my HTML I get this error:
+<class 'nevow._flat.FlattenerError'>:
+/home/juanjo/python/twisted/teco/ter.html:21:63: not well-formed
+(invalid token)
+
+<input type="radio" name="consignas" value="1" checked="checked" />
+fix it an works fine.
+
+Greets,
+
+-- 
+Juanjo Conti
+
+
+From exarkun at divmod.com  Thu Jul 16 15:09:57 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Thu, 16 Jul 2009 15:09:57 -0400
+Subject: [Twisted-web] Radio button checked error at
+ nevow._flat.FlattenerError
+In-Reply-To: <3f9007680907161104r2a44f02fgb1f23d68dd3e713f@mail.gmail.com>
+Message-ID: <20090716190957.2543.1150408806.divmod.quotient.2951@henry.divmod.com>
+
+On Thu, 16 Jul 2009 15:04:06 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>I founded out that if I have <input type="radio" name="consignas"
+>value="1" checked /> in my HTML I get this error:
+><class 'nevow._flat.FlattenerError'>:
+>/home/juanjo/python/twisted/teco/ter.html:21:63: not well-formed
+>(invalid token)
+>
+><input type="radio" name="consignas" value="1" checked="checked" />
+>fix it an works fine.
+
+<input checked> is HTML.  Most of Nevow expects XHTML.  So you need the
+XHTML spelling, as you discovered.
+
+Jean-Paul
+
+
+From daniel.yang.zhenyu at gmail.com  Fri Jul 17 02:56:23 2009
+From: daniel.yang.zhenyu at gmail.com (Daniel Yang)
+Date: Fri, 17 Jul 2009 14:56:23 +0800
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <615500620907081918l616b9f3dlf503eced5963f2dd@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+	<78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+	<78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+	<615500620907081830l4d4c511eqa8b8189a30895bc7@mail.gmail.com>
+	<f5eea9170907081859wb10cf22w5a5eeb326a9459a6@mail.gmail.com>
+	<615500620907081918l616b9f3dlf503eced5963f2dd@mail.gmail.com>
+Message-ID: <615500620907162356m4383e36dwf26d9a5e95d1f444@mail.gmail.com>
+
+using storm orm(twisted version) in Nevow:
+
+Here is my approach:
+
+First, create a pool:
+
+from storm.databases.sqlite import SQLite
+
+from storm.uri import URI
+
+from storm.twisted.store import StorePool
+
+
+database = SQLite(URI(*'sqlite:///test.db'*))
+
+pool = StorePool(database, 2, 5)
+
+pool.start()
+
+
+In pages, we can use store in render functions like:
+
+def *render_PeopleList*(*self*, ctx, data):
+
+pat = inevow.IQ(ctx).patternGenerator(*'PeopleItem'*)
+
+
+ def *cb_find*(results, s):
+
+results.config(offset=0, limit=10)
+
+return results.all().addCallback(cb_all, s)
+
+ def *cb_all*(items, s):
+
+#recycle this store.
+
+pool.put(s)
+
+ps = []
+
+for item in items:
+
+p = pat()
+
+p.fillSlots(*'nickname'*, item.nickname)
+
+ps.append(p)
+
+ return ctx.tag[ ps ]
+
+ def *cb_get*(s):
+
+return s.find(User).addBoth(cb_find, s)
+
+
+ return pool.get().addCallback(cb_get).addErrback(lambda error:
+log.msg(error))
+
+That's it.
+
+Thank you guys for help.
+
+FYI: Storm ORM with twisted integration is not quite stale yet.
+
+
+On Thu, Jul 9, 2009 at 10:18 AM, Daniel Yang
+<daniel.yang.zhenyu at gmail.com>wrote:
+
+> Thanks, Tristan and Colin.
+> Yes. the code was taken from storm unittests.
+>
+> I was planning to do some rendering work in cb_result.
+> Let me try first.
+>
+>
+> On Thu, Jul 9, 2009 at 9:59 AM, Tristan Seligmann <mithrandi at mithrandi.net
+> > wrote:
+>
+>> On Thu, Jul 9, 2009 at 3:30 AM, Daniel Yang<daniel.yang.zhenyu at gmail.com>
+>> wrote:
+>> > def test_execute(self):
+>>
+>> This looks like a unit test, not Nevow code?
+>>
+>> >     def cb_execute(result):
+>> >         #this result is a DeferredResult, not the actual data.
+>> >         return result.get_one().addCallback(cb_result)
+>> >     def cb_result(result):
+>> >         #the data returns
+>> >          print result
+>>
+>> Return your ultimate result here; note that if you're not actually
+>> going to do anything to result in cb_result, you could just have:
+>>
+>> def cb_execute(result):
+>>    return result.get_one()
+>>
+>> >     self.store.execute("SELECT title FROM foo WHERE
+>> id=10").addCallback(cb_execute)
+>> >     return ?
+>>
+>> return self.store.execute("SELECT title FROM foo WHERE
+>> id=10").addCallback(cb_execute)
+>>
+>> The result returned from cb_result is what will ultimately used by
+>> whatever invoked test_execute, assuming that it pays attention to the
+>> return value; I'm not clear how test_execute is being used, so I can't
+>> say this will work for sure. If test_execute is, for example, a render
+>> method, then it should work just fine.
+>> --
+>> mithrandi, i Ainil en-Balandor, a faer Ambar
+>>
+>> _______________________________________________
+>> Twisted-web mailing list
+>> Twisted-web at twistedmatrix.com
+>> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>>
+>
+>
+>
+> --
+> -----------------------------------------------
+> Yours
+> Faithfully
+>
+> Daniel Yang
+>
+
+
+
+-- 
+-----------------------------------------------
+Yours
+Faithfully
+
+Daniel Yang
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090717/6044bc09/attachment.htm 
+
+From karnaugh at karnaugh.za.net  Fri Jul 17 03:49:38 2009
+From: karnaugh at karnaugh.za.net (Colin Alston)
+Date: Fri, 17 Jul 2009 09:49:38 +0200
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <615500620907162356m4383e36dwf26d9a5e95d1f444@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+	<78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+	<78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+	<615500620907081830l4d4c511eqa8b8189a30895bc7@mail.gmail.com>
+	<f5eea9170907081859wb10cf22w5a5eeb326a9459a6@mail.gmail.com>
+	<615500620907081918l616b9f3dlf503eced5963f2dd@mail.gmail.com>
+	<615500620907162356m4383e36dwf26d9a5e95d1f444@mail.gmail.com>
+Message-ID: <78bfcf050907170049l678e4bb3pdb9b1c81fde31fe9@mail.gmail.com>
+
+On Fri, Jul 17, 2009 at 8:56 AM, Daniel Yang
+<daniel.yang.zhenyu at gmail.com>wrote:
+
+> using storm orm(twisted version) in Nevow:
+>
+> Here is my approach:
+>
+> First, create a pool:
+> <snip>
+> FYI: Storm ORM with twisted integration is not quite stale yet.
+>
+>
+Gees man, I don't know why you bother with Storm ORM looking at that code
+excerpt.
+
+Axiom ORM is significantly less convoluted.
+
+Does the Storm ORM wrapper for twisted not provide a transactional wrapper
+like sAsync to do all your things inside a single deferred? You could
+probably write one and save significant spaghetti.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090717/7b487bea/attachment.htm 
+
+From daniel.yang.zhenyu at gmail.com  Fri Jul 17 06:00:50 2009
+From: daniel.yang.zhenyu at gmail.com (Daniel Yang)
+Date: Fri, 17 Jul 2009 18:00:50 +0800
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <78bfcf050907170049l678e4bb3pdb9b1c81fde31fe9@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+	<78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+	<78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+	<615500620907081830l4d4c511eqa8b8189a30895bc7@mail.gmail.com>
+	<f5eea9170907081859wb10cf22w5a5eeb326a9459a6@mail.gmail.com>
+	<615500620907081918l616b9f3dlf503eced5963f2dd@mail.gmail.com>
+	<615500620907162356m4383e36dwf26d9a5e95d1f444@mail.gmail.com>
+	<78bfcf050907170049l678e4bb3pdb9b1c81fde31fe9@mail.gmail.com>
+Message-ID: <615500620907170300m63c6eb64qc48080ec948c39c9@mail.gmail.com>
+
+Just for experiment :DAlthough I started thinking about Axiom.
+
+
+
+
+On Fri, Jul 17, 2009 at 3:49 PM, Colin Alston <karnaugh at karnaugh.za.net>wrote:
+
+>
+>
+> On Fri, Jul 17, 2009 at 8:56 AM, Daniel Yang <daniel.yang.zhenyu at gmail.com
+> > wrote:
+>
+>> using storm orm(twisted version) in Nevow:
+>>
+>> Here is my approach:
+>>
+>> First, create a pool:
+>> <snip>
+>> FYI: Storm ORM with twisted integration is not quite stale yet.
+>>
+>>
+> Gees man, I don't know why you bother with Storm ORM looking at that code
+> excerpt.
+>
+> Axiom ORM is significantly less convoluted.
+>
+> Does the Storm ORM wrapper for twisted not provide a transactional wrapper
+> like sAsync to do all your things inside a single deferred? You could
+> probably write one and save significant spaghetti.
+>
+>
+
+
+-- 
+-----------------------------------------------
+Yours
+Faithfully
+
+Daniel Yang
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090717/f6081225/attachment-0001.htm 
+
+From glyph at divmod.com  Fri Jul 17 10:52:59 2009
+From: glyph at divmod.com (glyph at divmod.com)
+Date: Fri, 17 Jul 2009 14:52:59 -0000
+Subject: [Twisted-web] A question with storm orm and Nevow
+In-Reply-To: <78bfcf050907170049l678e4bb3pdb9b1c81fde31fe9@mail.gmail.com>
+References: <615500620907080759t76502256l98d798411df2b2df@mail.gmail.com>
+	<78bfcf050907080821l20785d08ld30e30610117a4fa@mail.gmail.com>
+	<78bfcf050907080822o31c19304q2206f06bcfbda837@mail.gmail.com>
+	<615500620907081830l4d4c511eqa8b8189a30895bc7@mail.gmail.com>
+	<f5eea9170907081859wb10cf22w5a5eeb326a9459a6@mail.gmail.com>
+	<615500620907081918l616b9f3dlf503eced5963f2dd@mail.gmail.com>
+	<615500620907162356m4383e36dwf26d9a5e95d1f444@mail.gmail.com>
+	<78bfcf050907170049l678e4bb3pdb9b1c81fde31fe9@mail.gmail.com>
+Message-ID: <20090717145259.27019.732183229.divmod.xquotient.2010@weber.divmod.com>
+
+
+
+
+On 07:49 am, karnaugh at karnaugh.za.net wrote:
+>Gees man, I don't know why you bother with Storm ORM looking at that 
+>code
+>excerpt.
+
+>Axiom ORM is significantly less convoluted.
+
+Yay Axiom, we all love Axiom.  Except, Axiom isn't an ORM, it's a 
+database :).  I don't want people getting the idea that Axiom is a 
+replacement for Storm (and similar systems): it's something different.
+
+The difference is that an ORM will allow you to access whatever schema 
+you want, perhaps a pre-existing one; a good ORM will let you use 
+whatever database you want.
+
+Axiom only lets you use SQLite, and it defines how your schema has to be 
+structured, created, managed, and upgraded.  There are queries that you 
+can't perform with Axiom which you could perform with Storm.
+
+Most importantly, though, Storm is designed to allow you to have other 
+things able to access the same database *without* the benefit of having 
+Storm code loaded into them, whereas Axiom requires that certain 
+invariants be enforced, and doesn't define them anywhere but the Axiom 
+code.  The only safe way to modify an Axiom database is via an Axiom 
+program with the appropriate schema.
+
+Of course Axiom has its advantages too, but those are obvious, right? 
+;-)
+
+
+From jjconti at gmail.com  Sun Jul 19 18:55:29 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Sun, 19 Jul 2009 19:55:29 -0300
+Subject: [Twisted-web] Error chanel in Nevow.Athena
+Message-ID: <3f9007680907191555y7fd1bf97u9cd182bbac06440@mail.gmail.com>
+
+I have notice that when an error occur in a LiveElement (lost
+connection or not handled exception in the server) an error message is
+displayed in the browser. Is there an explicit way to use this error
+showing mechanism to display errors from my application? This stuff
+seems not covered in Athena documentation.
+
+Greets,
+-- 
+Juanjo Conti
+
+
+From glyph at divmod.com  Sun Jul 19 20:08:18 2009
+From: glyph at divmod.com (Glyph Lefkowitz)
+Date: Sun, 19 Jul 2009 20:08:18 -0400
+Subject: [Twisted-web]  Error chanel in Nevow.Athena
+In-Reply-To: <d9047f780907191702h5c70f7c0m38be1c67df203941@mail.gmail.com>
+References: <3f9007680907191555y7fd1bf97u9cd182bbac06440@mail.gmail.com>
+	<d9047f780907191702h5c70f7c0m38be1c67df203941@mail.gmail.com>
+Message-ID: <d9047f780907191708m36879been5e9e1e8883bcd1c7@mail.gmail.com>
+
+On Sun, Jul 19, 2009 at 6:55 PM, Juanjo Conti<jjconti at gmail.com> wrote:
+> I have notice that when an error occur in a LiveElement (lost
+> connection or not handled exception in the server) an error message is
+> displayed in the browser. Is there an explicit way to use this error
+> showing mechanism to display errors from my application? This stuff
+> seems not covered in Athena documentation.
+
+The error dialog you're noticing comes from
+Nevow.Athena.PageWidget.showErrorDialog (which is defined in
+Nevow/nevow/js/Nevow/Athena/__init__.js).
+
+The PageWidget is the root JavaScript class that controls everything
+that's going on on the page. ?If you want to customize this, you
+should subclass Nevow.Athena.PageWidget in your application, and
+override showErrordDialog. ?On the Python side of things, you need to
+subclass nevow.athena.LivePage, and set your subclass's jsClass
+attribute to the name of your PageWidget subclass. ?I would not
+recommend trying to implement everything PageWidget does itself, since
+it does quite a lot and its interface isn't completely documented
+anywhere.
+
+This could definitely be better documented. ?Can you contribute a
+documentation patch that explains that stuff I just said? :-)
+
+
+From jjconti at gmail.com  Mon Jul 20 10:33:45 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Mon, 20 Jul 2009 11:33:45 -0300
+Subject: [Twisted-web] Error chanel in Nevow.Athena
+In-Reply-To: <d9047f780907191708m36879been5e9e1e8883bcd1c7@mail.gmail.com>
+References: <3f9007680907191555y7fd1bf97u9cd182bbac06440@mail.gmail.com>
+	<d9047f780907191702h5c70f7c0m38be1c67df203941@mail.gmail.com>
+	<d9047f780907191708m36879been5e9e1e8883bcd1c7@mail.gmail.com>
+Message-ID: <3f9007680907200733q7e61cd17uf9bcf81924c861ff@mail.gmail.com>
+
+2009/7/19 Glyph Lefkowitz <glyph at divmod.com>:
+> On Sun, Jul 19, 2009 at 6:55 PM, Juanjo Conti<jjconti at gmail.com> wrote:
+>> I have notice that when an error occur in a LiveElement (lost
+>> connection or not handled exception in the server) an error message is
+>> displayed in the browser. Is there an explicit way to use this error
+>> showing mechanism to display errors from my application? This stuff
+>> seems not covered in Athena documentation.
+>
+> The error dialog you're noticing comes from
+> Nevow.Athena.PageWidget.showErrorDialog (which is defined in
+> Nevow/nevow/js/Nevow/Athena/__init__.js).
+>
+> The PageWidget is the root JavaScript class that controls everything
+> that's going on on the page. ?If you want to customize this, you
+> should subclass Nevow.Athena.PageWidget in your application, and
+> override showErrordDialog. ?On the Python side of things, you need to
+> subclass nevow.athena.LivePage, and set your subclass's jsClass
+> attribute to the name of your PageWidget subclass.
+[..]
+
+Ok, but I don't actually need a customization, I'm just fine using the
+showErrorDialog. How can I acces the correct PageWidget instance?
+myLivePage.jsClass?
+
+So I can do myLivePage.jsClass.showErrorDialog(some params); right?
+
+> This could definitely be better documented. ?Can you contribute a
+> documentation patch that explains that stuff I just said? :-)
+
+As soon as I get something done, I'll contribute with doc.
+
+Thanks!
+
+-- 
+Juanjo Conti
+
+
+From jjconti at gmail.com  Mon Jul 20 10:40:40 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Mon, 20 Jul 2009 11:40:40 -0300
+Subject: [Twisted-web] User authentication with Nevow (just asking)
+Message-ID: <3f9007680907200740m11a9510ah3fb48d86be75dfe4@mail.gmail.com>
+
+Just asking, I don't need it ate the moment but I'll be thinking about
+it in the next weeks.
+
+Is there a common way for user authentication in Nevow?
+
+Thanks,
+
+-- 
+Juanjo Conti
+
+
+From exarkun at divmod.com  Mon Jul 20 10:47:48 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon, 20 Jul 2009 10:47:48 -0400
+Subject: [Twisted-web] Error chanel in Nevow.Athena
+In-Reply-To: <3f9007680907200733q7e61cd17uf9bcf81924c861ff@mail.gmail.com>
+Message-ID: <20090720144748.2543.50049909.divmod.quotient.3723@henry.divmod.com>
+
+On Mon, 20 Jul 2009 11:33:45 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>2009/7/19 Glyph Lefkowitz <glyph at divmod.com>:
+>> On Sun, Jul 19, 2009 at 6:55 PM, Juanjo Conti<jjconti at gmail.com> wrote:
+>>> I have notice that when an error occur in a LiveElement (lost
+>>> connection or not handled exception in the server) an error message is
+>>> displayed in the browser. Is there an explicit way to use this error
+>>> showing mechanism to display errors from my application? This stuff
+>>> seems not covered in Athena documentation.
+>>
+>> The error dialog you're noticing comes from
+>> Nevow.Athena.PageWidget.showErrorDialog (which is defined in
+>> Nevow/nevow/js/Nevow/Athena/__init__.js).
+>>
+>> The PageWidget is the root JavaScript class that controls everything
+>> that's going on on the page. ?If you want to customize this, you
+>> should subclass Nevow.Athena.PageWidget in your application, and
+>> override showErrordDialog. ?On the Python side of things, you need to
+>> subclass nevow.athena.LivePage, and set your subclass's jsClass
+>> attribute to the name of your PageWidget subclass.
+>[..]
+>
+>Ok, but I don't actually need a customization, I'm just fine using the
+>showErrorDialog. How can I acces the correct PageWidget instance?
+>myLivePage.jsClass?
+>
+>So I can do myLivePage.jsClass.showErrorDialog(some params); right?
+>
+>> This could definitely be better documented. ?Can you contribute a
+>> documentation patch that explains that stuff I just said? :-)
+>
+>As soon as I get something done, I'll contribute with doc.
+>
+
+If you're trying to do it from the Python side:
+
+   livePage.callRemote("showErrorDialog", ...)
+
+If you're trying to do it from the JavaScript side:
+
+   widget.getPageWidget().showErrorDialog(...)
+
+I've never tried either, but it seems like they should work. ;)
+
+Jean-Paul
+
+
+From exarkun at divmod.com  Mon Jul 20 10:53:58 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon, 20 Jul 2009 10:53:58 -0400
+Subject: [Twisted-web] User authentication with Nevow (just asking)
+In-Reply-To: <3f9007680907200740m11a9510ah3fb48d86be75dfe4@mail.gmail.com>
+Message-ID: <20090720145358.2543.1592583300.divmod.quotient.3726@henry.divmod.com>
+
+On Mon, 20 Jul 2009 11:40:40 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>Just asking, I don't need it ate the moment but I'll be thinking about
+>it in the next weeks.
+>
+>Is there a common way for user authentication in Nevow?
+>
+>Thanks,
+
+The nevow.guard module provides authentication.  There are some examples of
+its use in Nevow/examples/guarded/.  Recently, Twisted also introduced some
+support for HTTP AUTH-based authentication.  This should also be compatible
+with Nevow resources.  I forget if that code was released in 8.2, or if 9.0
+will be the first release to include it.
+
+Jean-Paul
+
+
+From davefowler at gmail.com  Mon Jul 20 13:01:22 2009
+From: davefowler at gmail.com (dave fowler)
+Date: Mon, 20 Jul 2009 12:01:22 -0500
+Subject: [Twisted-web] Fwd: Web-Based Proxy
+In-Reply-To: <5acf0ea80907200955n66f902b5hef52b4bef569db26@mail.gmail.com>
+References: <5acf0ea80907200955n66f902b5hef52b4bef569db26@mail.gmail.com>
+Message-ID: <5acf0ea80907201001i726b6f16wa349ab43653a66a8@mail.gmail.com>
+
+Ok, I've read the entire Twisted O'Reilly book and gone through many of the
+docs and tutorials but I still need a bit of direction.
+
+I'm trying to make a simple web-based proxy.  Similar to the proxy in the
+Twisted book, but with a web interface.  So I could go to
+http://asdf.com.MYPROXYSITE.com and see the contents of asdf.com.
+
+I have the following code that works well as a browser proxy, but I need to
+figure out how make it web based.
+
+My thoughts are that I need to make an HTTP server and then adjust the
+address in the protocol before finishing the proxy request.  Am I on the
+right track?  Does anyone have examples of this?
+
+Should I ditch the Proxy classes all together?
+
+Thanks for any input.
+
+Dave Fowler
+
+
+from twisted.web import proxy, http
+from twisted.python import log
+import sys
+log.startLogging(sys.stdout)
+
+class Proxy(proxy.Proxy):
+    def __init__(self, *args):
+        print "inside Proxy"
+        proxy.Proxy.__init__(self, *args)
+        print "Proxy: ", self.__dict__
+        print dir(self)
+
+
+class ProxyFactory(http.HTTPFactory):  # Receive connections from the client
+    """ Receives connections from the client """
+    def __init__(self):  # This function only needed for printing input and
+stuff
+        print "inside proxy factory"
+        http.HTTPFactory.__init__(self)
+        print self.__dict__
+        print dir(self)
+
+    def buildProtocol(self, addr):
+        protocol = Proxy()
+        print "making protocol for addr", addr
+        print "protocol:", protocol.__dict__
+        return protocol
+
+if __name__ == "__main__":
+
+    PROXY_PORT = 8001
+
+    from twisted.internet import reactor
+
+    reactor.listenTCP(PROXY_PORT, ProxyFactory())
+    reactor.run()
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090720/a34c6e96/attachment.htm 
+
+From exarkun at divmod.com  Mon Jul 20 14:41:08 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon, 20 Jul 2009 14:41:08 -0400
+Subject: [Twisted-web] Fwd: Web-Based Proxy
+In-Reply-To: <5acf0ea80907201001i726b6f16wa349ab43653a66a8@mail.gmail.com>
+Message-ID: <20090720184108.2543.1925657079.divmod.quotient.3745@henry.divmod.com>
+
+On Mon, 20 Jul 2009 12:01:22 -0500, dave fowler <davefowler at gmail.com> wrote:
+>Ok, I've read the entire Twisted O'Reilly book and gone through many of the
+>docs and tutorials but I still need a bit of direction.
+>
+>I'm trying to make a simple web-based proxy.  Similar to the proxy in the
+>Twisted book, but with a web interface.  So I could go to
+>http://asdf.com.MYPROXYSITE.com and see the contents of asdf.com.
+>
+>I have the following code that works well as a browser proxy, but I need to
+>figure out how make it web based.
+>
+>My thoughts are that I need to make an HTTP server and then adjust the
+>address in the protocol before finishing the proxy request.  Am I on the
+>right track?  Does anyone have examples of this?
+>
+
+The HTTP proxy implemented in twisted.web.proxy is probably a better
+starting point.  Or, it's at least a good example of how to get a basic
+proxy together. :)
+
+I think you're on the right track, but if you don't want to have to implement
+this all yourself, you probably don't have to.
+
+Jean-Paul
+
+
+From davefowler at gmail.com  Tue Jul 21 12:44:43 2009
+From: davefowler at gmail.com (dave fowler)
+Date: Tue, 21 Jul 2009 11:44:43 -0500
+Subject: [Twisted-web] Fwd: Web-Based Proxy
+In-Reply-To: <20090720184108.2543.1925657079.divmod.quotient.3745@henry.divmod.com>
+References: <5acf0ea80907201001i726b6f16wa349ab43653a66a8@mail.gmail.com>
+	<20090720184108.2543.1925657079.divmod.quotient.3745@henry.divmod.com>
+Message-ID: <5acf0ea80907210944p70653a4if7e9afb7ca6e664f@mail.gmail.com>
+
+Thanks for your help Jean-Paul.
+
+In my example I've just subclassed the protocol and factory so I could print
+out the properties and have a little control over things as I learn.  The
+proxy could of course be much easily run as
+
+   from twisted.web import http
+   f = http.HTTPFactory()
+   f.protocol = Proxy
+
+I should be a bit more specific about what I'm currently confused about.
+
+*I'm trying to find where I can grab the request URI from the client so I
+can modify it from www.asdf.com.MYPROXYSITE.com to www.asdf.com before the
+proxy client makes its requests.  Where can you access and modify those
+parameters?*
+
+Dave
+
+
+
+On Mon, Jul 20, 2009 at 1:41 PM, Jean-Paul Calderone <exarkun at divmod.com>wrote:
+
+> On Mon, 20 Jul 2009 12:01:22 -0500, dave fowler <davefowler at gmail.com>
+> wrote:
+> >Ok, I've read the entire Twisted O'Reilly book and gone through many of
+> the
+> >docs and tutorials but I still need a bit of direction.
+> >
+> >I'm trying to make a simple web-based proxy.  Similar to the proxy in the
+> >Twisted book, but with a web interface.  So I could go to
+> >http://asdf.com.MYPROXYSITE.com and see the contents of asdf.com.
+> >
+> >I have the following code that works well as a browser proxy, but I need
+> to
+> >figure out how make it web based.
+> >
+> >My thoughts are that I need to make an HTTP server and then adjust the
+> >address in the protocol before finishing the proxy request.  Am I on the
+> >right track?  Does anyone have examples of this?
+> >
+>
+> The HTTP proxy implemented in twisted.web.proxy is probably a better
+> starting point.  Or, it's at least a good example of how to get a basic
+> proxy together. :)
+>
+> I think you're on the right track, but if you don't want to have to
+> implement
+> this all yourself, you probably don't have to.
+>
+> Jean-Paul
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090721/cf9bba7a/attachment.htm 
+
+From exarkun at divmod.com  Tue Jul 21 13:19:55 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 21 Jul 2009 13:19:55 -0400
+Subject: [Twisted-web] Fwd: Web-Based Proxy
+In-Reply-To: <5acf0ea80907210944p70653a4if7e9afb7ca6e664f@mail.gmail.com>
+Message-ID: <20090721171955.2543.1390672840.divmod.quotient.3977@henry.divmod.com>
+
+On Tue, 21 Jul 2009 11:44:43 -0500, dave fowler <davefowler at gmail.com> wrote:
+>Thanks for your help Jean-Paul.
+>
+>In my example I've just subclassed the protocol and factory so I could print
+>out the properties and have a little control over things as I learn.  The
+>proxy could of course be much easily run as
+>
+>   from twisted.web import http
+>   f = http.HTTPFactory()
+>   f.protocol = Proxy
+>
+>I should be a bit more specific about what I'm currently confused about.
+>
+>*I'm trying to find where I can grab the request URI from the client so I
+>can modify it from www.asdf.com.MYPROXYSITE.com to www.asdf.com before the
+>proxy client makes its requests.  Where can you access and modify those
+>parameters?*
+>
+
+Proxy uses twisted.web.proxy.ProxyRequest as its request factory.  The
+request will have its "process" method called when it has been completely
+received.  You can subclass ProxyRequest, set your proxy to use that subclass
+as its request factory, and in that subclass, override process to change the
+uri before calling the base implementation.  How's that?
+
+Jean-Paul
+
+
+From dickon.reed+twisted at gmail.com  Tue Jul 21 13:41:07 2009
+From: dickon.reed+twisted at gmail.com (Dickon Reed)
+Date: Tue, 21 Jul 2009 18:41:07 +0100
+Subject: [Twisted-web] tab completion in manhole
+Message-ID: <44d7ed650907211041g1e0d3ec4ld596349a79772397@mail.gmail.com>
+
+Is there any way to to get tab completion of Python expressions (i.e. like
+what Ipython does) in twisted manhole sessions?
+
+Specifically, I'm using a variant of twisted.conch.stdio, which I only
+discovered today but seems to be a much more sound approach than the nasty
+concoction of reactor.crash and restarting the reactor and Ipython which
+I've tried before.
+
+Thanks,
+
+Dickon
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090721/60d7ddd4/attachment.htm 
+
+From davefowler at gmail.com  Tue Jul 21 18:46:54 2009
+From: davefowler at gmail.com (dave fowler)
+Date: Tue, 21 Jul 2009 17:46:54 -0500
+Subject: [Twisted-web] Fwd: Web-Based Proxy
+In-Reply-To: <20090721171955.2543.1390672840.divmod.quotient.3977@henry.divmod.com>
+References: <5acf0ea80907210944p70653a4if7e9afb7ca6e664f@mail.gmail.com>
+	<20090721171955.2543.1390672840.divmod.quotient.3977@henry.divmod.com>
+Message-ID: <5acf0ea80907211546t7ad9573en380886211fbd8442@mail.gmail.com>
+
+Perfect!  Thanks a ton!  That was just the lead I needed.  Did some more
+digging around and now I've got it running great.  Next I just have to
+figure out SSL support :).
+
+Thanks again!
+
+Dave
+
+
+
+On Tue, Jul 21, 2009 at 12:19 PM, Jean-Paul Calderone <exarkun at divmod.com>wrote:
+
+> On Tue, 21 Jul 2009 11:44:43 -0500, dave fowler <davefowler at gmail.com>
+> wrote:
+> >Thanks for your help Jean-Paul.
+> >
+> >In my example I've just subclassed the protocol and factory so I could
+> print
+> >out the properties and have a little control over things as I learn.  The
+> >proxy could of course be much easily run as
+> >
+> >   from twisted.web import http
+> >   f = http.HTTPFactory()
+> >   f.protocol = Proxy
+> >
+> >I should be a bit more specific about what I'm currently confused about.
+> >
+> >*I'm trying to find where I can grab the request URI from the client so I
+> >can modify it from www.asdf.com.MYPROXYSITE.com to www.asdf.com before
+> the
+> >proxy client makes its requests.  Where can you access and modify those
+> >parameters?*
+> >
+>
+> Proxy uses twisted.web.proxy.ProxyRequest as its request factory.  The
+> request will have its "process" method called when it has been completely
+> received.  You can subclass ProxyRequest, set your proxy to use that
+> subclass
+> as its request factory, and in that subclass, override process to change
+> the
+> uri before calling the base implementation.  How's that?
+>
+> Jean-Paul
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090721/54264648/attachment.htm 
+
+From jjconti at gmail.com  Fri Jul 24 17:49:48 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 24 Jul 2009 18:49:48 -0300
+Subject: [Twisted-web] Handling childs at Nevow
+Message-ID: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com>
+
+At the moment I have this URL working
+
+/
+
+/ter
+
+/graph
+
+I have an IndexPage(LivePage) with its
+
+    def child_ter(self, ctx):
+        return TerPage()
+
+    def child_graph(self, ctx):
+        return GraphPage()
+
+mehods.
+
+TerPage() an GraphPage() pick the firs element of a global list and
+show it in differents ways.
+
+I'd like now to enalble urls like /ter/1, /ter/2, /ter/n so the n
+element of the list is picked instead of the first one. How is the
+correct way to make that argument reach TerPage and GraphPage
+instances?
+
+Greets!
+
+-- 
+Juanjo Conti
+
+
+From michal.dtz at gmail.com  Sat Jul 25 03:04:43 2009
+From: michal.dtz at gmail.com (=?iso-8859-2?Q?Micha=B3_Pasternak?=)
+Date: Sat, 25 Jul 2009 09:04:43 +0200
+Subject: [Twisted-web] Handling childs at Nevow
+In-Reply-To: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com>
+References: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com>
+Message-ID: <4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+
+See "childFactory" and "locateChild" methods of rend.Page 
+
+BTW, are there any URL dispatchers (like the one Django has) out there for
+Nevow?
+
+-- 
+M
+
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com
+[mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of Juanjo Conti
+Sent: Friday, July 24, 2009 11:50 PM
+To: Twisted Web World
+Subject: [Twisted-web] Handling childs at Nevow
+
+At the moment I have this URL working
+
+/
+
+/ter
+
+/graph
+
+I have an IndexPage(LivePage) with its
+
+    def child_ter(self, ctx):
+        return TerPage()
+
+    def child_graph(self, ctx):
+        return GraphPage()
+
+mehods.
+
+TerPage() an GraphPage() pick the firs element of a global list and
+show it in differents ways.
+
+I'd like now to enalble urls like /ter/1, /ter/2, /ter/n so the n
+element of the list is picked instead of the first one. How is the
+correct way to make that argument reach TerPage and GraphPage
+instances?
+
+Greets!
+
+-- 
+Juanjo Conti
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+
+From karnaugh at karnaugh.za.net  Sat Jul 25 04:06:13 2009
+From: karnaugh at karnaugh.za.net (Colin Alston)
+Date: Sat, 25 Jul 2009 10:06:13 +0200
+Subject: [Twisted-web] Handling childs at Nevow
+In-Reply-To: <4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+References: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com>
+	<4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+Message-ID: <78bfcf050907250106x41ddeb9y697b67ffd9c739c@mail.gmail.com>
+
+On Sat, Jul 25, 2009 at 9:04 AM, Micha? Pasternak <michal.dtz at gmail.com>wrote:
+
+>
+> BTW, are there any URL dispatchers (like the one Django has) out there for
+> Nevow?
+>
+
+I really and truly hope not.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090725/2d3025ec/attachment.htm 
+
+From lists at 0xx0.net  Sat Jul 25 04:46:56 2009
+From: lists at 0xx0.net (=?UTF-8?Q?Siegmund_F=C3=BChringer?=)
+Date: Sat, 25 Jul 2009 10:46:56 +0200
+Subject: [Twisted-web] Handling childs at Nevow
+In-Reply-To: <78bfcf050907250106x41ddeb9y697b67ffd9c739c@mail.gmail.com>
+References: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com> 
+	<4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+	<78bfcf050907250106x41ddeb9y697b67ffd9c739c@mail.gmail.com>
+Message-ID: <6c2921ea0907250146p4df66182wbc7eddc63bb8c4b0@mail.gmail.com>
+
+On Sat, Jul 25, 2009 at 10:06 AM, Colin Alston<karnaugh at karnaugh.za.net> wrote:
+> On Sat, Jul 25, 2009 at 9:04 AM, Micha? Pasternak <michal.dtz at gmail.com>
+> wrote:
+>>
+>> BTW, are there any URL dispatchers (like the one Django has) out there for
+>> Nevow?
+>
+> I really and truly hope not.
+
+why not? urls are very important and using child_XXX methods is
+sometimes not very convinient.
+having a central place to set up urls makes it also possible to
+"reverse"-construct urls. like "give me the url to method XXX, with
+args X,Y,Z" that makes it very easy to change urls later on without
+going through all templates.
+
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+
+
+From nico at teknico.net  Sat Jul 25 06:46:09 2009
+From: nico at teknico.net (Nicola Larosa)
+Date: Sat, 25 Jul 2009 12:46:09 +0200
+Subject: [Twisted-web] Handling childs at Nevow
+References: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com>
+	<4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+	<78bfcf050907250106x41ddeb9y697b67ffd9c739c@mail.gmail.com>
+Message-ID: <20090725104232.7AA45160278EF@smtp.unbit.it>
+
+> Micha? Pasternak wrote:
+>> BTW, are there any URL dispatchers (like the one Django has) out there
+>> for Nevow?
+
+I know of this one (hi Duncan!):
+
+http://oubiwann.blogspot.com/2007/03/django-esque-url-resolution-in-
+nevow.html
+
+
+Colin Alston wrote:
+> I really and truly hope not.
+
+I hope you'll be able to sleep well tonight anyway. ;-P
+
+-- 
+Nicola Larosa - http://www.tekNico.net/
+
+The ideas of economists and political philosophers, both when they
+are right and when they are wrong, are more powerful than is commonly
+understood. Indeed the world is ruled by little else. Practical men, who
+believe themselves to be quite exempt from any intellectual influence,
+are usually the slaves of some defunct economist. - Maynard Keynes, 1936
+
+
+
+From karnaugh at karnaugh.za.net  Sat Jul 25 07:05:26 2009
+From: karnaugh at karnaugh.za.net (Colin Alston)
+Date: Sat, 25 Jul 2009 13:05:26 +0200
+Subject: [Twisted-web] Handling childs at Nevow
+In-Reply-To: <6c2921ea0907250146p4df66182wbc7eddc63bb8c4b0@mail.gmail.com>
+References: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com>
+	<4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+	<78bfcf050907250106x41ddeb9y697b67ffd9c739c@mail.gmail.com>
+	<6c2921ea0907250146p4df66182wbc7eddc63bb8c4b0@mail.gmail.com>
+Message-ID: <78bfcf050907250405s451e2bd2xc5e074423ebfc923@mail.gmail.com>
+
+2009/7/25 Siegmund F?hringer <lists at 0xx0.net>
+
+> On Sat, Jul 25, 2009 at 10:06 AM, Colin Alston<karnaugh at karnaugh.za.net>
+> wrote:
+> > On Sat, Jul 25, 2009 at 9:04 AM, Micha? Pasternak <michal.dtz at gmail.com>
+> > wrote:
+> >>
+> >> BTW, are there any URL dispatchers (like the one Django has) out there
+> for
+> >> Nevow?
+> >
+> > I really and truly hope not.
+>
+> why not? urls are very important and using child_XXX methods is
+> sometimes not very convinient.
+
+
+Convenience at the cost of maintainability is not worth it.
+
+Trust me, if your project is going to reach any kind of size, you do NOT
+want "django esque" URL dispatchers. I've seen it go bad, I've experienced
+it go bad.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090725/d3484ac0/attachment.htm 
+
+From karnaugh at karnaugh.za.net  Sat Jul 25 07:10:49 2009
+From: karnaugh at karnaugh.za.net (Colin Alston)
+Date: Sat, 25 Jul 2009 13:10:49 +0200
+Subject: [Twisted-web] Handling childs at Nevow
+In-Reply-To: <78bfcf050907250405s451e2bd2xc5e074423ebfc923@mail.gmail.com>
+References: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com>
+	<4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+	<78bfcf050907250106x41ddeb9y697b67ffd9c739c@mail.gmail.com>
+	<6c2921ea0907250146p4df66182wbc7eddc63bb8c4b0@mail.gmail.com>
+	<78bfcf050907250405s451e2bd2xc5e074423ebfc923@mail.gmail.com>
+Message-ID: <78bfcf050907250410h7df2ffccm97a9099e484c2965@mail.gmail.com>
+
+On Sat, Jul 25, 2009 at 1:05 PM, Colin Alston <karnaugh at karnaugh.za.net>wrote:
+
+>
+>
+> 2009/7/25 Siegmund F?hringer <lists at 0xx0.net>
+>
+>> On Sat, Jul 25, 2009 at 10:06 AM, Colin Alston<karnaugh at karnaugh.za.net>
+>> wrote:
+>> > On Sat, Jul 25, 2009 at 9:04 AM, Micha? Pasternak <michal.dtz at gmail.com
+>> >
+>> > wrote:
+>> >>
+>> >> BTW, are there any URL dispatchers (like the one Django has) out there
+>> for
+>> >> Nevow?
+>> >
+>> > I really and truly hope not.
+>>
+>> why not? urls are very important and using child_XXX methods is
+>> sometimes not very convinient.
+>
+>
+> Convenience at the cost of maintainability is not worth it.
+>
+
+ FWIW, you can subclass your page objects to create more generic ways to
+deal with REST like arguments, as well as child page dispatch.
+
+This is what I do in Enamel:
+
+http://open.thusa.co.za/enamel/browser/trunk/enamel/pages.py#L68
+http://open.thusa.co.za/enamel/browser/trunk/enamel/pages.py#L47
+
+Then you can mix the page object appropriately and do something like
+
+class FooPage(rend.Page):
+    # Whatever...
+
+class MyPage(pages.Standard):
+    childPages = {
+        'Foo' : FooPage
+    }
+
+    arbitraryArguments = True
+
+    def render_foo(self, c, d):
+        return c.tag[
+            "You passed ", self.arguments[0], "instead of 'Foo'"
+        ]
+
+HTH
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090725/fae31e5a/attachment.htm 
+
+From lists at 0xx0.net  Sat Jul 25 13:16:08 2009
+From: lists at 0xx0.net (=?UTF-8?Q?Siegmund_F=C3=BChringer?=)
+Date: Sat, 25 Jul 2009 19:16:08 +0200
+Subject: [Twisted-web] Handling childs at Nevow
+In-Reply-To: <78bfcf050907250405s451e2bd2xc5e074423ebfc923@mail.gmail.com>
+References: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com> 
+	<4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+	<78bfcf050907250106x41ddeb9y697b67ffd9c739c@mail.gmail.com> 
+	<6c2921ea0907250146p4df66182wbc7eddc63bb8c4b0@mail.gmail.com> 
+	<78bfcf050907250405s451e2bd2xc5e074423ebfc923@mail.gmail.com>
+Message-ID: <6c2921ea0907251016l59c10524lbef11af845f0f8e4@mail.gmail.com>
+
+On Sat, Jul 25, 2009 at 1:05 PM, Colin Alston<karnaugh at karnaugh.za.net> wrote:
+>
+>
+> 2009/7/25 Siegmund F?hringer <lists at 0xx0.net>
+>>
+>> On Sat, Jul 25, 2009 at 10:06 AM, Colin Alston<karnaugh at karnaugh.za.net>
+>> wrote:
+>> > On Sat, Jul 25, 2009 at 9:04 AM, Micha? Pasternak <michal.dtz at gmail.com>
+>> > wrote:
+>> >>
+>> >> BTW, are there any URL dispatchers (like the one Django has) out there
+>> >> for
+>> >> Nevow?
+>> >
+>> > I really and truly hope not.
+>>
+>> why not? urls are very important and using child_XXX methods is
+>> sometimes not very convinient.
+>
+> Convenience at the cost of maintainability is not worth it.
+>
+> Trust me, if your project is going to reach any kind of size, you do NOT
+> want "django esque" URL dispatchers. I've seen it go bad, I've experienced
+> it go bad.
+
+sorry i can't trust you on that one, because i am involved in a very
+big project at the moment. i'm not allowed to talk about it yet, but i
+is probably the biggest application of python in austria (ok, that is
+not really hard ;) )
+and i wrote a similar service (but way not as large) with nevow's
+traditional way of dealing with urls. and this one is very hard to
+maintain, because the url system is not abstracted out of the code and
+templates.
+so maintainability IS the reason i use a django like url dispatch
+system. i'm not a native speaker so convenience was probably the wrong
+word to choose.
+
+but it very much depends on the type of project. for some projects
+(also relatively large ones) it has been the right decision to stick
+with nevow's default way of handling urls.
+
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+
+
+From jjconti at gmail.com  Sat Jul 25 14:54:45 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Sat, 25 Jul 2009 15:54:45 -0300
+Subject: [Twisted-web] Handling childs at Nevow
+In-Reply-To: <4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+References: <3f9007680907241449k3936ee5blefb42201d240bc26@mail.gmail.com>
+	<4a6aae86.0ab6660a.5cd0.ffffe33c@mx.google.com>
+Message-ID: <3f9007680907251154i997ce9ax6563ec65d9efff55@mail.gmail.com>
+
+2009/7/25 Micha? Pasternak <michal.dtz at gmail.com>:
+> See "childFactory" and "locateChild" methods of rend.Page
+
+I am reading at
+http://python.net/crew/mwh/nevowapi/nevow.rend.ChildLookupMixin.html
+
+Is there an error in childFactory doc? It mentions the segment and
+request parameters which aren't there.
+
+-- 
+Juanjo Conti
+
+
+From odie5533 at gmail.com  Mon Jul 27 02:05:21 2009
+From: odie5533 at gmail.com (David Bern)
+Date: Mon, 27 Jul 2009 01:05:21 -0500
+Subject: [Twisted-web] Design for HTTP client form login and scraping
+Message-ID: <c53602e20907262305i45ce696xcc797b7203462324@mail.gmail.com>
+
+I want to make multiple HTTP requests using the same set of cookies.
+Should I call client.getPage a lot thus creating multiple factories to
+do this? Should I subclass the HTTPClientFactory and put logic in
+there? I am kinda lost on how to attack this. I want the program to
+login to a site and run some scraping on it.
+
+Regards,
+David Bern
+
+
+From exarkun at divmod.com  Mon Jul 27 09:01:35 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon, 27 Jul 2009 09:01:35 -0400
+Subject: [Twisted-web] Design for HTTP client form login and scraping
+In-Reply-To: <c53602e20907262305i45ce696xcc797b7203462324@mail.gmail.com>
+Message-ID: <20090727130135.388.1223880479.divmod.quotient.770@henry.divmod.com>
+
+On Mon, 27 Jul 2009 01:05:21 -0500, David Bern <odie5533 at gmail.com> wrote:
+>I want to make multiple HTTP requests using the same set of cookies.
+>Should I call client.getPage a lot thus creating multiple factories to
+>do this?
+
+This is probably the right approach for the near term.  If you're worried
+about the overhead of creating a lot of factories, I don't think you should.
+Creating these objects isn't very expensive (particularly compared to parsing
+html).
+
+Jean-Paul
+
+
+From exarkun at divmod.com  Mon Jul 27 09:09:21 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon, 27 Jul 2009 09:09:21 -0400
+Subject: [Twisted-web] tab completion in manhole
+In-Reply-To: <44d7ed650907211041g1e0d3ec4ld596349a79772397@mail.gmail.com>
+Message-ID: <20090727130921.388.2096704268.divmod.quotient.772@henry.divmod.com>
+
+On Tue, 21 Jul 2009 18:41:07 +0100, Dickon Reed <dickon.reed+twisted at gmail.com> wrote:
+>Is there any way to to get tab completion of Python expressions (i.e. like
+>what Ipython does) in twisted manhole sessions?
+>
+>Specifically, I'm using a variant of twisted.conch.stdio, which I only
+>discovered today but seems to be a much more sound approach than the nasty
+>concoction of reactor.crash and restarting the reactor and Ipython which
+>I've tried before.
+
+There's no support in manhole for tab completion.  This would be a great
+feature.  If someone would like to try to implement it, I'd be happy to
+offer guidance.
+
+Jean-Paul
+
+
+From odie5533 at gmail.com  Mon Jul 27 10:07:49 2009
+From: odie5533 at gmail.com (David Bern)
+Date: Mon, 27 Jul 2009 09:07:49 -0500
+Subject: [Twisted-web] Design for HTTP client form login and scraping
+In-Reply-To: <20090727130135.388.1223880479.divmod.quotient.770@henry.divmod.com>
+References: <c53602e20907262305i45ce696xcc797b7203462324@mail.gmail.com>
+	<20090727130135.388.1223880479.divmod.quotient.770@henry.divmod.com>
+Message-ID: <c53602e20907270707t2d8f9aaci646215385a47277e@mail.gmail.com>
+
+On Mon, Jul 27, 2009 at 8:01 AM, Jean-Paul Calderone<exarkun at divmod.com> wrote:
+> On Mon, 27 Jul 2009 01:05:21 -0500, David Bern <odie5533 at gmail.com> wrote:
+>>I want to make multiple HTTP requests using the same set of cookies.
+>>Should I call client.getPage a lot thus creating multiple factories to
+>>do this?
+>
+> This is probably the right approach for the near term. ?If you're worried
+> about the overhead of creating a lot of factories, I don't think you should.
+> Creating these objects isn't very expensive (particularly compared to parsing
+> html).
+>
+> Jean-Paul
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+Thank you for the fast reply. I am more worried about the difficulty
+of programming it this way, and was wondering if there is a better
+method. I want a class with functions which would correspond to
+different forms and pages on the web site. For instance, login(), then
+post_message(), or some such set of commands based on a configuration
+file. Would creating a class which calls client.getPage without
+inheriting anything be the best method to accomplish this? When would
+inheritance be the right method, only when extending the functionality
+of HTTP client in Twisted and not to make use of it? My main question
+here is that of style and ease of programming. I want to get into a
+good programming habit with Twisted rather than have to redesign and
+rewrite huge portions later because I put the logic in the wrong
+place.
+
+-- 
+Thanks again,
+David Bern
+
+
+From exarkun at divmod.com  Mon Jul 27 10:22:45 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Mon, 27 Jul 2009 10:22:45 -0400
+Subject: [Twisted-web] Design for HTTP client form login and scraping
+In-Reply-To: <c53602e20907270707t2d8f9aaci646215385a47277e@mail.gmail.com>
+Message-ID: <20090727142245.388.653301263.divmod.quotient.781@henry.divmod.com>
+
+On Mon, 27 Jul 2009 09:07:49 -0500, David Bern <odie5533 at gmail.com> wrote:
+>On Mon, Jul 27, 2009 at 8:01 AM, Jean-Paul Calderone<exarkun at divmod.com> wrote:
+>> On Mon, 27 Jul 2009 01:05:21 -0500, David Bern <odie5533 at gmail.com> wrote:
+>>>I want to make multiple HTTP requests using the same set of cookies.
+>>>Should I call client.getPage a lot thus creating multiple factories to
+>>>do this?
+>>
+>> This is probably the right approach for the near term. ?If you're worried
+>> about the overhead of creating a lot of factories, I don't think you should.
+>> Creating these objects isn't very expensive (particularly compared to parsing
+>> html).
+>>
+>> Jean-Paul
+>>
+>> _______________________________________________
+>> Twisted-web mailing list
+>> Twisted-web at twistedmatrix.com
+>> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>>
+>
+>Thank you for the fast reply. I am more worried about the difficulty
+>of programming it this way, and was wondering if there is a better
+>method. I want a class with functions which would correspond to
+>different forms and pages on the web site. For instance, login(), then
+>post_message(), or some such set of commands based on a configuration
+>file. Would creating a class which calls client.getPage without
+>inheriting anything be the best method to accomplish this?
+
+That's probably what I'd do.  There's not much to be gained by subclassing
+anything from twisted.web.client in this case.  I would reserve that for
+cases where I wanted to change the behavior of something at the HTTP level,
+for example providing different behavior for handling redirects.
+
+>When would
+>inheritance be the right method, only when extending the functionality
+>of HTTP client in Twisted and not to make use of it? My main question
+>here is that of style and ease of programming. I want to get into a
+>good programming habit with Twisted rather than have to redesign and
+>rewrite huge portions later because I put the logic in the wrong
+>place.
+>
+
+I'm coming to think that a good rule of thumb is not to subclass things
+unless you really need to.  There are probably some exceptions - for
+example, I'll probably keep subclassing twisted.internet.protocol.Protocol
+for a while to come, but my list of such exceptions is pretty short right
+now.
+
+I find subclassing to mainly cause problems - mostly to do with backwards
+compatibility - and not offer sufficient benefits to outweigh these.
+
+Jean-Paul
+
+
+From federicotom at yahoo.it  Mon Jul 27 19:36:24 2009
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Tue, 28 Jul 2009 01:36:24 +0200
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+Message-ID: <4A6E39F8.5010306@yahoo.it>
+
+Hello,
+
+I'm running a guarded app. Memory is not released on logout.
+I read carefully nevow.guard and I'm debugging widely with
+pdb and gc.
+
+I encountered the following problem. It sounds really strange.
+I discovered, using pdb and gc inside logoutPortal(), that
+visited pages remain alive.
+
+So, I created a WastingMemPage(rand.Page) class that, on __init__,
+allocates ton of mem (no external referrer, memroy is allocate
+inside the instance only). I will return it initializing each
+time:
+
+    def locateChild(self, ctx, segs):
+       return WastingMemPage(), segs
+
+Now, each time I hit one of this WastingMemPage, memory
+usage grows. When I logout ( portalLogout() ), memory is
+not released.
+
+Now:
+
+  * Is a rend.Page() not deleted once rendered?
+  * Altough the previous question, why pages remain
+    linked from something after portalLogout()?
+
+What's happening? Am I making some mistake? Is there some
+limit on portalLogout()?
+
+py 2.5/2.4. Nevow 0.9.31.
+
+Please, help!
+
+-- 
+efphe
+Today is Pungenday, the 62nd day of Confusion in the YOLD 3175
+
+
+
+From glyph at twistedmatrix.com  Mon Jul 27 20:56:45 2009
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Mon, 27 Jul 2009 20:56:45 -0400
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <4A6E39F8.5010306@yahoo.it>
+References: <4A6E39F8.5010306@yahoo.it>
+Message-ID: <d9047f780907271756p7e9ca144j898309c57fe8ef38@mail.gmail.com>
+
+On Mon, Jul 27, 2009 at 7:36 PM, Federico Tomassini <federicotom at yahoo.it>wrote:
+
+
+> I encountered the following problem. It sounds really strange.
+> I discovered, using pdb and gc inside logoutPortal(), that
+> visited pages remain alive.
+>
+> That does seem pretty strange.
+>
+
+So, I created a WastingMemPage(rand.Page) class
+
+
+Rather than wasting lots of memory to debug, why not use gc.get_referrers to
+discover what's keeping your rend.Page instance alive?  Perhaps it's an
+object in your own application that you can get rid of.  Or, if it's a bug
+in Nevow, it will tell us where in Nevow.
+
+ * Is a rend.Page() not deleted once rendered?
+
+
+It certainly *should* be, assuming nothing's hanging on to it...
+
+
+> * Altough the previous question, why pages remain
+>    linked from something after portalLogout()?
+>
+
+I don't know.
+
+What's happening? Am I making some mistake?
+
+
+Without access to your code ? and, I would imagine, a pretty extensive debug
+log ? I couldn't tell you exactly what's happening.
+
+Can you construct a minimal example which demonstrates the problem, which
+someone on this list could run and debug?
+
+
+> Is there some limit on portalLogout()?
+>
+
+No.  The behavior you're noticing sounds like a definite bug somewhere; if
+not in your code then in Nevow itself.
+
+py 2.5/2.4. Nevow 0.9.31.
+>
+
+Have you tried Nevow trunk at HEAD?  Does the problem still exist?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090727/222c0d04/attachment.htm 
+
+From federicotom at yahoo.it  Tue Jul 28 07:23:15 2009
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Tue, 28 Jul 2009 13:23:15 +0200
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <d9047f780907271756p7e9ca144j898309c57fe8ef38@mail.gmail.com>
+References: <4A6E39F8.5010306@yahoo.it>
+	<d9047f780907271756p7e9ca144j898309c57fe8ef38@mail.gmail.com>
+Message-ID: <4A6EDFA3.9010301@yahoo.it>
+
+Dear Glyph,
+
+see answers below. I'm debugging with pdb and gc. Maybe I
+discovered something, but the debug process is slow.
+
+Glyph Lefkowitz wrote:
+
+>     So, I created a WastingMemPage(rand.Page) class
+> 
+> 
+> Rather than wasting lots of memory to debug, why not use 
+> gc.get_referrers to discover what's keeping your rend.Page instance 
+> alive?  Perhaps it's an object in your own application that you can get 
+> rid of.  Or, if it's a bug in Nevow, it will tell us where in Nevow.
+
+Ok. on Page.afterRender() I put `self` on a list. After 5 hits
+to this page, I'm checking where these pages are referred.
+I have this for the first page on the list:
+
+   WovenContext(tag=None, remembrances={'nevow.inevow.IMacroFactory':
+	<myfile.pages.MyPage object at 0x4069eeac>})
+
+Do this tell you something?
+
+> Without access to your code ? and, I would imagine, a pretty extensive 
+> debug log ? I couldn't tell you exactly what's happening.
+> 
+> Can you construct a minimal example which demonstrates the problem, 
+> which someone on this list could run and debug?
+
+Yes. I will build a minimal framework.
+
+-- 
+efphe
+Today is Prickle-Prickle, the 63rd day of Confusion in the YOLD 3175
+
+
+From federicotom at yahoo.it  Tue Jul 28 09:17:51 2009
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Tue, 28 Jul 2009 15:17:51 +0200
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <4A6EDFA3.9010301@yahoo.it>
+References: <4A6E39F8.5010306@yahoo.it>	<d9047f780907271756p7e9ca144j898309c57fe8ef38@mail.gmail.com>
+	<4A6EDFA3.9010301@yahoo.it>
+Message-ID: <4A6EFA7F.9030008@yahoo.it>
+
+Federico Tomassini wrote:
+> Dear Glyph,
+> 
+> see answers below. I'm debugging with pdb and gc. Maybe I
+> discovered something, but the debug process is slow.
+> 
+> Glyph Lefkowitz wrote:
+> 
+>>     So, I created a WastingMemPage(rand.Page) class
+>> 
+>> 
+>> Rather than wasting lots of memory to debug, why not use 
+>> gc.get_referrers to discover what's keeping your rend.Page instance 
+>> alive?  Perhaps it's an object in your own application that you can get 
+>> rid of.  Or, if it's a bug in Nevow, it will tell us where in Nevow.
+> 
+> Ok. on Page.afterRender() I put `self` on a list. After 5 hits
+> to this page, I'm checking where these pages are referred.
+> I have this for the first page on the list:
+> 
+>    WovenContext(tag=None, remembrances={'nevow.inevow.IMacroFactory':
+> 	<myfile.pages.MyPage object at 0x4069eeac>})
+> 
+> Do this tell you something?
+> 
+>> Without access to your code ? and, I would imagine, a pretty extensive 
+>> debug log ? I couldn't tell you exactly what's happening.
+>> 
+>> Can you construct a minimal example which demonstrates the problem, 
+>> which someone on this list could run and debug?
+> 
+> Yes. I will build a minimal framework.
+> 
+
+Hello,
+
+I coded a minimal example. Problem seems to depend from
+Bar.data_somedata(). If I remove the interested tag from the
+docFactory, memory is released. When, instead, I use this
+tag (and Bar.data_somedata()), memory is not released:
+
+   http://dpaste.com/72343/
+
+-- 
+efphe
+Today is Prickle-Prickle, the 63rd day of Confusion in the YOLD 3175
+
+
+From federicotom at yahoo.it  Tue Jul 28 12:45:04 2009
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Tue, 28 Jul 2009 18:45:04 +0200
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <4A6EFA7F.9030008@yahoo.it>
+References: <4A6E39F8.5010306@yahoo.it>	<d9047f780907271756p7e9ca144j898309c57fe8ef38@mail.gmail.com>	<4A6EDFA3.9010301@yahoo.it>
+	<4A6EFA7F.9030008@yahoo.it>
+Message-ID: <4A6F2B10.5040909@yahoo.it>
+
+Federico Tomassini wrote:
+> 
+> Hello,
+> 
+> I coded a minimal example. Problem seems to depend from
+> Bar.data_somedata(). If I remove the interested tag from the
+> docFactory, memory is released. When, instead, I use this
+> tag (and Bar.data_somedata()), memory is not released:
+> 
+>    http://dpaste.com/72343/
+> 
+
+Ok, this minimal server application proofs that a memory
+leak exists somewhere. This is already a good result.
+
+Remember i'm not an expert: I spent many hours to write
+this little snippet of code. I spent other hours to
+isolate the problem and I have another result.
+
+If we put, on afterRender(), the following:
+
+   def afterRender(self, *a):
+     self.docFactory._cache[1].parent.parent= None
+
+the memory leak desappears (at least the greater).
+This proofs, I think, that context hier has to be
+cleaned somehow. Probably it would be safer to do:
+
+   def afterRender(self, *a):
+     self.docFactory._cache[1].parent.parent= None
+     self.docFactory._cache[1].parent= None
+
+and maybe:
+
+   def afterRender(self, *a):
+     self.docFactory._cache[1].parent.parent= None
+     self.docFactory._cache[1].parent= None
+     self.docFactory._cacche= None
+
+But this is not a bugfix, This is a proof of blackhole
+existence. Is there someone able to locate his origin?
+
+-- 
+efphe
+Today is Prickle-Prickle, the 63rd day of Confusion in the YOLD 3175
+
+
+From jjconti at gmail.com  Wed Jul 29 16:12:40 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Wed, 29 Jul 2009 17:12:40 -0300
+Subject: [Twisted-web] overriding locateChild
+Message-ID: <3f9007680907291312x58fe3e44ncc833802c0660fd1@mail.gmail.com>
+
+I've solved the question asked last week using chidlFactory; i've also
+tried to use locateChild, but each time I tried (in a LivePage) others
+things stopped to work (LivePage makes lots of ajax/comet calls via
+XMLHTTPRequest and that urls requested seems not to be handled
+propitiated).
+
+Are there something I should have in mind when overriding the method
+in this particular class?
+
+On the other hand, I've notice the "Sorry, but I couldn't find the
+object you requested." message when I ask (via url) for a page that's
+not in the hierarchy. Is this a 404 error message? How do I override
+it? How do I raise a 404 error from the code?
+
+Thanks!
+
+-- 
+Juanjo Conti
+
+
+From exarkun at divmod.com  Wed Jul 29 17:16:35 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Wed, 29 Jul 2009 17:16:35 -0400
+Subject: [Twisted-web] overriding locateChild
+In-Reply-To: <3f9007680907291312x58fe3e44ncc833802c0660fd1@mail.gmail.com>
+Message-ID: <20090729211635.11822.2012536300.divmod.quotient.392@henry.divmod.com>
+
+On Wed, 29 Jul 2009 17:12:40 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>I've solved the question asked last week using chidlFactory; i've also
+>tried to use locateChild, but each time I tried (in a LivePage) others
+>things stopped to work (LivePage makes lots of ajax/comet calls via
+>XMLHTTPRequest and that urls requested seems not to be handled
+>propitiated).
+>
+>Are there something I should have in mind when overriding the method
+>in this particular class?
+
+LivePage implements locateChild in order to work.  If you override this
+method, then you're disabling necessary functionality.  You need to take
+care to call the overridden implementation for the URLs LivePage expects
+to be handling.
+
+>
+>On the other hand, I've notice the "Sorry, but I couldn't find the
+>object you requested." message when I ask (via url) for a page that's
+>not in the hierarchy. Is this a 404 error message? How do I override
+>it? How do I raise a 404 error from the code?
+
+A 404 is a resource like any other.  However, as a special convenience,
+you may also return None in place of a resource.  In this case, the
+ICanHandleNotFound object remembered in the context will have its
+renderHTTP_notFound method called to produce the response.
+
+Jean-Paul
+
+
+From exarkun at divmod.com  Wed Jul 29 17:17:31 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Wed, 29 Jul 2009 17:17:31 -0400
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <4A6F2B10.5040909@yahoo.it>
+Message-ID: <20090729211731.11822.1680201615.divmod.quotient.393@henry.divmod.com>
+
+On Tue, 28 Jul 2009 18:45:04 +0200, Federico Tomassini <federicotom at yahoo.it> wrote:
+>Federico Tomassini wrote:
+>>
+>> Hello,
+>>
+>> I coded a minimal example. Problem seems to depend from
+>> Bar.data_somedata(). If I remove the interested tag from the
+>> docFactory, memory is released. When, instead, I use this
+>> tag (and Bar.data_somedata()), memory is not released:
+>>
+>>    http://dpaste.com/72343/
+>>
+>
+>Ok, this minimal server application proofs that a memory
+>leak exists somewhere. This is already a good result.
+
+I messed around with this for a while.  Unfortunately, I am not able
+to reproduce a memory leak using it.  I found some things which I find
+suspicious in Nevow, but none of them explains a leak.
+
+Sorry.
+
+Jean-Paul
+
+
+From glyph at twistedmatrix.com  Wed Jul 29 17:51:53 2009
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Wed, 29 Jul 2009 17:51:53 -0400
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <20090729211731.11822.1680201615.divmod.quotient.393@henry.divmod.com>
+References: <4A6F2B10.5040909@yahoo.it>
+	<20090729211731.11822.1680201615.divmod.quotient.393@henry.divmod.com>
+Message-ID: <d9047f780907291451r1716a3c2n8a1c14ddb9fd6e4d@mail.gmail.com>
+
+On Wed, Jul 29, 2009 at 5:17 PM, Jean-Paul Calderone <exarkun at divmod.com>wrote:
+
+> On Tue, 28 Jul 2009 18:45:04 +0200, Federico Tomassini <
+> federicotom at yahoo.it> wrote:
+> >Federico Tomassini wrote:
+>
+>>    http://dpaste.com/72343/
+> >>
+> >
+> >Ok, this minimal server application proofs that a memory
+> >leak exists somewhere. This is already a good result.
+>
+> I messed around with this for a while.  Unfortunately, I am not able
+> to reproduce a memory leak using it.  I found some things which I find
+> suspicious in Nevow, but none of them explains a leak.
+>
+
+Just for posterity, did you try it with the latest release, or just with
+trunk?
+
+(This question is both for Frederico and Jean-Paul.)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090729/149fd592/attachment.htm 
+
+From exarkun at divmod.com  Wed Jul 29 18:11:53 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Wed, 29 Jul 2009 18:11:53 -0400
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <d9047f780907291451r1716a3c2n8a1c14ddb9fd6e4d@mail.gmail.com>
+Message-ID: <20090729221153.11822.1761977867.divmod.quotient.406@henry.divmod.com>
+
+On Wed, 29 Jul 2009 17:51:53 -0400, Glyph Lefkowitz <glyph at twistedmatrix.com> wrote:
+>On Wed, Jul 29, 2009 at 5:17 PM, Jean-Paul Calderone <exarkun at divmod.com>wrote:
+>
+>> On Tue, 28 Jul 2009 18:45:04 +0200, Federico Tomassini <
+>> federicotom at yahoo.it> wrote:
+>> >Federico Tomassini wrote:
+>>
+>>>    http://dpaste.com/72343/
+>> >>
+>> >
+>> >Ok, this minimal server application proofs that a memory
+>> >leak exists somewhere. This is already a good result.
+>>
+>> I messed around with this for a while.  Unfortunately, I am not able
+>> to reproduce a memory leak using it.  I found some things which I find
+>> suspicious in Nevow, but none of them explains a leak.
+>>
+>
+>Just for posterity, did you try it with the latest release, or just with
+>trunk?
+
+Python 2.5, trunk of Twisted, trunk of Nevow.
+
+Jean-Paul
+
+
+From federicotom at yahoo.it  Wed Jul 29 19:34:26 2009
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Thu, 30 Jul 2009 01:34:26 +0200
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <20090729211731.11822.1680201615.divmod.quotient.393@henry.divmod.com>
+References: <20090729211731.11822.1680201615.divmod.quotient.393@henry.divmod.com>
+Message-ID: <4A70DC82.4080608@yahoo.it>
+
+Jean-Paul Calderone wrote:
+
+>>Ok, this minimal server application proofs that a memory
+>>leak exists somewhere. This is already a good result.
+> 
+> I messed around with this for a while.  Unfortunately, I am not able
+> to reproduce a memory leak using it.  I found some things which I find
+> suspicious in Nevow, but none of them explains a leak.
+
+Are you saying that you are not sure about memory leaks
+existence?
+
+The previous example allocates memory such way:
+
+  def afterRender(self, *a):
+    self.foo= ['a' * (10**6) for i in xrange(100)]
+
+When logout, memory remains allocated unless you
+create a destroyer method that deletes the foo
+attr before the exit, explicitley.
+
+Memory leaks appears also when rend.Page.data_bar()
+is used. Both cases seem to be related to WovenContext
+and docFactory (a lot of WovenCtx and IMacroFactory
+instances seems to stick in docFactory._cache).
+
+In fact, this part of nevow is simply a Memory
+Blackhole. Inside docFactory._cache one can find
+various sticky objects.
+
+So, why "you are not able to reproduce it"?
+
+This is a *really heavy* problem. So, imho, nevow
+should work on it with energies.
+
+Maybe the better way is to redesign WovenCtx machinery,
+as Jean-Paul suggested. But it's absolutely important
+to make an intervention.
+
+I can help. If we need to redesign WovenCtx and someone
+is able to guide my work (requiring to me precise APIs
+or Classes), you can rely on my contribution.
+
+Br
+
+-- 
+efphe
+Today is Setting Orange, the 64th day of Confusion in the YOLD 3175
+
+
+From exarkun at divmod.com  Wed Jul 29 20:47:29 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Wed, 29 Jul 2009 20:47:29 -0400
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <4A70DC82.4080608@yahoo.it>
+Message-ID: <20090730004729.11822.1206645372.divmod.quotient.446@henry.divmod.com>
+
+On Thu, 30 Jul 2009 01:34:26 +0200, Federico Tomassini <federicotom at yahoo.it> wrote:
+>Jean-Paul Calderone wrote:
+>
+>>>Ok, this minimal server application proofs that a memory
+>>>leak exists somewhere. This is already a good result.
+>>
+>> I messed around with this for a while.  Unfortunately, I am not able
+>> to reproduce a memory leak using it.  I found some things which I find
+>> suspicious in Nevow, but none of them explains a leak.
+>
+>Are you saying that you are not sure about memory leaks
+>existence?
+
+No, only that I am not able to reproduce it (I believe you when you say that
+you have a server which leaks memory).
+
+>The previous example allocates memory such way:
+>
+>  def afterRender(self, *a):
+>    self.foo= ['a' * (10**6) for i in xrange(100)]
+>
+>When logout, memory remains allocated unless you
+>create a destroyer method that deletes the foo
+>attr before the exit, explicitley.
+>
+>Memory leaks appears also when rend.Page.data_bar()
+>is used. Both cases seem to be related to WovenContext
+>and docFactory (a lot of WovenCtx and IMacroFactory
+>instances seems to stick in docFactory._cache).
+
+Yes, this I am able to observe.  However, this leak limits itself to a single
+instance.  After the first request, no further memory is leaked (when I try
+the example you provided).
+
+>In fact, this part of nevow is simply a Memory
+>Blackhole. Inside docFactory._cache one can find
+>various sticky objects.
+
+Yes, but they're generally things which are needed over and over again for
+every request.  That is the purpose of the cache. :)
+
+>So, why "you are not able to reproduce it"?
+
+When I run the example, it starts off by using about 10MB of memory.  When I
+make one request of it, it jumps to 50MB of memory.  When I make a second (or
+third, or any additional number) request of it, memory usage remains at
+50MB.  So, that's what I mean.
+
+>This is a *really heavy* problem. So, imho, nevow
+>should work on it with energies.
+
+I can understand how it would seem to be a very serious problem from your
+perspective.  It probably makes your Nevow-based application unusable, or at
+least require significant additional administrative resources.
+
+However... none of *my* Nevow-based applications exhibit this behavior. Even
+ignoring the fact that this makes it very difficult for me to try to fix the
+problem (or even understand what the problem is - I still don't, by the way),
+this means it's not going to work its way very far up my list of priorities -
+sorry.  There are other ways to move things up my list of priorities, most
+prominently, you could fund the debugging and development required to fix the
+issue.  As my employer has recently become defunct, the logistics of this are
+slightly complicated, but I'm sure we can work something out if you are
+interested.
+
+All that said, I'm still happy to give you my time in working on this,
+provided an example I can use to reproduce the misbehavior myself.  Without
+this, it's just too hard.
+
+>Maybe the better way is to redesign WovenCtx machinery,
+>as Jean-Paul suggested. But it's absolutely important
+>to make an intervention.
+>
+>I can help. If we need to redesign WovenCtx and someone
+>is able to guide my work (requiring to me precise APIs
+>or Classes), you can rely on my contribution.
+
+Some effort has been directed towards this goal already.  Element supersedes
+Fragment.  It comes with a flattener which doesn't use the context (except
+for backwards compatibility).  The next step is to provide a similar class to
+supersede Page.  This hasn't been extremely high priority, since it's always
+possible to structure all of your rendering logic as a number of Elements
+with only the thinnest layer of support from Page.
+
+Jean-Paul
+
+
+From glyph at twistedmatrix.com  Wed Jul 29 21:07:09 2009
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Wed, 29 Jul 2009 21:07:09 -0400
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <4A70DC82.4080608@yahoo.it>
+References: <20090729211731.11822.1680201615.divmod.quotient.393@henry.divmod.com>
+	<4A70DC82.4080608@yahoo.it>
+Message-ID: <d9047f780907291807m16013746mda241bfd7ee8da9@mail.gmail.com>
+
+On Wed, Jul 29, 2009 at 7:34 PM, Federico Tomassini <federicotom at yahoo.it>wrote:
+
+
+> I can help.
+
+
+The first thing you can do to help is to try with Nevow trunk :-).  You said
+in your first email that it was from 0.9.31.  exarkun has not tried with
+0.9.31.  0.9.31 was released over a year ago.  There are many bugs which
+have been fixed since then; we may already have addressed whatever is
+causing your problem.
+
+Have you done that yet?  Were the results the same?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090729/14bdd80c/attachment.htm 
+
+From federicotom at yahoo.it  Wed Jul 29 21:22:28 2009
+From: federicotom at yahoo.it (Federico Tomassini)
+Date: Thu, 30 Jul 2009 03:22:28 +0200
+Subject: [Twisted-web] Guard, LastPage Memory Leak?
+In-Reply-To: <d9047f780907291807m16013746mda241bfd7ee8da9@mail.gmail.com>
+References: <20090729211731.11822.1680201615.divmod.quotient.393@henry.divmod.com>	<4A70DC82.4080608@yahoo.it>
+	<d9047f780907291807m16013746mda241bfd7ee8da9@mail.gmail.com>
+Message-ID: <4A70F5D4.9090407@yahoo.it>
+
+Glyph Lefkowitz wrote:
+> On Wed, Jul 29, 2009 at 7:34 PM, Federico Tomassini 
+> <federicotom at yahoo.it <mailto:federicotom at yahoo.it>> wrote:
+>  
+> 
+>     I can help.
+> 
+> 
+> The first thing you can do to help is to try with Nevow trunk :-).  You 
+> said in your first email that it was from 0.9.31.  exarkun has not tried 
+> with 0.9.31.  0.9.31 was released over a year ago.  There are many bugs 
+> which have been fixed since then; we may already have addressed whatever 
+> is causing your problem.
+> 
+> Have you done that yet?  Were the results the same?
+
+Ok, I'll do it.  Stay tuned.
+
+-- 
+efphe
+Today is Setting Orange, the 64th day of Confusion in the YOLD 3175
+
+
+From jjconti at gmail.com  Fri Jul 31 10:44:20 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 31 Jul 2009 11:44:20 -0300
+Subject: [Twisted-web] Intresting examples!
+Message-ID: <3f9007680907310744w6b455188r615555e50dfd65@mail.gmail.com>
+
+I've foudn this examples on the web http://fzzzy.livejournal.com/1214.html
+
+I wonder know how updated they are. I was thinking to print them.
+Would this be a waist of paper?
+
+Thanks!
+-- 
+Juanjo Conti
+
+
+From exarkun at divmod.com  Fri Jul 31 11:16:43 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Fri, 31 Jul 2009 11:16:43 -0400
+Subject: [Twisted-web] Intresting examples!
+In-Reply-To: <3f9007680907310744w6b455188r615555e50dfd65@mail.gmail.com>
+Message-ID: <20090731151643.11822.1341059659.divmod.quotient.1001@henry.divmod.com>
+
+On Fri, 31 Jul 2009 11:44:20 -0300, Juanjo Conti <jjconti at gmail.com> wrote:
+>I've foudn this examples on the web http://fzzzy.livejournal.com/1214.html
+>
+>I wonder know how updated they are. I was thinking to print them.
+>Would this be a waist of paper?
+
+As the comments on that post indicate, the Nevow/examples/ directory contains
+more up-to-date examples which are more likely to still actually work.
+
+Jean-Paul
+
+
+From jjconti at gmail.com  Fri Jul 31 11:54:24 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 31 Jul 2009 12:54:24 -0300
+Subject: [Twisted-web] Intresting examples!
+In-Reply-To: <20090731151643.11822.1341059659.divmod.quotient.1001@henry.divmod.com>
+References: <3f9007680907310744w6b455188r615555e50dfd65@mail.gmail.com>
+	<20090731151643.11822.1341059659.divmod.quotient.1001@henry.divmod.com>
+Message-ID: <3f9007680907310854t22b056ecy940330a07a43753d@mail.gmail.com>
+
+Thansk for the reply.
+
+-- 
+Juanjo Conti
+
+

@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.0 (GNU/Linux)
+
+iD8DBQA9lnZzh3hqIoukqUQRApIQAKDKFvrcEvNsAT5bi2yNTPwSSF2SDwCgr5mH
+xZVBBZTVSKR3gMjTyln03ms=
+=goRA
+-----END PGP SIGNATURE-----

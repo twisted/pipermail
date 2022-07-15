@@ -1,0 +1,62 @@
+# -*- coding: latin-1 -*-
+
+from twisted.internet import reactor, defer, task
+from twisted.application import service
+from twisted.spread import pb
+from twisted.cred import portal, checkers, credentials
+from twisted.python import log
+import sys
+
+
+class MyServer(service.Service, pb.Referenceable):
+    def __init__(self, *args, **kw):
+        self.timeoutToAgent = 5
+
+    def startService(self):
+        log.msg('identity: Starting Service')
+        reactor.callLater(0, self.needAuthForAgent, '127.0.0.1')
+        service.Service.startService(self)
+
+    def needAuthForAgent(self, ipSource):
+        log.msg('identity: Attempting to connect to the agent %s...' % ipSource, debug=True)
+
+        self.factory = pb.PBClientFactory()
+        reactor.connectTCP(ipSource, 9003, self.factory, timeout=self.timeoutToAgent)
+        self.launchTimer(self.factory)
+        def1 = self.factory.login(credentials.UsernamePassword( 'mylogin', 'mypass' ), client=self)
+        def1.addCallbacks(callback=self.connected, errback=self.noLogin)
+        def1.addCallback(self.actionRequestAuth, ipSource)
+        def1.addErrback(errback=self.genericError)
+
+    def launchTimer(self, f):
+        reactor.callLater(5, self.disconnectInAnyCase, f)
+
+    def disconnectInAnyCase(self, f):
+        """ HERE IS THE PLACE IT'S SUPPOSED TO DISCONNECT THE CLIENT """
+        print dir(f.protocol)
+        #print f.protocol.connected
+
+    def connected(self, perspective):
+        """ Connected means that the PB handshake is OK and finished."""
+        log.msg("Connected, got perspective ref: %s" % perspective)
+
+    def noLogin(self, reason):
+        log.err('identity: Got rejected: %s' % reason)
+        self.factory.disconnect()
+        return defer.fail(reason)
+
+    def genericError(self, ref) :
+        log.err( "identity: Uncatched error: %s." % ref.getErrorMessage())
+
+    def actionRequestAuth(self, dummy, ipSource):
+        """ Do normally stuff here """
+        log.msg('Reset of alarm')
+        return None
+
+
+if __name__ == '__main__':
+    log.startLogging(sys.stdout, 0)
+    i = MyServer()
+    i.startService()
+    reactor.run()
+

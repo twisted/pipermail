@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.1 (GNU/Linux)
+
+iD8DBQA+SoHPvVGR4uSOE2wRAtDMAKCUwL0U4hb/3umbOrggtTgDibRkeQCfcPxU
+WdAWS/BVb+uJ0Iyb4VDOjVA=
+=durk
+-----END PGP SIGNATURE-----

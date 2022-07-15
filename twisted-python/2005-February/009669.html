@@ -1,0 +1,133 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20linux%20kernel%202.6.11-rc%20broke%20twisted%20process%0A%09pipes&In-Reply-To=20050301003723.GT8880%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009668.html">
+   <LINK REL="Next"  HREF="009670.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes</H1>
+    <B>James Y Knight</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20linux%20kernel%202.6.11-rc%20broke%20twisted%20process%0A%09pipes&In-Reply-To=20050301003723.GT8880%40opteron.random"
+       TITLE="[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes">foom at fuhm.net
+       </A><BR>
+    <I>Mon Feb 28 22:40:00 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009668.html">[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+</A></li>
+        <LI>Next message: <A HREF="009670.html">[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9669">[ date ]</a>
+              <a href="thread.html#9669">[ thread ]</a>
+              <a href="subject.html#9669">[ subject ]</a>
+              <a href="author.html#9669">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Feb 28, 2005, at 7:37 PM, Andrea Arcangeli wrote:
+&gt;<i> It's never the inverse since pollin was always forced to be set, both
+</I>&gt;<i> for readers and writers, so a write fd was always returned as readable
+</I>&gt;<i> unconditionally.
+</I>
+I'm glad we all agree as to what the new behavior should be, but you're 
+incorrect about the extent of the old brokenness. Simple tests prove 
+that POLLIN was not forced to be true always:
+
+On a debian 2.6.9-1-k7 kernel:
+
+====
+import os,select
+r,w=os.pipe()
+p=select.poll()
+p.register(w, select.POLLIN|select.POLLOUT)
+
+print select.select([w],[w],[w],0)
+print p.poll(0)
+
+os.write(w, &quot;asdf&quot;)
+print select.select([w],[w],[w],0)
+print p.poll(0)
+
+os.close(r)
+print select.select([w],[w],[w],0)
+print p.poll(0)
+====
+
+outputs:
+([], [4], [])
+[(4, 4)] (aka POLLOUT)
+([4], [], [])
+[(4, 1)] (aka POLLIN)
+([4], [4], [])
+[(4, 9)] (aka POLLIN|POLLERR)
+
+&gt;<i> It's POLLERR not POLLHUP. POLLHUP is set only when the &quot;writer&quot; side
+</I>&gt;<i> disconnected and you're listening to a reader fd. POLLERR is instead
+</I>&gt;<i> returned when the &quot;reader&quot; disconnected and you're listening to a
+</I>&gt;<i> writer fd.
+</I>
+Right. Twisted treats all of POLLERR/HUP/NVAL the same, anyways.
+
+&gt;<i> 671         if (events &amp; (POLLIN | POLLRDNORM)) {
+</I>&gt;<i> 672                 if ((rpipe-&gt;pipe_buffer.cnt &gt; 0) ||
+</I>&gt;<i> 673                     (rpipe-&gt;pipe_state &amp; PIPE_EOF))
+</I>&gt;<i> 674                         revents |= events &amp; (POLLIN | POLLRDNORM);
+</I>&gt;<i> 675         }
+</I>&gt;<i> The way I read it, even openbsd will report the fd as readable
+</I>&gt;<i> regardless if the channel is disconnected, if the buffer has something
+</I>&gt;<i> into it.
+</I>
+Nope -- Notice that rpipe and wpipe are backwards for the read and 
+write fds. &quot;rpipe&quot; on the write fd won't ever have any data in it. 
+(Except of course that pipes in BSD are bidirectional!). In BSD, 
+everything is symmetric, so it'd be very difficult for a stupid bug 
+like reporting the same status for both ends to occur.
+
+&gt;<i> Are you reall sure it can't be called with pollreactor?
+</I>&gt;<i>
+</I>&gt;<i> Sorry for asking again but I really want to be sure select won't screw
+</I>&gt;<i> things up with &gt;1024 fds open ;)
+</I>
+Yes, it will get called, because linux returns (returned?) 
+POLLERR|POLLIN when the other side is closed. pollreactor doesn't 
+assume the connection was lost immediately when POLLERR/etc is set, if 
+POLLIN is also set, because POLLIN|POLLHUP means there is more data 
+available to be read from the kernel buffer that was sent before the 
+connection closed. And, since normal transport implementations of 
+doRead actually do try to read, if it was lying about POLLIN, that's 
+okay: the read syscall will fail, and CONNECTION_LOST will be returned 
+from doRead.
+
+James
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009668.html">[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+</A></li>
+	<LI>Next message: <A HREF="009670.html">[Twisted-Python] linux kernel 2.6.11-rc broke twisted process	pipes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9669">[ date ]</a>
+              <a href="thread.html#9669">[ thread ]</a>
+              <a href="subject.html#9669">[ subject ]</a>
+              <a href="author.html#9669">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

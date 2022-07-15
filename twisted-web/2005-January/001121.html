@@ -1,0 +1,222 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] html cache with timeout
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20html%20cache%20with%20timeout&In-Reply-To=20050130141900.GN10440%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001120.html">
+   <LINK REL="Next"  HREF="001122.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] html cache with timeout</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20html%20cache%20with%20timeout&In-Reply-To=20050130141900.GN10440%40opteron.random"
+       TITLE="[Twisted-web] html cache with timeout">andrea at cpushare.com
+       </A><BR>
+    <I>Sun Jan 30 08:28:09 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001120.html">[Twisted-web] html cache with timeout
+</A></li>
+        <LI>Next message: <A HREF="001122.html">[Twisted-web] html cache with timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1121">[ date ]</a>
+              <a href="thread.html#1121">[ thread ]</a>
+              <a href="subject.html#1121">[ subject ]</a>
+              <a href="author.html#1121">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sun, Jan 30, 2005 at 03:19:00PM +0100, Andrea Arcangeli wrote:
+&gt;<i> +        c = self.lookupCache(ctx)
+</I>&gt;<i> +        if c is None or self.refreshCache():
+</I>&gt;<i> +            doc = self.docFactory.load()
+</I>&gt;<i> +            ctx =  WovenContext(ctx, tags.invisible[doc])
+</I>&gt;<i>  
+</I>
+In the above place I realized there was a subtle and not really
+important race condition where the following renderings could get old
+stale data from the cache while the flattening was running.
+
+My object is to call gettimeofday only one (since it's costly,
+especially on x86 w/o vsyscalls like x86-64) and secondly I want to run
+a single flattening, so moving the timestamp into the finisher wouldn't
+have fixed it either (since that would have invoked many unnecessary
+flattening, until the first one would have completed).
+
+That race would have been a very minor problem for my usage, but I fixed
+this optimally in this further update. This however use chained
+deferreds, so that I store the deferred in the cache and all following
+renderers now stop waiting for the single flattening to complete. So now
+cache is usable only with twisted, but I think this is perfectly ok,
+since without deferred the optimal implementation isn't doable (and if
+the twisted thread isn't persistent the cache will be destroyed anyway
+by execve ;).
+
+The thread that invokes the flattening (i.e. the one calling
+chainDeferredCache) could return 'd' too, not necessairly 'c', but I
+thought returning c would be more robust there too and less likely to
+break in the long run, because it exercises the code that only makes a
+difference under the race condition window.  (all other guys will have
+to wait for 'c' not 'd') Performance isn't an issue there.
+
+So this is more complex, but more correct, and it works fine too so far.
+Performance is unchanged, only the race condition window is closed by
+making caching dependent on twisted. Should still run w/o twisted as
+long as you don't try to add caching to it.
+
+So I'm keeping it applyed and I'll start optimizing all possible pages
+with this feature. It should be good enough for merging. Feel free to
+change the variable names if you don't like my coding style (I tried not
+to follow the kernel coding style even if I like it more ;)
+
+Thanks.
+
+Index: nevow/rend.py
+===================================================================
+--- nevow/rend.py	(revision 1134)
++++ nevow/rend.py	(working copy)
+@@ -30,6 +30,7 @@
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -374,6 +375,7 @@
+             self.children = {}
+         self.children[name] = child
+     
++_CACHE = {}
+ 
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+@@ -384,12 +386,47 @@
+ 
+     buffered = False
+ 
++    cacheTimeout = None # 0 means cache forever, &gt;0 sets the seconds of caching
++    __lastCacheRendering = 0 # this should not be touched by the parent class
++
+     beforeRender = None
+     afterRender = None
+     addSlash = None
+ 
+     flattenFactory = flat.flattenFactory
+ 
++    def hasCache(self, ctx):
++        if self.cacheTimeout is None:
++            return None
++
++        _now = now() # run gettimeofday only once
++        timeout = _now &gt; self.__lastCacheRendering + self.cacheTimeout and \
++                  self.cacheTimeout &gt; 0
++        c = self.lookupCache(ctx)
++        if timeout or c is None:
++            self.__lastCacheRendering = _now # stop other renders
++            from twisted.internet.defer import Deferred
++            d = Deferred()
++            self.storeCache(ctx, d)
++            # force only this rendering, others will wait the deferred
++            c = None
++        return c
++    def chainDeferredCache(self, ctx, d):
++        if self.cacheTimeout is None:
++            return d
++
++        from twisted.internet.defer import Deferred
++        c = self.lookupCache(ctx)
++        if isinstance(c, Deferred):
++            d.chainDeferred(c)
++        return c
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def storeCache(self, ctx, c):
++        _CACHE[self.cacheIDX(ctx)] = c
++    def lookupCache(self, ctx):
++        return _CACHE.get(self.cacheIDX(ctx))
++
+     def renderHTTP(self, ctx):
+         ## XXX request is really ctx now, change the name here
+         request = inevow.IRequest(ctx)
+@@ -411,23 +448,27 @@
+             if self.afterRender is not None:
+                 self.afterRender(ctx)
+ 
+-        if self.buffered:
++        if self.buffered or self.cacheTimeout is not None:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
+-                finishRequest()
+-                return result
++                c = io.getvalue()
++                self.storeCache(ctx, c)
++                return c
+         else:
+             writer = request.write
+             def finisher(result):
+                 finishRequest()
+                 return result
+ 
++        c = self.hasCache(ctx)
++        if c:
++            return c
++
+         doc = self.docFactory.load()
+         ctx =  WovenContext(ctx, tags.invisible[doc])
+ 
+-        return self.flattenFactory(doc, ctx, writer, finisher)
++        return self.chainDeferredCache(ctx, self.flattenFactory(doc, ctx, writer, finisher))
+ 
+     def rememberStuff(self, ctx):
+         Fragment.rememberStuff(self, ctx)
+
+
+As usual this unrelated fix is queued.
+
+Index: nevow/vhost.py
+===================================================================
+--- nevow/vhost.py	(revision 1134)
++++ nevow/vhost.py	(working copy)
+@@ -19,7 +19,7 @@
+ &quot;&quot;&quot;
+ 
+     def getStyleSheet(self):
+-        return self.stylesheet
++        return VirtualHostList.stylesheet
+  
+     def data_hostlist(self, context, data):
+         return self.nvh.hosts.keys()
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001120.html">[Twisted-web] html cache with timeout
+</A></li>
+	<LI>Next message: <A HREF="001122.html">[Twisted-web] html cache with timeout
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1121">[ date ]</a>
+              <a href="thread.html#1121">[ thread ]</a>
+              <a href="subject.html#1121">[ subject ]</a>
+              <a href="author.html#1121">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

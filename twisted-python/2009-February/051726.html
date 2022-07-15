@@ -1,0 +1,252 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] How to use ampoule?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20How%20to%20use%20ampoule%3F&In-Reply-To=%3CB8CD398A-F138-4F77-A9E9-A0B073A34EEE%40gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051718.html">
+   <LINK REL="Next"  HREF="051719.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] How to use ampoule?</H1>
+    <B>Valentino Volonghi</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20How%20to%20use%20ampoule%3F&In-Reply-To=%3CB8CD398A-F138-4F77-A9E9-A0B073A34EEE%40gmail.com%3E"
+       TITLE="[Twisted-Python] How to use ampoule?">dialtone at gmail.com
+       </A><BR>
+    <I>Fri Feb 20 16:07:58 MST 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051718.html">[Twisted-Python] How to use ampoule?
+</A></li>
+        <LI>Next message (by thread): <A HREF="051719.html">[Twisted-Python] Debugging Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51726">[ date ]</a>
+              <a href="thread.html#51726">[ thread ]</a>
+              <a href="subject.html#51726">[ subject ]</a>
+              <a href="author.html#51726">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+
+On Feb 20, 2009, at 2:08 AM, Chris wrote:
+
+&gt;<i> Hi everyone,
+</I>&gt;<i> I am using twisted to build a server,and the computing request maybe
+</I>&gt;<i> costs lot of cpu resources.I have checked the maillist,it seems I can
+</I>&gt;<i> use ampoule plugin to create another process ,I have checked the
+</I>&gt;<i> website,and downloaded the source code.It seems there is no any  
+</I>&gt;<i> document
+</I>&gt;<i> for it.I did find a example dir,after checking the code,I was
+</I>&gt;<i> confused.There should be two files,one for client and one for  
+</I>&gt;<i> server,am
+</I>&gt;<i> I right?the client will send the request to the server(could be in
+</I>&gt;<i> another machine?),and the server responses.but I can't find anything
+</I>&gt;<i> which matches what I thought.Can anyone explain a little bit to me? 
+</I>&gt;<i> Or if
+</I>&gt;<i> there is some code that would be better.
+</I>
+I don't have much time to write documentation, I basically spend most of
+the time in documenting the code itself, in testing it and I attached  
+some of
+the examples that one can use to learn the basics by himself but...
+
+You don't need 2 files, you need the code you want to run on both sides
+of the connection, Ampoule doesn't support shipping functions, although
+one might implement it on top of what ampoule offers, albeit not  
+recommended.
+
+AMPoule uses AMP as a communication protocol between the caller and the
+process pool, this means that they talk to each other using  
+twisted.protocols.amp
+and that for the abstraction sake they work as 2 separate networked  
+services
+that make RPC calls to each other. Again this also means that in order  
+to
+develop a process pool you will use AMP abstractions and classes on top
+of what AMPoule offers by default.
+
+Let's look at the simplest example: examples/pid.py
+
+What you need is a set of commands that a child process should be able
+to answer to, in pid.py this set is made of just a single command and  
+that
+is:
+
+from twisted.protocols import amp
+
+class Pid(amp.Command):
+     response = [(&quot;pid&quot;, amp.Integer())]
+
+Once you define a command that you want to be able to run in a process
+pool you need to define a child process that is able to answer to the  
+Pid
+command. Defining this also defines what every worker in the process
+pool will be able to answer to.
+
+In the example this is done with the following lines:
+
+from ampoule import child
+
+class MyChild(child.AMPChild):
+     @Pid.responder
+     def pid(self):
+         import os
+         return {&quot;pid&quot;: os.getpid()}
+
+We define a child of the process pool called MyChild and using AMP
+machinery we set the method pid as the responder for the command
+Pid. Unsurprisingly this command gets the pid and returns it.
+
+Now we need to run this code and use it. So far we have defined
+the server (ProcessPool) side of things.
+
+[NOTE: In order to run everything in a single file using &quot;python  
+filename.py&quot;
+to start it we need to hack around python's import system, this is why
+util.mainpoint exist, only to allow the script to import itself,  
+you'll notice
+that a script's name when started with &quot;python filename.py&quot; is not
+filename but __main__.]
+
+Here's the code
+
+@util.mainpoint
+def main(args):
+     import sys
+     from twisted.internet import reactor, defer
+     from twisted.python import log
+     log.startLogging(sys.stdout)
+
+     from ampoule import pool
+
+     @defer.inlineCallbacks
+     def _run():
+         pp = pool.ProcessPool(MyChild, min=1, max=1)
+         yield pp.start()
+         result = yield pp.doWork(Pid)
+         print &quot;The Child process PID is:&quot;, result['pid']
+         yield pp.stop()
+         reactor.stop()
+
+     reactor.callLater(1, _run)
+     reactor.run()
+
+Besides all the standard twisted imports and 'boilerplate' code
+the core of the client is inside the _run function.
+
+It creates the process pool telling it to use MyChild as a specification
+for its children, we also tell it that the minimum size of the pool is 1
+as well as the maximum size of the pool. Then the code proceeds
+to start it and once it's tarted we can submit commands and this is
+done with:
+
+result = yield pp.doWork(Pid)
+
+or
+
+result = yield pp.callRemote(Pid)
+
+The script then prints the result, stops the pool and exits.
+
+Strictly speaking the client of the process pool only needs to know
+the commands that he wants to execute, and which pool (if there
+is more than one) can execute it.
+
+This however is only true when the server is started separately from
+the client using &quot;twistd ampoule&quot; plugin. If your clients starts the
+pool by itself it needs to know also the class that defines the children
+protocol.
+
+The twistd ampoule plugin does nothing more than taking a child and
+parent class (the parent class defines what the master of the process
+pool can speak so that children can make calls against it if needed)
+and using some hacks exposes the same exact interface across the
+network using the parameters that you pass in the cli.
+
+&gt;<i> And the twisted server will receive lot of binary data from the
+</I>&gt;<i> client,if I use ampoule,I have to send the same data to the ampoule
+</I>&gt;<i> server again(now the twisted server acts as the ampoule client).Is the
+</I>
+Correct. I don't see any other way to do this except maybe if you have
+a distributed filesystem, in which case you might want to just save
+the data on the server and then make the right calls on the remote
+pools that have access to this distributed filesystem so that they can
+process the shards that they have access to.
+
+&gt;<i> ampoule suitable for such a kind of task? Or I should just use twisted
+</I>&gt;<i> process module?
+</I>
+Using the process module is not really different, the only issue you
+might find is related to the limit imposed by AMP of 64KB of data
+that can be transmitted in a single call to a given child. So for  
+example
+
+pool.callRemote(Command, argument=&quot;I'm a bit string of more than 64KB&quot;)
+
+won't work but:
+
+pool.callRemote(Command, argument=&quot;I'm a bit string of LESS than 64KB&quot;)
+
+will. There are multiple ways in which you can solve this issue but  
+essentially
+I wouldn't use ampoule to transport big quantities of data, you'd  
+better use
+a distributed filesystem or actually an http server where you store data
+from the server and each worker grabs data from.
+
+&gt;<i> I don't know my understanding is correct or not,please correct me.
+</I>
+
+It seems you got it right.
+
+HTH
+
+- --
+Valentino Volonghi aka Dialtone
+Now running MacOS X 10.5
+Home Page: <A HREF="http://www.twisted.it">http://www.twisted.it</A>
+<A HREF="http://www.adroll.com">http://www.adroll.com</A>
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.4.9 (Darwin)
+
+iEYEARECAAYFAkmfN88ACgkQ9Llz28widGXE9ACgk2OAlXK0cVP5/5tINoFAD70C
+Zc8Anig2L8GCNklG83a6la4x/hksFozW
+=SS7Z
+-----END PGP SIGNATURE-----
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051718.html">[Twisted-Python] How to use ampoule?
+</A></li>
+	<LI>Next message (by thread): <A HREF="051719.html">[Twisted-Python] Debugging Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51726">[ date ]</a>
+              <a href="thread.html#51726">[ thread ]</a>
+              <a href="subject.html#51726">[ subject ]</a>
+              <a href="author.html#51726">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

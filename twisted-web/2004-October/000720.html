@@ -1,0 +1,155 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: [Web-SIG] A more Twisted approach to async apps
+	in WSGI
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BWeb-SIG%5D%20A%20more%20Twisted%20approach%20to%20async%20apps%0A%09in%20WSGI&In-Reply-To=5.1.1.6.0.20040922204838.024f61c0%40mail.telecommunity.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000719.html">
+   <LINK REL="Next"  HREF="000721.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: [Web-SIG] A more Twisted approach to async apps
+	in WSGI</H1>
+    <B>James Y Knight</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BWeb-SIG%5D%20A%20more%20Twisted%20approach%20to%20async%20apps%0A%09in%20WSGI&In-Reply-To=5.1.1.6.0.20040922204838.024f61c0%40mail.telecommunity.com"
+       TITLE="[Twisted-web] Re: [Web-SIG] A more Twisted approach to async apps
+	in WSGI">foom at fuhm.net
+       </A><BR>
+    <I>Mon Oct  4 22:52:54 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000719.html">[Twisted-web] How to get rid of web logs? 
+</A></li>
+        <LI>Next message: <A HREF="000721.html">[Twisted-web] Re: [Web-SIG] A more Twisted approach to
+	async apps in WSGI
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#720">[ date ]</a>
+              <a href="thread.html#720">[ thread ]</a>
+              <a href="subject.html#720">[ subject ]</a>
+              <a href="author.html#720">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>A bit late with the response...but better late than never I hope. ;)
+
+On Sep 22, 2004, at 9:56 PM, Phillip J. Eby wrote:
+&gt;<i> On the positive side of the iterator approach, it could make it easier 
+</I>&gt;<i> for asynchronous applications to pause waiting for input, and it could 
+</I>&gt;<i> in principle support &quot;chunked&quot; transfer encoding of the input stream.
+</I>&gt;<i>
+</I>&gt;<i> Anyway, the long and short of it is that CGI and chunked encoding are 
+</I>&gt;<i> quite simply incompatible, which means that relying on its 
+</I>&gt;<i> availability would be nonportable in a WSGI application anyway.
+</I>
+I do not find that a good reason to copy the mistake (not supporting 
+chunking) to a new API.
+
+However! I don't think that the file-like-object API even has a problem 
+with chunked incoming data. As long as WSGI does not make 
+CONTENT_LENGTH a required header, and as long as the result of read 
+looks different for &quot;more data still to come&quot; and &quot;data finished&quot; (it 
+does, blocking for more data to occur vs. returning ''), I think it 
+should be fine (for non-async apps). Am I missing something here?
+
+&gt;<i> [...] That means that if we switch from an input stream to an 
+</I>&gt;<i> iterator, a lot of people are going to be trying to make sensible 
+</I>&gt;<i> wrappers to convert the iterator back to an input stream, and that's 
+</I>&gt;<i> just getting ridiculous, [...]
+</I>
+Iterable input stream does seems like it may be a loser for the common 
+case.
+
+&gt;<i> So, I'm thinking we should shift the burden to an async-specific API.  
+</I>&gt;<i> But, in this case, &quot;burden&quot; means that we get to give asynchronous 
+</I>&gt;<i> apps an API much more suited to their use cases.
+</I>&gt;<i> [...]
+</I>&gt;<i> The idea is that this would create an iterator that the server/gateway 
+</I>&gt;<i> could recognize as &quot;special&quot;, similar to the file-wrapper trick.  But, 
+</I>&gt;<i> the object returned would provide an extra API for use by the 
+</I>&gt;<i> asynchronous application, maybe something like:
+</I>&gt;<i>
+</I>&gt;<i>     put(data) -- queue data for retrieval when the controller is 
+</I>&gt;<i> iterated over
+</I>&gt;<i>
+</I>&gt;<i>     finish() -- mark the iterator finished, so it raises StopIteration
+</I>&gt;<i>
+</I>&gt;<i>     on_get(length,callback) -- call 'callback(data)' when 'length' 
+</I>&gt;<i> bytes are available on 'wsgi.input' (but return immediately from the 
+</I>&gt;<i> 'on_get()' call)
+</I>&gt;<i>
+</I>&gt;<i> While this API is an optional extension, it seems it would be closer 
+</I>&gt;<i> to what some async fans wanted, and less of a kludge.  It won't do 
+</I>&gt;<i> away with the possibility that middleware might block waiting for 
+</I>&gt;<i> input, of course, but when no middleware is present or the middleware 
+</I>&gt;<i> isn't transforming the input stream, it should work out quite well.
+</I>
+That sounds okay. I'd specify that the on_get &quot;length&quot; bit is a hint, 
+and may or may not be honored. put/finish is the right API for output 
+(although I'd call it write/finish myself), and on_get seems like the a 
+fairly usable API for input. It doesn't let you pause the incoming 
+data, so if you're passing it on to a slow downstream you'll 
+potentially need to buffer a lot, but maybe that's too much to ask for. 
+I assume callback('') is used to indicate end of incoming data: that 
+should be specified.
+
+However, interaction with middleware seems quite tricky here:
+- For input modifying middleware: I guess on_get would have to just 
+raise an exception if wsgi.input has been replaced. If the input stream 
+was iterable, an on_get callback could just be considered notice that 
+you can iterate the input stream once without blocking, assuming the 
+block boundary requirements were also in effect here. Then it would 
+work right even if the input stream was replaced. However, I think it 
+might be the case that middleware that wants to modify the input stream 
+is so rare, it doesn't really matter.
+- Output. The block boundary section implies that middleware that 
+follows the guidelines, and doesn't do any blocking operations of its 
+own should work without worrying about the server and application being 
+async or sync. If this is to work, the server cannot expect to actually 
+receive an asyncwrapper iterable as the return value, even if the app 
+is using it, because the middleware might be consuming that iterable 
+and returning one of its own. This means the .put/.next methods should 
+communicate out-of-band, effectively calling pause/resume functions in 
+the server so it knows when it's safe to iterate the vanilla iterator 
+the middleware returned without the middleware blocking when calling 
+the asyncwrapper-iterator.
+
+&gt;<i> But if this is the overall right approach, I'd like to drop the 
+</I>&gt;<i> current proposals to make 'wsgi.input' an iterator and add optional 
+</I>&gt;<i> 'pause'/'resume' APIs, since they were rather kludgy compared to 
+</I>&gt;<i> giving async apps their own mini-API for nonblocking I/O.
+</I>
+Perhaps Peter Hunt could try to implement it in his twisted wsgi 
+gateway and see if it works out. :)
+
+James
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000719.html">[Twisted-web] How to get rid of web logs? 
+</A></li>
+	<LI>Next message: <A HREF="000721.html">[Twisted-web] Re: [Web-SIG] A more Twisted approach to
+	async apps in WSGI
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#720">[ date ]</a>
+              <a href="thread.html#720">[ thread ]</a>
+              <a href="subject.html#720">[ subject ]</a>
+              <a href="author.html#720">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

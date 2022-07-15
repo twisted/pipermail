@@ -1,0 +1,204 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] fix nevow exception in args parsing
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20fix%20nevow%20exception%20in%20args%20parsing&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001902.html">
+   <LINK REL="Next"  HREF="001880.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] fix nevow exception in args parsing</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20fix%20nevow%20exception%20in%20args%20parsing&In-Reply-To="
+       TITLE="[Twisted-web] fix nevow exception in args parsing">andrea at cpushare.com
+       </A><BR>
+    <I>Fri Sep  2 19:37:40 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001902.html">Possible removal of ctx from inevow.IResource (was Re:
+	[Twisted-web]
+	access control feature, ctx removal from locateChild and renderHTTP,
+	what's going on?)
+</A></li>
+        <LI>Next message: <A HREF="001880.html">[Twisted-web] fix nevow exception in args parsing
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1879">[ date ]</a>
+              <a href="thread.html#1879">[ thread ]</a>
+              <a href="subject.html#1879">[ subject ]</a>
+              <a href="author.html#1879">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I noticed an exception in nevow, for example with divmod.com/?=x=x=x.
+
+This is the fix, please apply this (or an equivalent one) to SVN:
+
+Index: Nevow/nevow/url.py
+===================================================================
+--- Nevow/nevow/url.py	(revision 1748)
++++ Nevow/nevow/url.py	(working copy)
+@@ -21,7 +21,7 @@
+ def _uqf(query):
+     for x in query.split('&amp;'):
+         if '=' in x:
+-            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')] )
++            yield tuple( [urllib.unquote_plus(s) for s in x.split('=')[:2]] )
+         elif x:
+             yield (urllib.unquote_plus(x), None)
+ unquerify = lambda query: list(_uqf(query))
+
+
+And here again my latest version of the usual caching patches based on
+dialtone's stuff, that prevents high traffic pages to hurt.
+
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 1748)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -476,6 +476,8 @@
+         self.children[name] = child
+     
+ 
++_CACHE = {}
++
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+     via the document factory (docFactory).
+@@ -489,8 +491,46 @@
+     afterRender = None
+     addSlash = None
+ 
++    cache = False
++    lifetime = 0
++
+     flattenFactory = lambda self, *args: flat.flattenFactory(*args)
+ 
++    def hasCache(self, ctx):
++        if not self.cache:
++            return
++
++        c = self.lookupCache(ctx)
++
++        if c is None:
++            self.storeCache(ctx, [util.Deferred()])
++            return
++
++        if isinstance(c[0], util.Deferred):
++            d = util.Deferred()
++            c.append(d)
++            return d
++
++        if now() &gt; c[1] + self.lifetime and self.lifetime &gt; 0:
++            self.storeCache(ctx, [util.Deferred()])
++            return
++
++        return c[0]
++    def cacheRendered(self, ctx, data):
++        if self.cache:
++            defer_list = self.lookupCache(ctx)
++            assert(isinstance(defer_list[0], util.Deferred))
++            # overwrite the deferred with the data
++            self.storeCache(ctx, (data, now()))
++            for d in defer_list:
++                d.callback(data)
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def storeCache(self, ctx, c):
++        _CACHE[self.cacheIDX(ctx)] = c
++    def lookupCache(self, ctx):
++        return _CACHE.get(self.cacheIDX(ctx))
++
+     def renderHTTP(self, ctx):
+         if self.beforeRender is not None:
+             return util.maybeDeferred(self.beforeRender,ctx).addCallback(
+@@ -515,11 +555,18 @@
+             if self.afterRender is not None:
+                 return util.maybeDeferred(self.afterRender,ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c is not None:
++            finishRequest()
++            return c
++
++        if self.buffered or self.cache:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = io.getvalue()
++                self.cacheRendered(ctx, c)
++                request.write(c)
+                 return util.maybeDeferred(finishRequest).addCallback(lambda r: result)
+         else:
+             writer = request.write
+
+And here the fix to avoid wget to write garbage in filenames under
+the nevow guard (I suggest to merge it).
+
+Index: Nevow/nevow/guard.py
+===================================================================
+--- Nevow/nevow/guard.py	(revision 1748)
++++ Nevow/nevow/guard.py	(working copy)
+@@ -297,7 +297,8 @@
+         if path.startswith(SESSION_KEY):
+             key = path[len(SESSION_KEY):]
+             if key not in self.sessions:
+-                return urlToChild(request, *segments[1:], **{'__start_session__':1}), ()
++                #return urlToChild(request, *segments[1:], **{'__start_session__':1}), ()
++                return urlToChild(request, *segments[1:]), ()
+             self.sessions[key].setLifetime(self.sessionLifetime)
+             if cookie == key:
+                 # /sessionized-url/${SESSION_KEY}aef9c34aecc3d9148/foo
+@@ -305,7 +306,8 @@
+                 #                  we are this getChild
+                 # with a matching cookie
+                 self.sessions[key].sessionJustStarted = True
+-                return urlToChild(request, *segments[1:], **{'__session_just_started__':1}), ()
++                #return urlToChild(request, *segments[1:], **{'__session_just_started__':1}), ()
++                return urlToChild(request, *segments[1:]), ()
+             else:
+                 # We attempted to negotiate the session but failed (the user
+                 # probably has cookies disabled): now we're going to return the
+
+Keep up the great work, thanks!
+
+PS. While sending this email I take the opportunity to point you to the
+nevow sourcecode of a little GPL nevow appserver I developed last
+weekend, any suggestion for improvements is welcome ;).
+
+	<A HREF="http://klive.cpushare.com/downloads/">http://klive.cpushare.com/downloads/</A>
+
+</PRE>
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001902.html">Possible removal of ctx from inevow.IResource (was Re:
+	[Twisted-web]
+	access control feature, ctx removal from locateChild and renderHTTP,
+	what's going on?)
+</A></li>
+	<LI>Next message: <A HREF="001880.html">[Twisted-web] fix nevow exception in args parsing
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1879">[ date ]</a>
+              <a href="thread.html#1879">[ thread ]</a>
+              <a href="subject.html#1879">[ subject ]</a>
+              <a href="author.html#1879">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

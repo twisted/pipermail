@@ -1,0 +1,271 @@
+Index: web2/test/test_http.py
+===================================================================
+--- web2/test/test_http.py      (revision 11916)
++++ web2/test/test_http.py      (working copy)
+@@ -1,1 +1,1 @@
+ from __future__ import nested_scopes
+
+ import time
++import StringIO
+ from twisted.trial import unittest
+-from twisted.web2 import http, http_headers, responsecode, error
++from twisted.web2 import http, http_headers, responsecode, error, gzstream
+
+ from twisted.internet import reactor, protocol, address, interfaces
+ from twisted.protocols import loopback
+
+ from zope.interface import implements
+
++try:
++    enumerate
++except NameError:
++    def enumerate(seq):
++        for i in xrange(len(seq)):
++            yield i, seq[i]
+
+ class PreconditionTestCase(unittest.TestCase):
+     def checkPreconditions(self, request, expectedResult, expectedCode,
+@@ -536,2 +543,2 @@
+         cxn.client.loseConnection()
+         self.assertDone(cxn)
+
++    def testGzipStream(self):
++        cxn = self.connect()
++        cmds = [[]]
++        data = ""
++        sio = http.StringTransport()
++        out = http.StringTransport()
++
++##         def fromChunkEncoded(data):
++##             length, data, _ = data.split('\r\n')
++##             return data
++
++##         def write(writer, from):
++##             def _(data):
++
++
++        gzipper = gzstream.GzipStream()
++        gunzipper = gzstream.GunzipStream()
++
++        def encodeGzip(writer):
++            gzipper.write = writer
++            gzipper.reset()
++            def _(data):
++                gzipper.dataReceived(data)
++            return _
++
++        outtester = encodeGzip(http.toChunkEncoded(sio))
++
++        def decodeGzip(writer):
++            gunzipper.write = writer
++            gunzipper.reset()
++            def _(data):
++               gunzipper.dataReceived(data)
++            return _
++
++        intester = decodeGzip(out.write)
++
++        cxn.client.write("GET / HTTP/1.1\r\n\r\n")
++
++        cmds[0] += [('init', 'GET', '/', (1,1), ()),
++                    ('contentComplete',)]
++        self.compareResult(cxn, cmds, data)
++
++        cxn.requests[0].out_headers.setRawHeaders("Transfer-Encoding", ("gzip",))
++        cxn.requests[0].acceptData()
++        cxn.requests[0].write("")
++        cxn.requests[0].write("Hi boy")
++        cxn.requests[0].finish()
++
++        outtester("Hi boy")
++        gzipper.run()
++        pos = sio.tell()
++        sio.seek(0)
++        data += "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n"
++        data += sio.getvalue()
++        data += "0\r\n\r\n" # This is terminating chunks
++        self.compareResult(cxn, cmds, data)
++
++        sio.seek(0)
++        d = sio.getvalue()
++        split_d = d.split("\r\n")
++        for idx, el in enumerate(split_d):
++            if idx % 2 != 0:
++                intester(el)
++        gunzipper.run()
++        self.assertEquals(out.getvalue(), "Hi boy")
++        self.assertDone(cxn, done=False)
++        cxn.client.loseConnection()
++        self.assertDone(cxn)
++
++
+ class ErrorTestCase(HTTPTests):
+     def assertStartsWith(self, first, second, msg=None):
+         self.assert_(first.startswith(second), '%r.startswith(%r)' % (first, second))
+@@ -660,0 +737,0 @@
+
+         cxn.requests[0].finish()
+         ErrorTestCase.checkError(self, cxn, code)
++
+Index: web2/http.py
+===================================================================
+--- web2/http.py        (revision 11916)
++++ web2/http.py        (working copy)
+@@ -33,3 +33,4 @@
+ from twisted.web2 import http_headers
+ from twisted.web2 import iweb
+ from twisted.web2 import error
++from twisted.web2 import gzstream
+
+ PERSIST_NO_PIPELINE = 2
+
+@@ -42,0 +43,0 @@
+
+     @returns: a tuple of strings representing the chunked encoding of data"""
+     return ("%X\r\n" % len(data), data, "\r\n")
++
++def toChunkEncoded(transport):
++    """Convert string to a chunk with encoded input
+
++    @returns: a function that writes the chunk on the transport"""
++    def _(data):
++        transport.writeSequence(("%X\r\n" % len(data), data, "\r\n"))
++    return _
++
++
+
+ def parseVersion(strversion):
+     """Parse version strings of the form Protocol '/' Major '.' Minor. E.g. 'HTTP/1.1'.
+@@ -68,2 +78,2 @@
+     def __getattr__(self, attr):
+         return getattr(self.__dict__['s'], attr)
+
+-
+ # response codes that must have empty bodies
+ NO_BODY_CODES = (204, 304)
+
+@@ -304,2 +313,2 @@
+         else:
+             return ifrange == self.out_headers.getHeader("last-modified")
+
+-
+ # FIXME: these last 3 methods don't belong here.
+
+     def setHost(self, host, port, ssl=0):
+@@ -354,7 +362,6 @@
+     command = path = version = None
+     partialHeader = ''
+     queued = 0
+-    finishedReading = False
+-
++    finishedReading = False
+     channel = None
+     request = None
+
+@@ -366,2 +373,2 @@
+         self.channel = channel
+         self.queued=queued
+
++        self.gzipper = gzstream.GzipStream()
++        self.gunzipper = gzstream.GunzipStream()
++        self.outGzipEncoded = False
++        self.inGzipEncoded = False
++
+         # Buffer writes to a string until we're first in line
+         # to write a response
+         if queued:
+@@ -468,13 +480,14 @@
+     def rawDataReceived(self, data):
+         """Handle incoming content."""
+         datalen = len(data)
++
+         if datalen < self.length:
+             if not self.finished:
+-                self.request.handleContentChunk(data)
++                self.inChunkHandler(data)
+             self.length = self.length - datalen
+         else:
+             if not self.finished:
+-                self.request.handleContentChunk(data[:self.length])
++                self.inChunkHandler(data[:self.length])
+             extraneous = data[self.length:]
+             channel = self.channel # could go away from allContentReceived.
+             if not self.chunkedIn:
+@@ -515,0 +528,0 @@
+
+         self.channel.queueRequest(self)
+         request = self.channel.requestFactory(self, self.command, self.path, self.version, self.reqHeaders)
++
++        def decodeGzip(chunkHandler):
++            self.gunzipper.write = chunkHandler
++            self.gunzipper.reset()
++            def _(data):
++                self.gunzipper.dataReceived(data)
++            return _
++
++        # Set the client chunkhandler if the content is gzipped.
++        if ['gzip'] == self.reqHeaders.getHeader('Transfer-Encoding'):
++            self.inGzipEncoded = True
++            self.inChunkHandler = decodeGzip(request.handleContentChunk)
++        else:
++            self.inGzipEncoded = False
++            self.inChunkHandler = request.handleContentChunk
+
+         # Reset header state variables
+         del self.reqHeaders
+@@ -523,1 +551,1 @@
+         self.request = request
+
+     def allContentReceived(self):
++        if self.inGzipEncoded:
++            self.gunzipper.run()
+         self.finishedReading = True
+         self.channel.requestReadFinished(self, self.persistent)
+         if not self.finished:
+@@ -655,0 +685,0 @@
+
+         l.append("\r\n")
+         self.transport.writeSequence(l)
++
++        def encodeGzip(chunkHandler):
++            self.gzipper.write = chunkHandler
++            self.gzipper.reset()
++            def _(data):
++                self.gzipper.dataReceived(data)
++            return _
++
++        ### XXX Why using in operator breaks everything.
++        if ['gzip'] == headers.getHeader('Transfer-Encoding'):
++            self.outGzipEncoded = True
++            self.outChunkHandler = encodeGzip(toChunkEncoded(self.transport))
++        else:
++            self.outGzipEncoded = False
++            self.outChunkHandler = toChunk
+
+
+     def writeData(self, data):
+         if self.chunkedOut:
+-            self.transport.writeSequence(toChunk(data))
++            if self.outGzipEncoded:
++                self.outChunkHandler(data)
++            else:
++                self.transport.writeSequence(toChunk(data))
+         else:
+             self.transport.write(data)
+
+@@ -668,3 +716,6 @@
+         if self.finished:
+             warnings.warn("Warning! request.finish called twice.", stacklevel=2)
+             return
++
++        if self.outGzipEncoded:
++            self.gzipper.run()
+
+         if self.chunkedOut:
+             # write last chunk and closing CRLF
+             self.transport.write("0\r\n\r\n")
+
++
+         self.finished = True
+         if not self.queued:
+             self._cleanup()

@@ -1,0 +1,201 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] POP3 improvements
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20POP3%20improvements&In-Reply-To=20021230114825.4553701f.twisted%40itamarst.org">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002492.html">
+   <LINK REL="Next"  HREF="002494.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] POP3 improvements</H1>
+    <B>Abe Fettig</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20POP3%20improvements&In-Reply-To=20021230114825.4553701f.twisted%40itamarst.org"
+       TITLE="[Twisted-Python] POP3 improvements">abe at fettig.net
+       </A><BR>
+    <I>Mon Dec 30 13:09:52 EST 2002</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002492.html">[Twisted-Python] POP3 improvements
+</A></li>
+        <LI>Next message: <A HREF="002494.html">[Twisted-Python] POP3 improvements
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2493">[ date ]</a>
+              <a href="thread.html#2493">[ thread ]</a>
+              <a href="subject.html#2493">[ subject ]</a>
+              <a href="author.html#2493">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>(diff attached to make it easier to see what I changed)
+
+On Mon, 2002-12-30 at 11:48, Itamar Shtull-Trauring wrote:
+
+&gt;<i> 
+</I>&gt;<i> &gt; Currently it works like this:  When you send a command that returns a
+</I>&gt;<i> &gt; multi-line response (LIST or RETR), you pass an optional file-like
+</I>&gt;<i> &gt; object that the response should be written to.  If no file argument is
+</I>&gt;<i> &gt; supplied a StringIO is used.  When the server is finished sending the
+</I>&gt;<i> &gt; response, handle_COMMANDNAME is called, passing back the file object
+</I>&gt;<i> &gt; containing the downloaded response.
+</I>&gt;<i> 
+</I>&gt;<i> Instead of calling handle_COMMANDNAME, why not return a Deferred of the
+</I>&gt;<i> success?
+</I>
+Based on other Twisted protocol handlers I thought that the preferred
+way to handle events in protocols was to create methods that get called
+in response to events.  That way you create a class that inherits from
+POP3Client, and override the methods for events you want to handle. 
+Being able use classes and inheritance this way is one of the things I
+really like about Twisted.
+
+Also, that's the way it was in the original POP3 module.
+
+
+&gt;<i> 
+</I>&gt;<i> &gt; At this point I'm still not correcting byte-stuffed lines in
+</I>&gt;<i> &gt; downloaded messages, so I need to do that.  Also, if it would be OK
+</I>&gt;<i> &gt; with everyone, I think it might be nice to make POP3Client a little
+</I>&gt;<i> &gt; higher-level, so that LIST, for example, would return an actual list
+</I>&gt;<i> &gt; instead of a file(or, in the current implementation, a string) that
+</I>&gt;<i> &gt; the implementer has to parse.  And it might be good to offer support
+</I>&gt;<i> &gt; for more POP3 commands like TOP.
+</I>&gt;<i> 
+</I>&gt;<i> Or perhaps the Deferred should return that.
+</I>-------------- next part --------------
+--- /usr/lib/python2.2/site-packages/twisted/protocols/pop3.py	2002-07-24 15:04:56.000000000 -0400
++++ pop3support.py	2002-12-30 10:56:14.000000000 -0500
+@@ -21,6 +21,7 @@
+ from twisted.protocols import basic
+ import os, time, string, operator, stat, md5, binascii
+ from twisted.internet import protocol
++from cStringIO import StringIO
+ 
+ class POP3Error(Exception):
+     pass
+@@ -167,11 +168,16 @@
+     welcomeRe = re.compile('&lt;(.*)&gt;')
+ 
+     def sendShort(self, command, params):
++        self.line_mode = 1
+         self.transport.write('%s %s\r\n' % (command, params))
+         self.command = command
+         self.mode = SHORT
+ 
+-    def sendLong(self, command, params):
++    def sendLong(self, command, params, dataFile=None):
++        if not dataFile: dataFile = StringIO()
++        self.dataFile = dataFile
++        self.dataFileTail = &quot;&quot;
++        self.line_mode = 1
+         self.transport.write('%s %s\r\n' % (command, params))
+         self.command = command
+         self.mode = FIRST_LONG
+@@ -189,23 +195,41 @@
+             if m:
+                 self.welcomeCode = m.group(1)
+ 
++    def rawDataReceived(self, data):
++        tail = self.dataFileTail + data[-5:]
++        if tail.endswith(&quot;\r\n.\r\n&quot;):
++            self.dataFile.write(data[:-5])
++            method = getattr(self, 'handle_'+self.command, None)
++            if method is not None:
++                self.dataFile.seek(0)
++                method(self.dataFile)
++        else:
++            self.dataFile.write(data)
++            self.dataFileTail = data[-5:]
++
+     def lineReceived(self, line):
+-        if self.mode == SHORT or self.mode == FIRST_LONG:
++        if self.mode == SHORT:
+             self.mode = NEXT[self.mode]
+             method = getattr(self, 'handle_'+self.command, self.handle_default)
+             method(line)
+-        elif self.mode == LONG:
+-            if line == '.':
+-                self.mode = NEXT[self.mode]
+-                method = getattr(self, 'handle_'+self.command+'_end', None)
+-                if method is not None:
+-                    method()
+-                return
+-            if line[:1] == '.':
+-                line = line[1:]
+-            method = getattr(self, 'handle_'+self.command+'_continue', None)
+-            if method is not None:
+-                method(line)
++        elif self.mode == FIRST_LONG:
++            self.mode = NEXT[self.mode]
++            self.line_mode = 0
++            method = getattr(self, 'handle_'+self.command+'_start', self.handle_default)
++            method(line)
++           
++        #elif self.mode == LONG:
++        #    if line == '.':
++        #        self.mode = NEXT[self.mode]
++        #        method = getattr(self, 'handle_'+self.command+'_end', None)
++        #        if method is not None:
++        #            method()
++        #        return
++        #    if line[:1] == '.':
++        #        line = line[1:]
++        #    method = getattr(self, 'handle_'+self.command+'_continue', None)
++        #    if method is not None:
++        #        method(line)
+ 
+     def apopAuthenticate(self, user, password):
+         digest = md5.new(magic+password).digest()
+@@ -214,17 +238,24 @@
+ 
+     def apop(self, user, digest):
+         self.sendLong('APOP', user+' '+digest)
+-    def retr(self, i):
+-        self.sendLong('RETR', i)
++
++    def retr(self, i, destFile=None):
++        self.sendLong('RETR', i, destFile)
++
+     def dele(self, i):
+         self.sendShort('DELE', i)
++
+     def list(self, i=''):
+         self.sendLong('LIST', i)
++
+     def uidl(self, i=''):
+         self.sendLong('UIDL', i)
++
+     def user(self, name):
+         self.sendShort('USER', name)
++
+     def pass_(self, pass_):
+         self.sendShort('PASS', pass_)
++
+     def quit(self):
+         self.sendShort('QUIT', '')
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002492.html">[Twisted-Python] POP3 improvements
+</A></li>
+	<LI>Next message: <A HREF="002494.html">[Twisted-Python] POP3 improvements
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2493">[ date ]</a>
+              <a href="thread.html#2493">[ thread ]</a>
+              <a href="subject.html#2493">[ subject ]</a>
+              <a href="author.html#2493">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

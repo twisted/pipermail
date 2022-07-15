@@ -1,0 +1,179 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] epoll and other questions
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20epoll%20and%20other%20questions&In-Reply-To=%3C20041007215334.GM29178%40dualathlon.random%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="041283.html">
+   <LINK REL="Next"  HREF="041289.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] epoll and other questions</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20epoll%20and%20other%20questions&In-Reply-To=%3C20041007215334.GM29178%40dualathlon.random%3E"
+       TITLE="[Twisted-Python] epoll and other questions">andrea at cpushare.com
+       </A><BR>
+    <I>Thu Oct  7 15:53:34 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="041283.html">[Twisted-Python] epoll and other questions
+</A></li>
+        <LI>Next message (by thread): <A HREF="041289.html">[Twisted-Python] epoll and other questions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41288">[ date ]</a>
+              <a href="thread.html#41288">[ thread ]</a>
+              <a href="subject.html#41288">[ subject ]</a>
+              <a href="author.html#41288">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Wed, Oct 06, 2004 at 11:02:27PM +0300, Tommi Virtanen wrote:
+&gt;<i> then because of epoll API instability; now that epoll is no longer a
+</I>&gt;<i> moving target, someone should get back on the case.
+</I>
+agreed ;).
+
+Ideally with truly huge number of sockets open, the time wasted in poll
+at some point would be more than the time wasted in the python
+interpreter (if compared to a C source). Would be interesting to measure
+the breakpoint, so when the poll cost becomes higher than the
+interpreter.
+
+&gt;<i> &gt;twisted use epoll. I assume my application would require no change,
+</I>&gt;<i> &gt;so I can start developing with current twisted, I can test it with
+</I>&gt;<i> &gt;poll, and then later fix the internals when the slowdown becomes
+</I>&gt;<i> &gt;noticeable.  Right?
+</I>&gt;<i> 
+</I>&gt;<i> Yes. All the different reactors implement the same interface.
+</I>&gt;<i> 
+</I>&gt;<i> Also, notice that the default reactor most likely uses select, not poll:
+</I>&gt;<i> 
+</I>&gt;<i> $ python -c 'from twisted.internet import reactor; print reactor'
+</I>&gt;<i> &lt;twisted.internet.default.SelectReactor instance at 0x401fb16c&gt;
+</I>&gt;<i> $ python -c 'from twisted.internet import pollreactor; \
+</I>&gt;<i>  pollreactor.install(); from twisted.internet import reactor; \
+</I>&gt;<i>  print reactor'
+</I>&gt;<i> &lt;twisted.internet.pollreactor.PollReactor instance at 0x401f33ec&gt;
+</I>
+good point. I'll use pollreactor for now. Apparently, I still have to
+use the normal &quot;select&quot; reactor for interfacing with pyqt, but that's ok
+since I don't (yet) need scalability on the client side...
+
+&gt;<i> My gut feeling is you'll either hit an OS limit or sys.maxint,
+</I>&gt;<i> and the latter is pretty huge. Haven't looked at the details.
+</I>
+ok fine ;).
+
+&gt;<i> Well, there's nothing Twisted- or even Python-specific in that.
+</I>&gt;<i> The solution probably depends heavily on your dataset size, access
+</I>&gt;<i> patterns, and available RAM. Some people advocate heavy RAM caching.
+</I>
+yes, heavy ram caching is fine for reads, but writes may still require
+O_SYNC.
+
+&gt;<i> Sendfile might be the solution, but I don't think there's any
+</I>&gt;<i> integration of sendfile with python, far less with twisted.
+</I>
+sendfile is synchronous too, so I don't think it'd solve the problem.
+Plus sendfile only works from the filesystem to the network, while for
+me it's almost the other way around and I've to parse the data anyways
+(I'm even thinking to use pickle objects as storage for each user, but
+I'm a bit afraid about the versioning and the unpickle/pickle
+performance, so if I upgrade the user class and then all unpickle breaks
+because I lack a on-disk format different from the in-memory format).
+
+&gt;<i> Your plan on isolating disk IO to separate process(es) sounds quite
+</I>&gt;<i> sane. Your master process could receive the file data from the IO
+</I>&gt;<i> workers in blocks via a shared mmap, to avoid passing it through a
+</I>
+so you're saying I could already used shared mmap. but how to serialize
+then? I'd need pthread_mutex for that. Otherwise if I have to serialize
+through a pipe I can as well send the data through the pipe as well
+(it's not going to be high bandwidth communication where an additional
+memcpy matters, it'd prefer shared mem only for lowlatency and
+full-userspace locking for the data producer)
+ 
+&gt;<i> socket (even if the socket was a local TCP connection or UNIX domain).
+</I>&gt;<i> Don't know if that optimization is worth it; I would delay writing
+</I>&gt;<i> any extra code until the problem actually shows up.
+</I>
+Agreed ;)
+
+&gt;<i> Note that python threading is very likely _not_ what you want;
+</I>&gt;<i> the threads synchronize in the interpreter level quite a lot.
+</I>
+agreed, it's not really scaling. This is also why I doubt the
+serialization through shmem would work well, unless I write a module
+from scratch for the pthread_mutex futex driven locking.
+
+&gt;<i> &gt;Another thing I plan doing is to ship the public key (matching the 
+</I>&gt;<i> &gt;private key stored only on the server) on the client source tarball, 
+</I>&gt;<i> &gt;this way as far as people downloaded the right tarball, they will be 
+</I>&gt;<i> &gt;able to securely connect to the server since they will be able to
+</I>&gt;<i> &gt;check the signature. Is there any example of this idea (public key
+</I>&gt;<i> &gt;stored in a file in the client package) available somewhere?
+</I>&gt;<i> 
+</I>&gt;<i> SFS (secure file system) does something like that. The info page
+</I>&gt;<i> included has this:
+</I>&gt;<i> 
+</I>&gt;<i> 	SFS clients require no configuration.  Simply run the program
+</I>&gt;<i> 	`sfscd', and a directory `/sfs' should appear on your system.
+</I>&gt;<i> 	To test your client, access our SFS test server.  Type the
+</I>&gt;<i> 	following commands:
+</I>&gt;<i> 
+</I>&gt;<i> 	  % cd /sfs/@sfs.fs.net,uzwadtctbjb3dg596waiyru8cx5kb4an
+</I>&gt;<i> 	  % cat CONGRATULATIONS
+</I>&gt;<i> 	  You have set up a working SFS client.
+</I>&gt;<i> 	  %
+</I>&gt;<i> 
+</I>&gt;<i> 	Note that the `/sfs/@sfs.fs.net,...' directory does not need to
+</I>&gt;<i> 	exist before you run the `cd' command.  SFS transparently mounts
+</I>&gt;<i> 	new servers as you access them.
+</I>&gt;<i> 
+</I>&gt;<i> The part after the comma is a hash of the public key the server at
+</I>&gt;<i> sfs.fs.net must present, in order to be accepted.
+</I>
+I found sfscd program, but it's not a python program and it seems a bit
+different from what I wanted to do. My object was to create a
+private/public key pair, and to use an SSL library to load that file
+automatically and use it as the public/private key. My point is that if
+twisted supports the native ssh protocol from id_rsa* than it'll be a
+joke to implement my public/private key in a file too.  I was just
+trying to reuse whatever is available right now, be it
+SSH/SSL/sshtunnel/whatever as transport for the encryption. So if you've
+a suggestion of what encrypted transport to use that's welcome.
+
+Thank you very much for the help!
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="041283.html">[Twisted-Python] epoll and other questions
+</A></li>
+	<LI>Next message (by thread): <A HREF="041289.html">[Twisted-Python] epoll and other questions
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41288">[ date ]</a>
+              <a href="thread.html#41288">[ thread ]</a>
+              <a href="subject.html#41288">[ subject ]</a>
+              <a href="author.html#41288">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

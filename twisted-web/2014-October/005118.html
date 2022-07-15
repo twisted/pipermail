@@ -1,0 +1,126 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Making Secure HTTPS requests, SSL Method,	and Certificate Management using Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20Making%20Secure%20HTTPS%20requests%2C%20SSL%20Method%2C%0A%09and%20Certificate%20Management%20using%20Twisted&In-Reply-To=%3C112CDFBA-765C-4F7F-87CA-333A256605DF%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005114.html">
+   <LINK REL="Next"  HREF="005116.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Making Secure HTTPS requests, SSL Method,	and Certificate Management using Twisted</H1>
+    <B>Glyph</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20Making%20Secure%20HTTPS%20requests%2C%20SSL%20Method%2C%0A%09and%20Certificate%20Management%20using%20Twisted&In-Reply-To=%3C112CDFBA-765C-4F7F-87CA-333A256605DF%40twistedmatrix.com%3E"
+       TITLE="[Twisted-web] Making Secure HTTPS requests, SSL Method,	and Certificate Management using Twisted">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue Oct  7 23:49:37 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005114.html">[Twisted-web] Making Secure HTTPS requests, SSL Method, and Certificate Management using Twisted
+</A></li>
+        <LI>Next message: <A HREF="005116.html">[Twisted-web] Nginx vs Twisted Web
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5118">[ date ]</a>
+              <a href="thread.html#5118">[ thread ]</a>
+              <a href="subject.html#5118">[ subject ]</a>
+              <a href="author.html#5118">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Oct 6, 2014, at 7:55 AM, Carl Waldbieser &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">cwaldbieser at gmail.com</A>&gt; wrote:
+
+&gt;<i> I have a couple projects I am working on where I would like to make HTTPS requests using Twisted.  I reviewed the articles &quot;Using TLS in Twisted&quot; [1] and &quot;Using the Twisted Web Client&quot; (section &quot;HTTP over SSL&quot;) [2].  It seems like various options exist that will allow me to make HTTPS requests using the CA certs bundled on the client OS.
+</I>
+Thank you for diligently studying all of our existing documentation on the subject.  I apologize for its deficiencies.  This API has grown in fits and starts over the last decade or so and it has not ended in the most consistent shape.  Hopefully we can improve this based on your feedback for the next release.
+
+&gt;<i> I would like to be able to tell my HTTPS clients to accept specific *internal* CA certificates *in addition* to the certificates provided by the OS.  Initially, I thought this might be possible by passing a custom t.w.c.BrowserLikePolicyForHTTPS to the t.w.c.Agent as its `contextFactory` argument. I wasn't quite sure how to go about doing this, so I got some advice on StackOverflow [3]. With some slight modifications to the solution presented there, I was able to create a custom Trust Root that accepted a list of paths to CA cert files in PEM format that I wanted to add to the client. The custom trust root is passed to the BrowserLikePolicyForHTTPS. The policy is passed to the Agent.
+</I>&gt;<i> 
+</I>&gt;<i> The one hitch is that the IOpenSSLTrustRoot interface upon which my custom trust root is based is located in `twisted.internet._sslverify`[4], which if I understand correctly, is a private module and not supposed to be used as an API.  Is there a *supported* way to specify *additional* CA certs to use during SSL verification when making HTTPS requests using Twisted? If so, what is the recommended method?
+</I>
+Well, the &quot;good&quot; news is, on OS X, if you're using the bundled system OpenSSL, you can't turn this behavior off: &lt;<A HREF="https://hynek.me/articles/apple-openssl-verification-surprises/">https://hynek.me/articles/apple-openssl-verification-surprises/</A>&gt;.  Although we may eventually ship a mitigation for this vulnerability in Twisted, so probably best not to rely on that long-term :).
+
+The bad news is that, no, we really had two use-cases in mind here; either:
+
+your software is trusting the trust cartel as specified by the operating system vendor and/or the user, and your software is opting out of any trust configuration, or
+your software has a specific understanding of its trust root and is specifying it explicitly, because it knows who it expects the peer to be signed by
+
+So while your use-case sort of makes sense to me, it didn't come up in the last round of SSL enhancements and there's no straightforward way to go about this.
+
+However, it should nevertheless be possible to do it without delving into the private API.
+
+If you write your own IOpenSSLClientConnectionCreator, like this:
+
+from twisted.internet.interfaces import IOpenSSLClientConnectionCreator
+from twisted.python.components import proxyForInterface
+
+class AddExtraTrustRoots(proxyForInterface(IOpenSSLClientConnectionCreator)):
+    def __init__(self, extraTrustRoots, original):
+        self._extraTrustRoots = extraTrustRoots
+        super(AddExtraTrustRoots, self).__init__(original)
+
+
+    def clientConnectionForTLS(self, tlsProtocol):
+        connection = (super(AddExtraTrustRoots, self)
+                      .clientConnectionForTLS(tlsProtocol))
+        cert_store = connection.get_context().get_cert_store()
+        for cert in self._extraTrustRoots:
+            cert_store.add_cert(cert)
+        return connection
+
+you can delegate to the pyOpenSSL API for manipulating the trust settings of the connection, although Twisted will not provide a high-level wrapper for this.
+
+You can then use the above wrapper like:
+
+options = AddExtraTrustRoots([OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, &quot;...&quot;), ...], optionsForClientTLS(u&quot;google.com&quot;))
+
+I haven't tested this, let me know if I've overlooked something terrible :).
+
+&gt;<i> Another related concept that was not clear to me is how one might specify the SSL method (e.g. SSLv23_METHOD, SSLv3_METHOD, etc.) when making the request. Is there some recommended way to pass options to indicate the SSL method that ought to be used?
+</I>
+The default configuration allows for TLSv1.0, TLSv1.1, and TLSv1.2 (insofar as those versions are supported by your OpenSSL).  Do you really, really, really need to support worse protocol versions than that?
+
+You don't actually want to change the &quot;method&quot;, as &quot;method&quot; is a bizarre fiction of the OpenSSL API and is not actually how the protocol works; SSLv23_METHOD is the only &quot;method&quot; that allows protocol version negotiation, so you always want to start there and then set/unset the appropriate OP_NO_* options for the protocol versions you want to exclude.
+
+This is all pretty tedious and gross so if you're sure you want to do it I will describe how in the next reply :).
+
+&gt;<i> Any guidance would be appreciated.
+</I>
+I hope that this was sufficient!
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-web/attachments/20141007/b5f60367/attachment.html">http://twistedmatrix.com/pipermail/twisted-web/attachments/20141007/b5f60367/attachment.html</A>&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005114.html">[Twisted-web] Making Secure HTTPS requests, SSL Method, and Certificate Management using Twisted
+</A></li>
+	<LI>Next message: <A HREF="005116.html">[Twisted-web] Nginx vs Twisted Web
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5118">[ date ]</a>
+              <a href="thread.html#5118">[ thread ]</a>
+              <a href="subject.html#5118">[ subject ]</a>
+              <a href="author.html#5118">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

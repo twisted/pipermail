@@ -1,0 +1,137 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Timeout with pb callRemote
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Timeout%20with%20pb%20callRemote&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="021348.html">
+   <LINK REL="Next"  HREF="021354.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Timeout with pb callRemote</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Timeout%20with%20pb%20callRemote&In-Reply-To="
+       TITLE="[Twisted-Python] Timeout with pb callRemote">db3l.net at gmail.com
+       </A><BR>
+    <I>Mon Jan 18 16:54:34 EST 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="021348.html">[Twisted-Python] Timeout with pb callRemote
+</A></li>
+        <LI>Next message: <A HREF="021354.html">[Twisted-Python] [ANN] Foolscap-0.5.0 released
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21349">[ date ]</a>
+              <a href="thread.html#21349">[ thread ]</a>
+              <a href="subject.html#21349">[ subject ]</a>
+              <a href="author.html#21349">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Allen Bierbaum &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">abierbaum at gmail.com</A>&gt; writes:
+
+&gt;<i> I just tracked down a bug in one of our servers that uses twisted PB.
+</I>&gt;<i> The long and short of it was that the server made remote calls to
+</I>&gt;<i> clients that connected in and in some cases those clients would fall
+</I>&gt;<i> off the network (disconnected network cable, etc) but the server would
+</I>&gt;<i> not detect this.
+</I>
+Right - by default (sans enabling keepalives at the TCP level), TCP
+can only detect a problem when it is attempting to transmit data, or
+when it receives data from a system that has been restarted.  That's
+by design, since it can't tell if the idle time is expected or not.
+
+So if your request to the client makes it through but the connection
+breaks before the server needs to send any further data (such as
+waiting for a response) the server - waiting to receive - can
+essentially remain in that state forever.
+
+Even with keepalives turned on at the TCP level, the total time to
+declare a failure with default timers is often in the 2+ hour range.
+
+&gt;<i> Is there some other suitable way to set a timeout on a remoteCall
+</I>&gt;<i> when using PB?
+</I>
+I'd probably suggest implementing some connection monitoring mechanism
+in general for each client&lt;-&gt;server connection, rather than trying to
+time out individual calls.  The advantage to this is that it covers all
+sorts of failures in either direction and let's both sides fail any
+pending operations gracefully.
+
+What we did in one of our larger PB systems was have our client
+object, after connecting, set up a periodic ping request to the
+server.  Failure of that request (in addition to a network failure of
+other requestss) would cause the client to disconnect (after
+generating an internal signal) and then fall into an automatic
+reconnection process.  Since the ping is transmitting data over the
+session, failures will be detected much more rapidly (though still not
+instantaneously) when the TCP retransmit timers fail to deliver the
+data.  We also had separate signaling and reconnect logic that allowed
+the client to reattach all of its existing remote object handles if it
+reconnected to a server that hadn't restarted (e.g., just a network
+outage), but that's more complicated and not suitable for all types
+of remote object references.
+ 
+While we didn't have requests originating from the server, you could
+have a mirror approach running on the server for each client, or you
+could just have a watchdog timer running on the server that
+disconnects a client if it hasn't heard a ping request from it in a
+given amount of time.
+
+On either side, explicitly disconnecting the connection will also
+cause any pending deferreds for PB requests to fail and trigger their
+errbacks.
+
+If you really wanted to implement a timeout for a specific request,
+you could still use a watchdog timer - start a callLater with the
+appropriate timeout, save the response object, and cancel it in the
+callback chain for the response once it is received.
+
+What you should do if the callLater does fire is less clear.
+Personally I'd probably do something internal so any eventual response
+to the pending deferred was ignored.  You probably don't want to
+actually fire it yourself, since PB still references it and in theory
+could still get a response about it over the stream which would try to
+double-fire the deferred.  That's part of why setTimeout on the
+deferred itself can be a bad idea - someone else probably also
+references that deferred and won't know it has already fired if the
+timeout expires.
+
+Disconnecting the client would work, as similar to the above keepalive
+approach, it would fire the errback on all pending deferreds over that
+session.
+
+-- David
+
+
+
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="021348.html">[Twisted-Python] Timeout with pb callRemote
+</A></li>
+	<LI>Next message: <A HREF="021354.html">[Twisted-Python] [ANN] Foolscap-0.5.0 released
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21349">[ date ]</a>
+              <a href="thread.html#21349">[ thread ]</a>
+              <a href="subject.html#21349">[ subject ]</a>
+              <a href="author.html#21349">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

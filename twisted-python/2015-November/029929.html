@@ -1,0 +1,190 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Implementing Postfix Inet Policy Check Client
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Implementing%20Postfix%20Inet%20Policy%20Check%20Client&In-Reply-To=%3CCADtv4OCfy9wUUeodAiUQd9vSw%3DLz7ZsPG89MiAh3HVhapLJD4w%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="029923.html">
+   <LINK REL="Next"  HREF="029933.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Implementing Postfix Inet Policy Check Client</H1>
+    <B>Ex Vito</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Implementing%20Postfix%20Inet%20Policy%20Check%20Client&In-Reply-To=%3CCADtv4OCfy9wUUeodAiUQd9vSw%3DLz7ZsPG89MiAh3HVhapLJD4w%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Implementing Postfix Inet Policy Check Client">ex.vitorino at gmail.com
+       </A><BR>
+    <I>Tue Nov 17 19:14:22 MST 2015</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="029923.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+        <LI>Next message: <A HREF="029933.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29929">[ date ]</a>
+              <a href="thread.html#29929">[ thread ]</a>
+              <a href="subject.html#29929">[ subject ]</a>
+              <a href="author.html#29929">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Tom,
+
+I guess LineReceiver can help you with that, it's a matter of using a
+different delimiter. Here is a rough sketch of something you can start
+exploring:
+
+from __future__ import print_function
+
+from twisted.internet import reactor, protocol, endpoints, defer
+from twisted.protocols import basic
+
+
+class PostfixProtocol(basic.LineReceiver):
+
+    # Assuming Postfix sends '\r\n' line breaks (does it?)
+    delimiter = '\r\n\r\n'
+
+    def lineReceived(self, multi_line):
+        input_dict = {
+            k: v for k, v in (
+                line.split('=') for line in multi_line.split('\r\n')
+            )
+        }
+        self.gotPostfixRequest(input_dict)
+
+    def gotPostfixRequest(self, request_dict):
+        # Silly deferred-based implementation.
+        d = defer.Deferred()
+        d.addCallback(self.sendPostfixAction)
+        # Simulate a deferred being fired with success.
+        reactor.callLater(1, d.callback, 'OK')
+
+    def sendPostfixAction(self, response):
+        # NOTE: Sends self.delimiter after the payload.
+        #       Use self.tranport.write if you don't want it.
+        self.sendLine('action={}'.format(response))
+
+
+if __name__ == '__main__':
+
+    ep = endpoints.serverFromString(reactor, 'tcp:10000')
+    f = protocol.Factory()
+    f.protocol = PostfixProtocol
+    ep.listen(f)
+    reactor.run()
+
+Key ideas:
+- PostfixProtocol overrides LineReceiver's delimiter (setting it to
+'\r\n\r\n')
+- lineReceived parses the muti_line and calls gotPostfixRequest.
+- gotPostfixRequest should decide (or delegate, you choice) what kind of
+response to send back.
+- sendPostfixAction sends a response back to Postfix.
+
+Notes:
+- The multi_line parsing code is short(ish) but not very robust. It may
+fail in bad ways with invalid input.
+- The gotPostfixRequest implementation is written for the sake of a
+deferred-based example.
+
+Does this help you in any way?
+Cheers,
+--
+exvito
+
+
+On Tue, Nov 17, 2015 at 4:56 PM, Tom Boland &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">tom at t0mb.net</A>&gt; wrote:
+&gt;<i> Greetings all.
+</I>&gt;<i>
+</I>&gt;<i> This may be a very basic question.  I'm hoping to implement a postfix
+</I>&gt;<i> policy check client in twisted.  It's a simple protocol.  You send
+</I>&gt;<i> newline separated key value pairs like:
+</I>&gt;<i>
+</I>&gt;<i> recipient=<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">email at ddr.ess</A>
+</I>&gt;<i> sender=<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">another at ddr.ess</A>
+</I>&gt;<i> size=1024
+</I>&gt;<i> helo_name=mail.server
+</I>&gt;<i> etc..
+</I>&gt;<i>
+</I>&gt;<i> you terminate the request with an additional newline.  The response
+</I>&gt;<i> comes back like
+</I>&gt;<i>
+</I>&gt;<i> action=OK
+</I>&gt;<i>
+</I>&gt;<i> You can send mutliple requests in the same connection.  What I'm
+</I>&gt;<i> envisaging is a module that can be used to provide a deferred
+</I>&gt;<i> request/response pairing to my calling application.  The module class
+</I>&gt;<i> will manage the single connection to the postfix policy daemon (I'm
+</I>&gt;<i> actually going to have persistent connections to a few daemons), and
+</I>&gt;<i> reconnect when necessary etc.  Any requests will return a deferred that
+</I>&gt;<i> I can add callbacks to.  How would you design this with twisted?  I can
+</I>&gt;<i> easily envisage a way of using a clientfactory to instantiate separate
+</I>&gt;<i> connections for each request/response, but actually being able to simply
+</I>&gt;<i> send a request and receive the single response for that request is
+</I>&gt;<i> something I'm struggling to do within a LineReceiver instance (for
+</I>&gt;<i> instance).  Would the twisted.protocols.amp module help given that I
+</I>&gt;<i> can't change the server-side protocol?
+</I>&gt;<i>
+</I>&gt;<i> Any advice much appreciated!
+</I>&gt;<i>
+</I>&gt;<i> Thanks.  Tom.
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+
+-- 
+--
+  exvito
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;<A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20151118/66efa429/attachment-0001.html">http://twistedmatrix.com/pipermail/twisted-python/attachments/20151118/66efa429/attachment-0001.html</A>&gt;
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="029923.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+	<LI>Next message: <A HREF="029933.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#29929">[ date ]</a>
+              <a href="thread.html#29929">[ thread ]</a>
+              <a href="subject.html#29929">[ subject ]</a>
+              <a href="author.html#29929">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

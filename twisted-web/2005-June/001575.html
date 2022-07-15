@@ -1,0 +1,239 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Defers, the reactor,	and idiomatic/proper usage
+	-- new user needs some advice?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Defers%2C%20the%20reactor%2C%09and%20idiomatic/proper%20usage%0A%09--%20new%20user%20needs%20some%20advice%3F&In-Reply-To=f98c791005062110047d97a2d5%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001569.html">
+   <LINK REL="Next"  HREF="001597.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Defers, the reactor,	and idiomatic/proper usage
+	-- new user needs some advice?</H1>
+    <B>Dave Gray</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Defers%2C%20the%20reactor%2C%09and%20idiomatic/proper%20usage%0A%09--%20new%20user%20needs%20some%20advice%3F&In-Reply-To=f98c791005062110047d97a2d5%40mail.gmail.com"
+       TITLE="[Twisted-web] Defers, the reactor,	and idiomatic/proper usage
+	-- new user needs some advice?">dgray at omniti.com
+       </A><BR>
+    <I>Thu Jun 23 10:18:06 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001569.html">[Twisted-web] Defers, the reactor,
+	and idiomatic/proper usage -- new user needs some advice?
+</A></li>
+        <LI>Next message: <A HREF="001597.html">[Twisted-web] Defers, the reactor,	and idiomatic/proper usage
+	-- new user needs some advice?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1575">[ date ]</a>
+              <a href="thread.html#1575">[ thread ]</a>
+              <a href="subject.html#1575">[ subject ]</a>
+              <a href="author.html#1575">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I'm not familiar with feedlib, etc, but I'll answer what I can.
+
+Richard Meraz wrote:
+&gt;<i> MAXTIME = 60 # Kill crawl after this time
+</I>&gt;<i> TIMEOUT = 20 # Kill page retrieval after this time inactive
+</I>&gt;<i> MAXDEPTH = 3 # Recurse this depth when crawling page.
+</I>&gt;<i> 
+</I>&gt;<i> # Question: There seem to be many idioms to aggregate information from 
+</I>&gt;<i> different defered call-back chains in twisted..  Since everything runs 
+</I>&gt;<i> in a single thread I just stuck my stuff in a global class and everybody 
+</I>&gt;<i> modifies the vars there as I pass it around to the call-backs that 
+</I>&gt;<i> should see it.  Seems okay for a small script like this?
+</I>
+That seems fine, yeah. I think I would pass around the StateVars 
+instance as a context if I were coding this. Probably the same effect.
+
+&gt;<i> class StateVars:
+</I>&gt;<i>     '''Keep Global state for starting/stopping feedfinding and a record 
+</I>&gt;<i> of links we have checked and their status'''
+</I>&gt;<i>     connections = 1 
+</I>&gt;<i>     links_checked = {} # Structure: {url: (is RSS/ATOM/RDF, page-content)}
+</I>&gt;<i> 
+</I>&gt;<i> # Question: start_feed_crawl is where I set up my defers.  getPage 
+</I>&gt;<i> returns a defer and I attach my call-back process_link.
+</I>&gt;<i> # addCallbacks adds a callback/errback in parallel so only one or the 
+</I>&gt;<i> other is called?  so I need to add
+</I>&gt;<i> # the final errback to catch errors from callback process_link ?
+</I>
+Correct. Well, sort of. See below.
+
+&gt;<i> def start_feed_crawl(uri,depth):
+</I>&gt;<i>     '''Harvest feeds from a uri'''
+</I>&gt;<i> # Question: how to time-out this deferred chain if getPage is taking too 
+</I>&gt;<i> long to finish its work.
+</I>&gt;<i> # what exactly does the argument timeout to getPage do,  does it timeout 
+</I>&gt;<i> the socket after a no-response
+</I>&gt;<i> # or does it put an upper-bound on how long getPage has to finish its work?
+</I>&gt;<i> 
+</I>&gt;<i>     getPage(uri, timeout=TIMEOUT).addCallbacks(callback=process_link,
+</I>&gt;<i>                                                       callbackArgs=(uri, 
+</I>&gt;<i> depth, StateVars),
+</I>&gt;<i>                                                       errback = 
+</I>&gt;<i> process_error,
+</I>&gt;<i>                                                       errbackArgs=(uri,StateVars)
+</I>&gt;<i>                                                       ).addErrback(process_error, 
+</I>&gt;<i> uri, StateVars)
+</I>
+It seems clearer to me to write this as follows, but that's personal 
+preference:
+
+     d = getPage(...)
+     d.addCallbacks(...)
+     d.addErrback(...)
+
+But since you're setting up the call to the same errback twice, you 
+could simplify this to:
+
+     d = getPage(...)
+     d.addCallback(process_link, uri, depth, StateVars)
+     d.addErrback(process_error, uri, StateVars)
+
+&lt;<A HREF="http://twistedmatrix.com/projects/core/documentation/howto/defer.html#auto4">http://twistedmatrix.com/projects/core/documentation/howto/defer.html#auto4</A>&gt; 
+has a nice visual explanation of what happens when.
+
+&gt;<i> # Question: since I'm starting up these defers in a callback they are
+</I>&gt;<i> # being created after I've called reactor.run() since we call start_feed_crawl
+</I>&gt;<i> # as we find new links that meet our criteria.  Am I doing anything bad here?
+</I>&gt;<i> # All the examples I've seen (eg. p. 548-552 Python Cookbook, great eg by V. Volonghi
+</I>&gt;<i> # and P. Cogolo) have their data up-front and therefore set-up all the defers before calling
+</I>&gt;<i> # reactor.run().  Here I'm discovering my data as I go along and setting up deferrs while
+</I>&gt;<i> # the reactor is spinning.  Here is my fundamental lack of understanding.  While this script
+</I>&gt;<i> # seems to run okay, is it okay to do this?
+</I>
+Yes, that's fine. I think the one you've seen the most is the odd case - 
+being able to set up all the Deferreds beforehand.
+
+&gt;<i>     # Question: Is this how I kill the reactor -- ie. using some sort of 
+</I>&gt;<i> state condition.  Is there a better way,
+</I>&gt;<i>     # should I try better to understand deferred-list.  For example.  A 
+</I>&gt;<i> top-level deferred-list that contains
+</I>&gt;<i>     # other deferred-lists which get created to hold all the defers 
+</I>&gt;<i> (created by start_feed_crawl) for the
+</I>&gt;<i>     # links on a given page.  Could this deferred-list be told to stop 
+</I>&gt;<i> the reactor when the other lists have
+</I>&gt;<i>     # fired their callback (after the component defers have finished) ?  
+</I>&gt;<i> (Sorry for the convoluted question here
+</I>&gt;<i>     # I'm new at this)
+</I>
+What you want to do is stop the reactor when everything is done 
+processing. So after you call start_feed_crawl the first time, returning 
+the Deferred that getPage gives you, you can add a callback to that 
+which stops the reactor. The trick here is that if you stuff that 
+deferred into a DeferredList before you add the callback that stops the 
+reactor then if your first operation itself returns a deferred, the 
+DeferredList won't call its callbacks until the other Deferred operation 
+completes. So you'll be stacking up a whole bunch of Deferreds inside 
+the first one, and the callback on the DeferredList that does the 
+reactor.stop won't fire until you don't return a Deferred.
+
+There might be an easier way to do this, but this the way I know 
+(example attached). Someone please let me know if there's an easier way. 
+To see the example, run it with 'twistd -noy fetchpage.tac' then do 
+'telnet localhost 9000' and send:
+
+GET /?target=<A HREF="http://www.google.com/">http://www.google.com/</A> HTTP/1.1
+Host: localhost
+
+
+
+&gt;<i> Final question: occasionally I get errors that come from the http.py 
+</I>&gt;<i> code in twisted.  This get printed to the console, but don't necessarily 
+</I>&gt;<i> stop my program.  Should my errbacks be catching these?  How do I keep 
+</I>&gt;<i> errors from getting logged to the console (beside redirecting stderr). I 
+</I>&gt;<i> can post an example if necessary of the errors I'm getting.
+</I>
+When you create the DeferredList, pass in consumeErrors=1 - this will 
+make debugging that much more annoying though...
+
+HTH,
+Dave
+-------------- next part --------------
+from twisted.web import server
+from twisted.web.resource import Resource
+from twisted.web.client import getPage
+
+from twisted.internet import defer, reactor
+from twisted.python import log
+from cgi import escape
+class Foo(Resource):
+    counter = 0
+    isLeaf=True
+    def render_GET (self, request):
+        self.rq = request
+        target = escape(request.args['target'][0])
+        d = getPage(target).addCallback(self.print_page)
+        d.addErrback(log.err)
+        dl = defer.DeferredList([d])
+        dl.addCallback(stopNow)
+        dl.addErrback(log.err)
+        return server.NOT_DONE_YET
+
+    def print_page (self, html):
+        if Foo.counter &lt; 5:
+            Foo.counter += 1
+            print 'request '+str(Foo.counter)
+            d = defer.Deferred()
+            d.addCallback(self.print_page)
+            d.addErrback(log.err)
+            reactor.callLater(1, d.callback, html)
+            return d
+        else:
+            print 'now we can write stuff back'
+            self.rq.write(str(len(html))+' '+str(Foo.counter))
+            self.rq.finish()
+            self.rq.transport.loseConnection()
+            # no deferred being returned, stopNow fires
+
+def stopNow(cbval):
+    # can't add reactor.stop as a callback directly
+    # because it doesn't know what to do with the extra
+    # argument being returned from the callback
+    print cbval
+    reactor.stop()
+
+resource = Foo()
+site = server.Site(resource)
+
+from twisted.application import service, internet
+application = service.Application(&quot;Foo&quot;)
+internet.TCPServer(9000, site).setServiceParent(application)
+
+# vim: ai sts=4 sw=4 expandtab syntax=python :
+</PRE>
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001569.html">[Twisted-web] Defers, the reactor,
+	and idiomatic/proper usage -- new user needs some advice?
+</A></li>
+	<LI>Next message: <A HREF="001597.html">[Twisted-web] Defers, the reactor,	and idiomatic/proper usage
+	-- new user needs some advice?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1575">[ date ]</a>
+              <a href="thread.html#1575">[ thread ]</a>
+              <a href="subject.html#1575">[ subject ]</a>
+              <a href="author.html#1575">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

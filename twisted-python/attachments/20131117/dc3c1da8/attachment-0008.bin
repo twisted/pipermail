@@ -1,0 +1,92 @@
+"""
+Author: Daniel Sank
+Created: September 2013
+
+This is a chat client using PyQt for a GUI front end and Twisted for network
+communication. The program expects to connect to a TCP socket server that
+distributes all incoming data to each other connected client.
+
+To use this program first run a chat server. A possible example is the one in
+this directory's sister directory ../chatserverAsyncore/server.py
+Once the server is running make sure that the host and port values in
+constants.py are appropriate for the server, and simply launch this program.
+Once the program is running, hit the "connect" button to log into the server.
+You can now chat.
+
+This program illustrates the strategy of merging two event loops by customizing
+one of them. The Twisted reactor is designed to be able to integrate with other
+event loops. Here we use this strategy to merge PyQt and Twisted. Note that
+because of the event loop merging we don't have the complication of the
+callFromMain method we had to use in client-threads.py. We still need to emit
+PyQt signals from the Twisted code, so that part of the program is preserved
+from client-threads.py.
+"""
+
+import sys
+
+import PyQt4.QtGui as QtGui
+import PyQt4.QtCore as QtCore
+import PyQt4.uic as uic
+
+import twisted.internet.defer as defer
+import twisted.internet.protocol as protocol
+import qt4reactor
+
+import constants as C
+
+class MainWindow(QtGui.QMainWindow):
+    def __init__(self):
+        QtGui.QMainWindow.__init__(self)
+        self.ui = uic.loadUi('ui.ui')
+        
+        self.ui.sendButton.clicked.connect(self.sendMessage)
+        self.ui.inputBox.returnPressed.connect(self.sendMessage)
+        self.ui.connectButton.clicked.connect(self.getNetworkConnection)
+        
+        self.ui.show()
+        
+    def getNetworkConnection(self):
+        #This line should probably not be inside getNetworkConnection
+        factory = protocol.ClientCreator(reactor, ChatProtocol)
+        d = factory.connectTCP(C.HOST, C.PORT)
+        def onConnected(p):
+            self.cxn = p
+            p.emitter.signal.connect(self.onNewData)
+            self.ui.connectButton.setEnabled(False)
+        d.addCallback(onConnected)
+    
+    def onNewData(self, data):
+        self.ui.outputBox.append(data)
+        
+    def sendMessage(self):
+        message = str(self.ui.inputBox.text())
+        self.ui.inputBox.clear()
+        self.cxn.send(message)
+        
+class Emitter(QtCore.QObject):
+    
+    signal = QtCore.pyqtSignal(str)
+
+    def __init__(self):
+        QtCore.QObject.__init__(self)
+    
+class ChatProtocol(protocol.Protocol):
+        
+    def __init__(self):
+        self.emitter = Emitter()
+    
+    def dataReceived(self, data):
+        self.emitter.signal.emit(data)
+    
+    def send(self, data):
+        self.transport.write(data)
+    
+class ChatFactory(protocol.ClientFactory):
+    protocol = ChatProtocol
+    
+if __name__ == '__main__':
+    app = QtGui.QApplication(sys.argv)
+    qt4reactor.install()
+    from twisted.internet import reactor
+    mainWindow = MainWindow()
+    reactor.run()

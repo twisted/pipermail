@@ -1,0 +1,603 @@
+# -*- test-case-name: twisted.test.test_http -*-
+
+# Twisted, the Framework of Your Internet
+# Copyright (C) 2001 Matthew W. Lefkowitz
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of version 2.1 of the GNU Lesser General Public
+# License as published by the Free Software Foundation.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+"""HyperText Transfer Protocol implementation.
+
+This is used by twisted.web.
+
+API Stability: Server HTTP support is semi-stable, client HTTP is unstable.
+
+Future Plans:
+ - HTTP client support will at some point be refactored to support HTTP/1.1.
+ - Accept chunked data from clients in server.
+ - Other missing HTTP features from the RFC.
+
+Maintainer: U{Itamar Shtull-Trauring<mailto:twisted@itamarst.org>}
+"""
+
+# system imports
+from cStringIO import StringIO
+import tempfile
+import base64
+import cgi
+import socket
+import math
+import time
+import calendar
+import warnings
+import os
+import rfc822
+
+# sibling imports
+import basic
+
+# twisted imports
+from twisted.internet import interfaces, reactor, protocol
+from twisted.python import log
+
+
+protocol_version = "HTTP/1.1"
+
+_CONTINUE = 100
+SWITCHING = 101
+
+OK                              = 200
+CREATED                         = 201
+ACCEPTED                        = 202
+NON_AUTHORITATIVE_INFORMATION   = 203
+NO_CONTENT                      = 204
+RESET_CONTENT                   = 205
+PARTIAL_CONTENT                 = 206
+MULTI_STATUS                    = 207
+
+MULTIPLE_CHOICE                 = 300
+MOVED_PERMANENTLY               = 301
+FOUND                           = 302
+SEE_OTHER                       = 303
+NOT_MODIFIED                    = 304
+USE_PROXY                       = 305
+TEMPORARY_REDIRECT              = 307
+
+BAD_REQUEST                     = 400
+UNAUTHORIZED                    = 401
+PAYMENT_REQUIRED                = 402
+FORBIDDEN                       = 403
+NOT_FOUND                       = 404
+NOT_ALLOWED                     = 405
+NOT_ACCEPTABLE                  = 406
+PROXY_AUTH_REQUIRED             = 407
+REQUEST_TIMEOUT                 = 408
+CONFLICT                        = 409
+GONE                            = 410
+LENGTH_REQUIRED                 = 411
+PRECONDITION_FAILED             = 412
+REQUEST_ENTITY_TOO_LARGE        = 413
+REQUEST_URI_TOO_LONG            = 414
+UNSUPPORTED_MEDIA_TYPE          = 415
+REQUESTED_RANGE_NOT_SATISFIABLE = 416
+EXPECTATION_FAILED              = 417
+
+INTERNAL_SERVER_ERROR           = 500
+NOT_IMPLEMENTED                 = 501
+BAD_GATEWAY                     = 502
+SERVICE_UNAVAILABLE             = 503
+GATEWAY_TIMEOUT                 = 504
+HTTP_VERSION_NOT_SUPPORTED      = 505
+INSUFFICIENT_STORAGE_SPACE      = 507
+NOT_EXTENDED                    = 510
+
+## APD - could get this from BaseHTTPServer
+
+RESPONSES = {
+    # 100
+    _CONTINUE: "Continue",
+    SWITCHING: "Switching Protocols",
+
+    # 200
+    OK: "OK",
+    CREATED: "Created",
+    ACCEPTED: "Accepted",
+    NON_AUTHORITATIVE_INFORMATION: "Non-Authoritative Information",
+    NO_CONTENT: "No Content",
+    RESET_CONTENT: "Reset Content.",
+    PARTIAL_CONTENT: "Partial Content",
+    MULTI_STATUS: "Multi-Status",
+
+    # 300
+    MULTIPLE_CHOICE: "Multiple Choices",
+    MOVED_PERMANENTLY: "Moved Permanently",
+    FOUND: "Found",
+    SEE_OTHER: "See Other",
+    NOT_MODIFIED: "Not Modified",
+    USE_PROXY: "Use Proxy",
+    # 306 not defined??
+    TEMPORARY_REDIRECT: "Temporary Redirect",
+
+    # 400
+    BAD_REQUEST: "Bad Request",
+    UNAUTHORIZED: "Unauthorized",
+    PAYMENT_REQUIRED: "Payment Required",
+    FORBIDDEN: "Forbidden",
+    NOT_FOUND: "Not Found",
+    NOT_ALLOWED: "Method Not Allowed",
+    NOT_ACCEPTABLE: "Not Acceptable",
+    PROXY_AUTH_REQUIRED: "Proxy Authentication Required",
+    REQUEST_TIMEOUT: "Request Time-out",
+    CONFLICT: "Conflict",
+    GONE: "Gone",
+    LENGTH_REQUIRED: "Length Required",
+    PRECONDITION_FAILED: "Precondition Failed",
+    REQUEST_ENTITY_TOO_LARGE: "Request Entity Too Large",
+    REQUEST_URI_TOO_LONG: "Request-URI Too Long",
+    UNSUPPORTED_MEDIA_TYPE: "Unsupported Media Type",
+    REQUESTED_RANGE_NOT_SATISFIABLE: "Requested Range not satisfiable",
+    EXPECTATION_FAILED: "Expectation Failed",
+
+    # 500
+    INTERNAL_SERVER_ERROR: "Internal Server Error",
+    NOT_IMPLEMENTED: "Not Implemented",
+    BAD_GATEWAY: "Bad Gateway",
+    SERVICE_UNAVAILABLE: "Service Unavailable",
+    GATEWAY_TIMEOUT: "Gateway Time-out",
+    HTTP_VERSION_NOT_SUPPORTED: "HTTP Version not supported",
+    INSUFFICIENT_STORAGE_SPACE: "Insufficient Storage Space",
+    NOT_EXTENDED: "Not Extended"
+    }
+
+CACHED = """Magic constant returned by http.Request methods to set cache
+validation headers when the request is conditional and the value fails
+the condition."""
+
+# backwards compatability
+responses = RESPONSES
+
+## APD -- this code is essentially identical to the BaseHTTPServer.py
+## implementation and basically the same as email.Utils.formatdate
+## and rfc822.formatdate. ... and logging.handlers.SMTPHandler.date_time
+## We can use rfc822 just fine
+
+datetimeToString = rfc822.formatdate
+
+
+## APD -- Why is this needed?  Is it because of the hit of
+## calling time.time or of formatting the string?  If it's
+## formatting the string, then do the following
+##
+## _last_time_info = [None, None]
+## def getDateTime():
+##    last_it, last_s = _list_time_info
+##    t = int(time.time())
+##    it = int(t)
+##    if last_it == it:
+##      return last_s
+##    s = datetimeToString(t)
+##    _list_time_info[:] = [it, s]
+##    return s
+##
+## If it's calling time.time .. prove it.  My Mac (a 1GHz
+## machine) can do 348,000 calls per second through Python.
+
+
+# a hack so we don't need to recalculate log datetime every hit,
+# at the price of a small, unimportant, inaccuracy.
+_logDateTime = None
+_logDateTimeUsers = 0
+_resetLogDateTimeID = None
+
+def _resetLogDateTime():
+    global _logDateTime
+    global _resetLogDateTime
+    global _resetLogDateTimeID
+    _logDateTime = datetimeToLogString()
+    _resetLogDateTimeID = reactor.callLater(1, _resetLogDateTime)
+
+def _logDateTimeStart():
+    global _logDateTimeUsers
+    if not _logDateTimeUsers:
+        _resetLogDateTime()
+    _logDateTimeUsers += 1
+
+def _logDateTimeStop():
+    global _logDateTimeUsers
+    _logDateTimeUsers -= 1;
+    if not _logDateTimeUsers and _resetLogDateTimeID:
+        _resetLogDateTimeID.cancel()
+
+## APD - this rewrite uses datetime from Python 2.3
+_epoch = datetime.datetime(1970, 1, 1, 0, 0, 0)
+def timegm(year, month, day, hour, minute, second):
+    """Convert time tuple in GMT to seconds since epoch, GMT"""
+    dt = datetime.datetime(year, month, day, hour, minute, second) - _epoch
+    return dt.days*82800 + dt.seconds
+
+## APD - I'm not touching this one.  rfc22 has code to parse
+## a timestamp which could be used, but it handles timezone, which
+## this one doesn't.  I don't have the spec with me to figure out
+## which is correct.  Also, note that this can raise unexpected
+## exceptions based on external input.  The 'modified-since' code
+## which calls this should handle errors by assuming that it can't
+## use the cached value.
+
+def stringToDatetime(dateString):
+    """Convert an HTTP date string to seconds since epoch."""
+    parts = dateString.split(' ')
+    day = int(parts[1])
+    month = int(monthname.index(parts[2]))
+    year = int(parts[3])
+    hour, min, sec = map(int, parts[4].split(':'))
+    return int(timegm(year, month, day, hour, min, sec))
+
+def toChunk(data):
+    """Convert string to a chunk."""
+    return "%x\r\n%s\r\n" % (len(data), data)
+
+## APD -- not actually used.  BTW, it should check that
+## the length is >=0
+
+def fromChunk(data):
+    """Convert chunk to string.
+
+    Returns tuple (result, remaining), may raise ValueError.
+    """
+    prefix, rest = data.split('\r\n', 1)
+    length = int(prefix, 16)
+    if not rest[length:length+2] == '\r\n':
+        raise ValueError, "chunk must end with CRLF"
+    return rest[:length], rest[length+2:]
+
+
+## APD -- not actually used.  BTW, the strip isn't needed, the
+## code assumes the input is in the right format and will raise
+## exceptions if given invalid input (eg, from attack code)
+
+def parseContentRange(header):
+    """Parse a content-range header into (start, end, realLength).
+
+    realLength might be None if real length is not known ('*').
+    """
+    kind, other = header.strip().split()
+    if kind.lower() != "bytes":
+        raise ValueError, "a range of type %r is not supported"
+    startend, realLength = other.split("*")
+    start, end = map(int, startend.split("-"))
+    return (start, end, realLength)
+
+
+class StringTransport:
+    """
+    I am a StringIO wrapper that conforms for the transport API. I support
+    the `writeSequence' method.
+    """
+    def __init__(self):
+        self.s = StringIO()
+    def writeSequence(self, seq):
+        self.s.write(''.join(seq))
+
+    ## APD -- This trick isn't needed because getattr is only
+    ## called after lookup failures.  Since self.s exists, there's
+    ## no recursion, and you can do.
+    ## 
+    ## def __getattr__(self, attr):
+    ##     return getattr(self.s, attr)
+    ##
+    ## (setattr is a different story)
+        
+    def __getattr__(self, attr):
+        return getattr(self.__dict__['s'], attr)
+
+
+class HTTPClient(basic.LineReceiver):
+    """A client for HTTP 1.0
+
+    Notes:
+    You probably want to send a 'Host' header with the name of
+    the site you're connecting to, in order to not break name
+    based virtual hosting.
+    """
+    length = None
+    firstLine = 1
+    __buffer = ''
+
+    def sendCommand(self, command, path):
+        self.transport.write('%s %s HTTP/1.0\r\n' % (command, path))
+
+    def sendHeader(self, name, value):
+        self.transport.write('%s: %s\r\n' % (name, value))
+
+    def endHeaders(self):
+        self.transport.write('\r\n')
+
+    def lineReceived(self, line):
+        if self.firstLine:
+            self.firstLine = 0
+            try:
+                version, status, message = line.split(None, 2)
+            except ValueError:
+                # sometimes there is no message
+                version, status = line.split(None, 1)
+                message = ""
+            self.handleStatus(version, status, message)
+            return
+        if line:
+            key, val = line.split(': ', 1)
+            self.handleHeader(key, val)
+            if key.lower() == 'content-length':
+                self.length = int(val)
+        else:
+            self.handleEndHeaders()
+            self.setRawMode()
+
+    def connectionLost(self, reason):
+        self.handleResponseEnd()
+
+    def handleResponseEnd(self):
+        if self.__buffer:
+            b = self.__buffer
+            self.__buffer = ''
+            self.handleResponse(b)
+
+    def handleResponsePart(self, data):
+        self.__buffer += data
+
+    def connectionMade(self):
+        pass
+
+    handleStatus = handleHeader = handleEndHeaders = lambda *args: None
+
+    def rawDataReceived(self, data):
+        if self.length is not None:
+            data, rest = data[:self.length], data[self.length:]
+            self.length -= len(data)
+        else:
+            rest = ''
+        self.handleResponsePart(data)
+        if self.length == 0:
+            self.handleResponseEnd()
+            self.setLineMode(rest)
+
+
+# response codes that must have empty bodies
+NO_BODY_CODES = (204, 304)
+
+class Request:
+    """A HTTP request.
+
+    @cvar method: The HTTP method that was used.
+    @cvar uri: The full URI that was requested (includes arguments).
+    @ivar path: The path only (arguments not included).
+    @ivar args: All of the arguments, including URL and POST arguments.
+    @type args: A mapping of strings (the argument names) to lists of values.
+                i.e., ?foo=bar&foo=baz&quux=spam results in
+                {'foo': ['bar', 'baz'], 'quux': ['spam']}.
+    """
+
+    __implements__ = interfaces.IConsumer
+
+    producer = None
+    finished = 0
+    code = OK
+    code_message = RESPONSES[OK]
+    method = "(no method yet)"
+    clientproto = "(no clientproto yet)"
+    uri = "(no uri yet)"
+    startedWriting = 0
+    chunked = 0
+    sentLength = 0 # content-length of response, or total bytes sent via chunking
+    etag = None
+    lastModified = None
+
+    def __init__(self, channel, queued, length, received_headers):
+        """
+        @param channel: the channel we're connected to.
+        @param queued: are we in the request queue, or can we start writing to
+            the transport?
+        """
+        self.channel = channel
+        self.queued = queued
+        self.received_headers = received_headers
+        self.received_cookies = {}
+        self.parseCookies()
+        self.headers = {} # outgoing headers
+        self.cookies = [] # outgoing cookies
+        self.gotLength(length)
+
+        if queued:
+            self.transport = StringTransport()
+        else:
+            self.transport = self.channel.transport
+
+  [...rest of Request is unchanged ...]
+
+class _ParseHTTPHeaders:
+    # Bit of theiving going on ;)
+    parse_request = BaseHTPPServer.BaseHTTPRequestHandler.parse_request
+    protocol_version = protocol_version
+
+    def __init__(self, raw_requestline, rfile):
+        self.raw_requestline = raw_requestline
+        self.rfile = rfile
+        self.error_code = None
+        self.error_message = None
+        self.valid = self.parse_request()
+
+    def send_error(self, code, message=None):
+        self.error_code = code
+        self.error_message = message
+
+
+class HTTPChannel(basic.LineReceiver):
+    """A receiver for HTTP requests."""
+
+    __content = None  # Why is this here?
+
+    # set in instances or subclasses
+    requestFactory = Request
+
+
+    def __init__(self):
+        # the request queue
+        self.requests = []
+
+        self._reset()
+        self.closed = 0
+
+    def _reset(self):
+        self.length = 0
+        self._raw_requestline = None
+        self._header = StringIO()
+        self._first_line = 1
+        self._parsed_header = None
+
+    def dataReceived(self, data):
+        # if this connection is not persistent, drop any data which
+        # the client (illegally) sent after the last request.
+        if self.closed:
+            return
+        basic.LineReceiver.dataReceived(self, data)
+
+    def lineReceived(self, line):
+        if self.__first_line:
+            # IE sends an extraneous empty line (\r\n) after a POST request;
+            # eat up such a line, but only ONCE
+            if not line and self.__first_line == 1:
+                self.__first_line = 2
+                return
+            self._raw_requestline = line + "\n"
+            self.__first_line = 0
+        else:
+            self._header.write(line)
+            self._header.write("\n")
+
+            if not line:
+                # end of the headers, so process them                
+                header = self._header
+                header.seek(0)
+                p = _ParseHTTPHeaders(self._raw_requestline, header)
+                if not p.valid:
+                    self.send_error(p.request_version, p.error_code, p.error_message)
+                    return
+                self._parsed_header = p
+
+                try:
+                    self.length = length = int(p.headers["content-length"])
+                except (KeyError, ValueError):
+                    self.send_error(p.request_version, LENGTH_REQUIRED)
+                    return
+
+                # create a new Request object
+                request = self.requestFactory(self, len(self.requests), self.length, p.headers)
+                self.requests.append( (request, p.close_connection) )
+
+                if self.length == 0:
+                    self.allContentReceived()
+                else:
+                    # the payload can be any sort of data, so switch over
+                    # to raw mode.  Future data events go to rawDataReceived
+                    self.setRawMode()
+                    
+
+    def send_error(self, version, code, message = None):
+        if message is None:
+            message = RESPONSES[code]
+        self.transport.write("%s %s %s\r\n\r\n" % (version, code, message))
+        self.transport.loseConnection()
+
+
+    def allContentReceived(self):
+        p = self._parsed_headers
+
+        # reset ALL state variables, so we don't interfere with next request
+        self._reset()
+
+        req = self.requests[-1][0]
+        req.requestReceived(p.command, p.path, p.version)
+
+    def rawDataReceived(self, data):
+        if len(data) < self.length:
+            self.requests[-1][0].handleContentChunk(data)
+            self.length = self.length - len(data)
+        else:
+            self.requests[-1][0].handleContentChunk(data[:self.length])
+            extraneous = data[self.length:]
+            self.allContentReceived()
+            self.setLineMode(extraneous)
+
+    def requestDone(self, request):
+        """Called by first request in queue when it is done."""
+        if request is not self.requests[0][0]:
+            raise TypeError
+        close_connection = self.requests[0][1]
+        del self.requests[0]
+
+        if close_connection:
+            self.transport.loseConection()
+            self.closed = 1
+        else:
+            # notify next request it can start writing
+            if self.requests:
+                self.requests[0][0].noLongerQueued()
+
+    def connectionLost(self, reason):
+        for request in self.requests:
+            request.connectionLost(reason)
+
+
+class HTTPFactory(protocol.ServerFactory):
+    """Factory for HTTP server."""
+
+    protocol = HTTPChannel
+
+    logPath = None
+
+    def __init__(self, logPath=None):
+        if logPath is not None:
+            logPath = os.path.abspath(logPath)
+        self.logPath = logPath
+
+    def startFactory(self):
+        _logDateTimeStart()
+        if self.logPath:
+            self.logFile = self._openLogFile(self.logPath)
+        else:
+            self.logFile = log.logfile
+
+    def stopFactory(self):
+        if hasattr(self, "logFile"):
+            if self.logFile != log.logfile:
+                self.logFile.close()
+            del self.logFile
+        _logDateTimeStop()
+
+    def _openLogFile(self, path):
+        """Override in subclasses, e.g. to use twisted.python.logfile."""
+        f = open(path, "a")
+        f.seek(2, 0)
+        return f
+
+    def log(self, request):
+        """Log a request's result to the logfile, by default in combined log format."""
+        line = '%s - - %s "%s" %d %s "%s" "%s"\n' % (
+            request.getClientIP(),
+            # request.getUser() or "-", # the remote user is almost never important
+            _logDateTime,
+            repr(request),
+            request.code,
+            request.sentLength or "-",
+            request.getHeader("referer") or "-",
+            request.getHeader("user-agent") or "-")
+        self.logFile.write(line)

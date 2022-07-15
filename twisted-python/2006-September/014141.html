@@ -1,0 +1,246 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] _dumbwin32proc and PIPE_NOWAIT
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20_dumbwin32proc%20and%20PIPE_NOWAIT&In-Reply-To=20060930093414.1717.635703473.divmod.quotient.63636%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="014138.html">
+   <LINK REL="Next"  HREF="014143.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] _dumbwin32proc and PIPE_NOWAIT</H1>
+    <B>Manlio Perillo</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20_dumbwin32proc%20and%20PIPE_NOWAIT&In-Reply-To=20060930093414.1717.635703473.divmod.quotient.63636%40ohm"
+       TITLE="[Twisted-Python] _dumbwin32proc and PIPE_NOWAIT">manlio_perillo at libero.it
+       </A><BR>
+    <I>Sat Sep 30 07:06:03 EDT 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="014138.html">[Twisted-Python] _dumbwin32proc and PIPE_NOWAIT
+</A></li>
+        <LI>Next message: <A HREF="014143.html">[Twisted-Python] _dumbwin32proc and PIPE_NOWAIT
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14141">[ date ]</a>
+              <a href="thread.html#14141">[ thread ]</a>
+              <a href="subject.html#14141">[ subject ]</a>
+              <a href="author.html#14141">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE><A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at divmod.com</A> ha scritto:
+&gt;<i> [...]
+</I>&gt;<i> 
+</I>&gt;<i> &quot;threads are bad&quot;
+</I>&gt;<i> 
+</I>
+But they are used in twisted.enterprise.adbapi, and as I can see several
+developers prefer to use threads to interact with &quot;foreign&quot; APIs instead
+of develope native asyncronous API.
+
+&gt;&gt;<i> The solution is simple.
+</I>&gt;&gt;<i> Windows *do not* supports POSIX ;-).
+</I>&gt;<i> 
+</I>&gt;<i> It does, however, support standard IO, at least well enough for a large
+</I>&gt;<i> chunk of applications.  Although it's not as well supported as on
+</I>&gt;<i> &quot;POSIX&quot; platforms, there are plenty of programs that produce output
+</I>&gt;<i> which Twisted can happily parse semi-asynchronously using the current
+</I>&gt;<i> strategy.  Why on earth would you want to remove it?  It serves a
+</I>&gt;<i> purpose (cross-platform multi-process communication and control), it
+</I>&gt;<i> works, it's tested.
+</I>&gt;<i> 
+</I>
+This is true, for sockets it works well, but for pipes it uses an
+inefficient implementation.
+
+&gt;<i> [...]
+</I>
+&gt;&gt;<i> One needs to write a specializd abstract.FileDescriptor class, that use
+</I>&gt;&gt;<i> the Overlapped structure for I/O.
+</I>&gt;<i> 
+</I>&gt;<i> You mean like twisted.internet.iocpreactor.abstract.ConnectedSocket? 
+</I>&gt;<i> Have you even read this code?
+</I>&gt;<i> 
+</I>
+Yes, but as the name suggests it works only for Sockets(?).
+
+The problem is simple:
+if I want to do asyncronous I/O with Windows I don't have an unique
+'interface'.
+
+Only sockets are really integrated with the reactor.
+serialport has some specialized code for win32eventreactor integration,
+but if I want to use, as an example, named pipe, I have to write my own
+support
+(but it seems this is an issue for broken POSIX implementations, too).
+
+
+&gt;&gt;<i> [snip more oblique allusions to various win32 APIs]
+</I>&gt;<i> 
+</I>&gt;<i> Frankly, I don't think you know what you're talking about.  
+</I>
+This is very likely ;-)
+
+&gt;<i> If you know
+</I>&gt;<i> enough to make iocpreactor, or even win32eventreactor, work on Windows
+</I>&gt;<i> with SSL and GUI support, great, do that and contribute it, and we can
+</I>&gt;<i> discuss the patch.  If not, we're not going to break the *only* working,
+</I>&gt;<i> tested Windows reactor because you think one day it should be different.
+</I>&gt;<i> 
+</I>
+Is win32eventreactor not working and not tested?
+You did not mention it in the &quot;removing unsupported reactors in twisted&quot;
+thread.
+
+&gt;&gt;<i> This should allow one to easily use asyncronous I/O support of Window,
+</I>&gt;&gt;<i> not only for sockets, but on all (not many...) 'handles' that support
+</I>&gt;&gt;<i> the asyncronous I/O API.
+</I>&gt;<i> 
+</I>&gt;<i> If it's easy, feel free to do it :).
+</I>&gt;<i> 
+</I>
+I have write it, now stdio works ;-).
+
+Unfortunately it is not very efficient since:
+- it uses _pollingfile (not a real porblem)
+- it reads raw keyboard input and have to do all low level stuff like
+  '\b' handling, '\r' conversion, and so
+
+
+Here is the main code.
+I suspect such a thing will never be accepted into Twisted ;-):
+
+
+class _PollableConsoleReader(_PollableResource):
+    # XXX TODO add support for Window events (resize)
+    implements(IPushProducer)
+
+    def __init__(self, con, receivedCallback, lostCallback):
+        self.con = con
+        self.receivedCallback = receivedCallback
+        self.lostCallback = lostCallback
+        self.cp = &quot;cp%d&quot; % win32console.GetConsoleCP()
+
+        # We need this
+        self._stdout = win32console.GetStdHandle(
+	                   win32console.STD_OUTPUT_HANDLE
+                        )
+
+    def checkWork(self):
+        finished = 0
+        fullDataRead = []
+
+        info = self._stdout.GetConsoleScreenBufferInfo()
+        Y = info[&quot;CursorPosition&quot;].Y
+
+        while 1:
+            try:
+                n = self.con.GetNumberOfConsoleInputEvents()
+                if n == 0:
+                    break
+
+                records = self.con.ReadConsoleInput(n)
+
+                # We need to process input
+                # XXX check me
+                # XXX TODO rewrite in C(?), now this is very inefficient
+                for record in records:
+                    if record.EventType != win32console.KEY_EVENT \
+                            or not record.KeyDown:
+                        continue
+
+                    char = record.Char
+                    if char == '\b':
+                        # We need to handle this
+                        info = self._stdout.GetConsoleScreenBufferInfo()
+                        rowSize = info[&quot;MaximumWindowSize&quot;].X
+                        cursorPosition = info[&quot;CursorPosition&quot;]
+
+                        # Move the cursor
+                        if cursorPosition.X == 0:
+                            if cursorPosition.Y &gt; Y:
+                                cursorPosition.Y -= 1
+                                cursorPosition.X = rowSize - 1
+                        else:
+                            cursorPosition.X -= 1
+
+                        self._stdout.SetConsoleCursorPosition(
+                            cursorPosition
+                         )
+                        self._stdout.WriteConsoleOutputCharacter(' ',
+                                                      cursorPosition)
+                        continue
+                    elif char == '\0':
+                        continue
+                    elif char == '\r':
+                        char = '\n'
+
+                    char = char * record.RepeatCount
+                    data = char.encode(self.cp)
+                    self._stdout.WriteConsole(data) # Do echo
+
+                    fullDataRead.append(data)
+            except pywintypes.error:
+                raise
+                # XXX this should not happen
+                finished = 1
+                break
+
+        dataBuf = ''.join(fullDataRead)
+        if dataBuf:
+            self.receivedCallback(dataBuf)
+        if finished:
+            self.cleanup()
+
+        return len(dataBuf)
+
+   ...
+
+The ConsoleWriter does not need to support asyncronous I/O, so it is a
+simple wrapper for ConsoleWrite.
+
+This code still have some problems[1]...
+For now I have added this to _pollingfile module.
+
+The _win32stdio module can simply check if the stdin is attached to a
+terminal, so it (hopefully) can support both pipes and consoles.
+
+
+Many things can be added, like an emulation of POSIX terminal, callbacks
+for resize events, support for focus in/out, colored output, history
+editing, ...
+
+
+[1]
+How can be tested such a thing?
+
+
+
+Regards  Manlio Perillo
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="014138.html">[Twisted-Python] _dumbwin32proc and PIPE_NOWAIT
+</A></li>
+	<LI>Next message: <A HREF="014143.html">[Twisted-Python] _dumbwin32proc and PIPE_NOWAIT
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14141">[ date ]</a>
+              <a href="thread.html#14141">[ thread ]</a>
+              <a href="subject.html#14141">[ subject ]</a>
+              <a href="author.html#14141">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

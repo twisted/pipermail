@@ -1,0 +1,661 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Batch of nevow bugfixes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   
+   <LINK REL="Previous"  HREF="000096.html">
+   <LINK REL="Next"  HREF="000098.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Batch of nevow bugfixes
+   </H1>
+    <B>James Y Knight
+    </B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com"
+       TITLE="[Twisted-web] Batch of nevow bugfixes">twisted-web@twistedmatrix.com
+       </A><BR>
+    <I>Thu, 8 Jan 2004 18:13:31 -0500</I>
+    <P><UL>
+        <LI> Previous message: <A HREF="000096.html">[Twisted-web] Example App
+</A></li>
+        <LI> Next message: <A HREF="000098.html">[Twisted-web] NEWBIE: how to use only the networking core of twisted-web?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#97">[ date ]</a>
+              <a href="thread.html#97">[ thread ]</a>
+              <a href="subject.html#97">[ subject ]</a>
+              <a href="author.html#97">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>--Apple-Mail-4-807131218
+Content-Transfer-Encoding: 7bit
+Content-Type: text/plain;
+	charset=US-ASCII;
+	format=flowed
+
+So I've got a bunch of nevow patches here. They're all combined in one 
+patchfile cause I'm way too lazy to split them up, but it should be 
+pretty easy to see what's what.
+1) most files: Compatibility with python2.2 (agian). Omitted changes to 
+components.wsv, so it shouldn't hurt python2.3 users but won't actually 
+work in python2.2 yet.
+2) appserver.py: change to renderHTTP that allows returning a 
+NOT_DONE_YET from a deferred without blowing up. Probably not necessary 
+but makes it easier for me. :)
+3) context.py, stan.py: stripContexts and clone look within sublists 
+and attributes. This corrects bug #49, which causes the sequence 
+renderer to fail to render some parts.
+4) context.py, stan.py: use Unset instead of None for specials that 
+haven't been set, so that None is a valid value (important at least for 
+data attribute!)
+5) renderer.py: Fix bug #36 &quot;Nevow has issues with nested deferred 
+renderers.&quot;
+6) simple.py: Make this example work.
+7) stan.py: specials/specialMatches: don't find specials on the current 
+tag, only children. Fixes bug #50.
+
+All the ones I submitted bug reports on have testcases on the bugreport.
+
+
+--Apple-Mail-4-807131218
+Content-Transfer-Encoding: 7bit
+Content-Type: application/octet-stream;
+	x-unix-mode=0644;
+	name=&quot;nevow.patch&quot;
+Content-Disposition: attachment;
+	filename=nevow.patch
+
+Index: appserver.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/appserver.py,v
+retrieving revision 1.12
+diff -u -r1.12 appserver.py
+--- appserver.py	8 Jan 2004 01:11:33 -0000	1.12
++++ appserver.py	8 Jan 2004 22:11:57 -0000
+@@ -3,6 +3,8 @@
+ import cgi
+ from copy import copy
+ from urllib import unquote
++from types import StringTypes
++
+ 
+ from twisted.web import server
+ from twisted.web import resource
+@@ -135,7 +137,7 @@
+         self.deferred.callback(&quot;&quot;)
+ 
+     def _cbFinishRender(self, html):
+-        if isinstance(html, basestring):
++        if isinstance(html, StringTypes):
+             self.write(html)
+         server.Request.finish(self)
+         return html
+@@ -170,10 +172,15 @@
+         request.postpath.insert(0, request.prepath.pop())
+         return res, segments[1:]
+ 
+-    def renderHTTP(self, request):
+-        result = self.original.render(request)
+-        if result == server.NOT_DONE_YET:
++    def _handle_NOT_DONE_YET(self, data, request):
++        if data == server.NOT_DONE_YET:
+             return request.deferred
++        else:
++            return data
++        
++    def renderHTTP(self, request):
++        result = defer.maybeDeferred(self.original.render, request).addCallback(
++            self._handle_NOT_DONE_YET, request)
+         return result
+ 
+ 
+Index: context.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/context.py,v
+retrieving revision 1.14
+diff -u -r1.14 context.py
+--- context.py	11 Dec 2003 21:34:27 -0000	1.14
++++ context.py	8 Jan 2004 22:11:57 -0000
+@@ -3,13 +3,15 @@
+ # and/or modify it under the terms of version 2.1 of the GNU Lesser General
+ # Public License as published by the Free Software Foundation.
+ 
++from __future__ import generators
++
+ import warnings
+ 
+ from twisted.python import components
+ from twisted.python.reflect import qual
+ 
+ from nevow.iwoven import IData
+-from nevow.stan import specialMatches, specials, Tag
++from nevow.stan import specialMatches, specials, Tag, Unset
+ from nevow.tags import invisible
+ 
+ class _Marker(object):
+@@ -36,14 +38,22 @@
+         return &quot;More than one %r with the name %r was found.&quot; % tuple(self.args[:2])
+ 
+ 
+-def stripContexts(tag):
+-    for i in range(len(tag.children)):
+-        obj = tag.children[i]
++def _stripContexts(obj):
++    if isinstance(obj, (list, tuple)):
++        obj = [_stripContexts(x) for x in obj]
++    else:
+         if isinstance(obj, WovenContext):
+-            tag.children[i] = obj.tag
+             obj = obj.tag
+         if isinstance(obj, Tag):
+-            stripContexts(obj)
++            return stripContexts(obj)
++    return obj
++
++def stripContexts(tag):
++    for i in range(len(tag.children)):
++        tag.children[i] = _stripContexts(tag.children[i])
++    for key in tag.attributes:
++        tag.attributes[key] = _stripContexts(tag.attributes[key])
++    return tag
+ 
+ 
+ class WovenContext(object):
+@@ -54,7 +64,7 @@
+     def __init__(self, parent=None, tag=None, precompile=False, remembrances=None, key=None):
+         self.tag = tag
+         self.parent = parent
+-        if key is not None:
++        if key is not None and key is not Unset:
+             if self.parent is not None and self.parent.key is not None:
+                 self.key = '.'.join((self.parent.key, key))
+             else:
+@@ -107,9 +117,9 @@
+ #        data=None, renderer=None, observer=None, remembrances=None
+ 
+         new = WovenContext(self, tag, self.precompile, key=tag.key)
+-        if tag.data is not None:
++        if tag.data is not Unset:
+             new.remember(tag.data, IData)
+-        if tag.remember is not None:
++        if tag.remember is not Unset:
+             new.remember(tag.remember)
+ #        if renderer is not None:
+ #            # push a renderer onto the stack
+@@ -195,7 +205,7 @@
+             for x in specialMatches(tag, 'pattern', pattern):
+                 keeplooking = True
+                 cloned = x.clone()
+-                cloned.pattern = None
++                cloned.pattern = Unset
+                 yield cloned
+         if raiseIfMissing:
+             raise RuntimeError, &quot;Pattern %s was not found.&quot; % pattern
+Index: formless.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/formless.py,v
+retrieving revision 1.32
+diff -u -r1.32 formless.py
+--- formless.py	4 Jan 2004 15:31:21 -0000	1.32
++++ formless.py	8 Jan 2004 22:11:57 -0000
+@@ -20,10 +20,14 @@
+ from twisted.internet import reactor, defer
+ 
+ 
+-import itertools
++class count(object):
++    def __init__(self):
++        self.id = 0
++    def next(self):
++        self.id += 1
++        return self.id
+ 
+-
+-nextId = itertools.count().next
++nextId = count().next
+ 
+ 
+ class InputError(Exception):
+@@ -566,7 +570,8 @@
+         &quot;&quot;&quot;
+         copied = copy.deepcopy(self.typedValue.arguments)
+         curid = 0
+-        for arg in copied[::-1]:
++        for n in xrange(len(copied)-1, -1, -1):
++            arg=copied[n]
+             curid = arg.id
+             if isinstance(arg, Button):
+                 break
+Index: freeform.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/freeform.py,v
+retrieving revision 1.85
+diff -u -r1.85 freeform.py
+--- freeform.py	4 Jan 2004 15:31:21 -0000	1.85
++++ freeform.py	8 Jan 2004 22:11:57 -0000
+@@ -196,6 +196,15 @@
+ 
+         defaults = IFormDefaults(request)
+         value = defaults.getDefault(context.key, context)
++
++        if isinstance(value, Deferred):
++            value.addCallback(self._cb_call, context, data)
++            return value
++        else:
++            return self._cb_call(value, context, data)
++
++    def _cb_call(self, value, context, data):
++        request = context.locate(iwoven.IRequest)
+         try:
+             _, fbn = calculateFullBindingName(context, context.locate(formless.IBinding))
+         except KeyError:
+Index: renderer.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/renderer.py,v
+retrieving revision 1.29
+diff -u -r1.29 renderer.py
+--- renderer.py	23 Dec 2003 06:15:38 -0000	1.29
++++ renderer.py	8 Jan 2004 22:11:57 -0000
+@@ -4,6 +4,8 @@
+ # and/or modify it under the terms of version 2.1 of the GNU Lesser General
+ # Public License as published by the Free Software Foundation.
+ 
++from __future__ import generators
++
+ import os
+ import stat
+ import time
+@@ -67,8 +69,12 @@
+             buf(item)
+         elif isinstance(item, Deferred):
+             yield item
+-            for flat in _strflatten(context, ISerializable(item.result).serialize(context, None), buf):
+-                pass
++            if not hasattr(item, 'result'):
++                print &quot;ERROR: Deferred has no result!&quot;
++                buf(&quot;ERROR: Deferred has no result!&quot;)
++            else:
++                for sub in _strflatten(context, ISerializable(item.result).serialize(context, None), buf):
++                    yield sub
+         else:
+             for sub in _strflatten(context, item, buf):
+                 yield sub
+@@ -76,6 +82,12 @@
+ from cStringIO import StringIO
+ from twisted.python.context import get as getCtx
+ 
++def _error(failure):
++    # FIXME: this should *definitely* do something better
++    # doing this leaves the connection hanging, but it's better
++    # than nothing.
++    print &quot;FAILURE !&quot;,failure 
++    
+ def _subrender(L, itr, context, writer, closer):
+     for item in itr:
+         if writer is not None:
+@@ -88,6 +100,7 @@
+             item.addCallback(lambda ignored: transact(_subrender, L, itr, context, writer, closer))
+         else:
+             item.addCallback(lambda ignored: _subrender(L, itr, context, writer, closer))
++        item.addErrback(_error)
+         return item
+     data = ''.join(L)
+     if writer is not None:
+Index: simple.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/simple.py,v
+retrieving revision 1.3
+diff -u -r1.3 simple.py
+--- simple.py	28 Oct 2003 23:41:16 -0000	1.3
++++ simple.py	8 Jan 2004 22:11:57 -0000
+@@ -4,7 +4,11 @@
+ # Public License as published by the Free Software Foundation.
+ 
+ 
++from twisted.application import service, internet
++from twisted.web import server
++from nevow import renderer
+ from nevow.tags import *
++from nevow import stan
+ 
+ import random
+ 
+@@ -17,23 +21,6 @@
+     return data * 5
+ 
+ 
+-def sequence(context, data):
+-    patterns = context.generatePatterns('item')
+-    return [patterns.next()(data=item) for item in data]
+-
+-
+-def slotFiller(context, data):
+-    assert hasattr(data, 'items'), &quot;slotFiller needs an object which returns key, value tuples in response to items.&quot;
+-    for k, v in data.items():
+-        try:
+-            slot = context.locateSlots(k).next()
+-        except StopIteration:
+-            raise RuntimeError, &quot;Slot %s was not found.&quot; % k
+-        slot.children.append(v)
+-    context.tag.renderer = None
+-    return context.tag
+-
+-
+ def selectOptioner(context, data):
+     tag = context.tag.clone(deep=False)
+     tag(name=&quot;flavor&quot;)
+@@ -46,8 +33,8 @@
+     tag.renderer = None
+     return tag
+ 
+-
+-doc = html[
++class Simple(renderer.Renderer):
++  document = html[
+     head[
+         title[&quot;Hello, World&quot;]
+     ],
+@@ -59,7 +46,7 @@
+             &quot;Here are some random numbers: &quot;,
+             str, &quot; &quot;,
+             str, &quot; &quot;,
+-            str, &quot; &quot;,
++            str, &quot; &quot;
+         ],
+         ul(data={'one': 1, 'two': rand, 'three': 3})[
+             li(data=directive(&quot;one&quot;), renderer=str),
+@@ -70,7 +57,7 @@
+             li(data=_2, renderer=multiply),
+             li(data=_1, renderer=multiply),
+             li(data=_0, renderer=multiply),
+-            li(data=multiply, renderer=sequence)[
++            li(data=multiply, renderer=stan.sequence)[
+                 div(style=&quot;border: 1px solid blue; margin-bottom: 0.5em&quot;, pattern=&quot;item&quot;, renderer=str),
+                 div(style=&quot;border: 1px solid red; margin-bottom: 0.5em&quot;, pattern=&quot;item&quot;, renderer=multiply),
+             ]
+@@ -84,8 +71,8 @@
+                 td[&quot;AGE&quot;]
+             ],
+ 
+-            div(renderer=sequence)[
+-                tr(pattern=&quot;item&quot;, renderer=slotFiller)[
++            div(renderer=stan.sequence)[
++                tr(pattern=&quot;item&quot;, renderer=stan.mapping)[
+                     td(style=&quot;background-color: #efefef&quot;, slot=&quot;name&quot;),
+                     td(style=&quot;background-color: #abcdef&quot;, slot=&quot;age&quot;),
+                 ]
+@@ -95,3 +82,6 @@
+                 renderer=selectOptioner)
+     ]
+ ]
++
++application = service.Application(&quot;simple&quot;)
++internet.TCPServer(8080, server.Site(Simple())).setServiceParent(application)
+Index: stan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/stan.py,v
+retrieving revision 1.15
+diff -u -r1.15 stan.py
+--- stan.py	2 Jan 2004 16:02:08 -0000	1.15
++++ stan.py	8 Jan 2004 22:11:58 -0000
+@@ -3,6 +3,8 @@
+ # and/or modify it under the terms of version 2.1 of the GNU Lesser General
+ # Public License as published by the Free Software Foundation.
+ 
++from __future__ import generators
++
+ 
+ class Proto(str):
+     &quot;&quot;&quot;Proto is a string subclass. Instances of Proto, which are constructed
+@@ -124,19 +128,29 @@
+         &quot;&quot;&quot;
+         raise NotImplementedError, &quot;Stan tag instances are not iterable.&quot;
+ 
++    def _clone(self, obj, deep):
++        if hasattr(obj, 'clone'):
++            return obj.clone(deep)
++        elif isinstance(obj, (list, tuple)):
++            return [self._clone(x, deep)
++                    for x in obj]
++        else:
++            return obj
++        
+     def clone(self, deep=True):
+         &quot;&quot;&quot;Return a clone of this tag. If deep is True, clone all of this
+         tag's children. Otherwise, the children list of the clone will
+         be empty.
+         &quot;&quot;&quot;
+         if deep:
+-            newchildren = [
+-                hasattr(ch, 'clone') and ch.clone() or ch
+-                for ch in self.children
+-            ]
++            newchildren = [self._clone(x, True) for x in self.children]
+         else:
+             newchildren = []
+-        return Tag(self.tagName, attributes=self.attributes.copy(), children=newchildren, specials=self._specials.copy())
++        newattrs = self.attributes.copy()
++        for key in newattrs:
++            newattrs[key]=self._clone(newattrs[key], True)
++        
++        return Tag(self.tagName, attributes=newattrs, children=newchildren, specials=self._specials.copy())
+ 
+     def clear(self):
+         &quot;&quot;&quot;Clear any existing children from this tag.
+@@ -156,9 +170,16 @@
+         return &quot;Tag(%r%s)&quot; % (self.tagName, rstr)
+ 
+ 
++class UnsetClass:
++    def __nonzero__(self):
++        return False
++    def __repr__(self):
++        return &quot;Unset&quot;
++Unset=UnsetClass()
++
+ def makeAccessors(special):
+     def getSpecial(self):
+-        return self._specials.get(special)
++        return self._specials.get(special, Unset)
+ 
+     def setSpecial(self, data):
+         self._specials[special] = data
+@@ -171,31 +192,33 @@
+ del name
+ 
+ 
+-def specials(tagOrContext, special):
++def specials(tag, special):
+     &quot;&quot;&quot;Generate tags with special attributes regardless of attribute value.
+     &quot;&quot;&quot;
+-    tag = getattr(tagOrContext, 'tag', tagOrContext)
+-    if getattr(tag, special, None) is not None:
+-        yield tag
+-    else:
+-        for child in getattr(tag, 'children', []):
++    for childOrContext in getattr(tag, 'children', []):
++        child = getattr(childOrContext, 'tag', childOrContext)
++        
++        if getattr(child, special, Unset) is not Unset:
++            yield child
++        else:
+             for match in specials(child, special):
+                 yield match
+ 
+ 
+-def specialMatches(tagOrContext, special, pattern):
++def specialMatches(tag, special, pattern):
+     &quot;&quot;&quot;Generate special attribute matches starting with the given tag;
+     if a match is found, do not look any deeper below that match.
+     &quot;&quot;&quot;
+-    tag = getattr(tagOrContext, 'tag', tagOrContext)
+-    if getattr(tag, special, None) == pattern:
+-        yield tag
+-    else:
+-        for child in getattr(tag, 'children', []):
++    for childOrContext in getattr(tag, 'children', []):
++        child = getattr(childOrContext, 'tag', childOrContext)
++        
++        data = getattr(child, special, Unset)
++        if data == pattern:
++            yield child
++        elif data is Unset:
+             for match in specialMatches(child, special, pattern):
+                 yield match
+ 
+-
+ def sequence(context, data):
+     headers = specialMatches(context.tag, 'pattern', 'header')
+     pattern = context.patterns('item')
+Index: url.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/url.py,v
+retrieving revision 1.5
+diff -u -r1.5 url.py
+--- url.py	23 Dec 2003 06:15:38 -0000	1.5
++++ url.py	8 Jan 2004 22:11:58 -0000
+@@ -1,4 +1,4 @@
+-
++from __future__ import generators
+ import urllib
+ import weakref
+ 
+Index: serial/flatmdom.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatmdom.py,v
+retrieving revision 1.10
+diff -u -r1.10 flatmdom.py
+--- serial/flatmdom.py	11 Dec 2003 03:22:04 -0000	1.10
++++ serial/flatmdom.py	8 Jan 2004 22:11:58 -0000
+@@ -3,6 +3,8 @@
+ # and/or modify it under the terms of version 2.1 of the GNU Lesser General
+ # Public License as published by the Free Software Foundation.
+ 
++from __future__ import generators
++
+ from nevow.iwoven import ISerializable
+ from nevow.stan import Tag, xml, directive
+ 
+Index: serial/flatstan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatstan.py,v
+retrieving revision 1.18
+diff -u -r1.18 flatstan.py
+--- serial/flatstan.py	17 Dec 2003 01:44:39 -0000	1.18
++++ serial/flatstan.py	8 Jan 2004 22:11:58 -0000
+@@ -3,11 +3,12 @@
+ # and/or modify it under the terms of version 2.1 of the GNU Lesser General
+ # Public License as published by the Free Software Foundation.
+ 
+-
++from __future__ import generators
++from types import StringTypes
+ import types
+ import warnings
+ 
+ from twisted.python import components, log
+ from nevow.stan import Proto, Tag, xml, directive
+ from nevow.iwoven import ISerializable, IRendererFactory, IData
+ from nevow.renderer import flatten
+@@ -22,7 +24,7 @@
+ 
+ class TagSerializer(components.Adapter):
+     __implements__ = ISerializable,
+-
++    
+     def serialize(self, context, stream):
+         visible = bool(self.original.tagName)
+         singleton = not self.original.renderer and not self.original.children and not self.original.data
+@@ -50,7 +52,7 @@
+                             flat = flatten(ISerializable(v).serialize(context, stream))
+                             if flat:
+                                 val = flat[0]
+-                                if isinstance(val, basestring):
++                                if isinstance(val, StringTypes):
+                                     val = val.replace('&quot;', '&amp;quot;')
+                                 yield xml(val)
+                         yield xml('&quot;')
+@@ -63,9 +65,9 @@
+                 # TODO: Make this less buggy.
+                 try:
+                     if context.locate(IData) != self.original.data:
+-                        context = context.with(self.original)                    
++                        context = context.with(self.original)
+                 except KeyError:
+-                    context = context.with(self.original)                    
++                    context = context.with(self.original)
+                 if self.original.renderer:
+                     toBeRenderedBy = self.original.renderer
+                     self.original.renderer = None
+Index: test/test_disktemplate.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/test/test_disktemplate.py,v
+retrieving revision 1.16
+diff -u -r1.16 test_disktemplate.py
+--- test/test_disktemplate.py	11 Dec 2003 01:04:10 -0000	1.16
++++ test/test_disktemplate.py	8 Jan 2004 22:11:58 -0000
+@@ -3,6 +3,7 @@
+ # and/or modify it under the terms of version 2.1 of the GNU Lesser General
+ # Public License as published by the Free Software Foundation.
+ 
++from __future__ import generators
+ 
+ from nevow import renderer
+ from nevow import util
+Index: test/test_flatstan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/test/test_flatstan.py,v
+retrieving revision 1.15
+diff -u -r1.15 test_flatstan.py
+--- test/test_flatstan.py	10 Dec 2003 19:48:49 -0000	1.15
++++ test/test_flatstan.py	8 Jan 2004 22:11:58 -0000
+@@ -3,6 +3,8 @@
+ # and/or modify it under the terms of version 2.1 of the GNU Lesser General
+ # Public License as published by the Free Software Foundation.
+ 
++from __future__ import generators
++
+ from twisted.python import reflect
+ 
+ from twisted.web.resource import IResource
+
+--Apple-Mail-4-807131218
+Content-Transfer-Encoding: 7bit
+Content-Type: text/plain;
+	charset=US-ASCII;
+	format=flowed
+
+
+
+The deferred freeform patch from Gavrie Philipson should probably also 
+go in.
+
+James
+
+--Apple-Mail-4-807131218--
+
+
+
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI> Previous message: <A HREF="000096.html">[Twisted-web] Example App
+</A></li>
+	<LI> Next message: <A HREF="000098.html">[Twisted-web] NEWBIE: how to use only the networking core of twisted-web?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#97">[ date ]</a>
+              <a href="thread.html#97">[ thread ]</a>
+              <a href="subject.html#97">[ subject ]</a>
+              <a href="author.html#97">[ author ]</a>
+         </LI>
+       </UL>
+</body></html>

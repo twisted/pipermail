@@ -1,0 +1,218 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: Athena Forms Thing
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20Athena%20Forms%20Thing&In-Reply-To=43900CA3.907%40isotoma.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002186.html">
+   <LINK REL="Next"  HREF="002190.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: Athena Forms Thing</H1>
+    <B>Paul Reznicek</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20Athena%20Forms%20Thing&In-Reply-To=43900CA3.907%40isotoma.com"
+       TITLE="[Twisted-web] Re: Athena Forms Thing">maillists at ivsn.com
+       </A><BR>
+    <I>Mon Dec  5 19:39:00 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002186.html">[Twisted-web] Using deferreds to render a page
+</A></li>
+        <LI>Next message: <A HREF="002190.html">[Twisted-web] How to kill the session
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2187">[ date ]</a>
+              <a href="thread.html#2187">[ thread ]</a>
+              <a href="subject.html#2187">[ subject ]</a>
+              <a href="author.html#2187">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Doug Winter wrote:
+&gt;<i> ...
+</I>&gt;<i> Dialtone is right to suggest using mg's form library I think, and I'm up 
+</I>&gt;<i> for doing some hacking on this this weekend. ...
+</I>
+After testing Matt's &quot;forms&quot; I agree 100% that (except the AJAX features),
+forms are capable for very sophisticated designs!
+
+Your proposal on:
+   <A HREF="http://forms-project.pollenation.net/cgi-bin/trac.cgi/wiki/ajax">http://forms-project.pollenation.net/cgi-bin/trac.cgi/wiki/ajax</A>
+is qualified too - this functionality could be a real base for high
+interactive user interfaces.
+
+After getting your ajax-forms branch with:
+   svn checkout <A HREF="svn://pollenation.net/forms/branches/ajax-forms">svn://pollenation.net/forms/branches/ajax-forms</A> ajax-forms
+I found your's first example - but not working too much. I was playing a bit
+with it and attached is a patch how to get on the server-side some more live
+into it.
+
+Looking forward the next steps !!!
+
+Paul
+-------------- next part --------------
+Index: aforms/event.py 
+=================================================================== 
+--- aforms/event.py	(Revision 147) 
++++ aforms/event.py	(Arbeitskopie) 
+@@ -21,7 +21,7 @@ 
+     def __init__(self, event, method, *args): 
+         self.event = event 
+         self.method = method 
+-        self.args = args 
++        self.args = str(args)[2:-3] or '&quot;&quot;' 
+  
+     def render(self, ctx): 
+-        return &quot;server.callRemote('%s')&quot; % self.method 
++        return &quot;server.callRemote('%s', %s)&quot; % (self.method, self.args) 
+Index: aforms/examples/simple.py 
+=================================================================== 
+--- aforms/examples/simple.py	(Revision 147) 
++++ aforms/examples/simple.py	(Arbeitskopie) 
+@@ -1,3 +1,4 @@ 
++#! /usr/bin/env python 
+  
+ import pkg_resources 
+ pkg_resources.require(&quot;forms&quot;) 
+@@ -4,6 +5,8 @@ 
+  
+ from twisted.application import service 
+ from twisted.application import internet 
++from twisted.python import util 
++from twisted.internet import reactor 
+  
+ from nevow import rend 
+ from nevow import athena 
+@@ -20,20 +23,43 @@ 
+     ('baz', 'Baz'), 
+ ] 
+  
++from zope.interface import Interface 
++ 
++class ISimple(Interface): 
++    def keypressed(): 
++        pass 
++    def blur(): 
++        pass 
++    def async_submitted(): 
++        pass 
++ 
++class Simple(object): 
++    def keypressed(self, data): 
++        print 'keypressed', data 
++    def blur(self, data): 
++        print 'blur', data 
++    def async_submitted(self, data): 
++        print 'async_submitted', data 
++        reactor.stop() 
++ 
+ class Page(forms.ResourceMixin, athena.LivePage): 
+-    docFactory = loaders.xmlfile(&quot;aforms/examples/simple.html&quot;) 
++    docFactory = loaders.xmlfile( 
++            util.sibpath(__file__, 'simple.html'), ignoreComment=True) 
+  
+     def form_example(self, ctx): 
+         form = aforms.Form() 
++        formIdPrefix = 'example' 
+         wf = forms.widgetFactory( 
+             aforms.TextArea, 
+             events=( 
+-                aforms.CallRemote('onkeyup', 'keypressed'), 
+-                aforms.CallRemote('onblur', 'blur', 23), 
++                aforms.CallRemote('onkeyup', 'keypressed', 'this.value'), 
++                aforms.CallRemote('onblur', 'blur', 'this.value'), 
+             ) 
+         ) 
+-        form.addField('aString', forms.String(), wf) 
+-        form.addAsyncAction(aforms.CallRemote('onclick', 'async_submitted')) 
++        fieldName = 'aString' 
++        form.addField(fieldName, forms.String(), wf) 
++        form.addAsyncAction(aforms.CallRemote('onclick', 'async_submitted', 
++                'getValue(&quot;%s-%s&quot;)' % (formIdPrefix, fieldName) )) 
+         return form 
+  
+     def submitted(self, ctx, form, data): 
+@@ -44,11 +70,19 @@ 
+         return url.URL.fromString('/app') 
+  
+     def child_app(self, ctx): 
+-        page = Page((), None) 
++        page = Page(ISimple, Simple()) 
+         return page 
+  
+ root = Root() 
+ application = service.Application(&quot;test&quot;) 
+-i = internet.TCPServer(9898, appserver.NevowSite(root,  logPath=&quot;/dev/null&quot;)) 
++i = internet.TCPServer(9898, appserver.NevowSite(root, ))# logPath=&quot;/dev/null&quot;)) 
+ i.setServiceParent(application) 
+  
++# with this, you can start this file directly, no need for twistd ... 
++if __name__ == '__main__': 
++    &quot;&quot;&quot;Command Line Starter 
++    &quot;&quot;&quot; 
++    i.startService() 
++    print 'SERVICE STARTED' 
++    reactor.run() 
++    print 'reactor STOPPED' 
+Index: aforms/examples/simple.html 
+=================================================================== 
+--- aforms/examples/simple.html	(Revision 147) 
++++ aforms/examples/simple.html	(Arbeitskopie) 
+@@ -5,6 +5,14 @@ 
+ &lt;html xmlns:n=&quot;<A HREF="http://nevow.com/ns/nevow/0.1&quot;">http://nevow.com/ns/nevow/0.1&quot;</A>&gt; 
+   &lt;head&gt; 
+     &lt;n:invisible n:render=&quot;liveglue&quot; /&gt; 
++    &lt;script type='text/javascript' language='javascript'&gt; 
++    // &lt;![CDATA[ 
++    function getValue(fieldID) { 
++        return document.getElementById(fieldID).value; 
++    } 
++    // ]]&gt; 
++    &lt;/script&gt; 
++ 
+   &lt;/head&gt; 
+   &lt;body&gt; 
+     &lt;form n:render=&quot;form example&quot; /&gt; 
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002186.html">[Twisted-web] Using deferreds to render a page
+</A></li>
+	<LI>Next message: <A HREF="002190.html">[Twisted-web] How to kill the session
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2187">[ date ]</a>
+              <a href="thread.html#2187">[ thread ]</a>
+              <a href="subject.html#2187">[ subject ]</a>
+              <a href="author.html#2187">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

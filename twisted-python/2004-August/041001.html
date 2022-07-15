@@ -1,0 +1,252 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Adding callback to a Deferred that's	already	running?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Adding%20callback%20to%20a%20Deferred%20that%27s%0A%09already%09running%3F&In-Reply-To=%3Cuisb5iumb.fsf%40fitlinxx.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="041002.html">
+   <LINK REL="Next"  HREF="041004.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Adding callback to a Deferred that's	already	running?</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Adding%20callback%20to%20a%20Deferred%20that%27s%0A%09already%09running%3F&In-Reply-To=%3Cuisb5iumb.fsf%40fitlinxx.com%3E"
+       TITLE="[Twisted-Python] Re: Adding callback to a Deferred that's	already	running?">db3l at fitlinxx.com
+       </A><BR>
+    <I>Thu Aug 26 13:09:48 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="041002.html">[Twisted-Python] Re: Adding callback to a Deferred that's	already	running?
+</A></li>
+        <LI>Next message (by thread): <A HREF="041004.html">[Twisted-Python] Re: Adding callback to a Deferred	that's	already	running?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41001">[ date ]</a>
+              <a href="thread.html#41001">[ thread ]</a>
+              <a href="subject.html#41001">[ subject ]</a>
+              <a href="author.html#41001">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Steve Freitas &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">sflist at ihonk.com</A>&gt; writes:
+
+&gt;<i> Hi all,
+</I>&gt;<i> 
+</I>&gt;<i> I've got an XML-RPC app that has to grab some data from a SQL database, then 
+</I>&gt;<i> depending on the results, make some more SQL calls, make some more decisions, 
+</I>&gt;<i> then finally return a result. So, I'm hip-deep in Deferreds. So, here's the 
+</I>&gt;<i> idiom I've come up with, and I'm running into a limitation with it, namely 
+</I>&gt;<i> that I can't seem to add callbacks to a Deferred after it has started 
+</I>&gt;<i> running. Here's what I'm doing in abbreviated form, and it's an idiom I'd 
+</I>&gt;<i> like to stick with, if possible:
+</I>
+You can certainly add a callback to a Deferred that has already fired
+(it will immediately run synchronously), but yes, you can't do it
+during the callback/errback operation (e.g., adding to a Deferred from
+within one of that Deferred's callbacks/errbacks as it is running).
+
+&gt;<i> class MyXmlRpcClass(xmlrpc.XMLRPC):
+</I>&gt;<i>   def__init__(self):
+</I>&gt;<i>     self.db = adbapi.ConnectionPool(blah)
+</I>&gt;<i> 
+</I>&gt;<i>   def xmlrpc_foo(self):
+</I>&gt;<i>     return FooClass(self.db).step1() # This returns a deferred, see below
+</I>&gt;<i> 
+</I>&gt;<i> class FooClass(General):
+</I>&gt;<i>     def __init__(self, db):
+</I>&gt;<i>         self.db = db
+</I>&gt;<i> 
+</I>&gt;<i>     def step1(self):
+</I>&gt;<i>         self.d = self.db.runQuery(blah)
+</I>&gt;<i>         self.d.addCallback(self.step2)
+</I>&gt;<i>         return self.d
+</I>&gt;<i> 
+</I>&gt;<i>     def step2(self, query):
+</I>&gt;<i>  if query == 'yadda':
+</I>&gt;<i>           return 'This bit works'
+</I>&gt;<i>         else:
+</I>&gt;<i>           self.d.chainDeferred(self.db.runOperation(blah))
+</I>&gt;<i>           self.d.addCallback(self.step3)
+</I>&gt;<i>             
+</I>&gt;<i>     def step3(self, data):
+</I>&gt;<i>         return &quot;Never gets here!&quot;
+</I>&gt;<i> 
+</I>&gt;<i> If I get to the part where it adds the callback for step3, it ends up giving 
+</I>&gt;<i> an AlreadyCalled exception in Deferred. So, I expect there's a good way to 
+</I>&gt;<i> add to a running Deferred, no?
+</I>
+I don't think you actually want to &quot;add to a running Deferred&quot; here,
+since even if your chainDeferred call worked, it would be chaining at
+the _end_ of the Deferred's callback/errback chain, which might be
+after a whole slew of other operations that your callers (who got the
+deferred from step1) already added.  So it wouldn't occur in the
+sequence you want anyway.
+
+What you really want to do (I believe) is the opposite chain operation
+- you want to take the Deferred from the runOperation(blah), and chain
+it to your current Deferred, so that your current Deferred's
+callback/errback chain waits on the runOperation result to continue
+working.  The actual chaining is easy (just change your use of
+chainDeferred), but the hard part is making the current callback chain
+suspend itself until the new Deferred finishes.
+
+Luckily, Twisted already provides explicit support for this behavior
+(which is sort of crucial to permit deferrable operations to interact
+properly anyway).  What I think you want (similar to what I showed in
+an earlier message of mine in this thread) is simply to return the new
+deferred from within your callback.  Twisted will automatically notice
+that the callback itself is awaiting a response via the deferred, and
+it establishes the necessary linkage. 
+
+Once the new internal Deferred finishes, it is its result (whether
+successful or a Failure object) that will gate whether the original
+Deferreds chain continues up callback or errback.
+
+You can peek at the _runCallbacks inside the Deferred class definition
+if you want to see the mechanism.  Or check out the first paragraph in
+the &quot;Chaining Deferreds&quot; section of the Using Deferreds HOWTO.
+Interestingly enough, the HOWTO (next paragraph) makes mention of it
+potentially being confusing but that the reader will probably
+recognize the need when they run into it.  Clearly that doesn't always
+happen :-)
+
+There's two ways, I think you can do FooClass, depending on how you
+want to conceptually insert step3 into the processing:
+
+The first, fairly literal adjustment of your class would be:
+
+[Case 1]
+
+class FooClass(General):
+    def __init__(self, db):
+        self.db = db
+
+    def step1(self):
+        return self.db.runQuery(blah).addCallback(self.step2)
+
+    def step2(self, query):
+        if query == 'yadda':
+            return 'This bit works'
+        else:
+            return self.db.runOperation(blah).addCallback(self.step3)
+
+    def step3(self, data):
+        # 'data' is result of self.db.runOperation(blah)
+
+        # Note that the result of this method will become the callback
+        # result of the self.db.runOperation(blah) Deferred, and thus
+        # in turn the next result passed up the callback chain for the
+        # first self.db.runQuery(blah) Deferred as the answer from step2
+        # in the non-yadda case.
+
+        return &quot;I got here!'
+
+or:
+
+[Case 2]
+
+class FooClass(General):
+    def __init__(self, db):
+        self.db = db
+
+    def step1(self):
+        d = self.db.runQuery(blah)
+        return d.addCallback(self.step2).addCallback(self.step2)
+        
+    def step2(self, query):
+        if query == 'yadda':
+            return 'This bit works'
+        else:
+            return self.db.runOperation(blah)
+
+    def step3(self, data):
+        # 'data' is result of step2
+
+        # Note that the result of this method will become the callback
+        # in the main callback chain for the first self.db.runQuery(blah)
+        # Deferred, and will thus replace that of step2
+        return &quot;I got here!'
+
+
+(Actually, there's also a third way in which you manually pause and
+unpause the main Deferred callback chain, and set up a callback on the
+secondary Deferred chain to resume the main one, but that's precisely
+what Twisted does for you when you just return the underlying Deferred
+from your callback, so I don't see any benefit of doing it yourself).
+
+In both of these cases there are two deferred chains running (arising
+from the two discrete deferrable operations that themselves are
+creating Deferreds), but that in the even of the non-yadda path in
+step2, the first callback chain is suspended while awaiting completion
+of the second.
+
+In Case 1, the addCallback of step3 is to the secondary callback
+chain, so it provides additional post-processing of the runOperation
+result, but does not get involved in other paths/results from step2.
+
+In Case 2, step3 is added to the main callback (runQuery) chain, so it
+will see any results of step2 (both yadda and runOperation) and can
+then post-process them, becoming in all cases the callback result for
+the main callback chain.  Note a key point here - even though step3 is
+next in the main callback chain after step2, in the event step2
+returns the Deferred from runOperation, the main chain suspends (so
+step3 doesn't run immediately) until that second Deferred finishes,
+at which point it is the result that step3 sees.
+
+So what you end up (in the non-yadda case) is something like (in poor
+ASCII diagraming):
+
+    Case 1:                           Case 2:
+
+    runQuery                          runQuery
+       |                                 |
+    step2                             step2
+       |                                 |
+       |  no                             |  no
+       +-yadda-&gt;-runOperation            +-yadda-&gt;-runOperation
+       |              |                  |              |
+    yadda             v               yadda             v
+       |              |                  |              |
+       +---&lt;------ step3                 +---&lt;----------+
+       |                                 |
+       v                              step3
+                                         |
+                                         v
+
+
+Hope this helps clarify things somewhat.
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="041002.html">[Twisted-Python] Re: Adding callback to a Deferred that's	already	running?
+</A></li>
+	<LI>Next message (by thread): <A HREF="041004.html">[Twisted-Python] Re: Adding callback to a Deferred	that's	already	running?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#41001">[ date ]</a>
+              <a href="thread.html#41001">[ thread ]</a>
+              <a href="subject.html#41001">[ subject ]</a>
+              <a href="author.html#41001">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

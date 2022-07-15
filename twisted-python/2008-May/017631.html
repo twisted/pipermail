@@ -1,0 +1,157 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] ldaptor's LDAPClient.send_multiResponse not	dealing with chained deferreds, patch
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20ldaptor%27s%20LDAPClient.send_multiResponse%20not%0A%09dealing%20with%20chained%20deferreds%2C%20patch&In-Reply-To=481D0B61.60906%40gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="017630.html">
+   <LINK REL="Next"  HREF="017632.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] ldaptor's LDAPClient.send_multiResponse not	dealing with chained deferreds, patch</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20ldaptor%27s%20LDAPClient.send_multiResponse%20not%0A%09dealing%20with%20chained%20deferreds%2C%20patch&In-Reply-To=481D0B61.60906%40gmail.com"
+       TITLE="[Twisted-Python] ldaptor's LDAPClient.send_multiResponse not	dealing with chained deferreds, patch">exarkun at divmod.com
+       </A><BR>
+    <I>Sat May  3 21:28:38 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="017630.html">[Twisted-Python] ldaptor's LDAPClient.send_multiResponse not dealing with chained deferreds, patch
+</A></li>
+        <LI>Next message: <A HREF="017632.html">[Twisted-Python] ldaptor's LDAPClient.send_multiResponse not	dealing with chained deferreds, patch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#17631">[ date ]</a>
+              <a href="thread.html#17631">[ thread ]</a>
+              <a href="subject.html#17631">[ subject ]</a>
+              <a href="author.html#17631">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sat, 03 May 2008 19:03:29 -0600, Michael Torrie &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">torriem at gmail.com</A>&gt; wrote:
+&gt;<i>This message is probably for Tv.
+</I>&gt;<i>
+</I>&gt;<i>I have a situation where the callback to a
+</I>&gt;<i>LDAPClient.send_multiResponse() call needs to do a bunch of work that I
+</I>&gt;<i>want to split up over several functions, using deferred chaining.  What
+</I>&gt;<i>I want to do is something like this (this in conjunction with an LDAP
+</I>&gt;<i>proxy server I am writing using Twisted and ldaptor):
+</I>&gt;<i>
+</I>&gt;<i>d = self.client.send_multiResponse(request, got_response)
+</I>&gt;<i>
+</I>&gt;<i>then later:
+</I>&gt;<i>
+</I>&gt;<i>def got_response(response):
+</I>&gt;<i>
+</I>&gt;<i>    # get a list of other things to do with the response
+</I>&gt;<i>    d = do_stuff_with_response(response)
+</I>&gt;<i>    d.addCallback(finish)
+</I>&gt;<i>
+</I>&gt;<i>    return d
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>def finish(response):
+</I>&gt;<i>    # we're done
+</I>&gt;<i>
+</I>&gt;<i>    return isinstance(response, (
+</I>&gt;<i>            pureldap.LDAPSearchResultDone,
+</I>&gt;<i>            pureldap.LDAPBindResponse,
+</I>&gt;<i>            ))
+</I>&gt;<i>
+</I>&gt;<i>However, this doesn't work, because the send_multiResponse() method of
+</I>&gt;<i>LDAPClient isn't expecting the handler to return a deferred, even though
+</I>&gt;<i>if I do return a deferred the reactor does handle it properly, chaining
+</I>&gt;<i>the deferreds and their callbacks.
+</I>
+You don't need to return the Deferred in order for the code and event
+sources associated with it to cause it to eventually fire.  Returning
+it doesn't do anything more than make it available to the caller.  It
+seems this is what you actually want though, so this is just a change
+of perspective not a contradiction of your conclusion.
+
+&gt;<i>
+</I>&gt;<i>The problem is that in ldapclient.py, line 171, we have:
+</I>&gt;<i>
+</I>&gt;<i>                # Return true to mark request as fully handled
+</I>&gt;<i>                if handler(msg.value, *args, **kwargs):
+</I>&gt;<i>                    del self.onwire[msg.id]
+</I>&gt;<i>
+</I>&gt;<i>When handler() returns a deferred object, after the reactor processes
+</I>&gt;<i>the chain the value is a Deferred object, not True or False, even though
+</I>&gt;<i>the value of the deferred object may be True or False.  Hence the del
+</I>&gt;<i>self.onwire[msg.id] always executes, which when dealing with search
+</I>&gt;<i>result entries is a problem as they all share the same id.  I made a
+</I>&gt;<i>quick hack to fix this:
+</I>
+&gt;<i> [snip]
+</I>&gt;<i>+                result = handler(msg.value, *args, **kwargs)
+</I>&gt;<i>+
+</I>&gt;<i>+                try:
+</I>&gt;<i>+                    result = result.result
+</I>&gt;<i>+                except AttributeError:
+</I>&gt;<i>+                    pass
+</I>&gt;<i>+
+</I>&gt;<i>+               if result:
+</I>&gt;<i>                     del self.onwire[msg.id]
+</I>&gt;<i>
+</I>&gt;<i>     ##Bind
+</I>&gt;<i>----------------------------------------------------------
+</I>&gt;<i>
+</I>&gt;<i>Is this an acceptable way to do this?
+</I>&gt;<i>
+</I>
+Not really.  You need to take the code that depends on the result of
+the Deferred and put it into a callback which gets attached to that
+Deferred.  Something more like this:
+
+    def cbHandler(result):
+        if result:
+            del self.onwire[msg.id]
+
+    result = handler(msg.value, *args, **kwargs)
+    if isinstance(result, Deferred):
+        result.addCallback(cbHandler)
+    else:
+        cbHandler(result)
+
+Or, written using the helper function twisted.internet.defer.maybeDeferred,
+
+    def cbHandler(result):
+        if result:
+            del self.onwire[msg.id]
+    result = maybeDeferred(handler, msg.value, *args, **kwargs)
+    result.addCallback(cbHandler)
+
+This correctly handles both Deferred and non-Deferred results.  I don't
+have any idea if this change to ldaptor is correct with respect to LDAP
+semantics/requirements or the particular implementation details of the
+code in question here, though.
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="017630.html">[Twisted-Python] ldaptor's LDAPClient.send_multiResponse not dealing with chained deferreds, patch
+</A></li>
+	<LI>Next message: <A HREF="017632.html">[Twisted-Python] ldaptor's LDAPClient.send_multiResponse not	dealing with chained deferreds, patch
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#17631">[ date ]</a>
+              <a href="thread.html#17631">[ thread ]</a>
+              <a href="subject.html#17631">[ subject ]</a>
+              <a href="author.html#17631">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

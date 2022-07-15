@@ -1,0 +1,199 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Is it just me ....
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Is%20it%20just%20me%20....&In-Reply-To=%3C20030710120020.10507.qmail%40green.zadka.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="037461.html">
+   <LINK REL="Next"  HREF="037463.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Is it just me ....</H1>
+    <B>Moshe Zadka</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Is%20it%20just%20me%20....&In-Reply-To=%3C20030710120020.10507.qmail%40green.zadka.com%3E"
+       TITLE="[Twisted-Python] Is it just me ....">m at moshez.org
+       </A><BR>
+    <I>Thu Jul 10 06:00:20 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="037461.html">[Twisted-Python] Is it just me ....
+</A></li>
+        <LI>Next message (by thread): <A HREF="037463.html">[Twisted-Python] Is it just me ....
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37462">[ date ]</a>
+              <a href="thread.html#37462">[ thread ]</a>
+              <a href="subject.html#37462">[ subject ]</a>
+              <a href="author.html#37462">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Thu, 10 Jul 2003, Neil Blakey-Milner &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">nbm at mithrandr.moria.org</A>&gt; wrote:
+
+&gt;<i> tnntprss is at <A HREF="http://mithrandr.moria.org/code/tnntprss/">http://mithrandr.moria.org/code/tnntprss/</A> and it creates
+</I>&gt;<i> a NNTP news server with newsgroups and content from RSS feeds.
+</I>&gt;<i> Configuration of RSS feeds is probably the main issue here - I didn't
+</I>&gt;<i> want to use web interfaces without understanding woven.guard/cred
+</I>&gt;<i> better.  Understanding whether I'm using getServiceNamed in an
+</I>&gt;<i> acceptable way would be nice.  I remember pynfo used adapters for
+</I>&gt;<i> something similar - would that be more Twistedish (Twistedic?).
+</I>
+Well, if you have two services that rely on each other, a nice way to
+deal with that is MultiService. Have a convenicence function which
+returns a MultiService, all loaded up with both services, created
+from arguments to this function.
+
+def getTNNTPService(newsDir, syndDir, name):
+    s = app.MultiService(name)
+    NewsService(newsDir, &quot;news&quot;, s) 
+    SyndicationService(syndDir, &quot;syndication&quot;, s) 
+    return s
+
+Then a user can use the following to run your code:
+
+'''
+# File: tnntp.tpy
+#
+# Location of news
+newsDir = &quot;/tmp/newsdb&quot;
+# Location of syndication
+syndDir = &quot;/tmp/synddb&quot;
+
+from tnntprss import getTNNTPService
+from twisted.internetet import app
+
+application = app.Application(&quot;tnntprss&quot;)
+getTNNTPService(newsDir, syndDir, &quot;tnntp).setServiceParent(application)
+'''
+
+Then,
+
+% twistd -y tnntp.tpy
+
+works.
+
+Or, you might want to support an even more extreme method of hiding
+implementation details from users:
+
+def simpGetTNNTPService(storage, name):
+    s = app.MultiService(name)
+    NewsService(os.path.join(storage, &quot;newsdb&quot;), &quot;news&quot;, s) 
+    SyndicationService(os.path.join(storage, &quot;synddb&quot;), &quot;syndication&quot;, s) 
+    return s
+
+And have config files that look like
+
+'''
+# File: tnntp2.tpy
+#
+# Location of internal storage
+storage = &quot;/var/lib/tnntp&quot;
+
+from tnntprss import simpGetTNNTPService
+from twisted.internetet import app
+
+application = app.Application(&quot;tnntprss&quot;)
+simpGetTNNTPService(storage, &quot;tnntp&quot;).setServiceParent(application)
+'''
+
+And again
+
+% twistd -y tnntp2.tpy
+
+works.
+
+Another thing you can do when you convert to a package [and you should,
+regardless!] is to supply tap plugins that would look like
+
+# tnntprss/tap.py
+from twisted.python import usage
+from tnntprss import simpGetTNNTPService
+
+class Options(usage.Options):
+
+    optParameters = [['storage', 's', '/var/lib/tnntp', &quot;Where to store files&quot;]]
+
+def updateApplication(application, config):
+    simpGetTNNTPService(config['storage'], &quot;tnntp&quot;
+    ).setServiceParent(application)
+
+and then put a file like
+
+# tntprss/plugins.tml
+register(&quot;TNNTPRss&quot;, &quot;tnntprss.tap&quot;, type='tap', tapname='tnntprss')
+
+So that the user can
+
+% mktap tnntprss --storage=/home/moshez/.temp
+% twistd -f tnntprss.tap
+
+Other remarks:
+
+* startScheduler should be called from startService, not __init__, to
+  support persistence
+* similarily, all reactor.callLater() results should be saved from
+  an attribute of the SyndicationService, which is then .cancelled()
+  in stopService
+* 9119 is a hardcoded number. Probably should be given in an argument
+  to news service. Of course, the above get...Service() calls should
+  be modified to accept that argument, blah blah blah.
+* I'd prefer it if .listenTCP was not called from __init__, but instead,
+  an easy way to get the right factory was supplied:
+
+class NewsService(...):
+    ...
+    def getFactory(self):
+        return news.UsenetServerFactory(self.backend, None)
+
+Then, in the configurator:
+
+s = simpGetTNNTPService(storage, &quot;tnntp&quot;)
+s.setServiceParent(application)
+application.listenTCP(119, s.getServiceNamed(&quot;news&quot;).getFactory())
+[and again, mutatis mutandis for the other options]
+
+Rationale: easier support for non-common listening options [what if you
+want to only listen on 127.0.0.1, so that only you can read the news?
+what if you wanted to listen on several ports to defeat firewalls?]
+
+* Nit: rssparser.py is a DOS file, all other are unix files.
+
+I hope that matches your expectations of how thoroughly we can pick
+on you :)
+-- 
+Moshe Zadka -- <A HREF="http://moshez.org/">http://moshez.org/</A>
+Buffy: I don't like you hanging out with someone that... short.
+Riley: Yeah, a lot of young people nowadays are experimenting with shortness.
+Agile Programming Language -- <A HREF="http://www.python.org/">http://www.python.org/</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="037461.html">[Twisted-Python] Is it just me ....
+</A></li>
+	<LI>Next message (by thread): <A HREF="037463.html">[Twisted-Python] Is it just me ....
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37462">[ date ]</a>
+              <a href="thread.html#37462">[ thread ]</a>
+              <a href="subject.html#37462">[ subject ]</a>
+              <a href="author.html#37462">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

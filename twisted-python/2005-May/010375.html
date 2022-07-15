@@ -1,0 +1,222 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Hanging%20test%20cases%20%28Was%3A%20Evangelism%20notes...%29&In-Reply-To=ufyx0j7dw.fsf%40fitlinxx.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="010374.html">
+   <LINK REL="Next"  HREF="010376.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)</H1>
+    <B>Bob Ippolito</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Hanging%20test%20cases%20%28Was%3A%20Evangelism%20notes...%29&In-Reply-To=ufyx0j7dw.fsf%40fitlinxx.com"
+       TITLE="[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)">bob at redivi.com
+       </A><BR>
+    <I>Fri May  6 19:33:16 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="010374.html">[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+</A></li>
+        <LI>Next message: <A HREF="010376.html">[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10375">[ date ]</a>
+              <a href="thread.html#10375">[ thread ]</a>
+              <a href="subject.html#10375">[ subject ]</a>
+              <a href="author.html#10375">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On May 6, 2005, at 6:51 PM, David Bolen wrote:
+
+&gt;<i> Bob Ippolito &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">bob at redivi.com</A>&gt; writes:
+</I>&gt;<i>
+</I>&gt;<i> with respect to deferredResult/deferredError:
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;&gt;<i> Sorry, but Jp is right.  They have no place in any code.  Their
+</I>&gt;&gt;<i> existence is a mistake and should be corrected ASAP.  They severely
+</I>&gt;&gt;<i> violate the reactor interface.
+</I>&gt;&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> Hmm, then perhaps it's the reactor interface that could use some
+</I>&gt;<i> improving rather than removing this high level functionality?  Or is
+</I>&gt;<i> everyone just saying that the implementation (versus the concept) of
+</I>&gt;<i> the current functions is done wrong.  Or maybe I'm just missing what
+</I>&gt;<i> major mess having this sort of interface is exposing.
+</I>
+The reactor interface is not what needs improving, it's the way that  
+these functions work.  They iterate the reactor when the reactor is  
+in a stopped state.  The reactor should either be running, or not  
+running.  There are basically two fundamental issues:
+
+(1) Reactors can only be (meaningfully/predictably/etc) iterated if  
+Twisted rules the universe AND the implementation of that reactor is  
+amenable to that feature.  This is not a tautology.
+(2) Reactors need to fire various startup/shutdown events.  Reactors  
+shouldn't be doing ANYTHING unless they are in a running state.
+
+The current deferredResult/deferredError breaks both of these  
+conditions.
+(1) It iterates the reactor (which is a historically public, but  
+conceptually broken interface)
+(2) It iterates the reactor in a STOPPED state.  The reactor is never  
+&quot;running&quot; during these tests.  Startup/Shutdown does not happen!
+
+The fact that the doc strings talk about re-entrancy of certain  
+reactor functions and whatnot scares the shit out of me.  They should  
+not have to be re-entrant.  What their current implementation is  
+doing is really really broken.
+
+The problem, for tests, is that using a properly written  
+deferredResult / deferredError the reactor would startup/shutdown  
+violently throughout the course of a single test, and will break the  
+hell out of it if it has anything to do with services/etc.  So, while  
+for SOME deferreds it would work fine, but for others, it wouldn't.   
+Basically, unless you can encapsulate the entire test in a single  
+deferred, then it shouldn't be using deferredResult/deferredError.
+
+Therefore, what SHOULD happen is that trial should let you write  
+tests that return deferreds, and it should let you write it in the  
+deferredGenerator style (so it doesn't suck so much).
+
+Trial *could*, in theory, put the reactor into a &quot;started&quot; state at  
+the beginning of every tests and a &quot;stopped&quot; state at the end, but  
+then you're testing in a strange environment that doesn't really  
+mimic how Twisted actually works, and it still breaks (1) which makes  
+it unsuitable for testing the reactors where Twisted does not rule  
+the universe.  Testing this theory would require changes to the  
+reactor interface to make some parts of if re-entrant (bleargh).
+
+&gt;<i> Given Glyph's recent response, I might also clarify that while our
+</I>&gt;<i> heaviest use of these functions are within unit tests, we aren't using
+</I>&gt;<i> trial, so any linkage between poor behavior of these implementations
+</I>&gt;<i> and trial is not something I'm referring to or worry about breaking.
+</I>&gt;<i>
+</I>&gt;<i> What I do think is that there is a very good and practical reason to
+</I>&gt;<i> be able to unwind deferrable operations into a blocking structure for
+</I>&gt;<i> a wide variety of test conditions, and losing that capability would
+</I>&gt;<i> make writing tested Twisted code (at least for our situation) much
+</I>&gt;<i> more fragile and error prone (the tests themselves).  And that's not
+</I>&gt;<i> quite the same as the newer waitForDeferred stuff in 2.0 that
+</I>&gt;<i> integrates with generators.  While slick, it still doesn't work as
+</I>&gt;<i> well for easily maintainable tests in many of our situations.
+</I>
+Well, it causes you to write two lines of code instead of one.  That  
+sucks, but so what?  You don't have to write big callback chains..   
+It's conceptually identical, it's just that you have to throw in some  
+extra boiler plate that says THIS IS A DEFERRED.  If the way we say  
+that wasn't so ugly, it might actually be a good thing from a  
+readability standpoint :)
+
+I'm not *entirely* sure why &quot;waitForDeferred&quot; is really necessary at  
+all, though &quot;deferredGenerator&quot; certainly is.  In the interest of not- 
+wearing-off-your-fingerprints one might write a &quot;deferredGenerator&quot;  
+specifically for trial (or maybe in general) that just makes sure  
+you're yielding a Deferred.
+
+I *think* that it does this so that it can assume the last thing you  
+yield is the result.  I would say that you should wrap the result  
+instead of wrap every intermediate thing, since the intermediate  
+things you do in such a deferred generator should far outnumber the  
+times that you return from it.  Perhaps whoever wrote it had a good  
+reason that I just don't understand, but when I wrote something  
+equivalent a few years ago I wrote it such that there wasn't quite so  
+much boilerplate.
+
+&gt;<i> For example, in our system we may very heavy use of our own components
+</I>&gt;<i> all of which implement their entire API via deferrable interfaces.
+</I>&gt;<i> Interacting with multiple such components during a test is thus a
+</I>&gt;<i> multi-stage deferrable process.  Having these blocking calls permits a
+</I>&gt;<i> test method to say something like:
+</I>&gt;<i>
+</I>&gt;<i>     self.user = deferredResult(self.umgr.user())
+</I>&gt;<i>     self.user.email = '<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">test at dom.ain</A>'
+</I>&gt;<i>     deferredResult(self.umgr.saveUser(self.user))
+</I>
+# let's assume I've aliased waitForDeferred to &quot;wait&quot;
+
+d = waitForDeferred(self.umgr.user())
+yield d
+self.user = d.getResult()
+self.user.email = '<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">test at dom.ain</A>'
+d = waitForDeferred(self.umgr.saveUser(self.user))
+yield d
+d.getResult()
+
+So, the test is 6 lines instead of 3.  Which sucks, but it's  
+correct.  For tests that do more stuff, it probably should be even  
+less of a problem.
+
+If Python grows an extended iteration protocol, where yield becomes  
+an expression, you could make it 3 lines again.  This might actually  
+happen in Python 2.5.
+
+&gt;<i> Sure, I could write the user() and saveUser() calls with a callback
+</I>&gt;<i> chain, and then I'd have to nest the call to saveUser based on the
+</I>&gt;<i> user callback, probably something like:
+</I>&gt;<i>
+</I>&gt;<i>     def fail(failure):
+</I>&gt;<i>         self.fail(failure)
+</I>&gt;<i>
+</I>&gt;<i>     def gotUser(user):
+</I>&gt;<i>         self.user = user
+</I>&gt;<i>         self.user.email = '<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">test at dom.ain</A>'
+</I>&gt;<i>         return self.umgr.saveUser(self.user)
+</I>&gt;<i>
+</I>&gt;<i>     d = self.umgr.user()
+</I>&gt;<i>     d.addCallback(gotUser)
+</I>&gt;<i>     d.addErrback(fail)
+</I>&gt;<i>
+</I>&gt;<i> but I see no advantage (*in the context of such a test*) to doing it
+</I>&gt;<i> this way, and I see a real loss of clarity and maintainability for the
+</I>&gt;<i> test itself.
+</I>
+Well, let's say your database thing is a service, that maintains some  
+kind of ephemeral state that's required in some way.  If  
+deferredResult were properly written, this ephemeral state would hit  
+the bit bucket on each deferredResult, probably breaking your code  
+even though the test are &quot;correct&quot;.
+
+If you add such a component to the system, you might have to rewrite  
+all of your tests, because it would not be possible to fix the way  
+deferredResult works.
+
+&gt;<i> Since each component in our system has a deferrable interface, any
+</I>&gt;<i> test which is going to interact with multiple components would quickly
+</I>&gt;<i> evolve a fairly deep callback system in the test, without much benefit
+</I>&gt;<i> that I can see.
+</I>
+So, use deferredGenerator / waitForDeferred.
+
+-bob
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="010374.html">[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+</A></li>
+	<LI>Next message: <A HREF="010376.html">[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10375">[ date ]</a>
+              <a href="thread.html#10375">[ thread ]</a>
+              <a href="subject.html#10375">[ subject ]</a>
+              <a href="author.html#10375">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

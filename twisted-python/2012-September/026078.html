@@ -1,0 +1,196 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] deferred releasing too many tokens
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20deferred%20releasing%20too%20many%20tokens&In-Reply-To=7C63B99B-FC67-43BD-941E-FCED68FAADC5%402xlp.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="026077.html">
+   <LINK REL="Next"  HREF="026079.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] deferred releasing too many tokens</H1>
+    <B>Stephen Thorne</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20deferred%20releasing%20too%20many%20tokens&In-Reply-To=7C63B99B-FC67-43BD-941E-FCED68FAADC5%402xlp.com"
+       TITLE="[Twisted-Python] deferred releasing too many tokens">stephen at thorne.id.au
+       </A><BR>
+    <I>Wed Sep 26 17:09:22 EDT 2012</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="026077.html">[Twisted-Python] deferred releasing too many tokens
+</A></li>
+        <LI>Next message: <A HREF="026079.html">[Twisted-Python] deferred releasing too many tokens
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#26078">[ date ]</a>
+              <a href="thread.html#26078">[ thread ]</a>
+              <a href="subject.html#26078">[ subject ]</a>
+              <a href="author.html#26078">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>This is a better way of using DeferredSemaphore:
+
+    def queue_thread( self , data=None ):
+        self.queued_data= data
+        return self.semaphoreService.run( self._T_to_thread )
+
+It handles acquisition and release for you. This will avoid any code
+path that might result in a double-release.
+
+
+On Wed, Sep 26, 2012 at 1:07 PM, Jonathan Vanasco
+&lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python at 2xlp.com</A>&gt; wrote:
+&gt;<i> I'm in the process of rewriting a web spider (originally in twisted circa 2005) , and keep running into an issue with deferreds releasing too many tokens.
+</I>&gt;<i>
+</I>&gt;<i> i've been playing around with this all day, and can't seem to shake this problem.
+</I>&gt;<i>
+</I>&gt;<i> i'm guessing that i designed the application logic wrong.
+</I>&gt;<i>
+</I>&gt;<i> Does the following code raise any warning signs for people ?
+</I>&gt;<i>
+</I>&gt;<i> The general setup is this:
+</I>&gt;<i>
+</I>&gt;<i>         AnalyzeLink -
+</I>&gt;<i>                 - run-of-the-mill class that performs actual db operations and link fetching
+</I>&gt;<i>                 - doesn't really rely on twisted, aside from being coded to the specs of runInteraction ( accepts an adbapi txn, raises for a rollback, is generally happy for a commit )
+</I>&gt;<i>
+</I>&gt;<i>         AnalyzeLinksService-
+</I>&gt;<i>                 - relies on twisted
+</I>&gt;<i>                 - queries the database for a batch of items to update
+</I>&gt;<i>                 - each actionable item is wrapped into an '_AnalyzeLinksRequestWrapper' instance, all of which are tossed into a defer.DeferredList()
+</I>&gt;<i>
+</I>&gt;<i>         AnalyzeLinksRequestWrapper-
+</I>&gt;<i>                 - relies on twisted
+</I>&gt;<i>                 - pushes actual work into callbacks via threads.deferToThread
+</I>&gt;<i>                 - uses a defer.DeferredSemaphore provided by AnalyzeLinksService to acquire locks
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> some cleaned-up code is below :
+</I>&gt;<i>
+</I>&gt;<i> ------------------
+</I>&gt;<i>
+</I>&gt;<i> class AnalyzeLink(object):
+</I>&gt;<i>     def get_update_batch(self,txn):
+</I>&gt;<i>         # returns list of ids/data/etc to process
+</I>&gt;<i>
+</I>&gt;<i>     def action_for_data(self,txn,data):
+</I>&gt;<i>         # processes an entry
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> class _AnalyzeLinksRequestWrapper(RequestWrapper):
+</I>&gt;<i>         dbConnectionPool = None
+</I>&gt;<i>     semaphoreService = None
+</I>&gt;<i>     semaphoreLock = None
+</I>&gt;<i>
+</I>&gt;<i>     def __init__( self , semaphoreService = None , dbConnectionPool = None ):
+</I>&gt;<i>         self.dbConnectionPool= dbConnectionPool
+</I>&gt;<i>         self.semaphoreService= semaphoreService
+</I>&gt;<i>
+</I>&gt;<i>     def queue_thread( self , data=None ):
+</I>&gt;<i>         self.queued_data= data
+</I>&gt;<i>         d = self.semaphoreService.acquire()\
+</I>&gt;<i>             .addCallback( self._T_to_thread )
+</I>&gt;<i>         return d
+</I>&gt;<i>
+</I>&gt;<i>     def _T_to_thread( self , deferredSemaphore ):
+</I>&gt;<i>         self.semaphoreLock= deferredSemaphore
+</I>&gt;<i>         t = threads.deferToThread( self._T_thread_begin )\
+</I>&gt;<i>             .addErrback( self._T_errors )\
+</I>&gt;<i>             .addCallback( self._T_thread_end )
+</I>&gt;<i>
+</I>&gt;<i>     def _T_thread_begin( self ):
+</I>&gt;<i>         log.debug(&quot;_AnalyzeLinksRequestWrapper._T_thread_begin&quot; )
+</I>&gt;<i>         updater = AnalyzeLink()
+</I>&gt;<i>         self.dbConnectionPool.runInteraction( updater.action_for_data , self.queued_data )\
+</I>&gt;<i>             .addCallback( self._T_thread_end )\
+</I>&gt;<i>             .addErrback( self._T_errors )
+</I>&gt;<i>
+</I>&gt;<i>     def _T_thread_end( self , rval=None ):
+</I>&gt;<i>         self.semaphoreLock.release()
+</I>&gt;<i>
+</I>&gt;<i>     def _T_errors( self , x ):
+</I>&gt;<i>         self._T_thread_end()
+</I>&gt;<i>         raise x
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> class _AnalyzeLinksService(ServiceScaffold):
+</I>&gt;<i>     SEMAPHORE_TOKENS = 25
+</I>&gt;<i>
+</I>&gt;<i>     def __init__( self ):
+</I>&gt;<i>         self.semaphoreService= defer.DeferredSemaphore( tokens=self.SEMAPHORE_TOKENS )
+</I>&gt;<i>
+</I>&gt;<i>     def action( self ):
+</I>&gt;<i>         updater= AnalyzeLink()
+</I>&gt;<i>         database.get_dbPool().runInteraction( updater.get_update_batch , queued_updates )\
+</I>&gt;<i>             .addCallback( self._action_2 )\
+</I>&gt;<i>             .addErrback( self._action_error )
+</I>&gt;<i>
+</I>&gt;<i>     def _action_2( self , queued_updates ):
+</I>&gt;<i>         if len( queued_updates ):
+</I>&gt;<i>             updates= []
+</I>&gt;<i>             for item in queued_updates:
+</I>&gt;<i>                 requestWrapper= _AnalyzeLinksRequestWrapper(\
+</I>&gt;<i>                     semaphoreService = self.semaphoreService ,
+</I>&gt;<i>                     dbConnectionPool = database.get_dbPool()
+</I>&gt;<i>                 )
+</I>&gt;<i>                 result= requestWrapper.queue_thread( data=item )
+</I>&gt;<i>                 updates.append(result)
+</I>&gt;<i>             finished= defer.DeferredList( updates )\
+</I>&gt;<i>                 .addCallback( self.deferred_list_finish )
+</I>&gt;<i>         else:
+</I>&gt;<i>             d= defer.Deferred()
+</I>&gt;<i>             self.deferred_list_finish( d )
+</I>&gt;<i>
+</I>&gt;<i>     def _action_error( self , raised ):
+</I>&gt;<i>         log.debug(&quot;%s._action_error&quot; % self.__class__.__name__ )
+</I>&gt;<i>         self.set_processing_status( False )
+</I>&gt;<i>         if isinstance( raised.value , database.DbRollback ):
+</I>&gt;<i>             print &quot;DB Rollback&quot;
+</I>&gt;<i>             raise raised
+</I>&gt;<i>         elif isinstance( raised.value , database.DbRollbackOk ):
+</I>&gt;<i>             print &quot;DB Rollback ok&quot;
+</I>&gt;<i>         else:
+</I>&gt;<i>             raise raised
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> AnalyzeLinksService= _AnalyzeLinksService()
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> class AnalyzeLinksService_Service(internet.TimerService):
+</I>&gt;<i>     def __init__( self , dbConfigHash=None ):
+</I>&gt;<i>         internet.TimerService.__init__( self,
+</I>&gt;<i>             CHECK_PERIOD__IMPORT ,
+</I>&gt;<i>             AnalyzeLinksService.action
+</I>&gt;<i>         )
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="026077.html">[Twisted-Python] deferred releasing too many tokens
+</A></li>
+	<LI>Next message: <A HREF="026079.html">[Twisted-Python] deferred releasing too many tokens
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#26078">[ date ]</a>
+              <a href="thread.html#26078">[ thread ]</a>
+              <a href="subject.html#26078">[ subject ]</a>
+              <a href="author.html#26078">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

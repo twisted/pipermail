@@ -1,0 +1,420 @@
+From jlitzingerdev at gmail.com  Fri May 12 14:56:51 2017
+From: jlitzingerdev at gmail.com (Jason Litzinger)
+Date: Fri, 12 May 2017 14:56:51 -0600
+Subject: [Twisted-web] Question regarding custom contextFactory for
+	twisted.web.client.Agent
+Message-ID: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+
+Hello,
+
+I have an optimization question in the realm of "before I do something
+foolish..." regarding the contextFactory passed to twisted.web.client.Agent.
+
+Background:
+
+I have (several) twisted applications running on a Cortex-A5 system, one of
+which interfaces with a web service using the twisted.web.client.Agent
+API*.  The
+problem I've observed is that requests to this web service result in a higher
+than desired CPU load.  To understand the source of the load I isolated the
+server interactions and profiled.
+
+Investigation:
+
+The profile data revealed the load in question stemmed from TLS related
+calls, specifically optionsForClientTLS, which is called once per connection.
+In looking (briefly) at what optionsForClientTLS does, it seemed
+(perhaps wrongly)
+that there was an opportunity for optimization in my specific case.
+
+The optimization is to create a custom contextFactory that caches the connection
+creator since the host is not changing.  I prototyped an implementation and the
+load was reduced by a factor of ten.
+
+Question:
+
+Is it safe/sane to reuse a connection creator if the host to which I'm
+connecting is
+not going to change?
+
+Thanks,
+-Jason Litzinger
+
+* Technically this code is inside an open source third party SDK, but were I in
+  their shoes I'd write it the same way, so I've no issues with their
+implementation.
+
+
+From glyph at twistedmatrix.com  Fri May 12 17:24:33 2017
+From: glyph at twistedmatrix.com (Glyph)
+Date: Fri, 12 May 2017 16:24:33 -0700
+Subject: [Twisted-web] Question regarding custom contextFactory for
+ twisted.web.client.Agent
+In-Reply-To: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+Message-ID: <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+
+
+> On May 12, 2017, at 1:56 PM, Jason Litzinger <jlitzingerdev at gmail.com> wrote:
+> 
+> Hello,
+> 
+> I have an optimization question in the realm of "before I do something
+> foolish..." regarding the contextFactory passed to twisted.web.client.Agent.
+> 
+> Background:
+> 
+> I have (several) twisted applications running on a Cortex-A5 system, one of
+> which interfaces with a web service using the twisted.web.client.Agent
+> API*.  The
+> problem I've observed is that requests to this web service result in a higher
+> than desired CPU load.  To understand the source of the load I isolated the
+> server interactions and profiled.
+> 
+> Investigation:
+> 
+> The profile data revealed the load in question stemmed from TLS related
+> calls, specifically optionsForClientTLS, which is called once per connection.
+> In looking (briefly) at what optionsForClientTLS does, it seemed
+> (perhaps wrongly)
+> that there was an opportunity for optimization in my specific case.
+> 
+> The optimization is to create a custom contextFactory that caches the connection
+> creator since the host is not changing.  I prototyped an implementation and the
+> load was reduced by a factor of ten.
+> 
+> Question:
+> 
+> Is it safe/sane to reuse a connection creator if the host to which I'm
+> connecting is
+> not going to change?
+
+This sounds eminently sensible, and in fact sounds like Twisted, or Treq at least, really ought to do something like this on our end with some kind of small LRU cache, keeping the most-used N hostnames (where N defaults to some small number, say, 20).  I'm surprised to hear it is such a big optimization, but surprises like that are entirely the point of performance testing!
+
+Nevertheless, thanks for asking!  I really wish people would ask questions about client TLS more often before doing something potentially insecure :).  In this case, the client connection creator is used to produce client connections anyway, and the connections are not shared, so there should be no worrisome mingling of state between connections.
+
+We do host a performance test suite here: http://speed.twistedmatrix.com <http://speed.twistedmatrix.com/> and the benchmarks are here https://github.com/twisted-infra/twisted-benchmarks <https://github.com/twisted-infra/twisted-benchmarks> if your test is not adequately represented in an existing benchmark.
+
+-g
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20170512/ac64aab2/attachment.html>
+
+From jlitzingerdev at gmail.com  Sat May 13 20:36:07 2017
+From: jlitzingerdev at gmail.com (Jason Litzinger)
+Date: Sat, 13 May 2017 20:36:07 -0600
+Subject: [Twisted-web] Question regarding custom contextFactory for
+ twisted.web.client.Agent
+In-Reply-To: <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+ <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+Message-ID: <20170514023607.GA787@arch-tinker.localdomain>
+
+> This sounds eminently sensible, and in fact sounds like Twisted, or Treq at least, really ought to do something like this on our end with some kind of small LRU cache, keeping the most-used N hostnames (where N defaults to some small number, say, 20).  I'm surprised to hear it is such a big optimization, but surprises like that are entirely the point of performance testing!
+Thanks for taking a look!
+
+I like the idea of an LRU for the last N hosts.  Given I have something
+prototyped that I will expand on, that isn't much of a stretch.  If
+you think it might be useful to Twisted then I can try to iterate the
+patch until it is either rejected or accepted (following the well
+documented steps for contributing of course), thoughts?
+
+If it fits more in treq then I'm more than happy to share the code, but,
+since I'm not currently using treq the amount of effort I can
+realistically put towards it isn't as high, though that project is very
+appealing.
+
+On the size of the performance increase -- I was surprised as well, and
+there's always the possibility I made an error, but it was consistent
+across the five tests I ran.  Regardless, I'll be doing more profiling as
+I work toward the final implementation.
+> 
+> Nevertheless, thanks for asking!  I really wish people would ask questions about client TLS more often before doing something potentially insecure :).  In this case, the client connection creator is used to produce client connections anyway, and the connections are not shared, so there should be no worrisome mingling of state between connections.
+Agree.  I've come to believe that assumptions mixed with TLS/security
+related issues are my worst enemy.
+
+-Jason
+
+* Completely unrelated - I still owe on my committment to ticket
+  6597...yeah, life happened.  Luckily I saved my notes now that I'm
+  finding some time here and there.
+
+
+From glyph at twistedmatrix.com  Sun May 14 19:49:43 2017
+From: glyph at twistedmatrix.com (Glyph)
+Date: Sun, 14 May 2017 18:49:43 -0700
+Subject: [Twisted-web] Question regarding custom contextFactory for
+ twisted.web.client.Agent
+In-Reply-To: <20170514023607.GA787@arch-tinker.localdomain>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+ <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+ <20170514023607.GA787@arch-tinker.localdomain>
+Message-ID: <6D4A3C18-0154-4C8A-BD3F-93CD0934B5AB@twistedmatrix.com>
+
+
+> On May 13, 2017, at 7:36 PM, Jason Litzinger <jlitzingerdev at gmail.com> wrote:
+> 
+>> This sounds eminently sensible, and in fact sounds like Twisted, or Treq at least, really ought to do something like this on our end with some kind of small LRU cache, keeping the most-used N hostnames (where N defaults to some small number, say, 20).  I'm surprised to hear it is such a big optimization, but surprises like that are entirely the point of performance testing!
+> Thanks for taking a look!
+> 
+> I like the idea of an LRU for the last N hosts.  Given I have something
+> prototyped that I will expand on, that isn't much of a stretch.  If
+> you think it might be useful to Twisted then I can try to iterate the
+> patch until it is either rejected or accepted (following the well
+> documented steps for contributing of course), thoughts?
+
+This sounds like exactly what you should do.  (Keeping in mind that very nearly 100% of patches are "rejected" on their first attempt, so please do resubmit :))
+
+> If it fits more in treq then I'm more than happy to share the code, but,
+> since I'm not currently using treq the amount of effort I can
+> realistically put towards it isn't as high, though that project is very
+> appealing.
+
+Probably the best place to put it would be Twisted proper.  I just mentioned Treq because sometimes utility functionality like this can become surprisingly complex and have a lot of dependencies, and pin Treq it's easier to make the case that it's a high-level API that should just always do the right thing, as opposed to Agent which needs to preserve maximum flexibility for all HTTP client applications.
+
+> On the size of the performance increase -- I was surprised as well, and
+> there's always the possibility I made an error, but it was consistent
+> across the five tests I ran.  Regardless, I'll be doing more profiling as
+> I work toward the final implementation.
+
+Like I said, if we were never surprised we wouldn't have to have tests :-).
+
+>> Nevertheless, thanks for asking!  I really wish people would ask questions about client TLS more often before doing something potentially insecure :).  In this case, the client connection creator is used to produce client connections anyway, and the connections are not shared, so there should be no worrisome mingling of state between connections.
+> Agree.  I've come to believe that assumptions mixed with TLS/security
+> related issues are my worst enemy.
+
+Not just yours; the latin for "HTTP-only hist" is "hostis humani generis".
+
+> -Jason
+> 
+> * Completely unrelated - I still owe on my committment to ticket
+>  6597...yeah, life happened.  Luckily I saved my notes now that I'm
+>  finding some time here and there.
+
+We do what we must, because we can.
+
+-glyph
+
+
+From jlitzingerdev at gmail.com  Sun May 21 22:41:22 2017
+From: jlitzingerdev at gmail.com (Jason Litzinger)
+Date: Sun, 21 May 2017 22:41:22 -0600
+Subject: [Twisted-web] Question regarding custom contextFactory for
+ twisted.web.client.Agent
+In-Reply-To: <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+ <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+Message-ID: <20170522044113.GA2346@arch-tinker.localdomain>
+
+> We do host a performance test suite here: http://speed.twistedmatrix.com <http://speed.twistedmatrix.com/> and the benchmarks are here https://github.com/twisted-infra/twisted-benchmarks <https://github.com/twisted-infra/twisted-benchmarks> if your test is not adequately represented in an existing benchmark.
+
+I'm working on the previously discussed change (ticket 9138) and finally
+took a (brief) look at the benchmark suite.  Assuming master is the
+correct branch, from what I can tell the existing benchmarks for the
+Agent class use only HTTP, and the SSL tests are a lean client/server,
+not an HTTPS client/server.
+
+Am I missing something?
+
+Thanks!
+-Jason
+
+
+From glyph at twistedmatrix.com  Mon May 22 02:58:40 2017
+From: glyph at twistedmatrix.com (Glyph)
+Date: Mon, 22 May 2017 01:58:40 -0700
+Subject: [Twisted-web] Question regarding custom contextFactory for
+ twisted.web.client.Agent
+In-Reply-To: <20170522044113.GA2346@arch-tinker.localdomain>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+ <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+ <20170522044113.GA2346@arch-tinker.localdomain>
+Message-ID: <87FD5935-20E0-4A3C-9BC0-51DC34B25F62@twistedmatrix.com>
+
+
+> On May 21, 2017, at 9:41 PM, Jason Litzinger <jlitzingerdev at gmail.com> wrote:
+> 
+>> We do host a performance test suite here: http://speed.twistedmatrix.com <http://speed.twistedmatrix.com/> and the benchmarks are here https://github.com/twisted-infra/twisted-benchmarks <https://github.com/twisted-infra/twisted-benchmarks> if your test is not adequately represented in an existing benchmark.
+> 
+> I'm working on the previously discussed change (ticket 9138) and finally
+> took a (brief) look at the benchmark suite.  Assuming master is the
+> correct branch, from what I can tell the existing benchmarks for the
+> Agent class use only HTTP, and the SSL tests are a lean client/server,
+> not an HTTPS client/server.
+> 
+> Am I missing something?
+
+A quick glance at the tests confirms your suspicions: we test TLS, and we test HTTP, but we do not test HTTP over TLS.
+
+This is definitely something that could be rectified.
+
+Thanks for spotting it - please submit a PR to fix it :)
+
+-glyph
+
+From jlitzingerdev at gmail.com  Mon May 22 18:38:40 2017
+From: jlitzingerdev at gmail.com (Jason Litzinger)
+Date: Mon, 22 May 2017 18:38:40 -0600
+Subject: [Twisted-web] Question regarding custom contextFactory for
+ twisted.web.client.Agent
+In-Reply-To: <87FD5935-20E0-4A3C-9BC0-51DC34B25F62@twistedmatrix.com>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+ <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+ <20170522044113.GA2346@arch-tinker.localdomain>
+ <87FD5935-20E0-4A3C-9BC0-51DC34B25F62@twistedmatrix.com>
+Message-ID: <20170523003830.GA1086@arch-tinker.localdomain>
+
+> Thanks for spotting it - please submit a PR to fix it :)
+Copy that, was planning on it, though originally the context was in
+comparison to an existing benchmark.
+
+I assume the process/coding policies match submissions for Twisted
+Proper?  I briefly searched for docs specific to benchmark updates but
+didn't see anything glaring.
+
+I'm sure I'll need some guidance as to the best way to do this in a
+fully isolated environment.  For example, the host cert is somewhat
+tricky.  The simplest thing would be to serve up a self-signed cert, but
+I think a realistic benchmark needs to validate a full chain and do
+hostname verification.  Is a PR discussion the best place for these
+questions?
+
+Cheers,
+-Jason
+
+
+From glyph at twistedmatrix.com  Mon May 22 23:54:06 2017
+From: glyph at twistedmatrix.com (Glyph)
+Date: Mon, 22 May 2017 22:54:06 -0700
+Subject: [Twisted-web] Question regarding custom contextFactory for
+ twisted.web.client.Agent
+In-Reply-To: <20170523003830.GA1086@arch-tinker.localdomain>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+ <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+ <20170522044113.GA2346@arch-tinker.localdomain>
+ <87FD5935-20E0-4A3C-9BC0-51DC34B25F62@twistedmatrix.com>
+ <20170523003830.GA1086@arch-tinker.localdomain>
+Message-ID: <E72E306E-2656-4582-A71D-30DDF4ED117E@twistedmatrix.com>
+
+
+> On May 22, 2017, at 5:38 PM, Jason Litzinger <jlitzingerdev at gmail.com> wrote:
+> 
+>> Thanks for spotting it - please submit a PR to fix it :)
+> Copy that, was planning on it, though originally the context was in
+> comparison to an existing benchmark.
+> 
+> I assume the process/coding policies match submissions for Twisted
+> Proper?  I briefly searched for docs specific to benchmark updates but
+> didn't see anything glaring.
+
+It's a bit less formal, but largely similar.  The main difference is that you should just file a Github issue rather than a Trac ticket.
+
+> I'm sure I'll need some guidance as to the best way to do this in a
+> fully isolated environment.  For example, the host cert is somewhat
+> tricky.  The simplest thing would be to serve up a self-signed cert, but
+> I think a realistic benchmark needs to validate a full chain and do
+> hostname verification.  Is a PR discussion the best place for these
+> questions?
+
+You can keep asking questions here.
+
+The benchmark could use the Cryptography x509 layer to do setup for a custom CA cert, similar to the way many unit tests in Twisted already do...
+
+-glyph
+
+From exarkun at twistedmatrix.com  Tue May 23 06:16:22 2017
+From: exarkun at twistedmatrix.com (Jean-Paul Calderone)
+Date: Tue, 23 May 2017 08:16:22 -0400
+Subject: [Twisted-web] Question regarding custom contextFactory for
+	twisted.web.client.Agent
+In-Reply-To: <E72E306E-2656-4582-A71D-30DDF4ED117E@twistedmatrix.com>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+ <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+ <20170522044113.GA2346@arch-tinker.localdomain>
+ <87FD5935-20E0-4A3C-9BC0-51DC34B25F62@twistedmatrix.com>
+ <20170523003830.GA1086@arch-tinker.localdomain>
+ <E72E306E-2656-4582-A71D-30DDF4ED117E@twistedmatrix.com>
+Message-ID: <CAEeXt4OShOLHpc47yPYEpwpVePAoCdw+Z2j49+mSKx+_yL1KBA@mail.gmail.com>
+
+On Tue, May 23, 2017 at 1:54 AM, Glyph <glyph at twistedmatrix.com> wrote:
+
+>
+> > On May 22, 2017, at 5:38 PM, Jason Litzinger <jlitzingerdev at gmail.com>
+> wrote:
+> >
+> >> Thanks for spotting it - please submit a PR to fix it :)
+> > Copy that, was planning on it, though originally the context was in
+> > comparison to an existing benchmark.
+> >
+> > I assume the process/coding policies match submissions for Twisted
+> > Proper?  I briefly searched for docs specific to benchmark updates but
+> > didn't see anything glaring.
+>
+> It's a bit less formal, but largely similar.  The main difference is that
+> you should just file a Github issue rather than a Trac ticket.
+>
+> > I'm sure I'll need some guidance as to the best way to do this in a
+> > fully isolated environment.  For example, the host cert is somewhat
+> > tricky.  The simplest thing would be to serve up a self-signed cert, but
+> > I think a realistic benchmark needs to validate a full chain and do
+> > hostname verification.  Is a PR discussion the best place for these
+> > questions?
+>
+> You can keep asking questions here.
+>
+> The benchmark could use the Cryptography x509 layer to do setup for a
+> custom CA cert, similar to the way many unit tests in Twisted already do...
+>
+
+The cryptography APIs for making certs are pretty straightforward and well
+documented.  But if another example helps, here's some code that creates a
+self-signed ca cert and a client cert with an intermediate cert in between:
+
+
+https://github.com/LeastAuthority/txkube/blob/faa0374fcef6d089af39a98310f1bd798eb54b08/src/txkube/test/test_authentication.py#L17-L29
+
+https://github.com/LeastAuthority/txkube/blob/faa0374fcef6d089af39a98310f1bd798eb54b08/src/txkube/test/test_authentication.py#L276-L309
+
+Jean-Paul
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-web/attachments/20170523/670ff431/attachment.html>
+
+From jlitzingerdev at gmail.com  Tue May 23 20:59:52 2017
+From: jlitzingerdev at gmail.com (Jason Litzinger)
+Date: Tue, 23 May 2017 20:59:52 -0600
+Subject: [Twisted-web] Question regarding custom contextFactory for
+ twisted.web.client.Agent
+In-Reply-To: <CAEeXt4OShOLHpc47yPYEpwpVePAoCdw+Z2j49+mSKx+_yL1KBA@mail.gmail.com>
+References: <CAARXrP=bu-MmyNriipSx9WSXMA9VB7Q4MvSDaavYi9E0xpn3pQ@mail.gmail.com>
+ <D4A89F99-09B0-404A-8A96-286B9E44CC67@twistedmatrix.com>
+ <20170522044113.GA2346@arch-tinker.localdomain>
+ <87FD5935-20E0-4A3C-9BC0-51DC34B25F62@twistedmatrix.com>
+ <20170523003830.GA1086@arch-tinker.localdomain>
+ <E72E306E-2656-4582-A71D-30DDF4ED117E@twistedmatrix.com>
+ <CAEeXt4OShOLHpc47yPYEpwpVePAoCdw+Z2j49+mSKx+_yL1KBA@mail.gmail.com>
+Message-ID: <20170524025952.GA1228@arch-tinker.localdomain>
+
+> The cryptography APIs for making certs are pretty straightforward and well
+> documented.  But if another example helps, here's some code that creates a
+> self-signed ca cert and a client cert with an intermediate cert in between:
+> 
+> 
+> https://github.com/LeastAuthority/txkube/blob/faa0374fcef6d089af39a98310f1bd798eb54b08/src/txkube/test/test_authentication.py#L17-L29
+> 
+> https://github.com/LeastAuthority/txkube/blob/faa0374fcef6d089af39a98310f1bd798eb54b08/src/txkube/test/test_authentication.py#L276-L309
+
+Thanks!  I always find that working examples helps an API click for me,
+so this is much appreciated.
+
+I'll post here when I submit the PR.
+
+-Jason
+
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+

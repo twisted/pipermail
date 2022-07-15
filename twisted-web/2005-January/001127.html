@@ -1,0 +1,249 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] various formless types
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20various%20formless%20types&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001113.html">
+   <LINK REL="Next"  HREF="001128.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] various formless types</H1>
+    <B>andrea at cpushare.com</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20various%20formless%20types&In-Reply-To="
+       TITLE="[Twisted-web] various formless types">andrea at cpushare.com
+       </A><BR>
+    <I>Mon Jan 31 10:35:00 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001113.html">[Twisted-web] Source of twisted websites
+</A></li>
+        <LI>Next message: <A HREF="001128.html">[Twisted-web] Log out on guard login.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1127">[ date ]</a>
+              <a href="thread.html#1127">[ thread ]</a>
+              <a href="subject.html#1127">[ subject ]</a>
+              <a href="author.html#1127">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>These are some formless types I'm using in my app. I think it's a good
+idea to share it with you, since they can be useful not just to me.
+
+The reason of the webform.freeformDefaultContentPattern change is to use
+div instead of stan, I'm doing some strange stuff, so without div it
+becomes not compliant html.
+
+I need the context as last parameter of the processor handler, not in
+the below types, but in others.
+
+Note also the RequiredChoice, I believe the check &quot;x not in
+self.choices&quot; is required for security reasons, most people will expect
+the client does the right thing, but it's not forced to without such
+check. I only use requiredchoice and never choice. I also wonder if it
+really worth the new API that slows down it so much with the normal
+rendering, but let's say that's a more general problem with compy and
+getinterfaces. Plus the new API is way confusing, integers gets
+converted to strings and if you conver them back to integers with
+valueToKey the processor will forget the value, the processor remembers
+the value only if the coerce returns a string. That might actually be a
+bug. Anyway the below workaround in my requiredchoice works (i.e. always
+try to convert to int in the coerce for the security check, but keep
+returning a string). I only use lists of strings or integers as choices
+for requiredchoice of course, so I'm fine.
+
+class IntegerRange(annotate.Integer):
+	def __init__(self, min = None, max = None, *args, **kw):
+		super(IntegerRange, self).__init__(*args, **kw)
+		self.min = min
+		self.max = max
+		self.requiredFailMessage = 'Please enter an integer between %d and %d.' \
+					   % (self.min, self.max)
+
+	def coerce(self, val, configurable):
+		v = super(IntegerRange, self).coerce(val, configurable)
+		if v &gt; self.max or v &lt; self.min:
+			raise annotate.InputError(&quot;Integer must be between %d and %d.&quot; %
+						  (self.min, self.max))
+		return v
+
+class RealRange(annotate.Real):
+	def __init__(self, min = None, max = None, *args, **kw):
+		super(RealRange, self).__init__(*args, **kw)
+		self.min = min
+		self.max = max
+		self.requiredFailMessage = 'Please enter a real number between %d and %d.' \
+					   % (self.min, self.max)
+
+	def coerce(self, val, configurable):
+		v = super(RealRange, self).coerce(val, configurable)
+		if v &gt; self.max or v &lt; self.min:
+			raise annotate.InputError(&quot;Real must be between %d and %d.&quot; %
+						  (self.min, self.max))
+		return v
+
+class MaxlengthString(annotate.String):
+	def __init__(self, *args, **kwargs):
+		if 'maxlength' in kwargs:
+			self.maxlength = kwargs['maxlength']
+			del kwargs['maxlength']
+		else:
+			self.maxlength = 10
+		super(MaxlengthString, self).__init__(*args, **kwargs)
+
+	def coerce(self, val, configurable):
+		r = super(MaxlengthString, self).coerce(val, configurable)
+		if search_for_invalid_chars.search(r):
+			raise annotate.InputError(&quot;%r contains invalid characters.&quot; % val)
+		if len(r) &gt; self.maxlength:
+			raise annotate.InputError(&quot;%r is too long, maximum is %d.&quot; % (val, self.maxlength))
+		return r
+
+def invalid_email(email):
+	return not re.match(r'^[\w\-~@.+]+\Z', email) or \
+		   re.search(r'@[^@]*@', email) or \
+		   not re.match(r'^[\w\-~.+]<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">+ at .</A>*[\w\-~+]+\.[\w]{2,}\Z', email)
+
+class Email(MaxlengthString):
+	def coerce(self, val, configurable):
+		r = super(Email, self).coerce(val, configurable)
+		if invalid_email(val):
+			raise annotate.InputError(&quot;%r is not a valid email address.&quot; % val)
+		return r
+
+class MaxlengthStringRenderer(webform.StringRenderer):
+	def input(self, context, slot, data, name, value):
+		if data.typedValue.getAttribute('hidden'):
+			T='hidden'
+		else:
+			T='text'
+		return slot[
+			tags.input(id=formutils.keyToXMLID(context.key), type=T, name=name,
+				   value=value, maxlength=data.typedValue.maxlength,
+				   _class=&quot;freeform-input-%s&quot; % T)]
+
+class ProcessTypedContext(compy.Adapter):
+    __implements__ = iformless.IInputProcessor,
+
+    def process(self, context, boundTo, data):
+        &quot;&quot;&quot;data is a list of strings at this point
+        &quot;&quot;&quot;
+        typed = self.original
+        val = data[0]
+        if typed.unicode:
+            try:
+                val = val.decode(getPOSTCharset(context), 'replace')
+            except LookupError:
+                val = val.decode('utf-8', 'replace')
+        if typed.strip:
+            val = val.strip()
+        if val == '' or val is None:
+            if typed.required:
+                raise annotate.InputError(typed.requiredFailMessage)
+            else:
+                return typed.null
+        return typed.coerce(val, boundTo, context)
+
+class MaxlengthPassword(MaxlengthString):
+	requiredFailMessage = 'Please enter a password.'
+
+class MaxlengthPasswordRenderer(webform.PasswordRenderer):
+	def input(self, context, slot, data, name, value):
+		return [
+			tags.input(id=formutils.keyToXMLID(context.key), name=name,
+				   type=&quot;password&quot;, _class=&quot;freeform-input-password&quot;,
+				   maxlength=data.typedValue.maxlength),
+			&quot; Again &quot;,
+			tags.input(name=&quot;%s____2&quot; % name, type=&quot;password&quot;,
+				   _class=&quot;freeform-input-password&quot;,
+				   maxlength=data.typedValue.maxlength),
+			]
+
+class Decimal(annotate.Typed):
+	requiredFailMessage = 'Please enter a decimal number.'
+
+	def coerce(self, val, configurable):
+		# TODO: This shouldn't be required; check.
+		# val should never be None, but always a string.
+		if val is None:
+			return None
+		try:
+			return decimal.Decimal(val)
+		except decimal.InvalidOperation:
+			raise annotate.InputError(&quot;%r is not a decimal number.&quot; % val)
+class ForcedBoolean(annotate.Boolean):
+	pass
+
+class ForcedBooleanRenderer(webform.BooleanRenderer):
+    def input(self, context, slot, data, name, value):
+        ## The only difference here is the &quot;checked&quot; attribute; the value is still the same because
+        ## we want true to be passed to the server when the checkbox is checked and the form
+        ## is posted.
+        node = tags.input(id=formutils.keyToXMLID(context.key), type=&quot;checkbox&quot;,
+			  name=name, value='True', _class=&quot;freeform-input-checkbox&quot;)
+        if value:
+            node(checked=&quot;checked&quot;)
+
+        # HTML forms are so weak. If the checkbox is not checked, no value at all will be
+        # in request.args with the name data.name. So let's force the value False to always
+        # be in request.args[data.name]. If the checkbox is checked, the value True will
+        # be first, and we will find that.
+        return slot[node, tags.input(type=&quot;hidden&quot;, name=name, value=&quot;&quot;)]
+
+class RequiredChoice(annotate.Choice):
+	requiredFailMessage = 'Please choose an option.'
+
+	def coerce(self, val, configurable):
+		r = super(RequiredChoice, self).coerce(val, configurable)
+		if self.required and r == self.default:
+			raise annotate.InputError(self.requiredFailMessage)
+		try:
+			x = int(val)
+		except ValueError:
+			x = val
+		if x not in self.choices:
+			raise annotate.InputError(&quot;Your web browser is malfunctioning&quot;)
+		return r
+
+compy.registerAdapter(MaxlengthStringRenderer, MaxlengthString, iformless.ITypedRenderer)
+compy.registerAdapter(MaxlengthStringRenderer, Email, iformless.ITypedRenderer)
+compy.registerAdapter(MaxlengthPasswordRenderer, MaxlengthPassword, iformless.ITypedRenderer)
+compy.registerAdapter(ReadonlyTextRenderer, ReadonlyText, iformless.ITypedRenderer)
+compy.registerAdapter(webform.ChoiceRenderer, RequiredChoice, iformless.ITypedRenderer)
+compy.registerAdapter(ForcedBooleanRenderer, ForcedBoolean, iformless.ITypedRenderer)
+compy.registerAdapter(processors.ProcessPassword, MaxlengthPassword, iformless.IInputProcessor)
+
+webform.freeformDefaultContentPattern = tags.invisible[
+	tags.label(_class=&quot;freeform-label&quot;, _for=stan.slot('id'))[ stan.slot('label') ],
+	tags.div(_class=&quot;freeform-input&quot;)[ stan.slot('input') ],
+	tags.div(_class=&quot;freeform-error&quot;)[ stan.slot('error') ],
+	tags.div(_class=&quot;freeform-description&quot;)[tags.label(_for=stan.slot('id'))[ stan.slot('description') ]]].freeze()
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001113.html">[Twisted-web] Source of twisted websites
+</A></li>
+	<LI>Next message: <A HREF="001128.html">[Twisted-web] Log out on guard login.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1127">[ date ]</a>
+              <a href="thread.html#1127">[ thread ]</a>
+              <a href="subject.html#1127">[ subject ]</a>
+              <a href="author.html#1127">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

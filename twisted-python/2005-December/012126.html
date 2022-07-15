@@ -1,0 +1,228 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Question on deferreds
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Question%20on%20deferreds&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="012125.html">
+   <LINK REL="Next"  HREF="012127.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Question on deferreds</H1>
+    <B>Ken Whitesell</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Question%20on%20deferreds&In-Reply-To="
+       TITLE="[Twisted-Python] Question on deferreds">kwhitesell at adelphia.net
+       </A><BR>
+    <I>Wed Dec  7 00:19:18 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="012125.html">[Twisted-Python] RE: waiting on transport return
+</A></li>
+        <LI>Next message: <A HREF="012127.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12126">[ date ]</a>
+              <a href="thread.html#12126">[ thread ]</a>
+              <a href="subject.html#12126">[ subject ]</a>
+              <a href="author.html#12126">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Frank,
+
+	Ok, your clarifications make things a little more difficult, but 
+not impossible.
+
+	Standard disclaimer: I'm no Twisted-guru. There may be an easier 
+way to do this. I can only take this as far as my knowledge extends. 
+So having said that...
+
+There's no way to get around the fact that the calling program needs 
+to be 'broken' down into two parts, 'separated' by the deferred.
+
+In other words, to greatly simplify the situation, your flow should 
+be something like:
+
+function 1
+	do stuff...
+	do more stuff...
+	do more stuff...
+	callRemote...
+	addCallback(function2)
+return
+
+function 2
+	do more stuff...
+	do more stuff...
+	do more stuff...
+end of tests.
+
+The bottom line is that your entire program flow needs to be 
+reworked around the Twisted methodology. (Or, in other words, you 
+need to Twist your program. &lt;g&gt;)
+
+I don't remember where I saw this first, but the best way I know to
+describe this situation is to stop thinking of your program as a 
+program and Twisted as a library. Twisted is the program, and your 
+code is the library.
+
+Your functions get called by the reactor because of some event. You
+handle this event then return control to the reactor. The reactor 
+then calls other functions as necessary.
+
+So you perform some tests, then call remote to invoke a process on 
+the server, register your callback and yield control back to the 
+reactor.
+
+When the reply is received, a different function gets control and 
+you continue processing.
+
+One way this can look, is to take your original program (section 1) 
+and modify it to look more like the pseudo code below.
+
+*** Original code, with modified class 3 ***
+     class1():
+         def check1(data):
+             perform test
+             if test failed:
+                 return False
+             if not class2.check2(data):
+                 return False
+             do_additional_stuff_1
+             return True
+
+     class2():
+         def check2(data):
+             perform test
+             if test failed:
+                 return False
+             if not class3.check3(data):
+                 return False
+             do_additional_stuff_2
+             return True
+
+     class3():
+         def check3(data):
+             perform test
+             if test failed:
+                 return False
+
+		*** This is where the flow breaks ***
+             avatar.callRemote(check4,data).addCallback(afterCheck)
+
+             if not class4.check4(data):
+                 return False
+             do_additional_stuff_3
+             return True
+
+         def afterCheck(result):
+             return result
+
+The simplest rework I can come up with for this is:
+
+     class0():
+        def check0(data):
+             part1 = class1.check1(data)
+		# Assuming part1 is either false or a deferred
+             if part1:
+                 part1.addCallback(afterCheck)
+		else callLater(0, afterCheck, False)
+
+         def afterCheck(result):
+             # part 2
+		# Do the stuff after check4
+		# This would include the stuff that needs to be done
+		# after the tests. So code from
+                 # do_additional_stuff_x
+		# can be called from here.
+		finalResults = class1.do_additional_stuff_1(data)
+             return finalResult
+
+     class1():
+         def check1(data):
+             perform test
+             if test failed:
+                 return False
+             if not class2.check2(data):
+                 return False
+		# Note, we can't get here so this code can go
+             # return True
+
+        def do_additional_stuff_1(data):
+            class2.do_additional_stuff_2(data)
+            more suff goes here.
+
+     class2():
+         def check2(data):
+             perform test
+             if test failed:
+                 return False
+             if not class3.check3(data):
+                 return False
+		# Note, we can't get here so this code can go
+             # return True
+
+        def do_additional_stuff_2(data):
+            class3.do_additional_stuff_3(data)
+            more suff goes here.
+
+     class3():
+         def check3(data):
+             perform test
+             if test failed:
+                 return False
+
+		*** This is where the flow breaks ***
+             aDeferred =
+avatar.callRemote(check4,data).addCallback(afterCheck)
+             return aDeferred
+
+        def do_additional_stuff_3(data):
+            suff goes here.
+
+**************************************
+
+As you can see, it does chop things up a bit - and I'm still not 
+sure that I've really captured what you're trying to do. I've just 
+tried to match your existing class structure - which I believe to be 
+sub-optimal in this context, given that I'm working from some very 
+generic descriptions.
+
+Specifically, I'm not sure if these &quot;class1, class2 and class3&quot;
+definitions are truly classes, or if they're simply &quot;organizational
+usage groups&quot;. (I'm not judging one way or the other, I'm only 
+working from what you've written and what assumptions I can make - 
+this isn't meant to disparage your code, just that I don't feel like 
+I have enough solid information to make a more accurate judgement.)
+
+Hope this helps spark some ideas on your end.
+
+Ken
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="012125.html">[Twisted-Python] RE: waiting on transport return
+</A></li>
+	<LI>Next message: <A HREF="012127.html">[Twisted-Python] Weekly Bug Summary
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12126">[ date ]</a>
+              <a href="thread.html#12126">[ thread ]</a>
+              <a href="subject.html#12126">[ subject ]</a>
+              <a href="author.html#12126">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

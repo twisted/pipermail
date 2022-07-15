@@ -1,0 +1,186 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Conch/insults -- using HistoricRecvLine
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Conch/insults%20--%20using%20HistoricRecvLine&In-Reply-To=%3C20071209031209.8162.485080318.divmod.quotient.43920%40ohm%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="048932.html">
+   <LINK REL="Next"  HREF="048960.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Conch/insults -- using HistoricRecvLine</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Conch/insults%20--%20using%20HistoricRecvLine&In-Reply-To=%3C20071209031209.8162.485080318.divmod.quotient.43920%40ohm%3E"
+       TITLE="[Twisted-Python] Conch/insults -- using HistoricRecvLine">exarkun at divmod.com
+       </A><BR>
+    <I>Sat Dec  8 20:12:09 MST 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="048932.html">[Twisted-Python] Conch/insults -- using HistoricRecvLine
+</A></li>
+        <LI>Next message (by thread): <A HREF="048960.html">[Twisted-Python] Re: Conch/insults -- using HistoricRecvLine
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48935">[ date ]</a>
+              <a href="thread.html#48935">[ thread ]</a>
+              <a href="subject.html#48935">[ subject ]</a>
+              <a href="author.html#48935">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sun, 09 Dec 2007 01:21:27 +0100, Bjoern Schliessmann &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">chronoss at gmx.de</A>&gt; wrote:
+&gt;<i>Hello,
+</I>&gt;<i>
+</I>&gt;<i>I'm using a &quot;standard&quot; Twisted setup here: a ServerFactory which has
+</I>&gt;<i>basic.LineReceiver subclass as protocol for handling connections;
+</I>&gt;<i>I'm using methods like connectionMade and lineReceived.
+</I>&gt;<i>
+</I>&gt;<i>Now I tried the example on HistoricRecvLine from Twisted Conch and I
+</I>&gt;<i>like it. I tried my protocol to subclass HistoricRecvLine directly
+</I>&gt;<i>instead of basic.LineReceiver, but the server won't work anymore
+</I>&gt;<i>(it complains about not finding certain methods as soon as a
+</I>&gt;<i>connection comes in). So HistoricRecvLine doesn't seem to be
+</I>&gt;<i>compatible to standard Core protocols.
+</I>
+Indeed, it is not compatible.  Despite being an apparently similar thing,
+it is actually drastically different.  It may have been a mistake to give
+it methods such as &quot;lineReceived&quot;, mirroring LineReceiver.
+
+LineReceiver takes a stream of bytes and splits them on a delimiter,
+giving each element received to the &quot;lineReceived&quot; callback.  It also
+has a convenience method, &quot;sendLine&quot;, which writes the given bytes to
+the transport and then writes the delimiter.
+
+This is the full extent of its behavior with regard to the network.
+
+HistoricRecvLine does a number of things.  Actually, as you pointed out,
+HistoricRecvLine is just one of the objects which must be used in order
+to achieve the readline-like behavior it offers.  For the purposes of this
+explanation, I'm going to lump them all together and just talk about them
+as HistoricRecvLine though.
+
+First, it interprets telnet command sequences.  This means it can do
+things like know how big the client's terminal is, negotiate about
+linemode behavior, and so on.  This means bytes received over the network
+won't always just be split into nicely delimited strings and delivered to
+application code: some of them will be consumed internally.  Reversely,
+it will write out bytes which are not lines being sent to the client, but
+telnet command sequences indicating some requirement or response to the
+telnet client.
+
+Next, it interprets vt102 command codes.  This happens after the telnet
+command sequences have been removed.  The telnet layer is a protocol, but
+it acts as a transport for the vt102 layer.  This layer allows such things
+as the cursor to be repositioned, the screen to be cleared, function keys
+(such as control, arrows, home, F1, etc) to be interpreted and handled
+separately from &quot;normal&quot; input.  Again, this all results in bytes being
+sent and received over the socket which have nothing to do with the &quot;lines&quot;
+which will eventually be delivered.
+
+Finally, the readline-like behavior is implemented as yet another protocol
+on top of the vt102 layer which is acting as yet another transport.  This
+means you have readline stacked on top of vt102 stacked on top of telnet
+stacked on top of TCP.  Finally, at this layer, eventually some of the bytes
+received over the socket will be turned into a line of input which is
+delivered via the &quot;lineReceived&quot; method.
+
+In addition, the readline-like layer has to be very careful about what it
+sends, since the prompt interface is only preserved by careful management
+of the cursor position and other terminal state (ie, what is displaying on
+it).  If code simply writes text data to the transport, it will end up in
+the prompt somewhere, corrupting the readline interface.
+
+&gt;<i>
+</I>&gt;<i>I had a closer look at the demo_recvline.py example and, besides
+</I>&gt;<i>under ten lines of real code defining functional stuff, I saw a
+</I>&gt;<i>real mess of wrapper code. Several different classes are used to
+</I>&gt;<i>hook up the DemoRecvLine class into the ServerFactory. (This simple
+</I>&gt;<i>example is, IMHO, a huge difference to the elegance of simple
+</I>&gt;<i>Twisted Core examples.)
+</I>
+Yes, it's quite a mess.
+
+&gt;<i>
+</I>&gt;<i>Those wrapper classes are documented in a way that you don't
+</I>&gt;<i>understand what one class does unless you understand what some few
+</I>&gt;<i>other classes and interfaces do. Those others are documented in a
+</I>&gt;<i>similar way ;) There is one tutorial for conch which is in my view
+</I>&gt;<i>completely unrelated.
+</I>
+Indeed, the tutorial doesn't go into this area.  There is currently no
+prose-style documentation for these APIs.
+
+&gt;<i>
+</I>&gt;<i>No matter what, I tried to adapt and/or wrap my
+</I>&gt;<i>ex-basic.LineReceiver-and-now-HistoricRecvLine subclass in a way
+</I>&gt;<i>that I can hook it up to my ServerFactory class, but to no avail
+</I>&gt;<i>for hours. That's why I'm asking here. Could you please tell me
+</I>&gt;<i>what exactly I need to do to &quot;convert&quot; my new HistoricRecvLine
+</I>&gt;<i>subclass in a way that ServerFactory will accept it? Or is there
+</I>&gt;<i>even a simpler way to get basic readline-like functionality in
+</I>&gt;<i>Twisted? Because that's what I'm aiming at.
+</I>
+There may be other ways (for example, you could run a readline-using
+process as a child and allow the network client to interact with it).
+Whether any of them are simpler, I'm not sure.
+
+I haven't had a chance to work with this part of Twisted much recently,
+but after my most recent attempt, I think I decided that the approach
+taken by HistoricRecvLine doesn't lead to easily extensible or reusable
+code.  I had been investigating an API based on an explicit buffer object
+which allowed different components to be isolated from each other.  You
+can take a look at the incomplete results of this (again, no documentation,
+sorry) here:
+
+<A HREF="http://twistedmatrix.com/trac/browser/sandbox/exarkun/invective/trunk/invective/widgets.py">http://twistedmatrix.com/trac/browser/sandbox/exarkun/invective/trunk/invective/widgets.py</A>
+
+LineInputWidget serves roughly the same purpose as HistoricRecvLine.  It
+takes a rather different approach, though.  I haven't followed this
+investigation through to its conclusion, so I can't say if this approach
+ultimately works any better or not.  I'm hopeful, at least. :)
+
+If you want to stick with HistoricRecvLine, then the only suggestion that
+comes to mind to make is for you to keep your original LineReceiver sub-
+class separate from your HistoricRecvLine subclass.  Give a reference to
+the former to the latter: have the HistoricvRecvLine subclass's lineReceived
+method call lineReceived on the LineReceiver subclass (which may not need
+to be a LineReceiver subclass anymore); give the LineReceiver subclass a
+transport which knows how to interact with the terminal in a way which is
+not disruptive to HistoricRecvLine's use of it.
+
+If you have any other questions, feel free to ask, particularly if they're
+more specific, as those will be much easier to answer. :)
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="048932.html">[Twisted-Python] Conch/insults -- using HistoricRecvLine
+</A></li>
+	<LI>Next message (by thread): <A HREF="048960.html">[Twisted-Python] Re: Conch/insults -- using HistoricRecvLine
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48935">[ date ]</a>
+              <a href="thread.html#48935">[ thread ]</a>
+              <a href="subject.html#48935">[ subject ]</a>
+              <a href="author.html#48935">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

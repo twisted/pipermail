@@ -1,0 +1,321 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] [PATCH] nonbuffered cache
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5BPATCH%5D%20nonbuffered%20cache&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002427.html">
+   <LINK REL="Next"  HREF="002283.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] [PATCH] nonbuffered cache</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5BPATCH%5D%20nonbuffered%20cache&In-Reply-To="
+       TITLE="[Twisted-web] [PATCH] nonbuffered cache">andrea at cpushare.com
+       </A><BR>
+    <I>Thu Jan 12 06:24:31 MST 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002427.html">[Twisted-web] Web Shop (e-commerce)
+</A></li>
+        <LI>Next message: <A HREF="002283.html">[Twisted-web] [PATCH] nonbuffered cache
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2280">[ date ]</a>
+              <a href="thread.html#2280">[ thread ]</a>
+              <a href="subject.html#2280">[ subject ]</a>
+              <a href="author.html#2280">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+
+After klive pages become larger and the db become larger too, I realized
+that enabling my PageCache methods was destroing the very nice and
+useful nonbuffered mode that allows showing the fragment of pages that
+are already rendered while nevow keeps working to finishing rendering
+the whole page. The nonbuffered mode makes interactive behaviour
+completely different for klive (while it's almost invisible for other
+projects that renders much more quickly because of much smaller pages).
+
+Disabling the cache is a no way, a simple ab2 would DoS the server
+without cache, it wouldn't even survive ./ .
+
+So I modified the my cache patches to support nonbuffered mode. That was
+very easy. I cleaned up the code a bit too.
+
+I added some db queries to take several seconds to complete to block the
+page rendering a few times, and it was real fun to open 3 browsers and
+see the bar on the right enlarging every few seconds on all three
+browsers at the same time after each query returned. Clicking reload
+also re-display only the part of the page already rendered and then it
+waits nevow to complete.
+
+Performance is excellent as usual (it greatly exceeds the performance of
+the network, it'd require gigabit ethernet to the internet to saturate
+the link):
+
+<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">andrea at opteron</A>:~&gt; ab2 -n2000 -c 200 <A HREF="http://localhost:8818/">http://localhost:8818/</A>
+This is ApacheBench, Version 2.0.41-dev &lt;$Revision: 1.121.2.12 $&gt;
+apache-2.0
+Copyright (c) 1996 Adam Twiss, Zeus Technology Ltd,
+<A HREF="http://www.zeustech.net/">http://www.zeustech.net/</A>
+Copyright (c) 1998-2002 The Apache Software Foundation,
+<A HREF="http://www.apache.org/">http://www.apache.org/</A>
+
+Benchmarking localhost (be patient)
+Completed 200 requests
+Completed 400 requests
+Completed 600 requests
+Completed 800 requests
+Completed 1000 requests
+Completed 1200 requests
+Completed 1400 requests
+Completed 1600 requests
+Completed 1800 requests
+Finished 2000 requests
+
+
+Server Software:        TwistedWeb/SVN-Trunk
+Server Hostname:        localhost
+Server Port:            8818
+
+Document Path:          /
+Document Length:        166396 bytes
+
+Concurrency Level:      200
+Time taken for tests:   7.210944 seconds
+Complete requests:      2000
+Failed requests:        0
+Write errors:           0
+Total transferred:      335883918 bytes
+HTML transferred:       335625492 bytes
+Requests per second:    277.36 [#/sec] (mean)
+Time per request:       721.094 [ms] (mean)
+Time per request:       3.605 [ms] (mean, across all concurrent
+requests)
+Transfer rate:          45487.94 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0  104 547.7      0    3003
+Processing:   204  563 470.2    390    1978
+Waiting:      110  334  68.9    329     544
+Total:        204  667 716.4    390    3625
+
+Percentage of the requests served within a certain time (ms)
+  50%    390
+  66%    449
+  75%    498
+  80%    530
+  90%   1959
+  95%   1977
+  98%   3528
+  99%   3543
+ 100%   3625 (longest request)
+
+Even while the benchmark runs the server is accessible immediately. This
+delivered 45Mbytes/sec of payload (not megabit), with 277 requests per
+second. Without it such an ab2 command DoS the server. You can see the
+effect online as usual on klive website.
+
+I recommend applying to nevow CVS so others can use it too. If you don't
+change your code to enable it with the following API this patch *cannot*
+break anything even if it would be completely broken, so there are no
+excuses for not applying it ;), this is in the _obviously_ safe
+category.
+
+Here the API to enable it in your code. NOTE: you cannot use
+nevow_carryover/IHand with this, it makes no sense to cache forms output
+anyway. Recommended use is with cached_page_class and a LIFETIME of 5
+seconds (the above benchmark has a lifetime of 5 sec).
+
+class forever_cached_page_class(rend.Page):
+        cache = True
+class cached_page_class(forever_cached_page_class):
+        lifetime = LIFETIME
+
+class cached_page_class(rend.Page):
+        cache = True
+        lifetime = LIFETIME
+        max_cache_size = 20*1024*1024
+
+(LIFETIME in seconds)
+
+I consider this a must-have for most nevow sites, thanks!
+
+Index: Nevow/nevow/util.py
+===================================================================
+--- Nevow/nevow/util.py	(revision 4051)
++++ Nevow/nevow/util.py	(working copy)
+@@ -132,6 +132,7 @@
+     from twisted.python import failure
+     from twisted.python.failure import Failure
+     from twisted.python import log
++    from twisted.internet import reactor
+ 
+ except ImportError:
+     class Deferred(object): pass
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 4051)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -491,6 +491,62 @@
+         self.children[name] = child
+ 
+ 
++class PageCache(object):
++    def __init__(self):
++        self.__db = {}
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def __storeCache(self, cacheIDX, c):
++        self.__db[cacheIDX] = c
++    def __deleteCache(self, cacheIDX):
++        del self.__db[cacheIDX]
++    def __deleteCacheData(self, cacheIDX, page):
++        size = self.__db[cacheIDX][1]
++        assert len(self.__db[cacheIDX][0]) == size
++        page.subCacheSize(size)
++        self.__deleteCache(cacheIDX)
++    def __lookupCache(self, cacheIDX):
++        return self.__db.get(cacheIDX)
++    def getCache(self, ctx, request):
++        cacheIDX = self.cacheIDX(ctx)
++        c = self.__lookupCache(cacheIDX)
++
++        if c is None:
++            c = ['', (util.Deferred(), request)]
++            self.__storeCache(cacheIDX, c)
++            def writer(buf):
++                c[0] += buf
++                for d, r in c[1:]:
++                    r.write(buf)
++            return None, writer
++        elif isinstance(c, list):
++            d = util.Deferred()
++            request.write(c[0])
++            c.append((d, request))
++            return d, None
++
++        return c[0], None
++    def cacheRendered(self, ctx, result, page):
++        cacheIDX = self.cacheIDX(ctx)
++        defer_list = self.__lookupCache(cacheIDX)
++        assert isinstance(defer_list[1][0], util.Deferred)
++        data = defer_list[0]
++        size = len(data)
++        if page.canCache(size):
++            # overwrite the deferred with the data
++            timer = None
++            if page.lifetime &gt; 0:
++                timer = util.reactor.callLater(page.lifetime,
++                                               self.__deleteCacheData, cacheIDX, page)
++            page.addCacheSize(size)
++            self.__storeCache(cacheIDX, (data, size, timer, ))
++        else:
++            self.__deleteCache(cacheIDX)
++        for d,r in defer_list[1:]:
++            d.callback(result)
++
++_CACHE = PageCache()
++
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+     via the document factory (docFactory).
+@@ -504,8 +560,23 @@
+     afterRender = None
+     addSlash = None
+ 
++    cache = False
++    lifetime = 0
++    max_cache_size = None
++    __cache_size = 0
++
+     flattenFactory = lambda self, *args: flat.flattenFactory(*args)
+ 
++    def addCacheSize(self, size):
++        assert self.canCache(size)
++        self.__cache_size += size
++    def subCacheSize(self, size):
++        self.__cache_size -= size
++        assert self.__cache_size &gt;= 0
++    def canCache(self, size):
++        return self.max_cache_size is None or \
++               self.__cache_size + size &lt;= self.max_cache_size
++
+     def renderHTTP(self, ctx):
+         if self.beforeRender is not None:
+             return util.maybeDeferred(self.beforeRender,ctx).addCallback(
+@@ -530,7 +601,18 @@
+             if self.afterRender is not None:
+                 return util.maybeDeferred(self.afterRender,ctx)
+ 
+-        if self.buffered:
++        if self.cache:
++            cache, writer = _CACHE.getCache(ctx, request)
++            if cache:
++                return cache
++
++            assert not self.buffered
++            assert self.afterRender is None
++
++            def finisher(result):
++                _CACHE.cacheRendered(ctx, result, self)
++                return result
++        elif self.buffered:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002427.html">[Twisted-web] Web Shop (e-commerce)
+</A></li>
+	<LI>Next message: <A HREF="002283.html">[Twisted-web] [PATCH] nonbuffered cache
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2280">[ date ]</a>
+              <a href="thread.html#2280">[ thread ]</a>
+              <a href="subject.html#2280">[ subject ]</a>
+              <a href="author.html#2280">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

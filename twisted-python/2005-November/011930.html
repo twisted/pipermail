@@ -1,0 +1,259 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Unjelly - recursion limit reached
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Unjelly%20-%20recursion%20limit%20reached&In-Reply-To=20051105.183405.27234188.warner%40lothar.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="011919.html">
+   <LINK REL="Next"  HREF="011920.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Unjelly - recursion limit reached</H1>
+    <B>David K. Hess</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Unjelly%20-%20recursion%20limit%20reached&In-Reply-To=20051105.183405.27234188.warner%40lothar.com"
+       TITLE="[Twisted-Python] Unjelly - recursion limit reached">dhess at verscend.com
+       </A><BR>
+    <I>Mon Nov  7 09:42:34 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="011919.html">[Twisted-Python] Unjelly - recursion limit reached
+</A></li>
+        <LI>Next message: <A HREF="011920.html">[Twisted-Python] pb.Cacheable vs. offline queuing
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11930">[ date ]</a>
+              <a href="thread.html#11930">[ thread ]</a>
+              <a href="subject.html#11930">[ subject ]</a>
+              <a href="author.html#11930">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Nov 5, 2005, at 8:34 PM, Brian Warner wrote:
+
+&gt;&gt;<i> When a view_ method is called in a cacheable and the return value  
+</I>&gt;&gt;<i> is a
+</I>&gt;&gt;<i> graph of interconnected cacheables, is the return value completely
+</I>&gt;&gt;<i> serialized at that point?
+</I>&gt;<i>
+</I>&gt;<i> Do you mean that some view_ method is being invoked on a  
+</I>&gt;<i> pb.Referenceable (or
+</I>&gt;<i> pb.ViewPoint, I suppose) ? And that method is returning an instance  
+</I>&gt;<i> that
+</I>&gt;<i> inherits from pb.Cacheable? And this pb.Cacheable instance holds  
+</I>&gt;<i> references
+</I>&gt;<i> to other pb.Cacheables? Which may or may not have been transmitted  
+</I>&gt;<i> across
+</I>&gt;<i> this wire once already?
+</I>
+Yes, you expertly filled in the gaps of my original question. :-)  
+That's exactly what I'm asking.
+
+&gt;<i> The general answer is yes, the return value is completely  
+</I>&gt;<i> serialized right
+</I>&gt;<i> then. The serialized form of the return value is transmitted in  
+</I>&gt;<i> pieces as
+</I>&gt;<i> jelly recurses down the retval object graph, each new node visited  
+</I>&gt;<i> causes a
+</I>&gt;<i> little bit more data to be sent. However, it does not stop for  
+</I>&gt;<i> anything, and
+</I>&gt;<i> there is no way for an object being serialized to indicate that it  
+</I>&gt;<i> wants to
+</I>&gt;<i> put off serialization for a while[1]. On the receiving end, the
+</I>&gt;<i> callRemote()'s Deferred will not be fired until the retval has  
+</I>&gt;<i> completely
+</I>&gt;<i> finished deserialization. Intermediate objects may be constructed  
+</I>&gt;<i> while
+</I>&gt;<i> deserialization is taking place, but that ought to be invisible to the
+</I>&gt;<i> caller.
+</I>
+That's a relief. And I shouldn't have expected a different answer.  
+Twisted PB is excellent work and that would have been a glaring  
+oversight.
+
+&gt;<i> I'm not sure what would happen if, say, your  
+</I>&gt;<i> getStateToCacheAndObserveFor
+</I>&gt;<i> method did a callRemote though the same wire. newpb has a queue to  
+</I>&gt;<i> handle
+</I>&gt;<i> this sort of thing (the callRemote doesn't get transmitted until at  
+</I>&gt;<i> least
+</I>&gt;<i> after the current operation has finished), but I don't know what  
+</I>&gt;<i> oldpb does.
+</I>&gt;<i> If it isn't clever enough to be reentrant, the receiving end will get
+</I>&gt;<i> interleaved object state from the two operations and the results  
+</I>&gt;<i> will be very
+</I>&gt;<i> very messy.
+</I>&gt;<i>
+</I>&gt;<i> getStateToCacheAndObserveFor and getStateToCopy are called from PB  
+</I>&gt;<i> internals,
+</I>&gt;<i> and as a result it may not be safe to make other PB calls from  
+</I>&gt;<i> there. view_*
+</I>&gt;<i> is called when the wire is in a stable state (i.e. remote methods  
+</I>&gt;<i> calls are
+</I>&gt;<i> top-level objects on the wire), so I think it should be safe to make
+</I>&gt;<i> arbitrary PB calls from it.
+</I>
+All of my getStateToCacheAndObserveFor are very simple with no other  
+calls. :-(
+
+&gt;&gt;<i> I'm concerned that my hierarchy of cacheables received by the client
+</I>&gt;&gt;<i> is inconsistent because it is being modified by another client view_
+</I>&gt;&gt;<i> call into the server before the previous hierarchy has been fully
+</I>&gt;&gt;<i> serialized to the first client.
+</I>&gt;<i>
+</I>&gt;<i> Note that each callRemote is more-or-less atomic, and the creation  
+</I>&gt;<i> of a whole
+</I>&gt;<i> object graph is more-or-less atomic, but it is entirely possible  
+</I>&gt;<i> that other
+</I>&gt;<i> method calls will happen during the middle of a huge slew of  
+</I>&gt;<i> RemoteCache
+</I>&gt;<i> updates. So if object A modifies a dozen Cacheables at once, and  
+</I>&gt;<i> object B has
+</I>&gt;<i> a RemoteCache that is watching them, object C might sneak in a  
+</I>&gt;<i> callRemote
+</I>&gt;<i> while only half of the updates have been processed. The same thing  
+</I>&gt;<i> will
+</I>&gt;<i> happen if your Cacheable update method does multiple callRemotes to  
+</I>&gt;<i> do its
+</I>&gt;<i> job.
+</I>
+I'm not sure I'm following this fully. My situation is one server  
+connected to many clients. My assumption is that remoteCall results  
+and observer updates are serialized and kept in order in a qeueue to  
+each client. In other words, I assume that if client A connects and  
+performs a call that results in a Cacheable graph that takes a while  
+to serialize and deliver to client A, even if a another client B  
+calls in and modifies the state of one of the Cacheables that was  
+already serialized in the result being delivered to client A, the  
+update to that particular Cacheable will be properly queued behind  
+the original result still being delivered to A.
+
+Bottom line, if all of these things are true, then I'm not sure what  
+is going wrong. Is it possible that jelly is at times walking my  
+object graph (which is interconnected to a certain degree and changes  
+dynamically) in such a way that it has to perform a significant  
+amount of recursion? In other words, maybe this isn't a bug but I  
+just need to increase the runtime recursion limit?
+
+FYI, here's a snippet of the exception:
+
+------
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 540, in unjelly
+
+   File &quot;twisted\spread\flavors.pyo&quot;, line 394, in unjellyFor
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 540, in unjelly
+
+   File &quot;twisted\spread\flavors.pyo&quot;, line 394, in unjellyFor
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 621, in _unjelly_reference
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 540, in unjelly
+
+   File &quot;twisted\spread\flavors.pyo&quot;, line 451, in unjellyFor
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 540, in unjelly
+
+   File &quot;twisted\spread\flavors.pyo&quot;, line 394, in unjellyFor
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 540, in unjelly
+
+   File &quot;twisted\spread\flavors.pyo&quot;, line 394, in unjellyFor
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 621, in _unjelly_reference
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 540, in unjelly
+
+   File &quot;twisted\spread\flavors.pyo&quot;, line 451, in unjellyFor
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 654, in _unjelly_dictionary
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 603, in unjellyInto
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 553, in unjelly
+
+   File &quot;twisted\spread\jelly.pyo&quot;, line 646, in _unjelly_list
+----
+
+Thanks for your insight!
+
+Dave
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="011919.html">[Twisted-Python] Unjelly - recursion limit reached
+</A></li>
+	<LI>Next message: <A HREF="011920.html">[Twisted-Python] pb.Cacheable vs. offline queuing
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11930">[ date ]</a>
+              <a href="thread.html#11930">[ thread ]</a>
+              <a href="subject.html#11930">[ subject ]</a>
+              <a href="author.html#11930">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

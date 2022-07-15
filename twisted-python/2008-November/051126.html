@@ -1,0 +1,144 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20A%20Python%20metaclass%20for%20Twisted%20allowing%20__init__%0A%09to%20return%20a%20Deferred&In-Reply-To=%3C18703.8010.379291.213184%40jon.es%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051119.html">
+   <LINK REL="Next"  HREF="051127.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20A%20Python%20metaclass%20for%20Twisted%20allowing%20__init__%0A%09to%20return%20a%20Deferred&In-Reply-To=%3C18703.8010.379291.213184%40jon.es%3E"
+       TITLE="[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred">terry at jon.es
+       </A><BR>
+    <I>Mon Nov  3 08:56:58 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051119.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+        <LI>Next message (by thread): <A HREF="051127.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51126">[ date ]</a>
+              <a href="thread.html#51126">[ thread ]</a>
+              <a href="subject.html#51126">[ subject ]</a>
+              <a href="author.html#51126">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>[I'm replying the original because I want to comment on comments by all of
+JP, Esteve and Glyph]
+
+Glyph - I appreciate your comments on testing, and agree that's
+problematic. I also like your pattern, have run into it myself, and will
+use it - thanks.
+
+Glyph also said I didn't really provide a use-case, so I'll do that a bit
+more clearly now. That leads me back in the direction of preferring my
+metaclass solution.
+
+    from my.project.code import database
+
+    class CoordinatorHandler(object):
+        def __init__(self, tableName, tableSpec, dbURI):
+            def setDb(db):
+                self.db = db
+            d = database.getDB(dbURI)
+            d.addCallback(setDb)
+            d.addCallback(self.createDBTable, tableName, tableSpec)
+            return d
+
+        def _createDBTable(self, txn, tableName, tableSpec):
+            txn.execute('CREATE TABLE %s(%s)' % (tableName, tableSpec))
+
+        def createDBTable(self, result, tableName, tableSpec):
+            assert result is None
+            return self.db.runInteraction(self._createDBTable,
+                                          tableName, tableSpec)
+
+
+Here database.getDB returns a Deferred, as does self.createDBTable.
+
+The problem with approaches that don't actually create the class instance,
+is that __init__ is calling self.createDBTable, but self doesn't exist
+yet. So putting code to deal with Deferreds into __new__ wont help unless
+that code has nothing to do with the instance of the class.
+
+But using a metaclass makes it really easy. You just write your code
+completely as usual, using whatever Twisted/Deferred calls you want
+(including digging around in self), and return the Deferred result. You can
+wrap your __init__ in inlineCallbacks if you like.
+
+The difference is that my metaclass approach does create an instanced of
+the class. It just moves __init__ out of the way (into the __hidden__ dict,
+along with the args and kwargs) and calls it when you call __instantiate__.
+
+So I find the metaclass approach more general, though of course I don't
+like the clutter of __hidden__ or __instantiate__.
+
+With JP's suggestion of cleaning up the return result of __instantiate__ to
+just return the instance, I think it's a pretty clean solution - from the
+POV of the caller. You just act as normal in writing your class, but stick
+in a __metaclass__. Then calling gets you a Deferred, which is perfectly
+normal in the Twisted world.
+
+I guess what you should do depends on how complex your situation is, and
+also on whether you've already written your class code when you realize you
+need __init__ to somehow deal with Deferreds (in which case it may be
+easier to just add __metaclass__).
+
+
+If you do have the simpler situation, in which the Deferred is coming from
+the outside world (i.e., not from calling methods on self), then Glyph's
+approach is probably the nicest (the following is untested):
+
+    class X:
+        def __init__(self, *args, dResult=None, **kw):
+            # do something
+
+        @classmethod
+        def fromDeferred(cls, d, *args, **kw):
+            def cb(result):
+                return cls(*args, dResult=result, **kw)
+            return d.addCallback(cb)
+
+
+Which lets you create an object directly (no deferred involved), lets you
+create it after a deferred fires, and also lets you directly send in a fake
+deferred result.
+
+Terry
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051119.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+	<LI>Next message (by thread): <A HREF="051127.html">[Twisted-Python] A Python metaclass for Twisted allowing __init__	to return a Deferred
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51126">[ date ]</a>
+              <a href="thread.html#51126">[ thread ]</a>
+              <a href="subject.html#51126">[ subject ]</a>
+              <a href="author.html#51126">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

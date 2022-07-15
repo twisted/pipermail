@@ -1,0 +1,2589 @@
+From trac at twistedmatrix.com  Sun Sep  1 00:05:18 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 01 Sep 2019 06:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1567317918.68.7109056452069302177@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190901/a1c26c41/attachment.html>
+
+From kpn.arn.vollebregt at gmail.com  Wed Sep  4 02:37:39 2019
+From: kpn.arn.vollebregt at gmail.com (Arn Vollebregt)
+Date: Wed, 4 Sep 2019 10:37:39 +0200
+Subject: [Twisted-Python] PyOpenSSL empty socket property
+Message-ID: <CAObs90D9WZvU0qnrQeGOPHsSqp7izmzJZ59uqwWEYpR9tnfp8w@mail.gmail.com>
+
+Hi,
+
+I noticed that PyOpenSSL SNI callbacks (set with
+*ctx.set_tlsext_servername_callback*) receive a *OpenSSL.SSL.Connection*
+object within Twisted that have an empty *_socket* property, while this
+property *is* actually set when using *PyOpenSSL* directly. For my use-case
+this is a problem as I want to call *conn._socket.getpeername()* to
+determine the peer's IP address. So I am wondering: why is this behaviour
+different? And how do I get the peer IP address?
+
+---console---
+user:~$ sudo python testTwisted.py &
+[3] 32842
+user:~$ curl -s --insecure --key clientPrivateKey.pem --cert
+clientCertificate.pem https://127.0.0.1 > /dev/null
+'sniCallback' called.
+        conn._socket: None
+'verifyCallback' called for result 0
+        conn._socket: None
+'verifyCallback' called for result 1
+        conn._socket: None
+user:~$ sudo python testPyOpenSSL.py &
+[1] 33270
+user:~$ curl -s --insecure --key clientPrivateKey.pem --cert
+clientCertificate.pem https://127.0.0.1 > /dev/null
+'sniCallback' called.
+        conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+<class 'OpenSSL.SSL.Connection'>
+'verifyCallback' called for result 0
+        conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+'verifyCallback' called for result 1
+        conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+127.0.0.1 - - [29/Aug/2019 11:45:47] "GET / HTTP/1.1" 200 -
+------
+
+---testTwisted.py---
+### Generate server key material ###
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+serverPrivateKey.pem -out serverCertificate.pem -subj
+"/C=''/O=''/OU=''/CN=server"
+### Generate client key material ###
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+clientPrivateKey.pem -out clientCertificate.pem -subj
+"/C=''/O=''/OU=''/CN=client"
+from __future__ import print_function
+#https://twistedmatrix.com/documents/12.0.0/core/howto/ssl.html
+from OpenSSL import SSL
+from twisted.internet import ssl, reactor
+from twisted.web import server, resource
+from twisted.internet.protocol import Factory, Protocol
+
+def verifyCallback(conn, cert, errno, depth, result):
+    print('\'verifyCallback\' called for result ' + str(result))
+    print('\tconn._socket: ' + str(conn._socket))
+    return True
+
+def sniCallback(conn):
+    print('\'sniCallback\' called.')
+    print('\tconn._socket: ' + str(conn._socket))
+
+class MainResource(resource.Resource):
+    isLeaf = True
+
+    def render_GET(self, request):
+        request.responseHeaders.addRawHeader("Content-Type", "text/html;
+charset=utf-8")
+        return b"<html><body>Hello World</body></html>"
+
+if __name__ == '__main__':
+    myContextFactory = ssl.DefaultOpenSSLContextFactory(
+        'serverPrivateKey.pem',
+        'serverCertificate.pem'
+    )
+    ctx = myContextFactory.getContext()
+    #
+https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify
+    ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+    #
+https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback
+    ctx.set_tlsext_servername_callback(sniCallback)
+
+    site = server.Site(MainResource())
+    reactor.listenSSL(443, site, myContextFactory)
+    reactor.run()
+------
+
+---testPyOpenSSL.py---
+### Generate server key material ###
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+serverPrivateKey.pem -out serverCertificate.pem -subj
+"/C=''/O=''/OU=''/CN=server"
+### Generate client key material ###
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+clientPrivateKey.pem -out clientCertificate.pem -subj
+"/C=''/O=''/OU=''/CN=client"
+from __future__ import print_function
+import socket, sys, os
+from SocketServer import BaseServer
+from BaseHTTPServer import HTTPServer
+from SimpleHTTPServer import SimpleHTTPRequestHandler
+from OpenSSL import SSL
+
+def verifyCallback(conn, cert, errno, depth, result):
+    print('\'verifyCallback\' called for result ' + str(result))
+    print('\tconn._socket: ' + str(conn._socket))
+    return True
+
+def sniCallback(conn):
+    print('\'sniCallback\' called.')
+    print('\tconn._socket: ' + str(conn._socket))
+    print(type(conn))
+
+class SecureHTTPServer(HTTPServer):
+    def __init__(self, server_address, HandlerClass):
+        BaseServer.__init__(self, server_address, HandlerClass)
+        ctx = SSL.Context(SSL.TLSv1_2_METHOD)
+        ctx.use_privatekey_file('serverPrivateKey.pem')
+        ctx.use_certificate_file('serverCertificate.pem')
+        #
+https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify
+        ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+        #
+https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback
+        ctx.set_tlsext_servername_callback(sniCallback)
+        self.socket = SSL.Connection(ctx,
+socket.socket(self.address_family,self.socket_type))
+        self.server_bind()
+        self.server_activate()
+
+    def shutdown_request(self,request):
+        request.shutdown()
+
+class SecureHTTPRequestHandler(SimpleHTTPRequestHandler):
+    def setup(self):
+        self.connection = self.request
+        self.rfile = socket._fileobject(self.request, "rb", self.rbufsize)
+        self.wfile = socket._fileobject(self.request, "wb", self.wbufsize)
+
+    def do_GET(self):
+        self.send_response(200)
+        SimpleHTTPRequestHandler.end_headers(self)
+        self.wfile.write('<html><body>Hello World</body></html>')
+
+if __name__ == '__main__':
+    ip,port = ('0.0.0.0', 443)
+    httpd = SecureHTTPServer((ip, port), SecureHTTPRequestHandler)
+    httpd.serve_forever()
+------
+
+(Please note that even though these examples are for Python2 (due to other
+quirks) I am aiming to implement this in Python3.)
+
+Regards,
+
+Arn
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190904/62fa0936/attachment.html>
+
+From sean.dizazzo at gmail.com  Fri Sep  6 00:07:33 2019
+From: sean.dizazzo at gmail.com (Sean DiZazzo)
+Date: Thu, 5 Sep 2019 23:07:33 -0700
+Subject: [Twisted-Python] PyOpenSSL empty socket property
+In-Reply-To: <CAObs90D9WZvU0qnrQeGOPHsSqp7izmzJZ59uqwWEYpR9tnfp8w@mail.gmail.com>
+References: <CAObs90D9WZvU0qnrQeGOPHsSqp7izmzJZ59uqwWEYpR9tnfp8w@mail.gmail.com>
+Message-ID: <CANzH6etmN2uaeSwHHiNqjypwegHtwBD6mGMLgE8T88KT7+8+6w@mail.gmail.com>
+
+Perhaps this line from OpenSSL.SSL.Connection is a clue.
+
+"socket may be None; in this case, the Connection is created with a memory
+BIO: see the bio_read(), bio_write(), and bio_shutdown() methods."
+https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Connection
+
+On Wed, Sep 4, 2019 at 1:38 AM Arn Vollebregt <kpn.arn.vollebregt at gmail.com>
+wrote:
+
+> Hi,
+>
+> I noticed that PyOpenSSL SNI callbacks (set with
+> *ctx.set_tlsext_servername_callback*) receive a *OpenSSL.SSL.Connection*
+> object within Twisted that have an empty *_socket* property, while this
+> property *is* actually set when using *PyOpenSSL* directly. For my
+> use-case this is a problem as I want to call *conn._socket.getpeername()*
+> to determine the peer's IP address. So I am wondering: why is this
+> behaviour different? And how do I get the peer IP address?
+>
+> ---console---
+> user:~$ sudo python testTwisted.py &
+> [3] 32842
+> user:~$ curl -s --insecure --key clientPrivateKey.pem --cert
+> clientCertificate.pem https://127.0.0.1 > /dev/null
+> 'sniCallback' called.
+>         conn._socket: None
+> 'verifyCallback' called for result 0
+>         conn._socket: None
+> 'verifyCallback' called for result 1
+>         conn._socket: None
+> user:~$ sudo python testPyOpenSSL.py &
+> [1] 33270
+> user:~$ curl -s --insecure --key clientPrivateKey.pem --cert
+> clientCertificate.pem https://127.0.0.1 > /dev/null
+> 'sniCallback' called.
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> <class 'OpenSSL.SSL.Connection'>
+> 'verifyCallback' called for result 0
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> 'verifyCallback' called for result 1
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> 127.0.0.1 - - [29/Aug/2019 11:45:47] "GET / HTTP/1.1" 200 -
+> ------
+>
+> ---testTwisted.py---
+> ### Generate server key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+> serverPrivateKey.pem -out serverCertificate.pem -subj
+> "/C=''/O=''/OU=''/CN=server"
+> ### Generate client key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+> clientPrivateKey.pem -out clientCertificate.pem -subj
+> "/C=''/O=''/OU=''/CN=client"
+> from __future__ import print_function
+> #https://twistedmatrix.com/documents/12.0.0/core/howto/ssl.html
+> from OpenSSL import SSL
+> from twisted.internet import ssl, reactor
+> from twisted.web import server, resource
+> from twisted.internet.protocol import Factory, Protocol
+>
+> def verifyCallback(conn, cert, errno, depth, result):
+>     print('\'verifyCallback\' called for result ' + str(result))
+>     print('\tconn._socket: ' + str(conn._socket))
+>     return True
+>
+> def sniCallback(conn):
+>     print('\'sniCallback\' called.')
+>     print('\tconn._socket: ' + str(conn._socket))
+>
+> class MainResource(resource.Resource):
+>     isLeaf = True
+>
+>     def render_GET(self, request):
+>         request.responseHeaders.addRawHeader("Content-Type", "text/html;
+> charset=utf-8")
+>         return b"<html><body>Hello World</body></html>"
+>
+> if __name__ == '__main__':
+>     myContextFactory = ssl.DefaultOpenSSLContextFactory(
+>         'serverPrivateKey.pem',
+>         'serverCertificate.pem'
+>     )
+>     ctx = myContextFactory.getContext()
+>     #
+> https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify
+>     ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+>     #
+> https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback
+>     ctx.set_tlsext_servername_callback(sniCallback)
+>
+>     site = server.Site(MainResource())
+>     reactor.listenSSL(443, site, myContextFactory)
+>     reactor.run()
+> ------
+>
+> ---testPyOpenSSL.py---
+> ### Generate server key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+> serverPrivateKey.pem -out serverCertificate.pem -subj
+> "/C=''/O=''/OU=''/CN=server"
+> ### Generate client key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+> clientPrivateKey.pem -out clientCertificate.pem -subj
+> "/C=''/O=''/OU=''/CN=client"
+> from __future__ import print_function
+> import socket, sys, os
+> from SocketServer import BaseServer
+> from BaseHTTPServer import HTTPServer
+> from SimpleHTTPServer import SimpleHTTPRequestHandler
+> from OpenSSL import SSL
+>
+> def verifyCallback(conn, cert, errno, depth, result):
+>     print('\'verifyCallback\' called for result ' + str(result))
+>     print('\tconn._socket: ' + str(conn._socket))
+>     return True
+>
+> def sniCallback(conn):
+>     print('\'sniCallback\' called.')
+>     print('\tconn._socket: ' + str(conn._socket))
+>     print(type(conn))
+>
+> class SecureHTTPServer(HTTPServer):
+>     def __init__(self, server_address, HandlerClass):
+>         BaseServer.__init__(self, server_address, HandlerClass)
+>         ctx = SSL.Context(SSL.TLSv1_2_METHOD)
+>         ctx.use_privatekey_file('serverPrivateKey.pem')
+>         ctx.use_certificate_file('serverCertificate.pem')
+>         #
+> https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify
+>         ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+>         #
+> https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback
+>         ctx.set_tlsext_servername_callback(sniCallback)
+>         self.socket = SSL.Connection(ctx,
+> socket.socket(self.address_family,self.socket_type))
+>         self.server_bind()
+>         self.server_activate()
+>
+>     def shutdown_request(self,request):
+>         request.shutdown()
+>
+> class SecureHTTPRequestHandler(SimpleHTTPRequestHandler):
+>     def setup(self):
+>         self.connection = self.request
+>         self.rfile = socket._fileobject(self.request, "rb", self.rbufsize)
+>         self.wfile = socket._fileobject(self.request, "wb", self.wbufsize)
+>
+>     def do_GET(self):
+>         self.send_response(200)
+>         SimpleHTTPRequestHandler.end_headers(self)
+>         self.wfile.write('<html><body>Hello World</body></html>')
+>
+> if __name__ == '__main__':
+>     ip,port = ('0.0.0.0', 443)
+>     httpd = SecureHTTPServer((ip, port), SecureHTTPRequestHandler)
+>     httpd.serve_forever()
+> ------
+>
+> (Please note that even though these examples are for Python2 (due to other
+> quirks) I am aiming to implement this in Python3.)
+>
+> Regards,
+>
+> Arn
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190905/bb7c8453/attachment.html>
+
+From trac at twistedmatrix.com  Sun Sep  8 00:05:18 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 08 Sep 2019 06:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1567922718.5.3786261118453419510@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190908/c7069828/attachment.html>
+
+From glyph at twistedmatrix.com  Sun Sep  8 21:32:19 2019
+From: glyph at twistedmatrix.com (Glyph)
+Date: Sun, 8 Sep 2019 20:32:19 -0700
+Subject: [Twisted-Python] PyOpenSSL empty socket property
+In-Reply-To: <CANzH6etmN2uaeSwHHiNqjypwegHtwBD6mGMLgE8T88KT7+8+6w@mail.gmail.com>
+References: <CAObs90D9WZvU0qnrQeGOPHsSqp7izmzJZ59uqwWEYpR9tnfp8w@mail.gmail.com>
+ <CANzH6etmN2uaeSwHHiNqjypwegHtwBD6mGMLgE8T88KT7+8+6w@mail.gmail.com>
+Message-ID: <6A267BE7-CDAD-43C8-988D-108E1ECB904E@twistedmatrix.com>
+
+Indeed, in Twisted, the SSL.Connection is constructed with a memory BIO. And in fact there may not be a socket in the loop at all!
+
+What are you trying to do with `getpeername()`?  Hopefully there's a similar Twisted API that you could work with.
+
+-glyph
+
+> On Sep 5, 2019, at 11:07 PM, Sean DiZazzo <sean.dizazzo at gmail.com> wrote:
+> 
+> Perhaps this line from OpenSSL.SSL.Connection is a clue.
+> 
+> "socket may be None; in this case, the Connection is created with a memory BIO: see the bio_read(), bio_write(), and bio_shutdown() methods."
+> https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Connection <https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Connection>
+> 
+> On Wed, Sep 4, 2019 at 1:38 AM Arn Vollebregt <kpn.arn.vollebregt at gmail.com <mailto:kpn.arn.vollebregt at gmail.com>> wrote:
+> Hi,
+> 
+> I noticed that PyOpenSSL SNI callbacks (set with ctx.set_tlsext_servername_callback) receive a OpenSSL.SSL.Connection object within Twisted that have an empty _socket property, while this property is actually set when using PyOpenSSL directly. For my use-case this is a problem as I want to call conn._socket.getpeername() to determine the peer's IP address. So I am wondering: why is this behaviour different? And how do I get the peer IP address?
+> 
+> ---console---
+> user:~$ sudo python testTwisted.py &
+> [3] 32842
+> user:~$ curl -s --insecure --key clientPrivateKey.pem --cert clientCertificate.pem https://127.0.0.1 <https://127.0.0.1/> > /dev/null
+> 'sniCallback' called.
+>         conn._socket: None
+> 'verifyCallback' called for result 0
+>         conn._socket: None
+> 'verifyCallback' called for result 1
+>         conn._socket: None
+> user:~$ sudo python testPyOpenSSL.py &
+> [1] 33270
+> user:~$ curl -s --insecure --key clientPrivateKey.pem --cert clientCertificate.pem https://127.0.0.1 <https://127.0.0.1/> > /dev/null
+> 'sniCallback' called.
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> <class 'OpenSSL.SSL.Connection'>
+> 'verifyCallback' called for result 0
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> 'verifyCallback' called for result 1
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> 127.0.0.1 - - [29/Aug/2019 11:45:47] "GET / HTTP/1.1" 200 -
+> ------
+> 
+> ---testTwisted.py---
+> ### Generate server key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout serverPrivateKey.pem -out serverCertificate.pem -subj "/C=''/O=''/OU=''/CN=server"
+> ### Generate client key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout clientPrivateKey.pem -out clientCertificate.pem -subj "/C=''/O=''/OU=''/CN=client"
+> from __future__ import print_function
+> #https://twistedmatrix.com/documents/12.0.0/core/howto/ssl.html <https://twistedmatrix.com/documents/12.0.0/core/howto/ssl.html>
+> from OpenSSL import SSL
+> from twisted.internet import ssl, reactor
+> from twisted.web import server, resource
+> from twisted.internet.protocol import Factory, Protocol
+> 
+> def verifyCallback(conn, cert, errno, depth, result):
+>     print('\'verifyCallback\' called for result ' + str(result))
+>     print('\tconn._socket: ' + str(conn._socket))
+>     return True
+> 
+> def sniCallback(conn):
+>     print('\'sniCallback\' called.')
+>     print('\tconn._socket: ' + str(conn._socket))
+> 
+> class MainResource(resource.Resource):
+>     isLeaf = True
+> 
+>     def render_GET(self, request):
+>         request.responseHeaders.addRawHeader("Content-Type", "text/html; charset=utf-8")
+>         return b"<html><body>Hello World</body></html>"
+> 
+> if __name__ == '__main__':
+>     myContextFactory = ssl.DefaultOpenSSLContextFactory(
+>         'serverPrivateKey.pem',
+>         'serverCertificate.pem'
+>     )
+>     ctx = myContextFactory.getContext()
+>     # https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify <https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify>
+>     ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+>     # https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback <https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback>
+>     ctx.set_tlsext_servername_callback(sniCallback)
+> 
+>     site = server.Site(MainResource())
+>     reactor.listenSSL(443, site, myContextFactory)
+>     reactor.run()
+> ------
+> 
+> ---testPyOpenSSL.py---
+> ### Generate server key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout serverPrivateKey.pem -out serverCertificate.pem -subj "/C=''/O=''/OU=''/CN=server"
+> ### Generate client key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout clientPrivateKey.pem -out clientCertificate.pem -subj "/C=''/O=''/OU=''/CN=client"
+> from __future__ import print_function
+> import socket, sys, os
+> from SocketServer import BaseServer
+> from BaseHTTPServer import HTTPServer
+> from SimpleHTTPServer import SimpleHTTPRequestHandler
+> from OpenSSL import SSL
+> 
+> def verifyCallback(conn, cert, errno, depth, result):
+>     print('\'verifyCallback\' called for result ' + str(result))
+>     print('\tconn._socket: ' + str(conn._socket))
+>     return True
+> 
+> def sniCallback(conn):
+>     print('\'sniCallback\' called.')
+>     print('\tconn._socket: ' + str(conn._socket))
+>     print(type(conn))
+> 
+> class SecureHTTPServer(HTTPServer):
+>     def __init__(self, server_address, HandlerClass):
+>         BaseServer.__init__(self, server_address, HandlerClass)
+>         ctx = SSL.Context(SSL.TLSv1_2_METHOD)
+>         ctx.use_privatekey_file('serverPrivateKey.pem')
+>         ctx.use_certificate_file('serverCertificate.pem')
+>         # https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify <https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify>
+>         ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+>         # https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback <https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback>
+>         ctx.set_tlsext_servername_callback(sniCallback)
+>         self.socket = SSL.Connection(ctx, socket.socket(self.address_family,self.socket_type))
+>         self.server_bind()
+>         self.server_activate()
+>     
+>     def shutdown_request(self,request):
+>         request.shutdown()
+> 
+> class SecureHTTPRequestHandler(SimpleHTTPRequestHandler):
+>     def setup(self):
+>         self.connection = self.request
+>         self.rfile = socket._fileobject(self.request, "rb", self.rbufsize)
+>         self.wfile = socket._fileobject(self.request, "wb", self.wbufsize)
+>     
+>     def do_GET(self):
+>         self.send_response(200)
+>         SimpleHTTPRequestHandler.end_headers(self)
+>         self.wfile.write('<html><body>Hello World</body></html>')
+> 
+> if __name__ == '__main__':
+>     ip,port = ('0.0.0.0', 443)
+>     httpd = SecureHTTPServer((ip, port), SecureHTTPRequestHandler)
+>     httpd.serve_forever()
+> ------
+> 
+> (Please note that even though these examples are for Python2 (due to other quirks) I am aiming to implement this in Python3.)
+> 
+> Regards,
+> 
+> Arn
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com <mailto:Twisted-Python at twistedmatrix.com>
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python <https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190908/fb1b5723/attachment.html>
+
+From meejah at meejah.ca  Tue Sep 10 01:03:45 2019
+From: meejah at meejah.ca (meejah)
+Date: Tue, 10 Sep 2019 11:03:45 +0400
+Subject: [Twisted-Python] txtorcon 19.1.0
+Message-ID: <86r24ozl7y.fsf@atlantis.meejah.ca>
+
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+I'm pleased to announce txtorcon 19.1.0, containing the following
+changes:
+
+ * TorControlProtocol.on_disconnect is deprecated in favour of
+   TorControlProtocol.when_disconnected
+
+ * introduce non_anonymous_mode= kwarg in txtorcon.launch()
+   enabling Tor options making Onion Services non-anonymous for the
+   server (but they use a single hop instead of three to the
+   Introduction Point so they're slightly faster).
+
+ * add an API to listen to individual circuit and stream events
+   (without subclassing anything). Can be used as decorators too.
+   See e.g. TorState.on_circuit_new()
+
+ * fixes to the CI setup to properly test Twisted versions
+
+You can download the release from PyPI or GitHub (or of
+course "pip install txtorcon"):
+
+   https://pypi.python.org/pypi/txtorcon/19.1.0
+   https://github.com/meejah/txtorcon/releases/tag/v19.1.0
+
+Releases are also available from the hidden service:
+
+   http://timaq4ygg2iegci7.onion/txtorcon-19.1.0.tar.gz
+   http://timaq4ygg2iegci7.onion/txtorcon-19.1.0.tar.gz.asc
+
+Or via a "version 3" service:
+
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-19.1.0.tar.gz
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-19.1.0.tar.gz.asc
+
+You can verify the sha256sum of both by running the following 4 lines
+in a shell wherever you have the files downloaded:
+
+cat <<EOF | sha256sum --check
+25d8e52c3eac45bb90ff958ca7cdd7674fb3284e3a50826a58ab7b9578b15ea5  dist/txtorcon-19.1.0.tar.gz
+e93aef50f339b537ed969a4d83a704a2870658bb49cdfa95495ba5a740548d32  dist/txtorcon-19.1.0-py2.py3-none-any.whl
+EOF
+
+thanks,
+meejah
+-----BEGIN PGP SIGNATURE-----
+
+iQFFBAEBCAAvFiEEnVor1WiOy4id680/wmAoAxKAaacFAl13SBcRHG1lZWphaEBt
+ZWVqYWguY2EACgkQwmAoAxKAaad/DwgA5r1XbcoPuzw2FSoDNwJNNzDSEFBT+W7Z
+Ej0Wp27B7KuUgCp83u08DWpCbuz1iOLiYveWtKil+CrXFpmxH2M9itF4pd3U71dt
+o/PfEnPy3OxWD1cka2bnuFO3HlmCs7LOy5KndRlWBSzqDXfqnwTLqNSHB94TMoh3
+YEhyKmyo30DwLMeNdeayuJ18c24+U15kxt5+O7TPKSeNw88emizDMX3ZQFnuIUyJ
+6ybZxIwkJxXLOlO+cqnLH26eSIFqHrvILTXPvZ3ie2cwNYOgNS4IpkmVUlrF41Zq
+xQgMdR1pzLWrEVMSPOYKicAnPW/drd8urwXMq5y2/dVuUhQmhHxBxg==
+=7R7N
+-----END PGP SIGNATURE-----
+
+
+From hawkowl at atleastfornow.net  Tue Sep 10 09:15:35 2019
+From: hawkowl at atleastfornow.net (Amber Brown (hawkowl))
+Date: Wed, 11 Sep 2019 01:15:35 +1000
+Subject: [Twisted-Python] Twisted Release Manager In Search Of A Body Double
+ (pls hlep)
+Message-ID: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+
+Hi!
+
+I'm looking for someone to be my body double for Twisted releases, 
+taking over on alternate releases or when I'm busy (which seems to be 
+all the time???? when did I become an adult, why did I do that).
+
+Ideally this person is up for this role on an ongoing basis, with a time 
+commitment of four or so hours every alternating release (so every 2 
+months or so, hopefully). Plus, you'll need to be known by the team, 
+since you then become the trust anchor for all the binaries we publish.
+
+The release process is a bit buggy here and there, and I haven't been 
+the best at writing down workarounds/fixes for things, so also ideally 
+the first release would be a collaborative one. Plus, we need to update 
+it for the advent of built wheels, as well.
+
+If you have the time to spare, care about release management, and don't 
+mind yelling at computers for a while, drop me a (private) email 
+expressing interest and I'll get in touch.
+
+- hawkie
+
+
+From ant at zimage.com  Tue Sep 10 13:14:08 2019
+From: ant at zimage.com (Ant)
+Date: Tue, 10 Sep 2019 12:14:08 -0700
+Subject: [Twisted-Python] Pip's Twisted 19.7.0 package is offered to
+ upgrade my v19.2.1...
+In-Reply-To: <20190811193120.GA20640@beta.zimage.com>
+References: <20190811193120.GA20640@beta.zimage.com>
+Message-ID: <20190910191408.GA18935@beta.zimage.com>
+
+Are there any updates on this? I still see this minor issue. :(
+
+
+On Sun, Aug 11, 2019 at 12:31:20PM -0700, Ant wrote:
+> Hello.
+> 
+> I cannot figure out how to report this minor bug of a minor upgrade 
+> issue (https://github.com/twisted/twisted didn't have an issues 
+> section) that I noticed since last week:
+> 
+> $ pip list --outdated                       DEPRECATION: Python 3.4 support has been deprecated. pip 19.1 will be the last one supporting it. Please upgrade your Python as Python 3.4 won't be maintained after March 2019 (cf PEP 429).
+> Package Version Latest Type
+> ------- ------- ------ -----
+> Twisted 19.2.1  19.7.0 sdist
+> 
+> $ pip install --upgrade Twisted
+> DEPRECATION: Python 3.4 support has been deprecated. pip 19.1 will be the last one supporting it. Please upgrade your Python as Python 3.4 won't be maintained after March 2019 (cf PEP 429).
+> Collecting Twisted
+>   Using cached https://files.pythonhosted.org/packages/61/31/3855dcacd1d3b2e60c0b4ccc8e727b8cd497bd7087d327d81a9f0cbb580c/Twisted-19.7.0.tar.bz2
+>     ERROR: Complete output from command python setup.py egg_info:
+>     ERROR: Traceback (most recent call last):
+>       File "<string>", line 1, in <module>
+>       File "/tmp/pip-install-2h_su73e/Twisted/setup.py", line 20, in <module>
+>         setuptools.setup(**_setup["getSetupArgs"]())
+>       File "<string>", line 257, in getSetupArgs
+>       File "<string>", line 208, in _checkPythonVersion
+>     ImportError: Twisted on Python 3 requires Python 3.5 or later.
+>     ----------------------------------------
+> ERROR: Command "python setup.py egg_info" failed with error code 1 in /tmp/pip-install-2h_su73e/Twisted/
+> 
+> 
+> That v19.7.0 shouldn't even be offered for my outdated setups. :(
+> 
+> Thank you for reading and hopefully answering soon. :)
+-- 
+Colony is currently recovering from a nasty flu! It came early too. :(
+Note: A fixed width font (Courier, Monospace, etc.) is required to see this signature correctly.
+  /\___/\             Ant(Dude) @ philpi at earthlink.net / ant at zimage.com
+ / /\ /\ \           http://antfarm.ma.cx / http://antfarm.home.dhs.org
+| |o   o| |                                           & http://aqfl.net
+   \ _ /        Please kindly use Ant nickname & URL/link if crediting.
+    ( )
+
+
+From sda at fstab.net  Tue Sep 10 13:54:56 2019
+From: sda at fstab.net (Kyle Altendorf)
+Date: Tue, 10 Sep 2019 15:54:56 -0400
+Subject: [Twisted-Python] Pip's Twisted 19.7.0 package is offered to
+ upgrade my v19.2.1...
+In-Reply-To: <20190910191408.GA18935@beta.zimage.com>
+References: <20190811193120.GA20640@beta.zimage.com>
+ <20190910191408.GA18935@beta.zimage.com>
+Message-ID: <6a756d2a635e63b3b084baeb6896b92c@fstab.net>
+
+
+
+On 2019-09-10 15:14, Ant wrote:
+> Are there any updates on this? I still see this minor issue. :(
+
+Sorry, it appears I found time for a ticket and a PR...  but not an 
+email.  They have been submitted for review.
+
+Ticket: https://twistedmatrix.com/trac/ticket/9701
+PR: https://github.com/twisted/twisted/pull/1183
+
+Cheers,
+-kyle
+
+
+> On Sun, Aug 11, 2019 at 12:31:20PM -0700, Ant wrote:
+>> Hello.
+>> 
+>> I cannot figure out how to report this minor bug of a minor upgrade
+>> issue (https://github.com/twisted/twisted didn't have an issues
+>> section) that I noticed since last week:
+>> 
+>> $ pip list --outdated                       DEPRECATION: Python 3.4 
+>> support has been deprecated. pip 19.1 will be the last one supporting 
+>> it. Please upgrade your Python as Python 3.4 won't be maintained after 
+>> March 2019 (cf PEP 429).
+>> Package Version Latest Type
+>> ------- ------- ------ -----
+>> Twisted 19.2.1  19.7.0 sdist
+>> 
+>> $ pip install --upgrade Twisted
+>> DEPRECATION: Python 3.4 support has been deprecated. pip 19.1 will be 
+>> the last one supporting it. Please upgrade your Python as Python 3.4 
+>> won't be maintained after March 2019 (cf PEP 429).
+>> Collecting Twisted
+>>   Using cached 
+>> https://files.pythonhosted.org/packages/61/31/3855dcacd1d3b2e60c0b4ccc8e727b8cd497bd7087d327d81a9f0cbb580c/Twisted-19.7.0.tar.bz2
+>>     ERROR: Complete output from command python setup.py egg_info:
+>>     ERROR: Traceback (most recent call last):
+>>       File "<string>", line 1, in <module>
+>>       File "/tmp/pip-install-2h_su73e/Twisted/setup.py", line 20, in 
+>> <module>
+>>         setuptools.setup(**_setup["getSetupArgs"]())
+>>       File "<string>", line 257, in getSetupArgs
+>>       File "<string>", line 208, in _checkPythonVersion
+>>     ImportError: Twisted on Python 3 requires Python 3.5 or later.
+>>     ----------------------------------------
+>> ERROR: Command "python setup.py egg_info" failed with error code 1 in 
+>> /tmp/pip-install-2h_su73e/Twisted/
+>> 
+>> 
+>> That v19.7.0 shouldn't even be offered for my outdated setups. :(
+>> 
+>> Thank you for reading and hopefully answering soon. :)
+
+
+From ant at zimage.com  Tue Sep 10 14:08:00 2019
+From: ant at zimage.com (Ant)
+Date: Tue, 10 Sep 2019 13:08:00 -0700
+Subject: [Twisted-Python] Pip's Twisted 19.7.0 package is offered to
+ upgrade my v19.2.1...
+In-Reply-To: <6a756d2a635e63b3b084baeb6896b92c@fstab.net>
+References: <20190811193120.GA20640@beta.zimage.com>
+ <20190910191408.GA18935@beta.zimage.com>
+ <6a756d2a635e63b3b084baeb6896b92c@fstab.net>
+Message-ID: <20190910200800.GA23598@beta.zimage.com>
+
+On Tue, Sep 10, 2019 at 03:54:56PM -0400, Kyle Altendorf wrote:
+> 
+> Sorry, it appears I found time for a ticket and a PR...  but not an email.
+> They have been submitted for review.
+> 
+> Ticket: https://twistedmatrix.com/trac/ticket/9701
+> PR: https://github.com/twisted/twisted/pull/1183
+
+Thank you. :)
+
+
+From notorious.no at gmail.com  Tue Sep 10 20:25:18 2019
+From: notorious.no at gmail.com (Noman Sarker)
+Date: Tue, 10 Sep 2019 22:25:18 -0400
+Subject: [Twisted-Python] Twisted Release Manager In Search Of A Body
+ Double (pls hlep)
+In-Reply-To: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+References: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+Message-ID: <CABDBxiTRwoa3wphxopfYqYrZCcbH5+2TbUOSGznhh0BxJHAq_w@mail.gmail.com>
+
+Hi Amber
+
+I'm not super familiar with the Twisted release process but I can help if
+you can point me in the right direction. I haven't been as active as I was,
+but I answered many Stackoverflow about Twisted so I am quite familiar with
+the ecosystem. Let me know if I can help.
+
+
+On Tue, Sep 10, 2019, 11:26 AM Amber Brown (hawkowl) <
+hawkowl at atleastfornow.net> wrote:
+
+> Hi!
+>
+> I'm looking for someone to be my body double for Twisted releases,
+> taking over on alternate releases or when I'm busy (which seems to be
+> all the time???? when did I become an adult, why did I do that).
+>
+> Ideally this person is up for this role on an ongoing basis, with a time
+> commitment of four or so hours every alternating release (so every 2
+> months or so, hopefully). Plus, you'll need to be known by the team,
+> since you then become the trust anchor for all the binaries we publish.
+>
+> The release process is a bit buggy here and there, and I haven't been
+> the best at writing down workarounds/fixes for things, so also ideally
+> the first release would be a collaborative one. Plus, we need to update
+> it for the advent of built wheels, as well.
+>
+> If you have the time to spare, care about release management, and don't
+> mind yelling at computers for a while, drop me a (private) email
+> expressing interest and I'll get in touch.
+>
+> - hawkie
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190910/6d7dfc42/attachment.html>
+
+From trac at twistedmatrix.com  Sun Sep 15 00:05:21 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 15 Sep 2019 06:05:21 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1568527521.23.184442149693834092@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190915/b7e9a61c/attachment.html>
+
+From cristobal23 at gmail.com  Thu Sep 19 13:46:58 2019
+From: cristobal23 at gmail.com (=?UTF-8?Q?Crist=C3=B3bal_Villarroel?=)
+Date: Thu, 19 Sep 2019 12:46:58 -0700
+Subject: [Twisted-Python] Twisted Release Manager In Search Of A Body
+ Double (pls hlep)
+In-Reply-To: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+References: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+Message-ID: <CA+C14gLi1=VgVocA6wx-jQQiQhKRC+KNW6oav9gZjsY8X634gg@mail.gmail.com>
+
+Hi,
+
+I am interested in helping out! You have done such a great job. Thank you
+so much!! I am in the GitHub org already, but I don’t know if I have access
+to the repo with the deployment details. If I recall correctly its a bunch
+of Fabric on a combination of self-hosted buildbot and some other hosted CI
+service? Let me know, how I can help. At the very least, I can contribute
+documentation.
+
+Best,
+Cristobal
+
+On Tue, Sep 10, 2019 at 8:32 AM Amber Brown (hawkowl) <
+hawkowl at atleastfornow.net> wrote:
+
+> Hi!
+>
+> I'm looking for someone to be my body double for Twisted releases,
+> taking over on alternate releases or when I'm busy (which seems to be
+> all the time???? when did I become an adult, why did I do that).
+>
+> Ideally this person is up for this role on an ongoing basis, with a time
+> commitment of four or so hours every alternating release (so every 2
+> months or so, hopefully). Plus, you'll need to be known by the team,
+> since you then become the trust anchor for all the binaries we publish.
+>
+> The release process is a bit buggy here and there, and I haven't been
+> the best at writing down workarounds/fixes for things, so also ideally
+> the first release would be a collaborative one. Plus, we need to update
+> it for the advent of built wheels, as well.
+>
+> If you have the time to spare, care about release management, and don't
+> mind yelling at computers for a while, drop me a (private) email
+> expressing interest and I'll get in touch.
+>
+> - hawkie
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190919/badbb675/attachment.html>
+
+From trac at twistedmatrix.com  Sun Sep 22 00:05:33 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 22 Sep 2019 06:05:33 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1569132333.84.9066462212751257906@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190922/a3330679/attachment.html>
+
+From wk80333 at gmail.com  Thu Sep 26 20:38:46 2019
+From: wk80333 at gmail.com (Waqar Khan)
+Date: Thu, 26 Sep 2019 22:38:46 -0400
+Subject: [Twisted-Python] In memory cache in twisted
+Message-ID: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+
+Hi,
+  What's a good way to use a simple dictionary as a cache in twisted
+framework?
+Basically, I have this callback chain where I ultimately make a rest call
+(in non-blocking way using treq) to fetch some data. But before I make the
+call, I am using a dictionary to see if the value is available or not.
+But, I have noticed that the event loop gets pretty busy(sometimes, things
+get stuck and twisted server stops) as soon as I add this logic.. Which is
+pretty much
+
+@defer.inlinecallbacks
+def fetch(key):
+      if key in cache:
+               return cache[key]
+      # else call back to treq to fetch value
+       cache[key] = value
+       return value
+
+This dict can grow to around 50k.. What's a good way to solve this issue?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190926/7b046269/attachment.html>
+
+From dynamicgl at gmail.com  Thu Sep 26 20:45:14 2019
+From: dynamicgl at gmail.com (Gelin Yan)
+Date: Fri, 27 Sep 2019 10:45:14 +0800
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+Message-ID: <CABkOF6Q0HvpxuhMNz-GpX25P8j1WdQ+adgqvifFF1wMWvWxUNg@mail.gmail.com>
+
+Hi
+
+    I don't see any reason to use defer.inlineCallbacks in your snippet of
+codes.
+
+Regards
+
+gelin yan
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190927/c99e3b96/attachment.html>
+
+From wk80333 at gmail.com  Thu Sep 26 20:57:18 2019
+From: wk80333 at gmail.com (Waqar Khan)
+Date: Thu, 26 Sep 2019 22:57:18 -0400
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CABkOF6Q0HvpxuhMNz-GpX25P8j1WdQ+adgqvifFF1wMWvWxUNg@mail.gmail.com>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <CABkOF6Q0HvpxuhMNz-GpX25P8j1WdQ+adgqvifFF1wMWvWxUNg@mail.gmail.com>
+Message-ID: <CAJuJkHN+TjhjMMs5gzC3EUxFDT+oG0avEjqs_s79CbW1CK_N4g@mail.gmail.com>
+
+Good point.
+Thanks for responding.
+But, is the above way of using dictionary as cache correct? Or is there a
+"deffered" way of doing this?
+All I want is an inmemory cache that is compatible with this async
+paradigm?
+
+On Thu, Sep 26, 2019 at 10:45 PM Gelin Yan <dynamicgl at gmail.com> wrote:
+
+> Hi
+>
+>     I don't see any reason to use defer.inlineCallbacks in your snippet of
+> codes.
+>
+> Regards
+>
+> gelin yan
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190926/5da1f406/attachment.html>
+
+From maarten at treewalker.org  Thu Sep 26 21:39:59 2019
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Fri, 27 Sep 2019 05:39:59 +0200
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+Message-ID: <11135650.vblT0CJW4X@hyperion>
+
+On Friday, 27 September 2019 04:38:46 CEST Waqar Khan wrote:
+> Hi,
+>   What's a good way to use a simple dictionary as a cache in twisted
+> framework?
+> Basically, I have this callback chain where I ultimately make a rest
+> call (in non-blocking way using treq) to fetch some data. But before
+> I make the call, I am using a dictionary to see if the value is
+> available or not. But, I have noticed that the event loop gets pretty
+> busy(sometimes, things get stuck and twisted server stops) as soon as
+> I add this logic.. Which is pretty much
+> 
+> @defer.inlinecallbacks
+> def fetch(key):
+>       if key in cache:
+>                return cache[key]
+>       # else call back to treq to fetch value
+>        cache[key] = value
+>        return value
+> 
+> This dict can grow to around 50k.. What's a good way to solve this
+> issue?
+
+If it gets stuck, then the cause for that is probably in the part of the 
+code you omitted. So it would help to elaborate on how the value is 
+fetched exactly.
+
+I can see two other problems with this caching mechanism though:
+
+1. Items are never removed from the cache, so unless there is a limit to 
+the number of different keys that can be used, the cache can grow 
+indefinitely. You might want something like an LRU cache rather than a 
+plain dictionary.
+
+https://docs.python.org/3/library/functools.html#functools.lru_cache
+
+2. If a lot of clients are requesting the same thing, you won't see any 
+benefits from caching until the first request completes. So you could 
+get a pattern like this:
+
+T=0: key A requested, A is not cached, start fetch #1 of A
+T=1: key A requested, A is not cached, start fetch #2 of A
+T=2: key A requested, A is not cached, start fetch #3 of A
+T=3: key A requested, A is not cached, start fetch #4 of A
+T=4: key A requested, A is not cached, start fetch #5 of A
+T=5: fetch #1 of A completes and is added to the cache
+T=6: key A requested, A is cached, return value immediately
+
+In this example, the value for A is fetched 5 times despite the caching  
+mechanism. If the fetching takes a long time compared to the rate at 
+which requests are coming in, this effect gets worse at a quadratic 
+rate: the total time spent fetching is the number of requests that come 
+in during the fetching of the first request times the duration of the 
+fetch.
+
+To avoid this, you could put a Deferred for the fetch operation in the 
+cache or in a separate dictionary and if you get another request for the 
+same key before the fetch completes, return that Deferred instead of 
+starting another fetch.
+
+Bye,
+		Maarten
+
+
+
+
+From wk80333 at gmail.com  Thu Sep 26 21:48:35 2019
+From: wk80333 at gmail.com (Waqar Khan)
+Date: Thu, 26 Sep 2019 23:48:35 -0400
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <11135650.vblT0CJW4X@hyperion>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <11135650.vblT0CJW4X@hyperion>
+Message-ID: <CAJuJkHNWTppr4rBH8utxKDqiNybPz0vRXyLk_9FuYDOkRAPMPg@mail.gmail.com>
+
+Hi Maarten,
+   I think you have hit the problem in the head. I do think this is
+feasible as I have observed that as size of cache increases, things do get
+better which might support your theory.
+
+Is there a simple example you can add on "put a Deferred for the fetch
+operation ". I am really just getting started with twisted.
+Thanks for all the help.
+
+
+On Thu, Sep 26, 2019 at 11:40 PM Maarten ter Huurne <maarten at treewalker.org>
+wrote:
+
+> On Friday, 27 September 2019 04:38:46 CEST Waqar Khan wrote:
+> > Hi,
+> >   What's a good way to use a simple dictionary as a cache in twisted
+> > framework?
+> > Basically, I have this callback chain where I ultimately make a rest
+> > call (in non-blocking way using treq) to fetch some data. But before
+> > I make the call, I am using a dictionary to see if the value is
+> > available or not. But, I have noticed that the event loop gets pretty
+> > busy(sometimes, things get stuck and twisted server stops) as soon as
+> > I add this logic.. Which is pretty much
+> >
+> > @defer.inlinecallbacks
+> > def fetch(key):
+> >       if key in cache:
+> >                return cache[key]
+> >       # else call back to treq to fetch value
+> >        cache[key] = value
+> >        return value
+> >
+> > This dict can grow to around 50k.. What's a good way to solve this
+> > issue?
+>
+> If it gets stuck, then the cause for that is probably in the part of the
+> code you omitted. So it would help to elaborate on how the value is
+> fetched exactly.
+>
+> I can see two other problems with this caching mechanism though:
+>
+> 1. Items are never removed from the cache, so unless there is a limit to
+> the number of different keys that can be used, the cache can grow
+> indefinitely. You might want something like an LRU cache rather than a
+> plain dictionary.
+>
+> https://docs.python.org/3/library/functools.html#functools.lru_cache
+>
+> 2. If a lot of clients are requesting the same thing, you won't see any
+> benefits from caching until the first request completes. So you could
+> get a pattern like this:
+>
+> T=0: key A requested, A is not cached, start fetch #1 of A
+> T=1: key A requested, A is not cached, start fetch #2 of A
+> T=2: key A requested, A is not cached, start fetch #3 of A
+> T=3: key A requested, A is not cached, start fetch #4 of A
+> T=4: key A requested, A is not cached, start fetch #5 of A
+> T=5: fetch #1 of A completes and is added to the cache
+> T=6: key A requested, A is cached, return value immediately
+>
+> In this example, the value for A is fetched 5 times despite the caching
+> mechanism. If the fetching takes a long time compared to the rate at
+> which requests are coming in, this effect gets worse at a quadratic
+> rate: the total time spent fetching is the number of requests that come
+> in during the fetching of the first request times the duration of the
+> fetch.
+>
+> To avoid this, you could put a Deferred for the fetch operation in the
+> cache or in a separate dictionary and if you get another request for the
+> same key before the fetch completes, return that Deferred instead of
+> starting another fetch.
+>
+> Bye,
+>                 Maarten
+>
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190926/295541ed/attachment-0001.html>
+
+From maarten at treewalker.org  Thu Sep 26 21:59:30 2019
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Fri, 27 Sep 2019 05:59:30 +0200
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CAJuJkHNWTppr4rBH8utxKDqiNybPz0vRXyLk_9FuYDOkRAPMPg@mail.gmail.com>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <11135650.vblT0CJW4X@hyperion>
+ <CAJuJkHNWTppr4rBH8utxKDqiNybPz0vRXyLk_9FuYDOkRAPMPg@mail.gmail.com>
+Message-ID: <2367841.1YWT7QbvYH@hyperion>
+
+On Friday, 27 September 2019 05:48:35 CEST Waqar Khan wrote:
+> Hi Maarten,
+>    I think you have hit the problem in the head. I do think this is
+> feasible as I have observed that as size of cache increases, things do
+> get better which might support your theory.
+> 
+> Is there a simple example you can add on "put a Deferred for the fetch
+> operation ". I am really just getting started with twisted.
+> Thanks for all the help.
+
+Unfortunately I don't think I have any code lying around that implements 
+this kind of cache.
+
+Bye,
+		Maarten
+
+
+
+
+From ilyaskriblovsky at gmail.com  Fri Sep 27 00:04:11 2019
+From: ilyaskriblovsky at gmail.com (Ilya Skriblovsky)
+Date: Fri, 27 Sep 2019 09:04:11 +0300
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <2367841.1YWT7QbvYH@hyperion>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <11135650.vblT0CJW4X@hyperion>
+ <CAJuJkHNWTppr4rBH8utxKDqiNybPz0vRXyLk_9FuYDOkRAPMPg@mail.gmail.com>
+ <2367841.1YWT7QbvYH@hyperion>
+Message-ID: <CAOG7vkwyrV4ML-9u52zxu_f1u95v30X6D6mcpnxWHs9dYobBpQ@mail.gmail.com>
+
+Hi all,
+
+Here is async in-memory cache that I've implemented for one of my projects:
+https://gist.github.com/IlyaSkriblovsky/5aba53b661acd49b65efeb4ce41a8b52
+
+It properly handles problem #2 described by Maarten. But it doesn't
+bother with eviction because it wasn't needed at the time of writing
+(because key space was limited).
+
+Usage example:
+
+    @defer.inlineCallbacks
+    def load_content(url: str):
+        # does some long-running async task such as loading url content
+
+    @defer.inlineCallbacks
+    def main():
+        # DeferredCache receives loader function as an argument
+        # Loader function must return Deferred
+        cache = DeferredCache(load_content)
+
+        # this will actually download content
+        page1 = yield cache.get('http://example.com')
+        # this will use cached one (note that this get() also returns
+Deferred, but that
+        # Deferred will be already-succeeded, so `yield` will return
+the content immediately)
+        page2 = yield cache.get('http://example.com')
+
+        # illustration of problem #2 described by Maarten
+        # note there is no yield here, we are running these to get()s
+simultaneously
+        deferred_page1 = cache.get('https://www.nasa.gov/')
+        deferred_page2 = cache.get('https://www.nasa.gov/')
+        # actually waiting for results
+        page1, page2 = yield deferred.gatherResults([deferred_page1,
+deferred_page2])
+        # load_content() will be called only once with
+'https://www.nasa.gov/' by this point
+
+-- Ilya
+
+пт, 27 сент. 2019 г. в 06:59, Maarten ter Huurne <maarten at treewalker.org>:
+>
+> On Friday, 27 September 2019 05:48:35 CEST Waqar Khan wrote:
+> > Hi Maarten,
+> >    I think you have hit the problem in the head. I do think this is
+> > feasible as I have observed that as size of cache increases, things do
+> > get better which might support your theory.
+> >
+> > Is there a simple example you can add on "put a Deferred for the fetch
+> > operation ". I am really just getting started with twisted.
+> > Thanks for all the help.
+>
+> Unfortunately I don't think I have any code lying around that implements
+> this kind of cache.
+>
+> Bye,
+>                 Maarten
+>
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+
+From meejah at meejah.ca  Fri Sep 27 08:56:22 2019
+From: meejah at meejah.ca (meejah)
+Date: Fri, 27 Sep 2019 18:56:22 +0400
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CAJuJkHN+TjhjMMs5gzC3EUxFDT+oG0avEjqs_s79CbW1CK_N4g@mail.gmail.com>
+ (Waqar Khan's message of "Thu, 26 Sep 2019 22:57:18 -0400")
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <CABkOF6Q0HvpxuhMNz-GpX25P8j1WdQ+adgqvifFF1wMWvWxUNg@mail.gmail.com>
+ <CAJuJkHN+TjhjMMs5gzC3EUxFDT+oG0avEjqs_s79CbW1CK_N4g@mail.gmail.com>
+Message-ID: <86y2y9wzxl.fsf@atlantis.meejah.ca>
+
+Waqar Khan <wk80333 at gmail.com> writes:
+
+> But, is the above way of using dictionary as cache correct? Or is
+> there a "deffered" way of doing this?  All I want is an inmemory cache
+> that is compatible with this async paradigm?
+
+Yes, it is fine to use a single dict as a cache. Twisted is
+single-threaded an so only one callback is running at a time. There's no
+need to lock etc.
+
+(Or, is there another reason you need to cache to "be async"? Like maybe
+it's using memcached or so?)
+
+-- 
+meejah
+
+
+From trac at twistedmatrix.com  Sun Sep 29 00:05:19 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 29 Sep 2019 06:05:19 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1569737119.86.2854566160479325481@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190929/fc357f2e/attachment.html>
+
+From trac at twistedmatrix.com  Sun Sep  1 00:05:18 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 01 Sep 2019 06:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1567317918.68.7109056452069302177@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190901/a1c26c41/attachment-0002.html>
+
+From kpn.arn.vollebregt at gmail.com  Wed Sep  4 02:37:39 2019
+From: kpn.arn.vollebregt at gmail.com (Arn Vollebregt)
+Date: Wed, 4 Sep 2019 10:37:39 +0200
+Subject: [Twisted-Python] PyOpenSSL empty socket property
+Message-ID: <CAObs90D9WZvU0qnrQeGOPHsSqp7izmzJZ59uqwWEYpR9tnfp8w@mail.gmail.com>
+
+Hi,
+
+I noticed that PyOpenSSL SNI callbacks (set with
+*ctx.set_tlsext_servername_callback*) receive a *OpenSSL.SSL.Connection*
+object within Twisted that have an empty *_socket* property, while this
+property *is* actually set when using *PyOpenSSL* directly. For my use-case
+this is a problem as I want to call *conn._socket.getpeername()* to
+determine the peer's IP address. So I am wondering: why is this behaviour
+different? And how do I get the peer IP address?
+
+---console---
+user:~$ sudo python testTwisted.py &
+[3] 32842
+user:~$ curl -s --insecure --key clientPrivateKey.pem --cert
+clientCertificate.pem https://127.0.0.1 > /dev/null
+'sniCallback' called.
+        conn._socket: None
+'verifyCallback' called for result 0
+        conn._socket: None
+'verifyCallback' called for result 1
+        conn._socket: None
+user:~$ sudo python testPyOpenSSL.py &
+[1] 33270
+user:~$ curl -s --insecure --key clientPrivateKey.pem --cert
+clientCertificate.pem https://127.0.0.1 > /dev/null
+'sniCallback' called.
+        conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+<class 'OpenSSL.SSL.Connection'>
+'verifyCallback' called for result 0
+        conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+'verifyCallback' called for result 1
+        conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+127.0.0.1 - - [29/Aug/2019 11:45:47] "GET / HTTP/1.1" 200 -
+------
+
+---testTwisted.py---
+### Generate server key material ###
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+serverPrivateKey.pem -out serverCertificate.pem -subj
+"/C=''/O=''/OU=''/CN=server"
+### Generate client key material ###
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+clientPrivateKey.pem -out clientCertificate.pem -subj
+"/C=''/O=''/OU=''/CN=client"
+from __future__ import print_function
+#https://twistedmatrix.com/documents/12.0.0/core/howto/ssl.html
+from OpenSSL import SSL
+from twisted.internet import ssl, reactor
+from twisted.web import server, resource
+from twisted.internet.protocol import Factory, Protocol
+
+def verifyCallback(conn, cert, errno, depth, result):
+    print('\'verifyCallback\' called for result ' + str(result))
+    print('\tconn._socket: ' + str(conn._socket))
+    return True
+
+def sniCallback(conn):
+    print('\'sniCallback\' called.')
+    print('\tconn._socket: ' + str(conn._socket))
+
+class MainResource(resource.Resource):
+    isLeaf = True
+
+    def render_GET(self, request):
+        request.responseHeaders.addRawHeader("Content-Type", "text/html;
+charset=utf-8")
+        return b"<html><body>Hello World</body></html>"
+
+if __name__ == '__main__':
+    myContextFactory = ssl.DefaultOpenSSLContextFactory(
+        'serverPrivateKey.pem',
+        'serverCertificate.pem'
+    )
+    ctx = myContextFactory.getContext()
+    #
+https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify
+    ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+    #
+https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback
+    ctx.set_tlsext_servername_callback(sniCallback)
+
+    site = server.Site(MainResource())
+    reactor.listenSSL(443, site, myContextFactory)
+    reactor.run()
+------
+
+---testPyOpenSSL.py---
+### Generate server key material ###
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+serverPrivateKey.pem -out serverCertificate.pem -subj
+"/C=''/O=''/OU=''/CN=server"
+### Generate client key material ###
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+clientPrivateKey.pem -out clientCertificate.pem -subj
+"/C=''/O=''/OU=''/CN=client"
+from __future__ import print_function
+import socket, sys, os
+from SocketServer import BaseServer
+from BaseHTTPServer import HTTPServer
+from SimpleHTTPServer import SimpleHTTPRequestHandler
+from OpenSSL import SSL
+
+def verifyCallback(conn, cert, errno, depth, result):
+    print('\'verifyCallback\' called for result ' + str(result))
+    print('\tconn._socket: ' + str(conn._socket))
+    return True
+
+def sniCallback(conn):
+    print('\'sniCallback\' called.')
+    print('\tconn._socket: ' + str(conn._socket))
+    print(type(conn))
+
+class SecureHTTPServer(HTTPServer):
+    def __init__(self, server_address, HandlerClass):
+        BaseServer.__init__(self, server_address, HandlerClass)
+        ctx = SSL.Context(SSL.TLSv1_2_METHOD)
+        ctx.use_privatekey_file('serverPrivateKey.pem')
+        ctx.use_certificate_file('serverCertificate.pem')
+        #
+https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify
+        ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+        #
+https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback
+        ctx.set_tlsext_servername_callback(sniCallback)
+        self.socket = SSL.Connection(ctx,
+socket.socket(self.address_family,self.socket_type))
+        self.server_bind()
+        self.server_activate()
+
+    def shutdown_request(self,request):
+        request.shutdown()
+
+class SecureHTTPRequestHandler(SimpleHTTPRequestHandler):
+    def setup(self):
+        self.connection = self.request
+        self.rfile = socket._fileobject(self.request, "rb", self.rbufsize)
+        self.wfile = socket._fileobject(self.request, "wb", self.wbufsize)
+
+    def do_GET(self):
+        self.send_response(200)
+        SimpleHTTPRequestHandler.end_headers(self)
+        self.wfile.write('<html><body>Hello World</body></html>')
+
+if __name__ == '__main__':
+    ip,port = ('0.0.0.0', 443)
+    httpd = SecureHTTPServer((ip, port), SecureHTTPRequestHandler)
+    httpd.serve_forever()
+------
+
+(Please note that even though these examples are for Python2 (due to other
+quirks) I am aiming to implement this in Python3.)
+
+Regards,
+
+Arn
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190904/62fa0936/attachment-0002.html>
+
+From sean.dizazzo at gmail.com  Fri Sep  6 00:07:33 2019
+From: sean.dizazzo at gmail.com (Sean DiZazzo)
+Date: Thu, 5 Sep 2019 23:07:33 -0700
+Subject: [Twisted-Python] PyOpenSSL empty socket property
+In-Reply-To: <CAObs90D9WZvU0qnrQeGOPHsSqp7izmzJZ59uqwWEYpR9tnfp8w@mail.gmail.com>
+References: <CAObs90D9WZvU0qnrQeGOPHsSqp7izmzJZ59uqwWEYpR9tnfp8w@mail.gmail.com>
+Message-ID: <CANzH6etmN2uaeSwHHiNqjypwegHtwBD6mGMLgE8T88KT7+8+6w@mail.gmail.com>
+
+Perhaps this line from OpenSSL.SSL.Connection is a clue.
+
+"socket may be None; in this case, the Connection is created with a memory
+BIO: see the bio_read(), bio_write(), and bio_shutdown() methods."
+https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Connection
+
+On Wed, Sep 4, 2019 at 1:38 AM Arn Vollebregt <kpn.arn.vollebregt at gmail.com>
+wrote:
+
+> Hi,
+>
+> I noticed that PyOpenSSL SNI callbacks (set with
+> *ctx.set_tlsext_servername_callback*) receive a *OpenSSL.SSL.Connection*
+> object within Twisted that have an empty *_socket* property, while this
+> property *is* actually set when using *PyOpenSSL* directly. For my
+> use-case this is a problem as I want to call *conn._socket.getpeername()*
+> to determine the peer's IP address. So I am wondering: why is this
+> behaviour different? And how do I get the peer IP address?
+>
+> ---console---
+> user:~$ sudo python testTwisted.py &
+> [3] 32842
+> user:~$ curl -s --insecure --key clientPrivateKey.pem --cert
+> clientCertificate.pem https://127.0.0.1 > /dev/null
+> 'sniCallback' called.
+>         conn._socket: None
+> 'verifyCallback' called for result 0
+>         conn._socket: None
+> 'verifyCallback' called for result 1
+>         conn._socket: None
+> user:~$ sudo python testPyOpenSSL.py &
+> [1] 33270
+> user:~$ curl -s --insecure --key clientPrivateKey.pem --cert
+> clientCertificate.pem https://127.0.0.1 > /dev/null
+> 'sniCallback' called.
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> <class 'OpenSSL.SSL.Connection'>
+> 'verifyCallback' called for result 0
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> 'verifyCallback' called for result 1
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> 127.0.0.1 - - [29/Aug/2019 11:45:47] "GET / HTTP/1.1" 200 -
+> ------
+>
+> ---testTwisted.py---
+> ### Generate server key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+> serverPrivateKey.pem -out serverCertificate.pem -subj
+> "/C=''/O=''/OU=''/CN=server"
+> ### Generate client key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+> clientPrivateKey.pem -out clientCertificate.pem -subj
+> "/C=''/O=''/OU=''/CN=client"
+> from __future__ import print_function
+> #https://twistedmatrix.com/documents/12.0.0/core/howto/ssl.html
+> from OpenSSL import SSL
+> from twisted.internet import ssl, reactor
+> from twisted.web import server, resource
+> from twisted.internet.protocol import Factory, Protocol
+>
+> def verifyCallback(conn, cert, errno, depth, result):
+>     print('\'verifyCallback\' called for result ' + str(result))
+>     print('\tconn._socket: ' + str(conn._socket))
+>     return True
+>
+> def sniCallback(conn):
+>     print('\'sniCallback\' called.')
+>     print('\tconn._socket: ' + str(conn._socket))
+>
+> class MainResource(resource.Resource):
+>     isLeaf = True
+>
+>     def render_GET(self, request):
+>         request.responseHeaders.addRawHeader("Content-Type", "text/html;
+> charset=utf-8")
+>         return b"<html><body>Hello World</body></html>"
+>
+> if __name__ == '__main__':
+>     myContextFactory = ssl.DefaultOpenSSLContextFactory(
+>         'serverPrivateKey.pem',
+>         'serverCertificate.pem'
+>     )
+>     ctx = myContextFactory.getContext()
+>     #
+> https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify
+>     ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+>     #
+> https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback
+>     ctx.set_tlsext_servername_callback(sniCallback)
+>
+>     site = server.Site(MainResource())
+>     reactor.listenSSL(443, site, myContextFactory)
+>     reactor.run()
+> ------
+>
+> ---testPyOpenSSL.py---
+> ### Generate server key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+> serverPrivateKey.pem -out serverCertificate.pem -subj
+> "/C=''/O=''/OU=''/CN=server"
+> ### Generate client key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout
+> clientPrivateKey.pem -out clientCertificate.pem -subj
+> "/C=''/O=''/OU=''/CN=client"
+> from __future__ import print_function
+> import socket, sys, os
+> from SocketServer import BaseServer
+> from BaseHTTPServer import HTTPServer
+> from SimpleHTTPServer import SimpleHTTPRequestHandler
+> from OpenSSL import SSL
+>
+> def verifyCallback(conn, cert, errno, depth, result):
+>     print('\'verifyCallback\' called for result ' + str(result))
+>     print('\tconn._socket: ' + str(conn._socket))
+>     return True
+>
+> def sniCallback(conn):
+>     print('\'sniCallback\' called.')
+>     print('\tconn._socket: ' + str(conn._socket))
+>     print(type(conn))
+>
+> class SecureHTTPServer(HTTPServer):
+>     def __init__(self, server_address, HandlerClass):
+>         BaseServer.__init__(self, server_address, HandlerClass)
+>         ctx = SSL.Context(SSL.TLSv1_2_METHOD)
+>         ctx.use_privatekey_file('serverPrivateKey.pem')
+>         ctx.use_certificate_file('serverCertificate.pem')
+>         #
+> https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify
+>         ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+>         #
+> https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback
+>         ctx.set_tlsext_servername_callback(sniCallback)
+>         self.socket = SSL.Connection(ctx,
+> socket.socket(self.address_family,self.socket_type))
+>         self.server_bind()
+>         self.server_activate()
+>
+>     def shutdown_request(self,request):
+>         request.shutdown()
+>
+> class SecureHTTPRequestHandler(SimpleHTTPRequestHandler):
+>     def setup(self):
+>         self.connection = self.request
+>         self.rfile = socket._fileobject(self.request, "rb", self.rbufsize)
+>         self.wfile = socket._fileobject(self.request, "wb", self.wbufsize)
+>
+>     def do_GET(self):
+>         self.send_response(200)
+>         SimpleHTTPRequestHandler.end_headers(self)
+>         self.wfile.write('<html><body>Hello World</body></html>')
+>
+> if __name__ == '__main__':
+>     ip,port = ('0.0.0.0', 443)
+>     httpd = SecureHTTPServer((ip, port), SecureHTTPRequestHandler)
+>     httpd.serve_forever()
+> ------
+>
+> (Please note that even though these examples are for Python2 (due to other
+> quirks) I am aiming to implement this in Python3.)
+>
+> Regards,
+>
+> Arn
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190905/bb7c8453/attachment-0002.html>
+
+From trac at twistedmatrix.com  Sun Sep  8 00:05:18 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 08 Sep 2019 06:05:18 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1567922718.5.3786261118453419510@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190908/c7069828/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Sun Sep  8 21:32:19 2019
+From: glyph at twistedmatrix.com (Glyph)
+Date: Sun, 8 Sep 2019 20:32:19 -0700
+Subject: [Twisted-Python] PyOpenSSL empty socket property
+In-Reply-To: <CANzH6etmN2uaeSwHHiNqjypwegHtwBD6mGMLgE8T88KT7+8+6w@mail.gmail.com>
+References: <CAObs90D9WZvU0qnrQeGOPHsSqp7izmzJZ59uqwWEYpR9tnfp8w@mail.gmail.com>
+ <CANzH6etmN2uaeSwHHiNqjypwegHtwBD6mGMLgE8T88KT7+8+6w@mail.gmail.com>
+Message-ID: <6A267BE7-CDAD-43C8-988D-108E1ECB904E@twistedmatrix.com>
+
+Indeed, in Twisted, the SSL.Connection is constructed with a memory BIO. And in fact there may not be a socket in the loop at all!
+
+What are you trying to do with `getpeername()`?  Hopefully there's a similar Twisted API that you could work with.
+
+-glyph
+
+> On Sep 5, 2019, at 11:07 PM, Sean DiZazzo <sean.dizazzo at gmail.com> wrote:
+> 
+> Perhaps this line from OpenSSL.SSL.Connection is a clue.
+> 
+> "socket may be None; in this case, the Connection is created with a memory BIO: see the bio_read(), bio_write(), and bio_shutdown() methods."
+> https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Connection <https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Connection>
+> 
+> On Wed, Sep 4, 2019 at 1:38 AM Arn Vollebregt <kpn.arn.vollebregt at gmail.com <mailto:kpn.arn.vollebregt at gmail.com>> wrote:
+> Hi,
+> 
+> I noticed that PyOpenSSL SNI callbacks (set with ctx.set_tlsext_servername_callback) receive a OpenSSL.SSL.Connection object within Twisted that have an empty _socket property, while this property is actually set when using PyOpenSSL directly. For my use-case this is a problem as I want to call conn._socket.getpeername() to determine the peer's IP address. So I am wondering: why is this behaviour different? And how do I get the peer IP address?
+> 
+> ---console---
+> user:~$ sudo python testTwisted.py &
+> [3] 32842
+> user:~$ curl -s --insecure --key clientPrivateKey.pem --cert clientCertificate.pem https://127.0.0.1 <https://127.0.0.1/> > /dev/null
+> 'sniCallback' called.
+>         conn._socket: None
+> 'verifyCallback' called for result 0
+>         conn._socket: None
+> 'verifyCallback' called for result 1
+>         conn._socket: None
+> user:~$ sudo python testPyOpenSSL.py &
+> [1] 33270
+> user:~$ curl -s --insecure --key clientPrivateKey.pem --cert clientCertificate.pem https://127.0.0.1 <https://127.0.0.1/> > /dev/null
+> 'sniCallback' called.
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> <class 'OpenSSL.SSL.Connection'>
+> 'verifyCallback' called for result 0
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> 'verifyCallback' called for result 1
+>         conn._socket: <socket._socketobject object at 0x7f34c5bd3130>
+> 127.0.0.1 - - [29/Aug/2019 11:45:47] "GET / HTTP/1.1" 200 -
+> ------
+> 
+> ---testTwisted.py---
+> ### Generate server key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout serverPrivateKey.pem -out serverCertificate.pem -subj "/C=''/O=''/OU=''/CN=server"
+> ### Generate client key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout clientPrivateKey.pem -out clientCertificate.pem -subj "/C=''/O=''/OU=''/CN=client"
+> from __future__ import print_function
+> #https://twistedmatrix.com/documents/12.0.0/core/howto/ssl.html <https://twistedmatrix.com/documents/12.0.0/core/howto/ssl.html>
+> from OpenSSL import SSL
+> from twisted.internet import ssl, reactor
+> from twisted.web import server, resource
+> from twisted.internet.protocol import Factory, Protocol
+> 
+> def verifyCallback(conn, cert, errno, depth, result):
+>     print('\'verifyCallback\' called for result ' + str(result))
+>     print('\tconn._socket: ' + str(conn._socket))
+>     return True
+> 
+> def sniCallback(conn):
+>     print('\'sniCallback\' called.')
+>     print('\tconn._socket: ' + str(conn._socket))
+> 
+> class MainResource(resource.Resource):
+>     isLeaf = True
+> 
+>     def render_GET(self, request):
+>         request.responseHeaders.addRawHeader("Content-Type", "text/html; charset=utf-8")
+>         return b"<html><body>Hello World</body></html>"
+> 
+> if __name__ == '__main__':
+>     myContextFactory = ssl.DefaultOpenSSLContextFactory(
+>         'serverPrivateKey.pem',
+>         'serverCertificate.pem'
+>     )
+>     ctx = myContextFactory.getContext()
+>     # https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify <https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify>
+>     ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+>     # https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback <https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback>
+>     ctx.set_tlsext_servername_callback(sniCallback)
+> 
+>     site = server.Site(MainResource())
+>     reactor.listenSSL(443, site, myContextFactory)
+>     reactor.run()
+> ------
+> 
+> ---testPyOpenSSL.py---
+> ### Generate server key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout serverPrivateKey.pem -out serverCertificate.pem -subj "/C=''/O=''/OU=''/CN=server"
+> ### Generate client key material ###
+> # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout clientPrivateKey.pem -out clientCertificate.pem -subj "/C=''/O=''/OU=''/CN=client"
+> from __future__ import print_function
+> import socket, sys, os
+> from SocketServer import BaseServer
+> from BaseHTTPServer import HTTPServer
+> from SimpleHTTPServer import SimpleHTTPRequestHandler
+> from OpenSSL import SSL
+> 
+> def verifyCallback(conn, cert, errno, depth, result):
+>     print('\'verifyCallback\' called for result ' + str(result))
+>     print('\tconn._socket: ' + str(conn._socket))
+>     return True
+> 
+> def sniCallback(conn):
+>     print('\'sniCallback\' called.')
+>     print('\tconn._socket: ' + str(conn._socket))
+>     print(type(conn))
+> 
+> class SecureHTTPServer(HTTPServer):
+>     def __init__(self, server_address, HandlerClass):
+>         BaseServer.__init__(self, server_address, HandlerClass)
+>         ctx = SSL.Context(SSL.TLSv1_2_METHOD)
+>         ctx.use_privatekey_file('serverPrivateKey.pem')
+>         ctx.use_certificate_file('serverCertificate.pem')
+>         # https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify <https://www.pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_verify>
+>         ctx.set_verify(SSL.VERIFY_PEER, verifyCallback)
+>         # https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback <https://pyopenssl.org/en/stable/api/ssl.html#OpenSSL.SSL.Context.set_tlsext_servername_callback>
+>         ctx.set_tlsext_servername_callback(sniCallback)
+>         self.socket = SSL.Connection(ctx, socket.socket(self.address_family,self.socket_type))
+>         self.server_bind()
+>         self.server_activate()
+>     
+>     def shutdown_request(self,request):
+>         request.shutdown()
+> 
+> class SecureHTTPRequestHandler(SimpleHTTPRequestHandler):
+>     def setup(self):
+>         self.connection = self.request
+>         self.rfile = socket._fileobject(self.request, "rb", self.rbufsize)
+>         self.wfile = socket._fileobject(self.request, "wb", self.wbufsize)
+>     
+>     def do_GET(self):
+>         self.send_response(200)
+>         SimpleHTTPRequestHandler.end_headers(self)
+>         self.wfile.write('<html><body>Hello World</body></html>')
+> 
+> if __name__ == '__main__':
+>     ip,port = ('0.0.0.0', 443)
+>     httpd = SecureHTTPServer((ip, port), SecureHTTPRequestHandler)
+>     httpd.serve_forever()
+> ------
+> 
+> (Please note that even though these examples are for Python2 (due to other quirks) I am aiming to implement this in Python3.)
+> 
+> Regards,
+> 
+> Arn
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com <mailto:Twisted-Python at twistedmatrix.com>
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python <https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190908/fb1b5723/attachment-0002.html>
+
+From meejah at meejah.ca  Tue Sep 10 01:03:45 2019
+From: meejah at meejah.ca (meejah)
+Date: Tue, 10 Sep 2019 11:03:45 +0400
+Subject: [Twisted-Python] txtorcon 19.1.0
+Message-ID: <86r24ozl7y.fsf@atlantis.meejah.ca>
+
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+I'm pleased to announce txtorcon 19.1.0, containing the following
+changes:
+
+ * TorControlProtocol.on_disconnect is deprecated in favour of
+   TorControlProtocol.when_disconnected
+
+ * introduce non_anonymous_mode= kwarg in txtorcon.launch()
+   enabling Tor options making Onion Services non-anonymous for the
+   server (but they use a single hop instead of three to the
+   Introduction Point so they're slightly faster).
+
+ * add an API to listen to individual circuit and stream events
+   (without subclassing anything). Can be used as decorators too.
+   See e.g. TorState.on_circuit_new()
+
+ * fixes to the CI setup to properly test Twisted versions
+
+You can download the release from PyPI or GitHub (or of
+course "pip install txtorcon"):
+
+   https://pypi.python.org/pypi/txtorcon/19.1.0
+   https://github.com/meejah/txtorcon/releases/tag/v19.1.0
+
+Releases are also available from the hidden service:
+
+   http://timaq4ygg2iegci7.onion/txtorcon-19.1.0.tar.gz
+   http://timaq4ygg2iegci7.onion/txtorcon-19.1.0.tar.gz.asc
+
+Or via a "version 3" service:
+
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-19.1.0.tar.gz
+   http://fjblvrw2jrxnhtg67qpbzi45r7ofojaoo3orzykesly2j3c2m3htapid.onion/txtorcon-19.1.0.tar.gz.asc
+
+You can verify the sha256sum of both by running the following 4 lines
+in a shell wherever you have the files downloaded:
+
+cat <<EOF | sha256sum --check
+25d8e52c3eac45bb90ff958ca7cdd7674fb3284e3a50826a58ab7b9578b15ea5  dist/txtorcon-19.1.0.tar.gz
+e93aef50f339b537ed969a4d83a704a2870658bb49cdfa95495ba5a740548d32  dist/txtorcon-19.1.0-py2.py3-none-any.whl
+EOF
+
+thanks,
+meejah
+-----BEGIN PGP SIGNATURE-----
+
+iQFFBAEBCAAvFiEEnVor1WiOy4id680/wmAoAxKAaacFAl13SBcRHG1lZWphaEBt
+ZWVqYWguY2EACgkQwmAoAxKAaad/DwgA5r1XbcoPuzw2FSoDNwJNNzDSEFBT+W7Z
+Ej0Wp27B7KuUgCp83u08DWpCbuz1iOLiYveWtKil+CrXFpmxH2M9itF4pd3U71dt
+o/PfEnPy3OxWD1cka2bnuFO3HlmCs7LOy5KndRlWBSzqDXfqnwTLqNSHB94TMoh3
+YEhyKmyo30DwLMeNdeayuJ18c24+U15kxt5+O7TPKSeNw88emizDMX3ZQFnuIUyJ
+6ybZxIwkJxXLOlO+cqnLH26eSIFqHrvILTXPvZ3ie2cwNYOgNS4IpkmVUlrF41Zq
+xQgMdR1pzLWrEVMSPOYKicAnPW/drd8urwXMq5y2/dVuUhQmhHxBxg==
+=7R7N
+-----END PGP SIGNATURE-----
+
+
+
+From hawkowl at atleastfornow.net  Tue Sep 10 09:15:35 2019
+From: hawkowl at atleastfornow.net (Amber Brown (hawkowl))
+Date: Wed, 11 Sep 2019 01:15:35 +1000
+Subject: [Twisted-Python] Twisted Release Manager In Search Of A Body Double
+ (pls hlep)
+Message-ID: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+
+Hi!
+
+I'm looking for someone to be my body double for Twisted releases, 
+taking over on alternate releases or when I'm busy (which seems to be 
+all the time???? when did I become an adult, why did I do that).
+
+Ideally this person is up for this role on an ongoing basis, with a time 
+commitment of four or so hours every alternating release (so every 2 
+months or so, hopefully). Plus, you'll need to be known by the team, 
+since you then become the trust anchor for all the binaries we publish.
+
+The release process is a bit buggy here and there, and I haven't been 
+the best at writing down workarounds/fixes for things, so also ideally 
+the first release would be a collaborative one. Plus, we need to update 
+it for the advent of built wheels, as well.
+
+If you have the time to spare, care about release management, and don't 
+mind yelling at computers for a while, drop me a (private) email 
+expressing interest and I'll get in touch.
+
+- hawkie
+
+
+
+From ant at zimage.com  Tue Sep 10 13:14:08 2019
+From: ant at zimage.com (Ant)
+Date: Tue, 10 Sep 2019 12:14:08 -0700
+Subject: [Twisted-Python] Pip's Twisted 19.7.0 package is offered to
+ upgrade my v19.2.1...
+In-Reply-To: <20190811193120.GA20640@beta.zimage.com>
+References: <20190811193120.GA20640@beta.zimage.com>
+Message-ID: <20190910191408.GA18935@beta.zimage.com>
+
+Are there any updates on this? I still see this minor issue. :(
+
+
+On Sun, Aug 11, 2019 at 12:31:20PM -0700, Ant wrote:
+> Hello.
+> 
+> I cannot figure out how to report this minor bug of a minor upgrade 
+> issue (https://github.com/twisted/twisted didn't have an issues 
+> section) that I noticed since last week:
+> 
+> $ pip list --outdated                       DEPRECATION: Python 3.4 support has been deprecated. pip 19.1 will be the last one supporting it. Please upgrade your Python as Python 3.4 won't be maintained after March 2019 (cf PEP 429).
+> Package Version Latest Type
+> ------- ------- ------ -----
+> Twisted 19.2.1  19.7.0 sdist
+> 
+> $ pip install --upgrade Twisted
+> DEPRECATION: Python 3.4 support has been deprecated. pip 19.1 will be the last one supporting it. Please upgrade your Python as Python 3.4 won't be maintained after March 2019 (cf PEP 429).
+> Collecting Twisted
+>   Using cached https://files.pythonhosted.org/packages/61/31/3855dcacd1d3b2e60c0b4ccc8e727b8cd497bd7087d327d81a9f0cbb580c/Twisted-19.7.0.tar.bz2
+>     ERROR: Complete output from command python setup.py egg_info:
+>     ERROR: Traceback (most recent call last):
+>       File "<string>", line 1, in <module>
+>       File "/tmp/pip-install-2h_su73e/Twisted/setup.py", line 20, in <module>
+>         setuptools.setup(**_setup["getSetupArgs"]())
+>       File "<string>", line 257, in getSetupArgs
+>       File "<string>", line 208, in _checkPythonVersion
+>     ImportError: Twisted on Python 3 requires Python 3.5 or later.
+>     ----------------------------------------
+> ERROR: Command "python setup.py egg_info" failed with error code 1 in /tmp/pip-install-2h_su73e/Twisted/
+> 
+> 
+> That v19.7.0 shouldn't even be offered for my outdated setups. :(
+> 
+> Thank you for reading and hopefully answering soon. :)
+-- 
+Colony is currently recovering from a nasty flu! It came early too. :(
+Note: A fixed width font (Courier, Monospace, etc.) is required to see this signature correctly.
+  /\___/\             Ant(Dude) @ philpi at earthlink.net / ant at zimage.com
+ / /\ /\ \           http://antfarm.ma.cx / http://antfarm.home.dhs.org
+| |o   o| |                                           & http://aqfl.net
+   \ _ /        Please kindly use Ant nickname & URL/link if crediting.
+    ( )
+
+
+
+From sda at fstab.net  Tue Sep 10 13:54:56 2019
+From: sda at fstab.net (Kyle Altendorf)
+Date: Tue, 10 Sep 2019 15:54:56 -0400
+Subject: [Twisted-Python] Pip's Twisted 19.7.0 package is offered to
+ upgrade my v19.2.1...
+In-Reply-To: <20190910191408.GA18935@beta.zimage.com>
+References: <20190811193120.GA20640@beta.zimage.com>
+ <20190910191408.GA18935@beta.zimage.com>
+Message-ID: <6a756d2a635e63b3b084baeb6896b92c@fstab.net>
+
+
+
+On 2019-09-10 15:14, Ant wrote:
+> Are there any updates on this? I still see this minor issue. :(
+
+Sorry, it appears I found time for a ticket and a PR...  but not an 
+email.  They have been submitted for review.
+
+Ticket: https://twistedmatrix.com/trac/ticket/9701
+PR: https://github.com/twisted/twisted/pull/1183
+
+Cheers,
+-kyle
+
+
+> On Sun, Aug 11, 2019 at 12:31:20PM -0700, Ant wrote:
+>> Hello.
+>> 
+>> I cannot figure out how to report this minor bug of a minor upgrade
+>> issue (https://github.com/twisted/twisted didn't have an issues
+>> section) that I noticed since last week:
+>> 
+>> $ pip list --outdated                       DEPRECATION: Python 3.4 
+>> support has been deprecated. pip 19.1 will be the last one supporting 
+>> it. Please upgrade your Python as Python 3.4 won't be maintained after 
+>> March 2019 (cf PEP 429).
+>> Package Version Latest Type
+>> ------- ------- ------ -----
+>> Twisted 19.2.1  19.7.0 sdist
+>> 
+>> $ pip install --upgrade Twisted
+>> DEPRECATION: Python 3.4 support has been deprecated. pip 19.1 will be 
+>> the last one supporting it. Please upgrade your Python as Python 3.4 
+>> won't be maintained after March 2019 (cf PEP 429).
+>> Collecting Twisted
+>>   Using cached 
+>> https://files.pythonhosted.org/packages/61/31/3855dcacd1d3b2e60c0b4ccc8e727b8cd497bd7087d327d81a9f0cbb580c/Twisted-19.7.0.tar.bz2
+>>     ERROR: Complete output from command python setup.py egg_info:
+>>     ERROR: Traceback (most recent call last):
+>>       File "<string>", line 1, in <module>
+>>       File "/tmp/pip-install-2h_su73e/Twisted/setup.py", line 20, in 
+>> <module>
+>>         setuptools.setup(**_setup["getSetupArgs"]())
+>>       File "<string>", line 257, in getSetupArgs
+>>       File "<string>", line 208, in _checkPythonVersion
+>>     ImportError: Twisted on Python 3 requires Python 3.5 or later.
+>>     ----------------------------------------
+>> ERROR: Command "python setup.py egg_info" failed with error code 1 in 
+>> /tmp/pip-install-2h_su73e/Twisted/
+>> 
+>> 
+>> That v19.7.0 shouldn't even be offered for my outdated setups. :(
+>> 
+>> Thank you for reading and hopefully answering soon. :)
+
+
+
+From ant at zimage.com  Tue Sep 10 14:08:00 2019
+From: ant at zimage.com (Ant)
+Date: Tue, 10 Sep 2019 13:08:00 -0700
+Subject: [Twisted-Python] Pip's Twisted 19.7.0 package is offered to
+ upgrade my v19.2.1...
+In-Reply-To: <6a756d2a635e63b3b084baeb6896b92c@fstab.net>
+References: <20190811193120.GA20640@beta.zimage.com>
+ <20190910191408.GA18935@beta.zimage.com>
+ <6a756d2a635e63b3b084baeb6896b92c@fstab.net>
+Message-ID: <20190910200800.GA23598@beta.zimage.com>
+
+On Tue, Sep 10, 2019 at 03:54:56PM -0400, Kyle Altendorf wrote:
+> 
+> Sorry, it appears I found time for a ticket and a PR...  but not an email.
+> They have been submitted for review.
+> 
+> Ticket: https://twistedmatrix.com/trac/ticket/9701
+> PR: https://github.com/twisted/twisted/pull/1183
+
+Thank you. :)
+
+
+
+From notorious.no at gmail.com  Tue Sep 10 20:25:18 2019
+From: notorious.no at gmail.com (Noman Sarker)
+Date: Tue, 10 Sep 2019 22:25:18 -0400
+Subject: [Twisted-Python] Twisted Release Manager In Search Of A Body
+ Double (pls hlep)
+In-Reply-To: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+References: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+Message-ID: <CABDBxiTRwoa3wphxopfYqYrZCcbH5+2TbUOSGznhh0BxJHAq_w@mail.gmail.com>
+
+Hi Amber
+
+I'm not super familiar with the Twisted release process but I can help if
+you can point me in the right direction. I haven't been as active as I was,
+but I answered many Stackoverflow about Twisted so I am quite familiar with
+the ecosystem. Let me know if I can help.
+
+
+On Tue, Sep 10, 2019, 11:26 AM Amber Brown (hawkowl) <
+hawkowl at atleastfornow.net> wrote:
+
+> Hi!
+>
+> I'm looking for someone to be my body double for Twisted releases,
+> taking over on alternate releases or when I'm busy (which seems to be
+> all the time???? when did I become an adult, why did I do that).
+>
+> Ideally this person is up for this role on an ongoing basis, with a time
+> commitment of four or so hours every alternating release (so every 2
+> months or so, hopefully). Plus, you'll need to be known by the team,
+> since you then become the trust anchor for all the binaries we publish.
+>
+> The release process is a bit buggy here and there, and I haven't been
+> the best at writing down workarounds/fixes for things, so also ideally
+> the first release would be a collaborative one. Plus, we need to update
+> it for the advent of built wheels, as well.
+>
+> If you have the time to spare, care about release management, and don't
+> mind yelling at computers for a while, drop me a (private) email
+> expressing interest and I'll get in touch.
+>
+> - hawkie
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190910/6d7dfc42/attachment-0002.html>
+
+From trac at twistedmatrix.com  Sun Sep 15 00:05:21 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 15 Sep 2019 06:05:21 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1568527521.23.184442149693834092@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190915/b7e9a61c/attachment-0002.html>
+
+From cristobal23 at gmail.com  Thu Sep 19 13:46:58 2019
+From: cristobal23 at gmail.com (=?UTF-8?Q?Crist=C3=B3bal_Villarroel?=)
+Date: Thu, 19 Sep 2019 12:46:58 -0700
+Subject: [Twisted-Python] Twisted Release Manager In Search Of A Body
+ Double (pls hlep)
+In-Reply-To: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+References: <46949268-e760-366a-cd80-b71da8525e0e@atleastfornow.net>
+Message-ID: <CA+C14gLi1=VgVocA6wx-jQQiQhKRC+KNW6oav9gZjsY8X634gg@mail.gmail.com>
+
+Hi,
+
+I am interested in helping out! You have done such a great job. Thank you
+so much!! I am in the GitHub org already, but I don’t know if I have access
+to the repo with the deployment details. If I recall correctly its a bunch
+of Fabric on a combination of self-hosted buildbot and some other hosted CI
+service? Let me know, how I can help. At the very least, I can contribute
+documentation.
+
+Best,
+Cristobal
+
+On Tue, Sep 10, 2019 at 8:32 AM Amber Brown (hawkowl) <
+hawkowl at atleastfornow.net> wrote:
+
+> Hi!
+>
+> I'm looking for someone to be my body double for Twisted releases,
+> taking over on alternate releases or when I'm busy (which seems to be
+> all the time???? when did I become an adult, why did I do that).
+>
+> Ideally this person is up for this role on an ongoing basis, with a time
+> commitment of four or so hours every alternating release (so every 2
+> months or so, hopefully). Plus, you'll need to be known by the team,
+> since you then become the trust anchor for all the binaries we publish.
+>
+> The release process is a bit buggy here and there, and I haven't been
+> the best at writing down workarounds/fixes for things, so also ideally
+> the first release would be a collaborative one. Plus, we need to update
+> it for the advent of built wheels, as well.
+>
+> If you have the time to spare, care about release management, and don't
+> mind yelling at computers for a while, drop me a (private) email
+> expressing interest and I'll get in touch.
+>
+> - hawkie
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190919/badbb675/attachment-0002.html>
+
+From trac at twistedmatrix.com  Sun Sep 22 00:05:33 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 22 Sep 2019 06:05:33 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1569132333.84.9066462212751257906@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190922/a3330679/attachment-0002.html>
+
+From wk80333 at gmail.com  Thu Sep 26 20:38:46 2019
+From: wk80333 at gmail.com (Waqar Khan)
+Date: Thu, 26 Sep 2019 22:38:46 -0400
+Subject: [Twisted-Python] In memory cache in twisted
+Message-ID: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+
+Hi,
+  What's a good way to use a simple dictionary as a cache in twisted
+framework?
+Basically, I have this callback chain where I ultimately make a rest call
+(in non-blocking way using treq) to fetch some data. But before I make the
+call, I am using a dictionary to see if the value is available or not.
+But, I have noticed that the event loop gets pretty busy(sometimes, things
+get stuck and twisted server stops) as soon as I add this logic.. Which is
+pretty much
+
+@defer.inlinecallbacks
+def fetch(key):
+      if key in cache:
+               return cache[key]
+      # else call back to treq to fetch value
+       cache[key] = value
+       return value
+
+This dict can grow to around 50k.. What's a good way to solve this issue?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190926/7b046269/attachment-0002.html>
+
+From dynamicgl at gmail.com  Thu Sep 26 20:45:14 2019
+From: dynamicgl at gmail.com (Gelin Yan)
+Date: Fri, 27 Sep 2019 10:45:14 +0800
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+Message-ID: <CABkOF6Q0HvpxuhMNz-GpX25P8j1WdQ+adgqvifFF1wMWvWxUNg@mail.gmail.com>
+
+Hi
+
+    I don't see any reason to use defer.inlineCallbacks in your snippet of
+codes.
+
+Regards
+
+gelin yan
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190927/c99e3b96/attachment-0002.html>
+
+From wk80333 at gmail.com  Thu Sep 26 20:57:18 2019
+From: wk80333 at gmail.com (Waqar Khan)
+Date: Thu, 26 Sep 2019 22:57:18 -0400
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CABkOF6Q0HvpxuhMNz-GpX25P8j1WdQ+adgqvifFF1wMWvWxUNg@mail.gmail.com>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <CABkOF6Q0HvpxuhMNz-GpX25P8j1WdQ+adgqvifFF1wMWvWxUNg@mail.gmail.com>
+Message-ID: <CAJuJkHN+TjhjMMs5gzC3EUxFDT+oG0avEjqs_s79CbW1CK_N4g@mail.gmail.com>
+
+Good point.
+Thanks for responding.
+But, is the above way of using dictionary as cache correct? Or is there a
+"deffered" way of doing this?
+All I want is an inmemory cache that is compatible with this async
+paradigm?
+
+On Thu, Sep 26, 2019 at 10:45 PM Gelin Yan <dynamicgl at gmail.com> wrote:
+
+> Hi
+>
+>     I don't see any reason to use defer.inlineCallbacks in your snippet of
+> codes.
+>
+> Regards
+>
+> gelin yan
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190926/5da1f406/attachment-0002.html>
+
+From maarten at treewalker.org  Thu Sep 26 21:39:59 2019
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Fri, 27 Sep 2019 05:39:59 +0200
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+Message-ID: <11135650.vblT0CJW4X@hyperion>
+
+On Friday, 27 September 2019 04:38:46 CEST Waqar Khan wrote:
+> Hi,
+>   What's a good way to use a simple dictionary as a cache in twisted
+> framework?
+> Basically, I have this callback chain where I ultimately make a rest
+> call (in non-blocking way using treq) to fetch some data. But before
+> I make the call, I am using a dictionary to see if the value is
+> available or not. But, I have noticed that the event loop gets pretty
+> busy(sometimes, things get stuck and twisted server stops) as soon as
+> I add this logic.. Which is pretty much
+> 
+> @defer.inlinecallbacks
+> def fetch(key):
+>       if key in cache:
+>                return cache[key]
+>       # else call back to treq to fetch value
+>        cache[key] = value
+>        return value
+> 
+> This dict can grow to around 50k.. What's a good way to solve this
+> issue?
+
+If it gets stuck, then the cause for that is probably in the part of the 
+code you omitted. So it would help to elaborate on how the value is 
+fetched exactly.
+
+I can see two other problems with this caching mechanism though:
+
+1. Items are never removed from the cache, so unless there is a limit to 
+the number of different keys that can be used, the cache can grow 
+indefinitely. You might want something like an LRU cache rather than a 
+plain dictionary.
+
+https://docs.python.org/3/library/functools.html#functools.lru_cache
+
+2. If a lot of clients are requesting the same thing, you won't see any 
+benefits from caching until the first request completes. So you could 
+get a pattern like this:
+
+T=0: key A requested, A is not cached, start fetch #1 of A
+T=1: key A requested, A is not cached, start fetch #2 of A
+T=2: key A requested, A is not cached, start fetch #3 of A
+T=3: key A requested, A is not cached, start fetch #4 of A
+T=4: key A requested, A is not cached, start fetch #5 of A
+T=5: fetch #1 of A completes and is added to the cache
+T=6: key A requested, A is cached, return value immediately
+
+In this example, the value for A is fetched 5 times despite the caching  
+mechanism. If the fetching takes a long time compared to the rate at 
+which requests are coming in, this effect gets worse at a quadratic 
+rate: the total time spent fetching is the number of requests that come 
+in during the fetching of the first request times the duration of the 
+fetch.
+
+To avoid this, you could put a Deferred for the fetch operation in the 
+cache or in a separate dictionary and if you get another request for the 
+same key before the fetch completes, return that Deferred instead of 
+starting another fetch.
+
+Bye,
+		Maarten
+
+
+
+
+
+From wk80333 at gmail.com  Thu Sep 26 21:48:35 2019
+From: wk80333 at gmail.com (Waqar Khan)
+Date: Thu, 26 Sep 2019 23:48:35 -0400
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <11135650.vblT0CJW4X@hyperion>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <11135650.vblT0CJW4X@hyperion>
+Message-ID: <CAJuJkHNWTppr4rBH8utxKDqiNybPz0vRXyLk_9FuYDOkRAPMPg@mail.gmail.com>
+
+Hi Maarten,
+   I think you have hit the problem in the head. I do think this is
+feasible as I have observed that as size of cache increases, things do get
+better which might support your theory.
+
+Is there a simple example you can add on "put a Deferred for the fetch
+operation ". I am really just getting started with twisted.
+Thanks for all the help.
+
+
+On Thu, Sep 26, 2019 at 11:40 PM Maarten ter Huurne <maarten at treewalker.org>
+wrote:
+
+> On Friday, 27 September 2019 04:38:46 CEST Waqar Khan wrote:
+> > Hi,
+> >   What's a good way to use a simple dictionary as a cache in twisted
+> > framework?
+> > Basically, I have this callback chain where I ultimately make a rest
+> > call (in non-blocking way using treq) to fetch some data. But before
+> > I make the call, I am using a dictionary to see if the value is
+> > available or not. But, I have noticed that the event loop gets pretty
+> > busy(sometimes, things get stuck and twisted server stops) as soon as
+> > I add this logic.. Which is pretty much
+> >
+> > @defer.inlinecallbacks
+> > def fetch(key):
+> >       if key in cache:
+> >                return cache[key]
+> >       # else call back to treq to fetch value
+> >        cache[key] = value
+> >        return value
+> >
+> > This dict can grow to around 50k.. What's a good way to solve this
+> > issue?
+>
+> If it gets stuck, then the cause for that is probably in the part of the
+> code you omitted. So it would help to elaborate on how the value is
+> fetched exactly.
+>
+> I can see two other problems with this caching mechanism though:
+>
+> 1. Items are never removed from the cache, so unless there is a limit to
+> the number of different keys that can be used, the cache can grow
+> indefinitely. You might want something like an LRU cache rather than a
+> plain dictionary.
+>
+> https://docs.python.org/3/library/functools.html#functools.lru_cache
+>
+> 2. If a lot of clients are requesting the same thing, you won't see any
+> benefits from caching until the first request completes. So you could
+> get a pattern like this:
+>
+> T=0: key A requested, A is not cached, start fetch #1 of A
+> T=1: key A requested, A is not cached, start fetch #2 of A
+> T=2: key A requested, A is not cached, start fetch #3 of A
+> T=3: key A requested, A is not cached, start fetch #4 of A
+> T=4: key A requested, A is not cached, start fetch #5 of A
+> T=5: fetch #1 of A completes and is added to the cache
+> T=6: key A requested, A is cached, return value immediately
+>
+> In this example, the value for A is fetched 5 times despite the caching
+> mechanism. If the fetching takes a long time compared to the rate at
+> which requests are coming in, this effect gets worse at a quadratic
+> rate: the total time spent fetching is the number of requests that come
+> in during the fetching of the first request times the duration of the
+> fetch.
+>
+> To avoid this, you could put a Deferred for the fetch operation in the
+> cache or in a separate dictionary and if you get another request for the
+> same key before the fetch completes, return that Deferred instead of
+> starting another fetch.
+>
+> Bye,
+>                 Maarten
+>
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190926/295541ed/attachment-0002.html>
+
+From maarten at treewalker.org  Thu Sep 26 21:59:30 2019
+From: maarten at treewalker.org (Maarten ter Huurne)
+Date: Fri, 27 Sep 2019 05:59:30 +0200
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CAJuJkHNWTppr4rBH8utxKDqiNybPz0vRXyLk_9FuYDOkRAPMPg@mail.gmail.com>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <11135650.vblT0CJW4X@hyperion>
+ <CAJuJkHNWTppr4rBH8utxKDqiNybPz0vRXyLk_9FuYDOkRAPMPg@mail.gmail.com>
+Message-ID: <2367841.1YWT7QbvYH@hyperion>
+
+On Friday, 27 September 2019 05:48:35 CEST Waqar Khan wrote:
+> Hi Maarten,
+>    I think you have hit the problem in the head. I do think this is
+> feasible as I have observed that as size of cache increases, things do
+> get better which might support your theory.
+> 
+> Is there a simple example you can add on "put a Deferred for the fetch
+> operation ". I am really just getting started with twisted.
+> Thanks for all the help.
+
+Unfortunately I don't think I have any code lying around that implements 
+this kind of cache.
+
+Bye,
+		Maarten
+
+
+
+
+
+From ilyaskriblovsky at gmail.com  Fri Sep 27 00:04:11 2019
+From: ilyaskriblovsky at gmail.com (Ilya Skriblovsky)
+Date: Fri, 27 Sep 2019 09:04:11 +0300
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <2367841.1YWT7QbvYH@hyperion>
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <11135650.vblT0CJW4X@hyperion>
+ <CAJuJkHNWTppr4rBH8utxKDqiNybPz0vRXyLk_9FuYDOkRAPMPg@mail.gmail.com>
+ <2367841.1YWT7QbvYH@hyperion>
+Message-ID: <CAOG7vkwyrV4ML-9u52zxu_f1u95v30X6D6mcpnxWHs9dYobBpQ@mail.gmail.com>
+
+Hi all,
+
+Here is async in-memory cache that I've implemented for one of my projects:
+https://gist.github.com/IlyaSkriblovsky/5aba53b661acd49b65efeb4ce41a8b52
+
+It properly handles problem #2 described by Maarten. But it doesn't
+bother with eviction because it wasn't needed at the time of writing
+(because key space was limited).
+
+Usage example:
+
+    @defer.inlineCallbacks
+    def load_content(url: str):
+        # does some long-running async task such as loading url content
+
+    @defer.inlineCallbacks
+    def main():
+        # DeferredCache receives loader function as an argument
+        # Loader function must return Deferred
+        cache = DeferredCache(load_content)
+
+        # this will actually download content
+        page1 = yield cache.get('http://example.com')
+        # this will use cached one (note that this get() also returns
+Deferred, but that
+        # Deferred will be already-succeeded, so `yield` will return
+the content immediately)
+        page2 = yield cache.get('http://example.com')
+
+        # illustration of problem #2 described by Maarten
+        # note there is no yield here, we are running these to get()s
+simultaneously
+        deferred_page1 = cache.get('https://www.nasa.gov/')
+        deferred_page2 = cache.get('https://www.nasa.gov/')
+        # actually waiting for results
+        page1, page2 = yield deferred.gatherResults([deferred_page1,
+deferred_page2])
+        # load_content() will be called only once with
+'https://www.nasa.gov/' by this point
+
+-- Ilya
+
+пт, 27 сент. 2019 г. в 06:59, Maarten ter Huurne <maarten at treewalker.org>:
+>
+> On Friday, 27 September 2019 05:48:35 CEST Waqar Khan wrote:
+> > Hi Maarten,
+> >    I think you have hit the problem in the head. I do think this is
+> > feasible as I have observed that as size of cache increases, things do
+> > get better which might support your theory.
+> >
+> > Is there a simple example you can add on "put a Deferred for the fetch
+> > operation ". I am really just getting started with twisted.
+> > Thanks for all the help.
+>
+> Unfortunately I don't think I have any code lying around that implements
+> this kind of cache.
+>
+> Bye,
+>                 Maarten
+>
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+
+
+
+From meejah at meejah.ca  Fri Sep 27 08:56:22 2019
+From: meejah at meejah.ca (meejah)
+Date: Fri, 27 Sep 2019 18:56:22 +0400
+Subject: [Twisted-Python] In memory cache in twisted
+In-Reply-To: <CAJuJkHN+TjhjMMs5gzC3EUxFDT+oG0avEjqs_s79CbW1CK_N4g@mail.gmail.com>
+ (Waqar Khan's message of "Thu, 26 Sep 2019 22:57:18 -0400")
+References: <CAJuJkHPF7RMbShtxJwg_Z4t+S0eEJWgy6FWOb0hhyae0K-ic=A@mail.gmail.com>
+ <CABkOF6Q0HvpxuhMNz-GpX25P8j1WdQ+adgqvifFF1wMWvWxUNg@mail.gmail.com>
+ <CAJuJkHN+TjhjMMs5gzC3EUxFDT+oG0avEjqs_s79CbW1CK_N4g@mail.gmail.com>
+Message-ID: <86y2y9wzxl.fsf@atlantis.meejah.ca>
+
+Waqar Khan <wk80333 at gmail.com> writes:
+
+> But, is the above way of using dictionary as cache correct? Or is
+> there a "deffered" way of doing this?  All I want is an inmemory cache
+> that is compatible with this async paradigm?
+
+Yes, it is fine to use a single dict as a cache. Twisted is
+single-threaded an so only one callback is running at a time. There's no
+need to lock etc.
+
+(Or, is there another reason you need to cache to "be async"? Like maybe
+it's using memcached or so?)
+
+-- 
+meejah
+
+
+
+From trac at twistedmatrix.com  Sun Sep 29 00:05:19 2019
+From: trac at twistedmatrix.com (trac at twistedmatrix.com)
+Date: Sun, 29 Sep 2019 06:05:19 -0000
+Subject: [Twisted-Python] Weekly Bug Summary
+Message-ID: 1569737119.86.2854566160479325481@twistedmatrix.com
+
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20190929/fc357f2e/attachment-0002.html>
+

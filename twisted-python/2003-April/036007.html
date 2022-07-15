@@ -1,0 +1,167 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Patch for flavors.py?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Patch%20for%20flavors.py%3F&In-Reply-To=%3CPine.LNX.4.44.0304081118030.12962-100000%40localhost.localdomain%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="036016.html">
+   <LINK REL="Next"  HREF="036038.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Patch for flavors.py?</H1>
+    <B>Jasper Phillips</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Patch%20for%20flavors.py%3F&In-Reply-To=%3CPine.LNX.4.44.0304081118030.12962-100000%40localhost.localdomain%3E"
+       TITLE="[Twisted-Python] Patch for flavors.py?">jasper at peak.org
+       </A><BR>
+    <I>Tue Apr  8 13:32:11 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="036016.html">[Twisted-Python] Resource bug?
+</A></li>
+        <LI>Next message (by thread): <A HREF="036038.html">[Twisted-Python] Patch for flavors.py?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36007">[ date ]</a>
+              <a href="thread.html#36007">[ thread ]</a>
+              <a href="subject.html#36007">[ subject ]</a>
+              <a href="author.html#36007">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+I was talking with Kevin Turner at the pub last night after the &quot;Porpig&quot;
+meeting, and he mentioned having the same problem with circular references I
+was having, so I offered to post the klu... err, patch I had for the problem.
+
+
+In short, it checks for _Dereference's (corresponding to dictionaries not yet
+available) that are destined to be (erroneously) copied into the __dict__ of
+an object that is then returned.  When one is found, it is returned instead
+without a containing object, and a method object is scheduled to be run
+via postUnjelly.
+
+Later on (in crefutil.py), after the _Derefence has been magically replaced
+by it's corresponding dictionary, the dictionary is taken and stored in
+the __dict__ of a newly created object.  Even later, the postUnjelly
+scheduled earlier is called, which sets the __class__ of the manually
+created object.
+
+
+This is a pretty hideous fix!  But it is minimal, and I think unlikely to
+have side effects.  Then again, I do not have a broad understanding of
+twisted, and haven't tested it extensively...  Clearly what newjelly.py is
+aiming for is superior, and so I haven't been inclined to invest any further
+effort.
+
+The cvs -u for the two files affected follows.  Use them as you wish, and
+critique is always welcome.
+
+- -Jasper
+
+
+
+Index: flavors.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/spread/flavors.py,v
+retrieving revision 1.28
+diff -u -r1.28 flavors.py
+- --- flavors.py  17 Feb 2003 20:48:30 -0000      1.28
++++ flavors.py  8 Apr 2003 18:16:27 -0000
+@@ -388,9 +388,26 @@
+     def unjellyFor(self, unjellier, jellyList):
+         if unjellier.invoker is None:
+             return setInstanceState(self, unjellier, jellyList)
+- -        self.setCopyableState(unjellier.unjelly(jellyList[1]))
+- -        return self
++        state = unjellier.unjelly( jellyList[1] )
+ 
++        from twisted.persisted.crefutil import _Dereference
++        if isinstance( state, _Dereference ):
++            # In the caller (jelly._Unjellier.unjelly()),
++            # presence of state.postUnjelly triggers a call to self.postUnjelly
++            # This seems like a bug...
++            state.postUnjelly = 1
++            self.postUnjelly  = ClassReset( state, self.__class__ )
++            return state
++        else:
++            self.setCopyableState( state )
++            return self
++        
++class ClassReset( object ):
++    def __init__( self, obj, klass ):
++        self.obj   = obj
++        self.klass = klass
++    def __call__( self ):
++        self.obj.__class__ = self.klass
+ 
+ 
+ class RemoteCache(RemoteCopy, Serializable):
+
+Index: crefutil.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/persisted/crefutil.py,v
+retrieving revision 1.11
+diff -u -r1.11 crefutil.py
+- --- crefutil.py 31 Mar 2003 00:28:34 -0000      1.11
++++ crefutil.py 8 Apr 2003 19:18:06 -0000
+@@ -114,6 +114,17 @@
+         NotKnown.__init__(self)
+         self.id = id
+ 
++    def resolveDependants(self, newObject):
++        self.resolved = 1
++        self.resolvedObject = newObject
++        for mut, key in self.dependants:
++            inst           = mut.value
++            inst.__dict__  = newObject
++            mut[key]       = inst
++
++            if isinstance(newObject, NotKnown):
++                newObject.addDependant(mut, key)
++
+ 
+ from twisted.internet.defer import Deferred
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.0.6 (GNU/Linux)
+Comment: For info see <A HREF="http://www.gnupg.org">http://www.gnupg.org</A>
+
+iD8DBQE+kyPC8EpjZ7/X9bIRAsxZAKDJZnJemKCtBFnhU+i7uRsLXLRCjwCg9XHn
+aIviUjrRqf/KAzbJq7x708k=
+=Cqoo
+-----END PGP SIGNATURE-----
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="036016.html">[Twisted-Python] Resource bug?
+</A></li>
+	<LI>Next message (by thread): <A HREF="036038.html">[Twisted-Python] Patch for flavors.py?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36007">[ date ]</a>
+              <a href="thread.html#36007">[ thread ]</a>
+              <a href="subject.html#36007">[ subject ]</a>
+              <a href="author.html#36007">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

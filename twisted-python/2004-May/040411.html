@@ -1,0 +1,194 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Writing a Jabber client
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Writing%20a%20Jabber%20client&In-Reply-To=%3C40B21051.2050703%40student.tue.nl%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="040431.html">
+   <LINK REL="Next"  HREF="040414.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Writing a Jabber client</H1>
+    <B>E.A.M. Huijbers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Writing%20a%20Jabber%20client&In-Reply-To=%3C40B21051.2050703%40student.tue.nl%3E"
+       TITLE="[Twisted-Python] Writing a Jabber client">E.A.M.Huijbers at student.tue.nl
+       </A><BR>
+    <I>Mon May 24 09:10:09 MDT 2004</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="040431.html">[Twisted-Python] Re: twisted enterprise versus other OR tools
+</A></li>
+        <LI>Next message (by thread): <A HREF="040414.html">[Twisted-Python] Writing a Jabber client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#40411">[ date ]</a>
+              <a href="thread.html#40411">[ thread ]</a>
+              <a href="subject.html#40411">[ subject ]</a>
+              <a href="author.html#40411">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi all,
+
+I'm having trouble writing a Jabber client with Twisted. I came across a 
+simple sample[0], and tried to build out from it, but for some reason 
+it's barely working.
+
+When I run the application in the attached script, the logon goes fine, 
+and I can receive messages sent to the account, but it never seems to 
+receive subscription requests. When I ran it on an account that already 
+had some items on the contact list, I did receive &lt;presence&gt; messages to 
+indcate that a user changed status, but I don't receive &lt;presence 
+type=&quot;subscribe&quot;&gt; messages...
+
+Ultimately, I tacked a &quot;/*&quot; handler on to the code to see if I was 
+receiving any packets at all, but the only thing that seems to trigger 
+anything are messages.
+
+This is very frustrating for me. Is it a problem with the code, or am I 
+missing something in the Jabber protocol?
+
+Any help would be greatly appreciated.
+
+- Rico
+
+P.S: Please don't mind the code, I know it's a bit (a lot) hackish right 
+now, but my first step is to get it running. I'll make it beautiful 
+afterwards ;) .
+
+[0] <A HREF="http://randomthoughts.vandorp.ca/WK/blog/706?t=item">http://randomthoughts.vandorp.ca/WK/blog/706?t=item</A>
+
+##### code starts here #####
+
+from twisted.protocols.jabber import client, jid
+from twisted.protocols import xmlstream
+from twisted.xish import domish
+
+from twisted.internet import reactor
+
+name = 'Foo'
+server='bar.com'
+resource = 'PythonBot'
+password = 'foobar'
+me = '%s@%s/%s' % (name, server, resource)
+
+thexmlstream = None
+tryandregister = 1
+
+def initOnline(xmlstream):
+    global factory
+    print 'Initializing...'
+    xmlstream.addObserver('/message', gotMessage)
+    xmlstream.addObserver('/presence', gotPresence)
+    xmlstream.addObserver('/iq', gotIq)
+    xmlstream.addObserver('/*', gotSomething)
+
+def authd(xmlstream):
+    thexmlstream = xmlstream
+    print &quot;we've authd!&quot;
+    print repr(xmlstream)
+
+    #need to send presence so clients know we're
+    #actually online
+    presence = domish.Element(('jabber:client', 'presence'))
+    presence.addElement('status').addContent('Online')
+    xmlstream.send(presence)
+
+    initOnline(xmlstream)
+
+def gotMessage(el):
+    print 'Got message: %s' % str(el.attributes)
+
+def gotSomething(el):
+    print 'Got something: %s -&gt; %s' % (el.name, str(el.attributes))
+
+def gotIq(el):
+    print 'Got IQ: %s' % str(el.attributes)
+
+def gotPresence(el):
+    print 'We got a presence message!'
+    print repr(el.attributes)
+    try:
+        t = el.attributes['type']
+        if t == 'subscribe':
+            # Grant every subscription request
+            xmlstream.send(domish.Element(('jabber:client', 'presence'), 
+attribs={
+                'from': me,
+                'to':el.attributes['from'],
+                'type':'subscribed'
+            }))
+    except KeyError:
+        # Big fat ignore
+        pass
+
+def invaliduserEvent(xmlstream):
+    print 'Invalid user!'
+    global tryandregister
+    if tryandregister:
+        tryandregister = 0
+        print 'Attempting to register...'
+        global factory
+        factory.authenticator.registerAccount(name, password)
+    else:
+        global reactor
+        reactor.stop()
+
+def authfailedEvent(xmlstream):
+    global reactor
+    print 'Auth failed!'
+    reactor.stop()
+
+def registerfailedEvent(xmlstream):
+    global reactor
+    print 'Register failed!'
+    reactor.stop()
+
+myJid = jid.JID(me)
+secret = password
+factory = client.basicClientFactory(myJid,secret)
+
+# Register authentication callbacks
+factory.addBootstrap(xmlstream.STREAM_AUTHD_EVENT, authd)
+factory.addBootstrap(client.BasicAuthenticator.INVALID_USER_EVENT, 
+invaliduserEvent)
+factory.addBootstrap(client.BasicAuthenticator.AUTH_FAILED_EVENT, 
+authfailedEvent)
+factory.addBootstrap(client.BasicAuthenticator.REGISTER_FAILED_EVENT, 
+registerfailedEvent)
+
+# Go!
+reactor.connectTCP(server, 5222, factory)
+reactor.run()
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="040431.html">[Twisted-Python] Re: twisted enterprise versus other OR tools
+</A></li>
+	<LI>Next message (by thread): <A HREF="040414.html">[Twisted-Python] Writing a Jabber client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#40411">[ date ]</a>
+              <a href="thread.html#40411">[ thread ]</a>
+              <a href="subject.html#40411">[ subject ]</a>
+              <a href="author.html#40411">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

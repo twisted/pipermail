@@ -1,0 +1,195 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] containership for row objects and networked observation
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20containership%20for%20row%20objects%20and%20networked%20observation&In-Reply-To=%3CPGEKIMFOMBFCPBEILDBLEEAHCBAA.sean%40ninjaneering.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="034341.html">
+   <LINK REL="Next"  HREF="034343.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] containership for row objects and networked observation</H1>
+    <B>Sean Riley</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20containership%20for%20row%20objects%20and%20networked%20observation&In-Reply-To=%3CPGEKIMFOMBFCPBEILDBLEEAHCBAA.sean%40ninjaneering.com%3E"
+       TITLE="[Twisted-Python] containership for row objects and networked observation">sean at ninjaneering.com
+       </A><BR>
+    <I>Fri Oct  4 12:49:23 MDT 2002</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="034341.html">[Twisted-Python] woven.widgets
+</A></li>
+        <LI>Next message (by thread): <A HREF="034343.html">[Twisted-Python] ANN: CVSToys 0.9.6.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#34342">[ date ]</a>
+              <a href="thread.html#34342">[ thread ]</a>
+              <a href="subject.html#34342">[ subject ]</a>
+              <a href="author.html#34342">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>ramblings about formalizing containment for rowObjects and networked
+observation...  this paraphases some of my existing application code that
+seems like it could be generalized.
+
+if we know that childRow has a relationship to parentRow where
+childRow.parent_id is an p_id of a parentRow, when a child is added to
+parent with:
+
+parentRow.addToContainer(childRow)
+
+this could autmatically set the parent_id of the childRow to the p_id of the
+parentRow and add the child to a list of children for the parent. This would
+make the childRow dirty so that it will be updated to the database.
+
+this assumes that RowObjects have a childRows list to add children to.
+
+should this be part of Enterprise Row Objects, or some other part of
+twisted? does it belong in twisted at all? imagine this with error
+checking...
+
+
+class Container:
+	def __init__(self):
+		self.container = []
+
+	def addToContainer(self, obj):
+		&quot;&quot;&quot;add an object to the container
+		&quot;&quot;&quot;
+		self.container.append(obj)
+
+	def removeFromContainer(self, obj):
+		&quot;&quot;&quot;remove an object from the container
+		&quot;&quot;&quot;
+		self.container.remove(obj)
+
+	def getContainedOfType(self, classType):
+		&quot;&quot;&quot;returns all contained objects of the specified type
+		&quot;&quot;&quot;
+		out = []
+		for item in self.container:
+		if isinstance(item, classType) or
+			issubclass(item.__class__, classType):
+			out.append(item)
+		return out
+
+I have a containment system that is similar to this but adds observation of
+containership:
+
+class ObservableContainer(Container):
+	def __init__(self):
+		Container.__init__(self)
+		self.observers = []
+
+	def addToContainer(self, obj):
+		&quot;&quot;&quot;add an object to the container
+		&quot;&quot;&quot;
+		Container.addToContainer(self, obj)
+		for o in self.observers:
+			o.callRemote('addToContainer', obj)
+
+	def removeFromContainer(self, obj):
+		&quot;&quot;&quot;remove an object from the container
+		&quot;&quot;&quot;
+		Container.removeFromContainer(self, obj)
+		for o in self.observers:
+			o.callRemote('removeFromContainer', obj)
+
+	def observe_addToContainer(self, obj):
+		self.addToContainer(obj)
+
+	def observe_removeFromContainer(self, obj):
+		self.removeFromContainer(obj)
+
+
+Then... making RowObjects observableContainers:
+
+class RowObject(ObservableContainer):
+
+	def addToContainer(self, row):
+		&quot;&quot;&quot;assumes a rowObject is being added...
+		&quot;&quot;&quot;
+		## TODO: set the foreign key columns on
+		##       the row being added
+		ObservableContainer.addToContainer(row)
+
+this is a powerful combination of observation and containment. it can be
+extended with client side UI objects that are observers of the client-side
+rowObjects so that changes can be propogated automatically across the
+network and into the UI.
+
+class ClientObject(ObservableContainer):
+	def addToContainer(self, obj):
+ 		for o in self.observers:
+			## Dirty UI observers
+		Container.addToContiner(self, obj)
+
+	def removeFromContainer(self, obj):
+		for o in self.observers:
+			## Dirty UI observers
+		Container.removeFromContainer(self, obj)
+
+
+so... when a child row is added to a parent row object on the server, the
+observing client object is notified, and the observing UI element is dirtied
+so that the UI can be redrawn with the new object being visible.
+additionaly, the child row object has it's foreign key attributes updated
+automatically and is ready to be updated to the database.
+
+if you add the capability for RowObject derived classes to be pb.Cacheables
+as well, changes other than containment then use a very similar mechanism:
+
+class MyRoomClass(RowObject, pb.Cachable):
+
+	def setColor(self, color):
+		self.color = color
+		for o in self.observers:
+			o.callRemote(&quot;setColor&quot;, color)
+
+class RemoteRoom(ClientObject):
+	def observe_setColor(self, color):
+		self.color = color
+		for o in self.observers:
+			### dirty UI observers
+
+this starts become to a generalized application framework that could be
+applied to many types of applications.. chat servers that contain chat
+groups that contain chat members, virtual worlds with world areas that
+contain buildings that contain chests that contain items...
+
+
+i guess the question is.. is this type containment/observation type
+functionality general enough (and useful enough) to be part of twisted?
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="034341.html">[Twisted-Python] woven.widgets
+</A></li>
+	<LI>Next message (by thread): <A HREF="034343.html">[Twisted-Python] ANN: CVSToys 0.9.6.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#34342">[ date ]</a>
+              <a href="thread.html#34342">[ thread ]</a>
+              <a href="subject.html#34342">[ subject ]</a>
+              <a href="author.html#34342">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

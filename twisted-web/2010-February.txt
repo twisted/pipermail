@@ -1,0 +1,904 @@
+From cristiano.paris at gmail.com  Tue Feb  2 16:58:45 2010
+From: cristiano.paris at gmail.com (Cristiano Paris)
+Date: Tue, 2 Feb 2010 22:58:45 +0100
+Subject: [Twisted-web] Single-threaded WSGIResource
+Message-ID: <afc62ce21002021358w15f32b2ekb8e19f1f3fa0b77@mail.gmail.com>
+
+Hi,
+
+I'm playing with Django (1.1.1) under Twisted Web (9.0.0) through the
+WSGI interface. When using my web app under the test server with
+sqlite3 as the DBMS, I'm having troubles since in-memory sqlite3 DBs
+can't be shared among threads.
+
+The solution I came up with was to run the WSGIResource in the main
+thread. In order to do so, I subclassed the WSGIResource as follows:
+
+-----
+from twisted.web.wsgi import WSGIResource,_WSGIResponse
+from twisted.web.server import NOT_DONE_YET
+
+class MainThreadWSGIResource(WSGIResource):
+  def __init__(self,reactor,app):
+    WSGIResource.__init__(self,reactor,None,app)
+
+  def render(self,request):
+    response = _WSGIResponse(
+        self._reactor, self._threadpool, self._application, request)
+    response.run()
+    return NOT_DONE_YET
+-----
+
+Basically, I replaced "response.start()" in the original render()
+method with the "response.run()", bypassing the callInThread() call in
+the _WSGIResponse's start() method. Even if it works, I hate importing
+_WSGIResponse and replicating the code of the original WSGIResource's
+render() code. Anyhow, I can't think of a better/more elegant solution
+with the current implementation.
+
+I'll appreciate any comment on this.
+
+Thank you.
+
+Cristiano
+
+
+From exarkun at twistedmatrix.com  Tue Feb  2 17:13:07 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Tue, 02 Feb 2010 22:13:07 -0000
+Subject: [Twisted-web] Single-threaded WSGIResource
+In-Reply-To: <afc62ce21002021358w15f32b2ekb8e19f1f3fa0b77@mail.gmail.com>
+References: <afc62ce21002021358w15f32b2ekb8e19f1f3fa0b77@mail.gmail.com>
+Message-ID: <20100202221307.26099.1246970293.divmod.xquotient.88@localhost.localdomain>
+
+On 09:58 pm, cristiano.paris at gmail.com wrote:
+>Hi,
+>
+>I'm playing with Django (1.1.1) under Twisted Web (9.0.0) through the
+>WSGI interface. When using my web app under the test server with
+>sqlite3 as the DBMS, I'm having troubles since in-memory sqlite3 DBs
+>can't be shared among threads.
+>
+>The solution I came up with was to run the WSGIResource in the main
+>thread. In order to do so, I subclassed the WSGIResource as follows:
+
+Can you use a thread-local SQLite3 connection, or is that logic buried 
+too deeply in some other code?
+
+Another option (I think - untested) would be to give WSGIResource a 
+different implementation of the thread pool interface:
+
+class NotThreadPool:
+    def callInThread(self, f, *a, **kw):
+        f(*a, **kw)
+
+Jean-Paul
+
+
+From cristiano.paris at gmail.com  Wed Feb  3 02:56:38 2010
+From: cristiano.paris at gmail.com (Cristiano Paris)
+Date: Wed, 3 Feb 2010 08:56:38 +0100
+Subject: [Twisted-web] Single-threaded WSGIResource
+In-Reply-To: <20100202221307.26099.1246970293.divmod.xquotient.88@localhost.localdomain>
+References: <afc62ce21002021358w15f32b2ekb8e19f1f3fa0b77@mail.gmail.com> 
+	<20100202221307.26099.1246970293.divmod.xquotient.88@localhost.localdomain>
+Message-ID: <afc62ce21002022356q4f19e00ak8055ced79b13037@mail.gmail.com>
+
+On Tue, Feb 2, 2010 at 11:13 PM,  <exarkun at twistedmatrix.com> wrote:
+> ...
+> Can you use a thread-local SQLite3 connection, or is that logic buried
+> too deeply in some other code?
+
+It is, so this is not an option.
+
+> Another option (I think - untested) would be to give WSGIResource a
+> different implementation of the thread pool interface:
+>
+> class NotThreadPool:
+> ? ?def callInThread(self, f, *a, **kw):
+> ? ? ? ?f(*a, **kw)
+
+Well, that would work too but I think it isn't more elegant than my
+solution yet being shorter, as you still have to know how the
+_WSGIRequest's code works.
+
+A better option would be to delegate the threading strategy to
+subclasses of a generic "adapter" class which:
+
+1 - Turns a Twisted Web request to a WSGI environment upon creation
+(i.e. in the __init__ method), adapts the input/output/error streams
+and so on.
+2 - Let the class user start the WSGI application, whatever this means
+(start a thread or passing control straight to 3).
+3 - Calls the WSGI application after starting to get the output from it.
+4 - Writes the output the client.
+
+The adapter class provides 1 and 3. Since 2 and 4 deal with the
+threading/non threading strategy, they wouldn't be directly
+implemented by the adapter class: they are implemented in subclasses
+providing the wanted threading strategy.
+
+My two cents.
+
+Cristiano
+
+
+From exarkun at twistedmatrix.com  Wed Feb  3 08:21:41 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Wed, 03 Feb 2010 13:21:41 -0000
+Subject: [Twisted-web] Single-threaded WSGIResource
+In-Reply-To: <afc62ce21002022356q4f19e00ak8055ced79b13037@mail.gmail.com>
+References: <afc62ce21002021358w15f32b2ekb8e19f1f3fa0b77@mail.gmail.com>
+	<20100202221307.26099.1246970293.divmod.xquotient.88@localhost.localdomain>
+	<afc62ce21002022356q4f19e00ak8055ced79b13037@mail.gmail.com>
+Message-ID: <20100203132141.26099.553361689.divmod.xquotient.104@localhost.localdomain>
+
+On 07:56 am, cristiano.paris at gmail.com wrote:
+>On Tue, Feb 2, 2010 at 11:13 PM,  <exarkun at twistedmatrix.com> wrote:
+>>...
+>>Can you use a thread-local SQLite3 connection, or is that logic buried
+>>too deeply in some other code?
+>
+>It is, so this is not an option.
+>>Another option (I think - untested) would be to give WSGIResource a
+>>different implementation of the thread pool interface:
+>>
+>>class NotThreadPool:
+>>? ?def callInThread(self, f, *a, **kw):
+>>? ? ? ?f(*a, **kw)
+>
+>Well, that would work too but I think it isn't more elegant than my
+>solution yet being shorter, as you still have to know how the
+>_WSGIRequest's code works.
+
+I disagree.  The fact that a threadpool is used is part of the public 
+interface.  The public WSGIResource class accepts a threadpool as an 
+argument to its initializer.  The threadpool interface itself is public.
+
+Basically, this is a parameter you're supposed to be passing in, and 
+you're supposed to have it configured in a way which is appropriate for 
+your application.
+>
+>A better option would be to delegate the threading strategy to
+>subclasses of a generic "adapter" class which:
+>
+>1 - Turns a Twisted Web request to a WSGI environment upon creation
+>(i.e. in the __init__ method), adapts the input/output/error streams
+>and so on.
+>2 - Let the class user start the WSGI application, whatever this means
+>(start a thread or passing control straight to 3).
+>3 - Calls the WSGI application after starting to get the output from 
+>it.
+>4 - Writes the output the client.
+>
+>The adapter class provides 1 and 3. Since 2 and 4 deal with the
+>threading/non threading strategy, they wouldn't be directly
+>implemented by the adapter class: they are implemented in subclasses
+>providing the wanted threading strategy.
+>
+>My two cents.
+
+I'd have a hard time deciding whether this is an improvement without 
+seeing an actual implementation.  I'm not convinced it's necessary for 
+your use-case, though.
+
+Jean-Paul
+
+
+From cristiano.paris at gmail.com  Wed Feb  3 08:27:58 2010
+From: cristiano.paris at gmail.com (Cristiano Paris)
+Date: Wed, 3 Feb 2010 14:27:58 +0100
+Subject: [Twisted-web] Single-threaded WSGIResource
+In-Reply-To: <20100203132141.26099.553361689.divmod.xquotient.104@localhost.localdomain>
+References: <afc62ce21002021358w15f32b2ekb8e19f1f3fa0b77@mail.gmail.com> 
+	<20100202221307.26099.1246970293.divmod.xquotient.88@localhost.localdomain>
+	<afc62ce21002022356q4f19e00ak8055ced79b13037@mail.gmail.com> 
+	<20100203132141.26099.553361689.divmod.xquotient.104@localhost.localdomain>
+Message-ID: <afc62ce21002030527g2e6ed8d3m11f9963259bb86fe@mail.gmail.com>
+
+On Wed, Feb 3, 2010 at 2:21 PM,  <exarkun at twistedmatrix.com> wrote:
+> ...
+> I disagree. ?The fact that a threadpool is used is part of the public
+> interface. ?The public WSGIResource class accepts a threadpool as an
+> argument to its initializer. ?The threadpool interface itself is public.
+>
+> Basically, this is a parameter you're supposed to be passing in, and you're
+> supposed to have it configured in a way which is appropriate for your
+> application.
+
+Ok, but you need to provide all the methods because you are not
+supposed to know which methods WSGIResource is going to use.
+
+Cristiano
+
+
+From exarkun at twistedmatrix.com  Wed Feb  3 08:42:11 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Wed, 03 Feb 2010 13:42:11 -0000
+Subject: [Twisted-web] Single-threaded WSGIResource
+In-Reply-To: <afc62ce21002030527g2e6ed8d3m11f9963259bb86fe@mail.gmail.com>
+References: <afc62ce21002021358w15f32b2ekb8e19f1f3fa0b77@mail.gmail.com>
+	<20100202221307.26099.1246970293.divmod.xquotient.88@localhost.localdomain>
+	<afc62ce21002022356q4f19e00ak8055ced79b13037@mail.gmail.com>
+	<20100203132141.26099.553361689.divmod.xquotient.104@localhost.localdomain>
+	<afc62ce21002030527g2e6ed8d3m11f9963259bb86fe@mail.gmail.com>
+Message-ID: <20100203134211.26099.1113906304.divmod.xquotient.105@localhost.localdomain>
+
+On 01:27 pm, cristiano.paris at gmail.com wrote:
+>On Wed, Feb 3, 2010 at 2:21 PM,  <exarkun at twistedmatrix.com> wrote:
+>>...
+>>I disagree. ?The fact that a threadpool is used is part of the public
+>>interface. ?The public WSGIResource class accepts a threadpool as an
+>>argument to its initializer. ?The threadpool interface itself is 
+>>public.
+>>
+>>Basically, this is a parameter you're supposed to be passing in, and 
+>>you're
+>>supposed to have it configured in a way which is appropriate for your
+>>application.
+>
+>Ok, but you need to provide all the methods because you are not
+>supposed to know which methods WSGIResource is going to use.
+
+Sure.
+>
+>Cristiano
+>
+>_______________________________________________
+>Twisted-web mailing list
+>Twisted-web at twistedmatrix.com
+>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From catonano at gmail.com  Tue Feb  9 06:38:48 2010
+From: catonano at gmail.com (Catonano)
+Date: Tue, 9 Feb 2010 12:38:48 +0100
+Subject: [Twisted-web] help on handle... methods
+Message-ID: <c4aa833e1002090338s1ace5145i3d02eb000cae3aac@mail.gmail.com>
+
+Hello people,
+
+I'm taking a look at the HTTPPageDownloader implementation and there's a
+thing I don't understand.
+
+There these three methods:
+
+
+   1. handleStatus_200
+   2. handleResponsePart
+   3. handleResponseEnd
+
+How does the reactor know it has to call these methods ?
+
+What if I want to add or remove or modify a method ? Will the reactor call
+them correctly anyway ? How comes ?
+
+Thanks for any hint
+Catonano
+
+
+-- 
+La difesa pi? sicura contro il male ? l'estremo individualismo,
+l'originalit? di pensiero, la stravaganza, perfino, se volete,
+l'eccentricit?? Il male va matto per la solidariet?.
+
+Less than one di Joseph Brodsky
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20100209/0819a09d/attachment.htm 
+
+From wwwjfy at gmail.com  Tue Feb  9 12:02:45 2010
+From: wwwjfy at gmail.com (wwwjfy)
+Date: Wed, 10 Feb 2010 01:02:45 +0800
+Subject: [Twisted-web] help on handle... methods
+In-Reply-To: <c4aa833e1002090338s1ace5145i3d02eb000cae3aac@mail.gmail.com>
+References: <c4aa833e1002090338s1ace5145i3d02eb000cae3aac@mail.gmail.com>
+Message-ID: <8a3d00371002090902n1a4294dcnd9fba40f95a36cf7@mail.gmail.com>
+
+On Tue, Feb 9, 2010 at 19:38, Catonano <catonano at gmail.com> wrote:
+
+> Hello people,
+>
+> I'm taking a look at the HTTPPageDownloader implementation and there's a
+> thing I don't understand.
+>
+> There these three methods:
+>
+>
+>    1. handleStatus_200
+>    2. handleResponsePart
+>    3. handleResponseEnd
+>
+> How does the reactor know it has to call these methods ?
+>
+> What if I want to add or remove or modify a method ? Will the reactor call
+> them correctly anyway ? How comes ?
+>
+> Thanks for any hint
+> Catonano
+>
+>
+> --
+> La difesa pi? sicura contro il male ? l'estremo individualismo,
+> l'originalit? di pensiero, la stravaganza, perfino, se volete,
+> l'eccentricit?? Il male va matto per la solidariet?.
+>
+> Less than one di Joseph Brodsky
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+> Hi,
+   1. You can find it in handleEndHeaders, which decides to call method
+'handleStatus_' + status if the method exists.
+   2.3. These two method are called in method rawDataReceived in class
+HTTPClient, which is HTTPPageDownloader's parent.
+
+   I think you can grep all source files of twisted to find most answers if
+you don't know where is one method called. :)
+
+---
+wwwjfy
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20100210/7feded82/attachment.htm 
+
+From catonano at gmail.com  Wed Feb 10 04:32:50 2010
+From: catonano at gmail.com (Catonano)
+Date: Wed, 10 Feb 2010 10:32:50 +0100
+Subject: [Twisted-web] help on handle... methods
+In-Reply-To: <8a3d00371002090902n1a4294dcnd9fba40f95a36cf7@mail.gmail.com>
+References: <c4aa833e1002090338s1ace5145i3d02eb000cae3aac@mail.gmail.com>
+	<8a3d00371002090902n1a4294dcnd9fba40f95a36cf7@mail.gmail.com>
+Message-ID: <c4aa833e1002100132p3bd53ac8tebab9540bd49d523@mail.gmail.com>
+
+Dear wwwjfy,
+
+2010/2/9 wwwjfy <wwwjfy at gmail.com>
+
+>
+> Hi,
+>    1. You can find it in handleEndHeaders, which decides to call method
+> 'handleStatus_' + status if the method exists.
+>    2.3. These two method are called in method rawDataReceived in class
+> HTTPClient, which is HTTPPageDownloader's parent.
+>
+>    I think you can grep all source files of twisted to find most answers if
+> you don't know where is one method called. :)
+>
+>
+Thank you so much for your help. I found those methods and even verified
+that I would have found them with grep ;-)
+
+Now, since you made me feel embarassed  ;-)  , I want to write a few words
+about why I didn't try myself in the first place.
+
+I self learned with the Squeak Smalltalk, when I was 17. Then I used to work
+in Java, but with VisualAge, that was a Smalltalk IDE applied to Java.
+
+So now I am spoiled, I expect to be able to find parent classes with all
+their methods arranged in a nice GUI with the methods represented as bullets
+that, if clicked, make appear the method code in a frame.
+
+In Smalltalk code pieces weren't even written in files.
+
+Grep really didn't come to my mind :-(
+
+Now that you lighted this bulb to me, I am flabbergasted at how the code
+editing situation sucks, outside of my Smalltalk enchanted world.
+
+I found these methods, but I can't see which class they belong to, I have to
+scroll to the class definition, then scroll back to where I were, but I tend
+to get lost in the process.
+
+Now I'm trying to draw the classes tree I'm interested in on a paper with a
+pencil.
+
+I mean, how is this possible ? Do you people really work this way ?
+
+Thanks, anyhow, for your help.
+Bye
+Catonano
+
+---
+> wwwjfy
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+
+
+-- 
+La difesa pi? sicura contro il male ? l'estremo individualismo,
+l'originalit? di pensiero, la stravaganza, perfino, se volete,
+l'eccentricit?? Il male va matto per la solidariet?.
+
+Less than one di Joseph Brodsky
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20100210/dbf3ab85/attachment.htm 
+
+From wthie at thiengineering.ch  Wed Feb 10 14:33:49 2010
+From: wthie at thiengineering.ch (Werner Thie)
+Date: Wed, 10 Feb 2010 20:33:49 +0100
+Subject: [Twisted-web] help on handle... methods
+In-Reply-To: <c4aa833e1002100132p3bd53ac8tebab9540bd49d523@mail.gmail.com>
+References: <c4aa833e1002090338s1ace5145i3d02eb000cae3aac@mail.gmail.com>	<8a3d00371002090902n1a4294dcnd9fba40f95a36cf7@mail.gmail.com>
+	<c4aa833e1002100132p3bd53ac8tebab9540bd49d523@mail.gmail.com>
+Message-ID: <4B730A1D.6020903@thiengineering.ch>
+
+Hi
+
+it's of course nice to have an 'all and everything showing' IDE which 
+even let's your refactor things throughout whole libraries with a few 
+keystrokes but in Python I've never seen such a thing at work. (Please 
+enlighten me if there is such a tool)
+
+On the FOSS side you'll find Eclipse with Pydev (I'm currently working 
+with it) on the top of my list, I certainly used SPE which is quite an 
+effort on its own and very useable and also little tools like PyCrust. 
+On the commercial side I have experience with the ill fated VisualPython 
+(plugin for the MS family of dev tools), Komodo through all it's 
+incarnations and I must confess I never worked with Wings IDE.
+
+So for me it's definitely Eclipse with Pydev (FOSS edition) but as we 
+learned way back in the seventies when we had line editors and dumb 
+ASCII terminals: Never ever discuss sex, religion and editors!
+
+HTH, Werner
+
+Catonano wrote:
+> Dear wwwjfy,
+> 
+> 2010/2/9 wwwjfy <wwwjfy at gmail.com <mailto:wwwjfy at gmail.com>>
+> 
+> 
+>     Hi,
+>        1. You can find it in handleEndHeaders, which decides to call
+>     method 'handleStatus_' + status if the method exists.
+>        2.3. These two method are called in method rawDataReceived in
+>     class HTTPClient, which is HTTPPageDownloader's parent.
+> 
+>        I think you can grep all source files of twisted to find most
+>     answers if you don't know where is one method called. :)
+> 
+> 
+> Thank you so much for your help. I found those methods and even verified 
+> that I would have found them with grep ;-)
+> 
+> Now, since you made me feel embarassed  ;-)  , I want to write a few 
+> words about why I didn't try myself in the first place.
+> 
+> I self learned with the Squeak Smalltalk, when I was 17. Then I used to 
+> work in Java, but with VisualAge, that was a Smalltalk IDE applied to Java.
+> 
+> So now I am spoiled, I expect to be able to find parent classes with all 
+> their methods arranged in a nice GUI with the methods represented as 
+> bullets that, if clicked, make appear the method code in a frame.
+> 
+> In Smalltalk code pieces weren't even written in files.
+> 
+> Grep really didn't come to my mind :-(
+> 
+> Now that you lighted this bulb to me, I am flabbergasted at how the code 
+> editing situation sucks, outside of my Smalltalk enchanted world.
+> 
+> I found these methods, but I can't see which class they belong to, I 
+> have to scroll to the class definition, then scroll back to where I 
+> were, but I tend to get lost in the process.
+> 
+> Now I'm trying to draw the classes tree I'm interested in on a paper 
+> with a pencil.
+> 
+> I mean, how is this possible ? Do you people really work this way ?
+> 
+> Thanks, anyhow, for your help.
+> Bye
+> Catonano
+> 
+>     ---
+>     wwwjfy
+> 
+>     _______________________________________________
+>     Twisted-web mailing list
+>     Twisted-web at twistedmatrix.com <mailto:Twisted-web at twistedmatrix.com>
+>     http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> 
+> 
+> 
+> 
+> -- 
+> La difesa pi? sicura contro il male ? l'estremo individualismo, 
+> l'originalit? di pensiero, la stravaganza, perfino, se volete, 
+> l'eccentricit?? Il male va matto per la solidariet?.
+> 
+> Less than one di Joseph Brodsky
+> 
+> 
+> ------------------------------------------------------------------------
+> 
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+
+From wwwjfy at gmail.com  Thu Feb 11 00:38:25 2010
+From: wwwjfy at gmail.com (wwwjfy)
+Date: Thu, 11 Feb 2010 13:38:25 +0800
+Subject: [Twisted-web] help on handle... methods
+In-Reply-To: <c4aa833e1002100132p3bd53ac8tebab9540bd49d523@mail.gmail.com>
+References: <c4aa833e1002090338s1ace5145i3d02eb000cae3aac@mail.gmail.com>
+	<8a3d00371002090902n1a4294dcnd9fba40f95a36cf7@mail.gmail.com>
+	<c4aa833e1002100132p3bd53ac8tebab9540bd49d523@mail.gmail.com>
+Message-ID: <8a3d00371002102138w4d90c899p8856e60c6bcf7e5a@mail.gmail.com>
+
+On Wed, Feb 10, 2010 at 17:32, Catonano <catonano at gmail.com> wrote:
+
+> Dear wwwjfy,
+>
+> 2010/2/9 wwwjfy <wwwjfy at gmail.com>
+>
+>
+>> Hi,
+>>    1. You can find it in handleEndHeaders, which decides to call method
+>> 'handleStatus_' + status if the method exists.
+>>    2.3. These two method are called in method rawDataReceived in class
+>> HTTPClient, which is HTTPPageDownloader's parent.
+>>
+>>    I think you can grep all source files of twisted to find most answers
+>> if you don't know where is one method called. :)
+>>
+>>
+> Thank you so much for your help. I found those methods and even verified
+> that I would have found them with grep ;-)
+>
+> Now, since you made me feel embarassed  ;-)  , I want to write a few words
+> about why I didn't try myself in the first place.
+>
+> I self learned with the Squeak Smalltalk, when I was 17. Then I used to
+> work in Java, but with VisualAge, that was a Smalltalk IDE applied to Java.
+>
+> So now I am spoiled, I expect to be able to find parent classes with all
+> their methods arranged in a nice GUI with the methods represented as bullets
+> that, if clicked, make appear the method code in a frame.
+>
+> In Smalltalk code pieces weren't even written in files.
+>
+> Grep really didn't come to my mind :-(
+>
+> Now that you lighted this bulb to me, I am flabbergasted at how the code
+> editing situation sucks, outside of my Smalltalk enchanted world.
+>
+> I found these methods, but I can't see which class they belong to, I have
+> to scroll to the class definition, then scroll back to where I were, but I
+> tend to get lost in the process.
+>
+> Now I'm trying to draw the classes tree I'm interested in on a paper with a
+> pencil.
+>
+> I mean, how is this possible ? Do you people really work this way ?
+>
+> I don't think there is a perfect way to find where methods like these are
+called, unless the IDE is clever enough.
+Sometimes I suffered from it.
+Maybe it the cost of the flexible. ;)
+
+> Thanks, anyhow, for your help.
+> Bye
+> Catonano
+>
+> ---
+>> wwwjfy
+>>
+>> _______________________________________________
+>> Twisted-web mailing list
+>> Twisted-web at twistedmatrix.com
+>> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>>
+>>
+>
+>
+> --
+> La difesa pi? sicura contro il male ? l'estremo individualismo,
+> l'originalit? di pensiero, la stravaganza, perfino, se volete,
+> l'eccentricit?? Il male va matto per la solidariet?.
+>
+> Less than one di Joseph Brodsky
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20100211/fbe16468/attachment.htm 
+
+From catonano at gmail.com  Thu Feb 11 06:20:14 2010
+From: catonano at gmail.com (Catonano)
+Date: Thu, 11 Feb 2010 12:20:14 +0100
+Subject: [Twisted-web] help on handle... methods
+In-Reply-To: <8a3d00371002102138w4d90c899p8856e60c6bcf7e5a@mail.gmail.com>
+References: <c4aa833e1002090338s1ace5145i3d02eb000cae3aac@mail.gmail.com>
+	<8a3d00371002090902n1a4294dcnd9fba40f95a36cf7@mail.gmail.com>
+	<c4aa833e1002100132p3bd53ac8tebab9540bd49d523@mail.gmail.com>
+	<8a3d00371002102138w4d90c899p8856e60c6bcf7e5a@mail.gmail.com>
+Message-ID: <c4aa833e1002110320i5a0e8798qcccd3cb557606338@mail.gmail.com>
+
+Werner, wwwjfy,
+
+2010/2/11 wwwjfy <wwwjfy at gmail.com>
+
+
+> I don't think there is a perfect way to find where methods like these are
+> called, unless the IDE is clever enough.
+> Sometimes I suffered from it.
+> Maybe it the cost of the flexible. ;)
+>
+>
+thanks to the both of you. I managed to install Eclipse, seems getting
+better, actually.
+
+Now, my question moved. I see the BaseProtocol class having the
+"makeConnection" method.
+
+Now, is the reactor supposed to call this method ? Is it supposed to pass a
+ITransport argument, too ?
+
+Well are these conventions ? Or does the reactor uses some sort of
+reflection or other aid to "guess" which method to call and which argument
+to pass ?
+
+Same goes for the "dataReceived" method that makes its first appareance in
+the Protocol class. Is the reactor supposed to call this method and pass the
+data as an argument ?
+
+Am I being annoying ? Sorry, I'm just trying to understand.
+
+Thanks
+Catonano
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20100211/75e2fca7/attachment.htm 
+
+From catonano at gmail.com  Thu Feb 11 06:24:44 2010
+From: catonano at gmail.com (Catonano)
+Date: Thu, 11 Feb 2010 12:24:44 +0100
+Subject: [Twisted-web] help on handle... methods
+In-Reply-To: <c4aa833e1002110320i5a0e8798qcccd3cb557606338@mail.gmail.com>
+References: <c4aa833e1002090338s1ace5145i3d02eb000cae3aac@mail.gmail.com>
+	<8a3d00371002090902n1a4294dcnd9fba40f95a36cf7@mail.gmail.com>
+	<c4aa833e1002100132p3bd53ac8tebab9540bd49d523@mail.gmail.com>
+	<8a3d00371002102138w4d90c899p8856e60c6bcf7e5a@mail.gmail.com>
+	<c4aa833e1002110320i5a0e8798qcccd3cb557606338@mail.gmail.com>
+Message-ID: <c4aa833e1002110324t4ca34bo18d9ce00a55a305b@mail.gmail.com>
+
+Ok, I got it. I have to take a look at IProtocoloCore and the such.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20100211/fb366923/attachment.htm 
+
+From David.Watson at windriver.com  Tue Feb 23 20:12:12 2010
+From: David.Watson at windriver.com (Watson, David)
+Date: Tue, 23 Feb 2010 17:12:12 -0800
+Subject: [Twisted-web] Reactor events help request ..
+Message-ID: <58BD0469C48A7443A479A13D101685E303EA8F05@ala-mail09.corp.ad.wrs.com>
+
+ 
+Hi Folks ..
+ 
+I'm not entirely a newbie a python and twisted, but I have come to the
+point where I need a bit more expertise on this topic, so I am hoping
+that I have come to the right place .. 
+ 
+What  I'm hoping, that  you folks can help out with a minor problem that
+I am having with the twistd reactor class and/or the callLater function
+  
+I have been using a reactor.callLater function to schedule an event that
+happens in the reactor to send out a heartbeat type message at regular
+intervals .. This works great !
+ 
+However, it appears to me that the self.sendLine(msg)  and or the
+self.transport.write(msg) writing  functions are blocked functions
+waiting for a reactor event to occur at a future scheduled time before
+acutally flushing out the internal write buffers ..  
+ 
+I am currently using the twistd protocol factory to create a custom
+protocol to communicate between a server and client,  which up until now
+has not been a real concern, but I am trying to improve the preformance
+and turn around time between the client and server and this blocking
+operation is a major source of  unneeded delay .. 
+ 
+My problem is that I have scheduled heartbeat events that I want to send
+to the server .. as well as  the  non scheduled events that I want to go
+to the server imediately .. 
+ 
+I have been scouring the various python/twistd  document sites, but to
+no avial,  on all of the sites that I have seen, the method used have
+all done the same thing ,  by re-scheduling something into the future
+with a reactor.callLater () function, which causes a delayed write to
+occur .. not a problem for something that is 1 or 2 second s in the
+furture, but it is a serious problem when the next event is 120 seconds
+away .. 
+ 
+I have tried using a self.transport.write(msg) function, but the actual
+communication still seems to be buffered and stuck waiting for the
+scheduled reactor event .. 
+ 
+What I think I need is something similar to  self.transport.flush()
+which would flush out the write buffers on demand, but does not seen to
+exist ..
+ 
+I am hoping that someone has faced the same/similar stituation and give
+me some guidance and/or to point me in the correct direction .. 
+ 
+Thanks for any help you can offer ..
+ 
+Cheers
+ 
+Dave Watson
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20100223/812991c6/attachment.htm 
+
+From exarkun at twistedmatrix.com  Wed Feb 24 09:33:33 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Wed, 24 Feb 2010 14:33:33 -0000
+Subject: [Twisted-web] Reactor events help request ..
+In-Reply-To: <58BD0469C48A7443A479A13D101685E303EA8F05@ala-mail09.corp.ad.wrs.com>
+References: <58BD0469C48A7443A479A13D101685E303EA8F05@ala-mail09.corp.ad.wrs.com>
+Message-ID: <20100224143333.2792.1169113255.divmod.xquotient.60@localhost.localdomain>
+
+On 01:12 am, david.watson at windriver.com wrote:
+>
+>Hi Folks ..
+>
+>I'm not entirely a newbie a python and twisted, but I have come to the
+>point where I need a bit more expertise on this topic, so I am hoping
+>that I have come to the right place ..
+>
+>What  I'm hoping, that  you folks can help out with a minor problem 
+>that
+>I am having with the twistd reactor class and/or the callLater function
+>
+>I have been using a reactor.callLater function to schedule an event 
+>that
+>happens in the reactor to send out a heartbeat type message at regular
+>intervals .. This works great !
+>
+>However, it appears to me that the self.sendLine(msg)  and or the
+>self.transport.write(msg) writing  functions are blocked functions
+>waiting for a reactor event to occur at a future scheduled time before
+>acutally flushing out the internal write buffers ..
+
+This isn't the intended behavior.  The most common mistake which leads 
+to it is trying to use Twisted APIs such as these from a different 
+thread than the one where reactor.run() was called.  The only thread- 
+safe Twisted API is reactor.callFromThread.
+
+You didn't say anything about threads in your post, so I don't know if 
+this is the problem you're having, but since it's so common I thought 
+I'd mention it.
+
+Jean-Paul
+
+
+From David.Watson at windriver.com  Wed Feb 24 11:12:47 2010
+From: David.Watson at windriver.com (Watson, David)
+Date: Wed, 24 Feb 2010 08:12:47 -0800
+Subject: [Twisted-web] Reactor events help request ..
+In-Reply-To: <20100224143333.2792.1169113255.divmod.xquotient.60@localhost.localdomain>
+References: <58BD0469C48A7443A479A13D101685E303EA8F05@ala-mail09.corp.ad.wrs.com>
+	<20100224143333.2792.1169113255.divmod.xquotient.60@localhost.localdomain>
+Message-ID: <58BD0469C48A7443A479A13D101685E303EA8FF0@ala-mail09.corp.ad.wrs.com>
+
+ 
+Hi Jean-Paul ..
+
+Thanks for your response .. I think your correct, I got an earlier email
+from Andrew, and he pointed me in the same direction ..
+I am investigating this new info now and I think that this appears to be
+the problem ..
+
+Thanks for your help ..
+
+Cheers
+
+Dave W.
+
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com
+[mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of
+exarkun at twistedmatrix.com
+Sent: Wednesday, February 24, 2010 9:34 AM
+To: Twisted Web World
+Subject: Re: [Twisted-web] Reactor events help request ..
+
+On 01:12 am, david.watson at windriver.com wrote:
+>
+>Hi Folks ..
+>
+>I'm not entirely a newbie a python and twisted, but I have come to the 
+>point where I need a bit more expertise on this topic, so I am hoping 
+>that I have come to the right place ..
+>
+>What  I'm hoping, that  you folks can help out with a minor problem 
+>that I am having with the twistd reactor class and/or the callLater 
+>function
+>
+>I have been using a reactor.callLater function to schedule an event 
+>that happens in the reactor to send out a heartbeat type message at 
+>regular intervals .. This works great !
+>
+>However, it appears to me that the self.sendLine(msg)  and or the
+>self.transport.write(msg) writing  functions are blocked functions 
+>waiting for a reactor event to occur at a future scheduled time before 
+>acutally flushing out the internal write buffers ..
+
+This isn't the intended behavior.  The most common mistake which leads
+to it is trying to use Twisted APIs such as these from a different
+thread than the one where reactor.run() was called.  The only thread-
+safe Twisted API is reactor.callFromThread.
+
+You didn't say anything about threads in your post, so I don't know if
+this is the problem you're having, but since it's so common I thought
+I'd mention it.
+
+Jean-Paul
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From jjconti at gmail.com  Sun Feb 28 14:23:00 2010
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Sun, 28 Feb 2010 16:23:00 -0300
+Subject: [Twisted-web] Problem using nevow.guard
+Message-ID: <3f9007681002281123t445b1d1fp939850b52b597efa@mail.gmail.com>
+
+Hi! based on the example given at
+http://divmod.org/trac/browser/trunk/Nevow/examples/guarded/guarded2.py
+I'm trying to add user authentication to a part of a Nevow site I'm
+running. This is my slightly modified version of guard2.py
+http://python.pastebin.com/tLQDFdrN
+
+I've notice that this works if I create a appserver.NevowSite using
+this "authenticated resource" instead of my IndexPage():
+
+#site = appserver.NevowSite(IndexPage())
+site = appserver.NevowSite(authenticatedResource(IndexPage()))
+
+but I don't want the hole site to be authenticated. I'd like to add
+the authentication only to a particular section. So, what I'm doing is
+returning a authenticatedResource(SectionIWantToProtectPage()) where I
+was returning SectionIWantToProtectPage(). i.e. in the child_auth
+method of IndexPage().
+
+site = appserver.NevowSite(IndexPage())
+
+When I do that, firefox complains that the server is redirecting the
+request to http://localhost:8009/auth/?__start_session__=1 in a way
+that will never be complete. It ask if I have cookies disabled and
+says that If enabling cookies for this site solves the problem, the
+real problem is in the server configuration.
+
+So... could you help me? I don't know what I'm doing wrong.
+
+Thanks,
+
+-- 
+Juanjo Conti
+blog: http://www.juanjoconti.com.ar
+
+

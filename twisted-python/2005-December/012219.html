@@ -1,0 +1,176 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] help with refcounts and memleaks
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20help%20with%20refcounts%20and%20memleaks&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="012211.html">
+   <LINK REL="Next"  HREF="012220.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] help with refcounts and memleaks</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20help%20with%20refcounts%20and%20memleaks&In-Reply-To="
+       TITLE="[Twisted-Python] help with refcounts and memleaks">andrea at cpushare.com
+       </A><BR>
+    <I>Mon Dec 26 11:07:35 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="012211.html">[Twisted-Python] Python 2.2 Support
+</A></li>
+        <LI>Next message: <A HREF="012220.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12219">[ date ]</a>
+              <a href="thread.html#12219">[ thread ]</a>
+              <a href="subject.html#12219">[ subject ]</a>
+              <a href="author.html#12219">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+
+I was just shoked today when I noticed this:
+
+-------------------
+import sys
+
+class A(object):
+	y = None
+	def x(self):
+		pass
+	def __del__(self):
+		print 'deleted'
+
+
+a = A()
+print sys.getrefcount(a)
+if 1:
+	a.y = a.x
+print sys.getrefcount(a)
+del a
+-------------------
+
+I understood the cross references memleaks well, like &quot;x.y = y; y.x= x;
+del x,y&quot;, but I didn't imagine that &quot;a.y = a.x&quot; would be enough to
+generate a memleak. &quot;a.y = a.x&quot; isn't referencing another structure,
+it's referencing itself only. Infact if I do this the memleak goes
+away!!
+
+-------------------
+import sys
+
+class A(object):
+	def x(self):
+		pass
+	y = x
+	def __del__(self):
+		print 'deleted'
+
+
+a = A()
+print sys.getrefcount(a)
+a.x()
+a.y()
+print a.x, a.y
+del a
+-------------------
+
+Now the fact a static field doesn't generate a reference but a dynamic
+one does is quite confusing to me and it also opened a can of worms in
+my code. I can handle that now that I know about it, but I wonder what
+people recommends to solve memleaks of this kind.
+
+I'd also like to know how other languages like ruby and java behave in
+terms of self-references of objects. Can't the language understand it's
+a self reference, and in turn it's the same as an integer or a string,
+like it already does when the member is initialized statically?
+
+Infact can't the language be smart enough to even understand when two
+cross referenced objects lost visibility from all points of view, and
+drop both objects even if they hold a reference on each other? I
+understand this is a lot more complicated but wouldn't it be possible in
+theory? What does the garbage collection of other languages like ruby
+and java, the same as python or more advanced?
+
+So far my python programs never really cared to released memory (so my
+not full understanding of python refcounts wasn't a problem), but now
+since I'm dealing with a server I must make sure that the &quot;proto&quot; is
+released after a loseConnection invocation. So I must cleanup all cross
+and self! references in loseConnection and use weakrefs where needed.
+
+Now those structures that I'm leaking (like the protocol object) are so
+tiny that there's no chance that I could ever notice the memleak in real
+life, so I had to add debugging code to trap memleaks. You can imagine
+my server code like this:
+
+class cpushare_protocol(Int32StringReceiver):
+	def connectionMade(self):
+		[..]
+		self.hard_handlers = {
+			PROTO_SECCOMP : self.seccomp_handler,
+			PROTO_LOG : self.log_handler,
+			}
+		[..]
+ 	def log_handler(self, string):
+		[..]
+	def seccomp_handler(self, string):
+		[..]
+	def __del__(self):
+		print 'protocol deleted'
+	def connectionLost(self, reason):
+		[..]
+		# memleaks
+		del self.hard_handlers
+		print 'protocol refcount:', sys.getrefcount(self)
+		#assert sys.getrefcount(self) == 4
+
+For things like hard_handlers (that are self-referencing callbacks) I
+can't even use the weakref.WeakValueDictionary, because it wouldn't hold
+itself, the object gets released immediately. So the only chance I have
+to release the memory of the protocol object when the connection is
+dropped, is to do an explicit del self.hard_handlers in loseConnection.
+
+I wonder what other twisted developers do to avoid those troubles.
+Perhaps I shouldn't use self referencing callbacks to hold the state
+machine, and do like the smpt protocol that does this:
+
+    def lookupMethod(self, command):
+        return getattr(self, 'do_' + command.upper(), None)
+
+basically working with strings instead of pointers. Or I can simply make
+sure to cleanup all structures when I stop using them (like with the del
+self.hard_handlers above), but then I'll lose part of the automatic
+garbage collection features of python. I really want garbage collection
+or I could have written this in C++ if I'm forced to cleanup by hand.
+
+Help is appreciated, thanks!
+
+PS. Merry Christmas and Happy New 2006!
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="012211.html">[Twisted-Python] Python 2.2 Support
+</A></li>
+	<LI>Next message: <A HREF="012220.html">[Twisted-Python] help with refcounts and memleaks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12219">[ date ]</a>
+              <a href="thread.html#12219">[ thread ]</a>
+              <a href="subject.html#12219">[ subject ]</a>
+              <a href="author.html#12219">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

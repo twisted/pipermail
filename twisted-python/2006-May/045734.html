@@ -1,0 +1,147 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] web.client blowing up on non-fully qualified 301s
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20web.client%20blowing%20up%20on%20non-fully%20qualified%20301s&In-Reply-To=%3C2E91C86E7AEBFD43BB11EC2DD8EF518F10C2F0%40szexchange.Shopzilla.inc%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="045740.html">
+   <LINK REL="Next"  HREF="045735.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] web.client blowing up on non-fully qualified 301s</H1>
+    <B>Keith Dutton</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20web.client%20blowing%20up%20on%20non-fully%20qualified%20301s&In-Reply-To=%3C2E91C86E7AEBFD43BB11EC2DD8EF518F10C2F0%40szexchange.Shopzilla.inc%3E"
+       TITLE="[Twisted-Python] web.client blowing up on non-fully qualified 301s">keith at Shopzilla.com
+       </A><BR>
+    <I>Thu May 25 16:48:28 MDT 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="045740.html">[Twisted-Python] Re: deferToThread - supported alternative to	the (deprecated) setTimeout method
+</A></li>
+        <LI>Next message (by thread): <A HREF="045735.html">[Twisted-Python] web.client blowing up on non-fully qualified 301s
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45734">[ date ]</a>
+              <a href="thread.html#45734">[ thread ]</a>
+              <a href="subject.html#45734">[ subject ]</a>
+              <a href="author.html#45734">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello, 
+
+I have run into an odd problem.  I am not sure if it is my issue or Twisted: any help would be appreciated.  Under at least some circumstances, twisted.web.client seems to 1) not be able to follow a 301, and 2) throw an unhandled exception, when trying to follow a 301.  A specific example and resulting error is given below:
+
+
+from twisted.internet import defer
+from twisted.web import client
+from twisted.internet import reactor
+
+class HTTPGetter(client.HTTPClientFactory):
+    protocol = client.HTTPPageGetter
+
+class Fetcher:
+
+    def __init__(self,client_factory = HTTPGetter):
+        self.factory = client_factory
+        
+    def download(self,host,port,url):
+        f = self.factory(url)
+        f.deferred.addCallback(self.downloadFinished).addErrback(self.downloadFailed)
+        k = reactor.connectTCP(host, port, f, timeout=10)
+        return f.deferred
+    
+    def downloadFinished(self,v):
+        print  &quot;good&quot;
+
+    def downloadFailed(self, v):
+        print &quot;bad&quot;
+        print v
+    
+r = Fetcher()
+w = r.download(&quot;www.shopzilla.com&quot;,80,&quot;/aaaa&quot;)
+reactor.callLater(10,reactor.stop)
+reactor.run()
+
+This results in:
+
+Unhandled error in Deferred:
+Traceback (most recent call last):
+  File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/posixbase.py&quot;, line 226, in mainLoop
+    self.runUntilCurrent()
+  File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/base.py&quot;, line 541, in runUntilCurrent
+    call.func(*call.args, **call.kw)
+  File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/tcp.py&quot;, line 494, in resolveAddress
+    d.addCallbacks(self._setRealAddress, self.failIfNotConnected)
+  File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/defer.py&quot;, line 182, in addCallbacks
+    self._runCallbacks()
+--- &lt;exception caught here&gt; ---
+  File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/defer.py&quot;, line 307, in _runCallbacks
+    self.result = callback(self.result, *args, **kw)
+  File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/tcp.py&quot;, line 498, in _setRealAddress
+    self.doConnect()
+  File &quot;/usr/local/lib/python2.4/site-packages/twisted/internet/tcp.py&quot;, line 520, in doConnect
+    connectResult = self.socket.connect_ex(self.realAddress)
+  File &quot;&lt;string&gt;&quot;, line 1, in connect_ex
+    
+exceptions.TypeError: an integer is required
+
+Which is apparently due to the fact that doConnect assumes a good address and so does not trap for TypeError.
+
+The bad address that doConnect blows up on ('',None) for (host,port) slips in due to twisted.web.client.handleStatus_301.   The example site (Shopzilla.com) posts a URL for the 301 Location that is not fully qualified.  handleStatus_301, in the face of such a URL, appears to fail because it relies on getting the host/port from the location URL, but these are not present in it.  Thus it passes in the ('',None) to its reactor.connectTCP attempt to follow the redirect, leading to the error above.  My kludge fix to handleStatus_301 is given below, where if the host or port are missing I steal them from the transport, which should be correct since it was just used to get the page.  I am running with this now, with no errors.
+
+Is this a Twisted issue?  If so, is my fix reasonable?  If it is not a Twisted issue, what am I doing wrong?  
+
+Thanks,
+
+Keith
+
+    def handleStatus_301(self):
+        l = self.headers.get('location')
+        if not l:
+            self.handleStatusDefault()
+        url = l[0]
+        if self.followRedirect:
+            scheme, host, port, path = \
+                _parse(url, defaultPort=self.transport.getPeer().port)
+            self.factory.setURL(url)
+            #following 4 lines added kad to fix apparent issue with 301 to a url that is not fully qualified
+            if self.factory.host == '':
+                self.factory.host = self.transport.addr[0]
+            if self.factory.port == None:
+                self.factory.port = self.transport.addr[1]
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20060525/f57a2e7b/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="045740.html">[Twisted-Python] Re: deferToThread - supported alternative to	the (deprecated) setTimeout method
+</A></li>
+	<LI>Next message (by thread): <A HREF="045735.html">[Twisted-Python] web.client blowing up on non-fully qualified 301s
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45734">[ date ]</a>
+              <a href="thread.html#45734">[ thread ]</a>
+              <a href="subject.html#45734">[ subject ]</a>
+              <a href="author.html#45734">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

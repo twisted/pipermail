@@ -1,0 +1,1003 @@
+From peter.westlake at pobox.com  Fri Oct  1 10:31:07 2010
+From: peter.westlake at pobox.com (Peter Westlake)
+Date: Fri, 01 Oct 2010 15:31:07 +0100
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+Message-ID: <1285943467.13732.1397865225@webmail.messagingengine.com>
+
+J.P's excellent article http://jcalderone.livejournal.com/50890.html
+explains how to avoid calling Request.finish() on a request after its
+connection was lost, because that now raises an exception. The code in
+the article is able to avoid calling finish() because it handles the
+rendering itself. The call to finish() is right there in _delayedRender.
+But I'm using Nevow (because it's awesome) and all that stuff is done
+behind the scenes, where I can't get to it.
+
+My application has a form, which uses the Post/Redirect/Get pattern
+(http://en.wikipedia.org/wiki/Post/Redirect/Get) to avoid
+double-posting. Because processing is not instant, the browser receives
+the HTTP header telling it to redirect before the processing has
+finished. When the processing finishes, the Deferred embedded in the web
+page fires with a value, Stan finishes flattening the page, and Nevow
+calls Request.finish(). By then the browser has closed the connection
+and sent in the GET request. So I get an error every single time.
+
+What is the correct method to tell Nevow to abandon the request, please?
+
+This is a completely self-contained example, to be run with twistd:
+
+
+from nevow import tags, inevow, loaders, appserver
+from nevow.rend import Page
+from nevow.url import URL
+from twisted.internet.task import deferLater
+from twisted.internet import reactor
+from twisted.application import service
+from twisted.application.internet import TCPServer
+from twisted.web import http
+
+class Redirector(Page):
+
+    count = 0
+    message = 0
+
+    def _increment(self):
+        self.count += 1
+        return self.count
+
+    def slow_operation(self):
+        return deferLater(reactor, 3, self._increment)
+
+    def beforeRender(self, ctx):
+        req = inevow.IRequest(ctx)
+        if req.method == 'POST':
+            oldurl = URL.fromContext(ctx)
+            newurl = oldurl.remove('cmd')
+            req.setResponseCode(http.SEE_OTHER)
+            req.setHeader("Location", newurl)
+            self.message = self.slow_operation()
+
+    def render_message(self, ctx, data):
+        return self.message
+
+    docFactory = loaders.stan(
+        tags.html[
+            tags.head[tags.title['Slow page']],
+            tags.body[
+                tags.h1['Problem with interrupted connections'],
+                tags.form(method='post', action='')[
+                    tags.button(type='submit', name='cmd',
+                    value='click')[
+                        'Click'
+                        ]
+                    ],
+                tags.p(render=tags.directive('message'))
+                ]
+            ]
+        )
+
+application = service.Application('Demo')
+
+site = appserver.NevowSite(Redirector())
+webservice = TCPServer(8123, site)
+webservice.setName('WUI')
+webservice.setServiceParent(application)
+
+
+Thanks in advance,
+
+Peter.
+
+
+
+From peter.westlake at pobox.com  Fri Oct  1 12:28:55 2010
+From: peter.westlake at pobox.com (Peter Westlake)
+Date: Fri, 01 Oct 2010 17:28:55 +0100
+Subject: [Twisted-web] Possible bug in nevow.testutil.FakeRequest
+ setHeaders and getHeaders
+In-Reply-To: <20100929205311.2022.1426647211.divmod.xquotient.7@localhost.localdomain>
+References: <1285694631.24671.1397331661@webmail.messagingengine.com><20100928175206.4943.1065920686.divmod.xquotient.60@localhost.localdomain><1285764538.24242.1397478621@webmail.messagingengine.com>
+	<20100929130025.4943.794929629.divmod.xquotient.104@localhost.localdomain>
+	<1285772226.19274.1397502701@webmail.messagingengine.com>
+	<20100929153152.4943.161054247.divmod.xquotient.109@localhost.localdomain>
+	<8A960528-7EDC-402E-9BDD-B7D05F654669@twistedmatrix.com>
+	<20100929205311.2022.1426647211.divmod.xquotient.7@localhost.localdomain>
+Message-ID: <1285950535.7525.1397893957@webmail.messagingengine.com>
+
+On Wed, 29 Sep 2010 20:53 +0000, exarkun at twistedmatrix.com wrote:
+> On 07:57 pm, glyph at twistedmatrix.com wrote:
+> >
+> >On Sep 29, 2010, at 11:31 AM, exarkun at twistedmatrix.com wrote:
+> >>First there would be tickets (plural) for adding features to Twisted's
+> >>Request and FakeRequest from Nevow.  Then there would be tickets (or
+> >>maybe just a ticket) for deleting the corresponding (then redundant)
+> >>code from Nevow.
+
+These are in as http://twistedmatrix.com/trac/ticket/4662 and
+http://twistedmatrix.com/trac/ticket/4663.
+
+> >My two cents here would be to move in the direction of making Request 
+> >itself a data structure which could be manipulated in memory, rather 
+> >than having it tightly bound to the HTTP connection, and then having a 
+> >discrete test double.
+
+I put this into the comments for 4662.
+
+Peter.
+
+
+From seadog at sealabs.net  Tue Oct  5 14:45:15 2010
+From: seadog at sealabs.net (Giorgos Logiotatidis)
+Date: Tue, 05 Oct 2010 20:45:15 +0200
+Subject: [Twisted-web] t.w.client.downloadPage with large amount of postData
+Message-ID: <1286304315.15085.21.camel@areti>
+
+Hello everyone,
+I'm writing a client that is using t.w.client.downloadPage function to
+download a large chunk of data into a file from a webserver. This is
+working fine.
+
+Now I want use the same function (or at least take advantage of the
+"save to file" functionality) and be able to send along with my request
+a large chunk of data, without storing that chunk into memory.
+
+To clarify my need here is an example
+
+(1) client -> POST <large data file> -> server
+(2) server computes
+(3) server -> <REPLY with large data file> -> client
+
+the (3) step is done in a memory efficient way using
+t.w.c.downloadPage(). Right now I execute the (1) step using the
+"postData" argument of t.w.c.downloadPage after loading all data into
+memory.
+
+Is there a way I can avoid loading all data into memory?
+
+Thank you in advance,
+-Giorgos Logiotatidis
+
+
+
+
+
+From exarkun at twistedmatrix.com  Fri Oct  8 09:19:33 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Fri, 08 Oct 2010 13:19:33 -0000
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <1285943467.13732.1397865225@webmail.messagingengine.com>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com>
+Message-ID: <20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+
+On 1 Oct, 02:31 pm, peter.westlake at pobox.com wrote:
+>J.P's excellent article http://jcalderone.livejournal.com/50890.html
+>explains how to avoid calling Request.finish() on a request after its
+>connection was lost, because that now raises an exception. The code in
+>the article is able to avoid calling finish() because it handles the
+>rendering itself. The call to finish() is right there in 
+>_delayedRender.
+>But I'm using Nevow (because it's awesome) and all that stuff is done
+>behind the scenes, where I can't get to it.
+
+Mmm.  Indeed.  Nevow doesn't make it easy to handle this case.
+
+Nevow itself should be taking some action in this case, I think.  One 
+possibility would be to cancel the Deferred associated with the child 
+lookup/rendering operation.  This would depend on having a new enough 
+version of Twisted (such that Deferred cancellation is available) 
+though.  Otherwise all Nevow could really do is ignore the result of the 
+Deferred when it comes.
+
+Actually, ignoring the result might be a sensible thing to implement 
+first anyway.  It should be simpler and have no application consequences 
+except to get rid of the now-disallowed finish() call.
+
+Are you interested in helping implement this?
+
+Jean-Paul
+>My application has a form, which uses the Post/Redirect/Get pattern
+>(http://en.wikipedia.org/wiki/Post/Redirect/Get) to avoid
+>double-posting. Because processing is not instant, the browser receives
+>the HTTP header telling it to redirect before the processing has
+>finished. When the processing finishes, the Deferred embedded in the 
+>web
+>page fires with a value, Stan finishes flattening the page, and Nevow
+>calls Request.finish(). By then the browser has closed the connection
+>and sent in the GET request. So I get an error every single time.
+>
+>What is the correct method to tell Nevow to abandon the request, 
+>please?
+>
+>This is a completely self-contained example, to be run with twistd:
+>
+>
+>from nevow import tags, inevow, loaders, appserver
+>from nevow.rend import Page
+>from nevow.url import URL
+>from twisted.internet.task import deferLater
+>from twisted.internet import reactor
+>from twisted.application import service
+>from twisted.application.internet import TCPServer
+>from twisted.web import http
+>
+>class Redirector(Page):
+>
+>    count = 0
+>    message = 0
+>
+>    def _increment(self):
+>        self.count += 1
+>        return self.count
+>
+>    def slow_operation(self):
+>        return deferLater(reactor, 3, self._increment)
+>
+>    def beforeRender(self, ctx):
+>        req = inevow.IRequest(ctx)
+>        if req.method == 'POST':
+>            oldurl = URL.fromContext(ctx)
+>            newurl = oldurl.remove('cmd')
+>            req.setResponseCode(http.SEE_OTHER)
+>            req.setHeader("Location", newurl)
+>            self.message = self.slow_operation()
+>
+>    def render_message(self, ctx, data):
+>        return self.message
+>
+>    docFactory = loaders.stan(
+>        tags.html[
+>            tags.head[tags.title['Slow page']],
+>            tags.body[
+>                tags.h1['Problem with interrupted connections'],
+>                tags.form(method='post', action='')[
+>                    tags.button(type='submit', name='cmd',
+>                    value='click')[
+>                        'Click'
+>                        ]
+>                    ],
+>                tags.p(render=tags.directive('message'))
+>                ]
+>            ]
+>        )
+>
+>application = service.Application('Demo')
+>
+>site = appserver.NevowSite(Redirector())
+>webservice = TCPServer(8123, site)
+>webservice.setName('WUI')
+>webservice.setServiceParent(application)
+>
+>
+>Thanks in advance,
+>
+>Peter.
+>
+>
+>_______________________________________________
+>Twisted-web mailing list
+>Twisted-web at twistedmatrix.com
+>http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From exarkun at twistedmatrix.com  Fri Oct  8 09:23:20 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Fri, 08 Oct 2010 13:23:20 -0000
+Subject: [Twisted-web] t.w.client.downloadPage with large amount
+	of	postData
+In-Reply-To: <1286304315.15085.21.camel@areti>
+References: <1286304315.15085.21.camel@areti>
+Message-ID: <20101008132320.2022.914390131.divmod.xquotient.471@localhost.localdomain>
+
+On 5 Oct, 06:45 pm, seadog at sealabs.net wrote:
+>Hello everyone,
+>I'm writing a client that is using t.w.client.downloadPage function to
+>download a large chunk of data into a file from a webserver. This is
+>working fine.
+>
+>Now I want use the same function (or at least take advantage of the
+>"save to file" functionality) and be able to send along with my request
+>a large chunk of data, without storing that chunk into memory.
+>
+>To clarify my need here is an example
+>
+>(1) client -> POST <large data file> -> server
+>(2) server computes
+>(3) server -> <REPLY with large data file> -> client
+>
+>the (3) step is done in a memory efficient way using
+>t.w.c.downloadPage(). Right now I execute the (1) step using the
+>"postData" argument of t.w.c.downloadPage after loading all data into
+>memory.
+>
+>Is there a way I can avoid loading all data into memory?
+
+Twisted 9.0 introduced twisted.web.client.Agent which is intended to 
+eventually replace getPage, downloadPage, and all the other stuff in the 
+twisted.web.client module.
+
+If you're lucky, then Agent already supports all the features you're 
+interested in, depending on Twisted 9.0 is okay for you, and you can 
+switch to using it right away.  There are some helpers still missing, so 
+you'll find it a little clunkier to use than downloadPage, but it will 
+let you send your upload without loading it all into memory.
+
+Otherwise, you might have to move to using HTTPClientFactory or 
+HTTPDownloader directly (the factories used by getPage and downloadPage) 
+in order to feed it data incrementally.  Avoid this if you can, those 
+two factories are a mess.
+
+Jean-Paul
+
+
+From peter.westlake at pobox.com  Fri Oct  8 12:50:51 2010
+From: peter.westlake at pobox.com (Peter Westlake)
+Date: Fri, 08 Oct 2010 17:50:51 +0100
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com>
+	<20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+Message-ID: <1286556651.26862.1399073777@webmail.messagingengine.com>
+
+
+
+On Fri, 08 Oct 2010 13:19 +0000, exarkun at twistedmatrix.com wrote:
+> On 1 Oct, 02:31 pm, peter.westlake at pobox.com wrote:
+> >J.P's excellent article http://jcalderone.livejournal.com/50890.html
+> >explains how to avoid calling Request.finish() on a request after its
+> >connection was lost, because that now raises an exception. The code in
+> >the article is able to avoid calling finish() because it handles the
+> >rendering itself. The call to finish() is right there in 
+> >_delayedRender.
+> >But I'm using Nevow (because it's awesome) and all that stuff is done
+> >behind the scenes, where I can't get to it.
+> 
+> Mmm.  Indeed.  Nevow doesn't make it easy to handle this case.
+> 
+> Nevow itself should be taking some action in this case, I think.  One 
+> possibility would be to cancel the Deferred associated with the child 
+> lookup/rendering operation.  This would depend on having a new enough 
+> version of Twisted (such that Deferred cancellation is available) 
+> though.  Otherwise all Nevow could really do is ignore the result of the 
+> Deferred when it comes.
+
+Is the version of Twisted with cancellation more recent than
+the version of Nevow that detects the error? If not, it might
+be reasonable to expect cancellation to be available. Or would
+it be reasonable to test for it at the beginning of the Nevow source?
+
+> Actually, ignoring the result might be a sensible thing to implement 
+> first anyway.  It should be simpler and have no application consequences 
+> except to get rid of the now-disallowed finish() call.
+> 
+> Are you interested in helping implement this?
+
+I'm certainly willing to try! Especially as I have a cron job
+that mails me whenever it finds an exception in the log.
+
+Any hints as to how to go about it would be very welcome.
+So far I've found NevowRequest._cbFinishRender in appserver.py
+- is that the right sort of area? And NevowSite.handleSegment?
+
+Peter.
+
+
+
+
+
+From seadog at sealabs.net  Sun Oct 10 05:41:26 2010
+From: seadog at sealabs.net (Giorgos Logiotatidis)
+Date: Sun, 10 Oct 2010 11:41:26 +0200
+Subject: [Twisted-web] [SOLVED] Re: t.w.client.downloadPage with large
+ amount of	postData
+In-Reply-To: <20101008132320.2022.914390131.divmod.xquotient.471@localhost.localdomain>
+References: <1286304315.15085.21.camel@areti>
+	<20101008132320.2022.914390131.divmod.xquotient.471@localhost.localdomain>
+Message-ID: <1286703686.3288.1.camel@areti>
+
+On Fri, 2010-10-08 at 13:23 +0000, exarkun at twistedmatrix.com wrote:
+> If you're lucky, then Agent already supports all the features you're 
+> interested in, depending on Twisted 9.0 is okay for you, and you can 
+> switch to using it right away.  There are some helpers still missing,
+> so 
+> you'll find it a little clunkier to use than downloadPage, but it
+> will 
+> let you send your upload without loading it all into memory. 
+
+I found a solution using client.Agent from this page [1]. The code on
+that page uses this twistedx python module which uses client.Agent [2]
+
+Thank you for your answer,
+-g
+
+[1]
+http://marianoiglesias.com.ar/python/file-uploading-with-multi-part-encoding-using-twisted/
+[2]
+http://github.com/mariano/pyfire/blob/master/pyfire/twistedx/producer.py
+
+
+
+From exarkun at twistedmatrix.com  Wed Oct 13 13:36:50 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Wed, 13 Oct 2010 17:36:50 -0000
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <1286990566.17346.1399881905@webmail.messagingengine.com>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+Message-ID: <20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+
+On 05:22 pm, peter.westlake at pobox.com wrote:
+>I'm about to start looking at this. Is there any formal procedure to
+>follow,
+>or shall I just put in a ticket and assign it to myself?
+
+That's the formal procedure. :)
+>Peter.
+>
+>On Fri, 08 Oct 2010 17:50 +0100, "Peter Westlake"
+><peter.westlake at pobox.com> wrote:
+>>
+>>
+>>On Fri, 08 Oct 2010 13:19 +0000, exarkun at twistedmatrix.com wrote:
+>> > On 1 Oct, 02:31 pm, peter.westlake at pobox.com wrote:
+>> > >J.P's excellent article 
+>>http://jcalderone.livejournal.com/50890.html
+>> > >explains how to avoid calling Request.finish() on a request after 
+>>its
+>> > >connection was lost, because that now raises an exception. The code 
+>>in
+>> > >the article is able to avoid calling finish() because it handles 
+>>the
+>> > >rendering itself. The call to finish() is right there in
+>> > >_delayedRender.
+>> > >But I'm using Nevow (because it's awesome) and all that stuff is 
+>>done
+>> > >behind the scenes, where I can't get to it.
+>> >
+>> > Mmm.  Indeed.  Nevow doesn't make it easy to handle this case.
+>> >
+>> > Nevow itself should be taking some action in this case, I think. 
+>>One
+>> > possibility would be to cancel the Deferred associated with the 
+>>child
+>> > lookup/rendering operation.  This would depend on having a new 
+>>enough
+>> > version of Twisted (such that Deferred cancellation is available)
+>> > though.  Otherwise all Nevow could really do is ignore the result of 
+>>the
+>> > Deferred when it comes.
+>>
+>>Is the version of Twisted with cancellation more recent than
+>>the version of Nevow that detects the error? If not, it might
+>>be reasonable to expect cancellation to be available. Or would
+>>it be reasonable to test for it at the beginning of the Nevow source?
+
+Unfortunately, the finish() error was introduced in Twisted 9.0 and 
+cancellation was introduced in 10.1.  So there's a few combinations to 
+account for.
+>> > Actually, ignoring the result might be a sensible thing to implement
+>> > first anyway.  It should be simpler and have no application 
+>>consequences
+>> > except to get rid of the now-disallowed finish() call.
+>> >
+>> > Are you interested in helping implement this?
+>>
+>>I'm certainly willing to try! Especially as I have a cron job
+>>that mails me whenever it finds an exception in the log.
+>>
+>>Any hints as to how to go about it would be very welcome.
+>>So far I've found NevowRequest._cbFinishRender in appserver.py
+>>- is that the right sort of area? And NevowSite.handleSegment?
+
+That sounds like the right area.
+
+Jean-Paul
+
+
+From exarkun at twistedmatrix.com  Thu Oct 14 10:07:40 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Thu, 14 Oct 2010 14:07:40 -0000
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <1287059040.15743.1400025407@webmail.messagingengine.com>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+	<20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+	<1287059040.15743.1400025407@webmail.messagingengine.com>
+Message-ID: <20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+
+On 12:24 pm, peter.westlake at pobox.com wrote:
+>On Wed, 13 Oct 2010 17:36 +0000, exarkun at twistedmatrix.com wrote:
+>>On 05:22 pm, peter.westlake at pobox.com wrote:
+>> >I'm about to start looking at this. Is there any formal procedure to
+>> >follow,
+>> >or shall I just put in a ticket and assign it to myself?
+>>
+>>That's the formal procedure. :)
+>
+>Okay, it's in as ticket 3031. I can't see a way to assign it to
+>myself, probably because it wouldn't be sensible to give full
+>access to random people off the Internet!
+
+I gave you the "contributor" role which hopefully will let you do a few 
+more things with tickets.
+
+Jean-Paul
+
+
+From peter.westlake at pobox.com  Thu Oct 14 12:01:51 2010
+From: peter.westlake at pobox.com (Peter Westlake)
+Date: Thu, 14 Oct 2010 17:01:51 +0100
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+	<20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+	<1287059040.15743.1400025407@webmail.messagingengine.com>
+	<20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+Message-ID: <1287072111.30034.1400065711@webmail.messagingengine.com>
+
+
+
+On Thu, 14 Oct 2010 14:07 +0000, exarkun at twistedmatrix.com wrote:
+> On 12:24 pm, peter.westlake at pobox.com wrote:
+> >On Wed, 13 Oct 2010 17:36 +0000, exarkun at twistedmatrix.com wrote:
+> >>On 05:22 pm, peter.westlake at pobox.com wrote:
+> >> >I'm about to start looking at this. Is there any formal procedure to
+> >> >follow,
+> >> >or shall I just put in a ticket and assign it to myself?
+> >>
+> >>That's the formal procedure. :)
+> >
+> >Okay, it's in as ticket 3031. I can't see a way to assign it to
+> >myself, probably because it wouldn't be sensible to give full
+> >access to random people off the Internet!
+> 
+> I gave you the "contributor" role which hopefully will let you do a few 
+> more things with tickets.
+
+Got it, thanks!
+
+Peter.
+
+
+From peter.westlake at pobox.com  Fri Oct 15 12:52:53 2010
+From: peter.westlake at pobox.com (Peter Westlake)
+Date: Fri, 15 Oct 2010 17:52:53 +0100
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <1287072111.30034.1400065711@webmail.messagingengine.com>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+	<20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+	<1287059040.15743.1400025407@webmail.messagingengine.com>
+	<20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+	<1287072111.30034.1400065711@webmail.messagingengine.com>
+Message-ID: <1287161573.2621.1400258607@webmail.messagingengine.com>
+
+A quick question about Python style:
+
+nevow.Request is a subclass of twisted.web.server.Request,
+which is a subclass of http.Request, which has an attribute
+_disconnected. Since the name begins with an underscore, it
+isn't intended to be part of the public API, and I think
+that means I can't refer to it in nevow.Request.
+
+There are two options:
+
+1) use notifyFinish() to set a new attribute in nevow.Request,
+   which would end up duplicating _disconnected;
+
+2) use it anyway, and file a request for _disconnected to
+   become part of the published interface.
+
+Both approaches work, and I have a unit test to prove it!
+Which would you like me to do?
+
+Peter.
+
+
+
+From exarkun at twistedmatrix.com  Fri Oct 15 15:03:08 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Fri, 15 Oct 2010 19:03:08 -0000
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <1287161573.2621.1400258607@webmail.messagingengine.com>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+	<20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+	<1287059040.15743.1400025407@webmail.messagingengine.com>
+	<20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+	<1287072111.30034.1400065711@webmail.messagingengine.com>
+	<1287161573.2621.1400258607@webmail.messagingengine.com>
+Message-ID: <20101015190308.2414.468545070.divmod.xquotient.497@localhost.localdomain>
+
+On 04:52 pm, peter.westlake at pobox.com wrote:
+>A quick question about Python style:
+>
+>nevow.Request is a subclass of twisted.web.server.Request,
+>which is a subclass of http.Request, which has an attribute
+>_disconnected. Since the name begins with an underscore, it
+>isn't intended to be part of the public API, and I think
+>that means I can't refer to it in nevow.Request.
+>
+>There are two options:
+>
+>1) use notifyFinish() to set a new attribute in nevow.Request,
+>   which would end up duplicating _disconnected;
+>
+>2) use it anyway, and file a request for _disconnected to
+>   become part of the published interface.
+>
+>Both approaches work, and I have a unit test to prove it!
+>Which would you like me to do?
+
+A combination of the two sounds best to me.  Use `notifyFinish` for now, 
+and file a ticket asking for a public version of `_disconnected`.  When 
+that's done and has been released for long enough, Nevow can switch (if 
+anyone cares enough to do it - presumably the only reason anyone would 
+care is that using `notifyFinish` might add a miniscule additional 
+amount of per-request overhead).
+
+Jean-Paul
+
+
+From peter.westlake at pobox.com  Fri Oct 15 15:50:39 2010
+From: peter.westlake at pobox.com (Peter Westlake)
+Date: Fri, 15 Oct 2010 20:50:39 +0100
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <20101015190308.2414.468545070.divmod.xquotient.497@localhost.localdomain>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+	<20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+	<1287059040.15743.1400025407@webmail.messagingengine.com>
+	<20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+	<1287072111.30034.1400065711@webmail.messagingengine.com>
+	<1287161573.2621.1400258607@webmail.messagingengine.com>
+	<20101015190308.2414.468545070.divmod.xquotient.497@localhost.localdomain>
+Message-ID: <1287172239.3002.1400286879@webmail.messagingengine.com>
+
+
+
+On Fri, 15 Oct 2010 19:03 +0000, exarkun at twistedmatrix.com wrote:
+> On 04:52 pm, peter.westlake at pobox.com wrote:
+> >A quick question about Python style:
+> >
+> >nevow.Request is a subclass of twisted.web.server.Request,
+> >which is a subclass of http.Request, which has an attribute
+> >_disconnected. Since the name begins with an underscore, it
+> >isn't intended to be part of the public API, and I think
+> >that means I can't refer to it in nevow.Request.
+> >
+> >There are two options:
+> >
+> >1) use notifyFinish() to set a new attribute in nevow.Request,
+> >   which would end up duplicating _disconnected;
+> >
+> >2) use it anyway, and file a request for _disconnected to
+> >   become part of the published interface.
+> >
+> >Both approaches work, and I have a unit test to prove it!
+> >Which would you like me to do?
+> 
+> A combination of the two sounds best to me.  Use `notifyFinish` for now, 
+> and file a ticket asking for a public version of `_disconnected`.  When 
+> that's done and has been released for long enough, Nevow can switch (if 
+> anyone cares enough to do it - presumably the only reason anyone would 
+> care is that using `notifyFinish` might add a miniscule additional 
+> amount of per-request overhead).
+
+In that case, I have a patch (attached). You also mentioned that
+handleSegment would need fixing: under what circumstances does
+that go wrong?
+
+Peter.
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: avoid-request-finish-error.patch
+Type: application/octet-stream
+Size: 2150 bytes
+Desc: not available
+Url : http://twistedmatrix.com/pipermail/twisted-web/attachments/20101015/b469c609/attachment.obj 
+
+From Eric.Chamberlain at zonarsystems.com  Thu Oct 21 16:17:36 2010
+From: Eric.Chamberlain at zonarsystems.com (Eric Chamberlain)
+Date: Thu, 21 Oct 2010 13:17:36 -0700
+Subject: [Twisted-web] Adding service to virtual path
+Message-ID: <65A83E3E-9526-4DCB-9462-DAF7060C51CB@zonarsystems.com>
+
+I'm trying to add a single service to a virtual path like http://localhost:8080/geospatial/geocoder/XMLRPC.
+
+Version info:
+Twisted: 9.0
+Python: 2.6
+
+The following code does not work:
+
+root = resource.Resource()
+srv = XMLRPCGeocoder()
+root.putChild("geospatial/geocoder/XMLRPC", srv)
+
+When I attempt to access the service, twisted gives the following error:
+Request failed: <ProtocolError for localhost:8080/geospatial/geocoder/XMLRPC: 404 Not Found>
+
+If I use the following code, and change the client to point only to localhost:8080/XMLRPC, it _does_ work:
+
+root.putChild("XMLRPC", srv)
+
+The docs say something about using putChild.putChild... so I tried the following:
+
+root.putChild("geospatial", None).putChild("geocoder", None).putChild("XMLRPC", srv)
+
+The problem is Resource.putChild _always_ returns None!  Even the following, which is the working version:
+print root.putChild("XMLRPC", srv) # Prints None too
+
+Looking at twisted.web.resource.Resource's source code, all it does is add the path to a hash array and returns nothing...
+
+It seems like such a simple thing to do!  Thanks for your help!
+
+
+
+________________________________
+Confidentiality Notice: This e-mail may contain proprietary information some of which may be legally privileged. It is for the intended recipient(s) only. If you believe that it has been sent to you in error, please notify the sender by reply e-mail and delete the message. Any disclosure, copying, distribution or use of this information by someone other than the intended recipient(s) is prohibited and may be unlawful.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20101021/1ac8e4dd/attachment.htm 
+
+From marco.giusti at gmail.com  Thu Oct 21 16:47:33 2010
+From: marco.giusti at gmail.com (Marco Giusti)
+Date: Thu, 21 Oct 2010 22:47:33 +0200
+Subject: [Twisted-web] Adding service to virtual path
+In-Reply-To: <65A83E3E-9526-4DCB-9462-DAF7060C51CB@zonarsystems.com>
+References: <65A83E3E-9526-4DCB-9462-DAF7060C51CB@zonarsystems.com>
+Message-ID: <20101021204733.GA2437@murdoc>
+
+On Thu, Oct 21, 2010 at 01:17:36PM -0700, Eric Chamberlain wrote:
+> I'm trying to add a single service to a virtual path like http://localhost:8080/geospatial/geocoder/XMLRPC.
+> 
+> Version info:
+> Twisted: 9.0
+> Python: 2.6
+> 
+> The following code does not work:
+> 
+> root = resource.Resource()
+> srv = XMLRPCGeocoder()
+> root.putChild("geospatial/geocoder/XMLRPC", srv)
+> 
+> When I attempt to access the service, twisted gives the following error:
+> Request failed: <ProtocolError for
+> localhost:8080/geospatial/geocoder/XMLRPC: 404 Not Found>
+
+You should put a resource for each component of the url:
+
+	root = resource.Resource()
+	geospatial = resource.Resource()
+	root.putChild('geospatial', geospatial)
+	geocoder = resource.Resource()
+	geospatial.putChild('geocoder', geocoder)
+	xmlrpc = XMLRPCGeocoder()
+	geocoder.putChild('XMLRPC', xmlrpc)
+
+I didn't double checked, but I am pretty sure that this will works.
+
+> Looking at twisted.web.resource.Resource's source code, all it does is
+> add the path to a hash array and returns nothing...
+
+Yes, putChild does this, but this is not how path traversal works. The
+path is splitted in segments which are harvested one after the other
+until a resource is returned. 
+
+m.
+
+-- 
+Dalle virt? che si esigono in un domestico, l'Eccellenza Vostra conosce molti
+padroni degni d'esser servitori?
+		-- Pierre Augustin Caron de Beaumarchais
+
+
+From Eric.Chamberlain at zonarsystems.com  Thu Oct 21 17:20:41 2010
+From: Eric.Chamberlain at zonarsystems.com (Eric Chamberlain)
+Date: Thu, 21 Oct 2010 14:20:41 -0700
+Subject: [Twisted-web] Adding service to virtual path
+In-Reply-To: <20101021204733.GA2437@murdoc>
+References: <65A83E3E-9526-4DCB-9462-DAF7060C51CB@zonarsystems.com>
+	<20101021204733.GA2437@murdoc>
+Message-ID: <96C44829-2716-44B7-8758-DBDB1D255E03@zonarsystems.com>
+
+That was it.  If you lived near by I'd buy you a beer.  Thank you!
+
+
+On Oct 21, 2010, at 1:47 PM, Marco Giusti wrote:
+
+On Thu, Oct 21, 2010 at 01:17:36PM -0700, Eric Chamberlain wrote:
+I'm trying to add a single service to a virtual path like http://localhost:8080/geospatial/geocoder/XMLRPC.
+
+Version info:
+Twisted: 9.0
+Python: 2.6
+
+The following code does not work:
+
+root = resource.Resource()
+srv = XMLRPCGeocoder()
+root.putChild("geospatial/geocoder/XMLRPC", srv)
+
+When I attempt to access the service, twisted gives the following error:
+Request failed: <ProtocolError for
+localhost:8080/geospatial/geocoder/XMLRPC: 404 Not Found>
+
+You should put a resource for each component of the url:
+
+root = resource.Resource()
+geospatial = resource.Resource()
+root.putChild('geospatial', geospatial)
+geocoder = resource.Resource()
+geospatial.putChild('geocoder', geocoder)
+xmlrpc = XMLRPCGeocoder()
+geocoder.putChild('XMLRPC', xmlrpc)
+
+I didn't double checked, but I am pretty sure that this will works.
+
+Looking at twisted.web.resource.Resource's source code, all it does is
+add the path to a hash array and returns nothing...
+
+Yes, putChild does this, but this is not how path traversal works. The
+path is splitted in segments which are harvested one after the other
+until a resource is returned.
+
+m.
+
+--
+Dalle virt? che si esigono in un domestico, l'Eccellenza Vostra conosce molti
+padroni degni d'esser servitori?
+-- Pierre Augustin Caron de Beaumarchais
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com<mailto:Twisted-web at twistedmatrix.com>
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+________________________________
+Confidentiality Notice: This e-mail may contain proprietary information some of which may be legally privileged. It is for the intended recipient(s) only. If you believe that it has been sent to you in error, please notify the sender by reply e-mail and delete the message. Any disclosure, copying, distribution or use of this information by someone other than the intended recipient(s) is prohibited and may be unlawful.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20101021/50dec48d/attachment.htm 
+
+From peter.westlake at pobox.com  Thu Oct 21 17:32:09 2010
+From: peter.westlake at pobox.com (Peter Westlake)
+Date: Thu, 21 Oct 2010 22:32:09 +0100
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <1287172239.3002.1400286879@webmail.messagingengine.com>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+	<20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+	<1287059040.15743.1400025407@webmail.messagingengine.com>
+	<20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+	<1287072111.30034.1400065711@webmail.messagingengine.com>
+	<1287161573.2621.1400258607@webmail.messagingengine.com>
+	<20101015190308.2414.468545070.divmod.xquotient.497@localhost.localdomain>
+	<1287172239.3002.1400286879@webmail.messagingengine.com>
+Message-ID: <1287696729.17543.1401309377@webmail.messagingengine.com>
+
+On Fri, 15 Oct 2010 20:50 +0100, "Peter Westlake"
+<peter.westlake at pobox.com> wrote:
+> 
+> 
+> On Fri, 15 Oct 2010 19:03 +0000, exarkun at twistedmatrix.com wrote:
+> > On 04:52 pm, peter.westlake at pobox.com wrote:
+> > >A quick question about Python style:
+...
+> 
+> In that case, I have a patch (attached). You also mentioned that
+> handleSegment would need fixing: under what circumstances does
+> that go wrong?
+
+Should I attach the patch to the ticket, or wait for someone
+to have a look at it, or - what's the drill?
+
+Peter.
+
+
+From exarkun at twistedmatrix.com  Fri Oct 22 09:38:33 2010
+From: exarkun at twistedmatrix.com (exarkun at twistedmatrix.com)
+Date: Fri, 22 Oct 2010 13:38:33 -0000
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <1287696729.17543.1401309377@webmail.messagingengine.com>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+	<20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+	<1287059040.15743.1400025407@webmail.messagingengine.com>
+	<20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+	<1287072111.30034.1400065711@webmail.messagingengine.com>
+	<1287161573.2621.1400258607@webmail.messagingengine.com>
+	<20101015190308.2414.468545070.divmod.xquotient.497@localhost.localdomain>
+	<1287172239.3002.1400286879@webmail.messagingengine.com>
+	<1287696729.17543.1401309377@webmail.messagingengine.com>
+Message-ID: <20101022133833.1927.406468151.divmod.xquotient.22@localhost.localdomain>
+
+On 21 Oct, 09:32 pm, peter.westlake at pobox.com wrote:
+>On Fri, 15 Oct 2010 20:50 +0100, "Peter Westlake"
+><peter.westlake at pobox.com> wrote:
+>>
+>>
+>>On Fri, 15 Oct 2010 19:03 +0000, exarkun at twistedmatrix.com wrote:
+>> > On 04:52 pm, peter.westlake at pobox.com wrote:
+>> > >A quick question about Python style:
+>...
+>>
+>>In that case, I have a patch (attached). You also mentioned that
+>>handleSegment would need fixing: under what circumstances does
+>>that go wrong?
+>
+>Should I attach the patch to the ticket, or wait for someone
+>to have a look at it, or - what's the drill?
+
+Attaching patches to tickets is definitely a good thing.  It's easier to 
+keep track of things there than via email.  You might also want to add 
+the "review" keyword to the ticket to draw people's attention.
+
+Thanks,
+Jean-Paul
+
+
+From marco.giusti at gmail.com  Fri Oct 22 09:47:31 2010
+From: marco.giusti at gmail.com (Marco Giusti)
+Date: Fri, 22 Oct 2010 15:47:31 +0200
+Subject: [Twisted-web] Adding service to virtual path
+In-Reply-To: <96C44829-2716-44B7-8758-DBDB1D255E03@zonarsystems.com>
+References: <65A83E3E-9526-4DCB-9462-DAF7060C51CB@zonarsystems.com>
+	<20101021204733.GA2437@murdoc>
+	<96C44829-2716-44B7-8758-DBDB1D255E03@zonarsystems.com>
+Message-ID: <20101022134731.GB2437@murdoc>
+
+On Thu, Oct 21, 2010 at 02:20:41PM -0700, Eric Chamberlain wrote:
+> That was it.  If you lived near by I'd buy you a beer.  Thank you!
+
+I appreciate the thought. :)
+
+m.
+
+-- 
+Cosa volete? Questo diavolo d'uomo ha sempre le tasche ripiene di argomenti
+irresistibili.
+		-- Pierre Augustin Caron de Beaumarchais
+
+
+From peter.westlake at pobox.com  Fri Oct 22 10:09:39 2010
+From: peter.westlake at pobox.com (Peter Westlake)
+Date: Fri, 22 Oct 2010 15:09:39 +0100
+Subject: [Twisted-web] How to handle interrupted responses in nevow?
+In-Reply-To: <20101022133833.1927.406468151.divmod.xquotient.22@localhost.localdomain>
+References: <1285943467.13732.1397865225@webmail.messagingengine.com><20101008131933.2022.1335597011.divmod.xquotient.463@localhost.localdomain>
+	<1286556651.26862.1399073777@webmail.messagingengine.com>
+	<1286990566.17346.1399881905@webmail.messagingengine.com>
+	<20101013173650.2414.46126362.divmod.xquotient.11@localhost.localdomain>
+	<1287059040.15743.1400025407@webmail.messagingengine.com>
+	<20101014140740.2414.1148413184.divmod.xquotient.315@localhost.localdomain>
+	<1287072111.30034.1400065711@webmail.messagingengine.com>
+	<1287161573.2621.1400258607@webmail.messagingengine.com>
+	<20101015190308.2414.468545070.divmod.xquotient.497@localhost.localdomain>
+	<1287172239.3002.1400286879@webmail.messagingengine.com>
+	<1287696729.17543.1401309377@webmail.messagingengine.com>
+	<20101022133833.1927.406468151.divmod.xquotient.22@localhost.localdomain>
+Message-ID: <1287756579.9856.1401420197@webmail.messagingengine.com>
+
+On Fri, 22 Oct 2010 13:38 +0000, exarkun at twistedmatrix.com wrote:
+...
+> Attaching patches to tickets is definitely a good thing.  It's easier to 
+> keep track of things there than via email.  You might also want to add 
+> the "review" keyword to the ticket to draw people's attention.
+
+Done, thanks: http://divmod.org/trac/ticket/3031
+
+It's still assigned to me.
+
+Peter.
+
+

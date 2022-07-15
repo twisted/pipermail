@@ -1,0 +1,234 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] How to switch users in SSH session.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20to%20switch%20users%20in%20SSH%20session.&In-Reply-To=20070927125800.8162.2058440172.divmod.quotient.14879%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="016090.html">
+   <LINK REL="Next"  HREF="016092.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] How to switch users in SSH session.</H1>
+    <B>Paul_S_Johnson at mnb.uscourts.gov</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20How%20to%20switch%20users%20in%20SSH%20session.&In-Reply-To=20070927125800.8162.2058440172.divmod.quotient.14879%40ohm"
+       TITLE="[Twisted-Python] How to switch users in SSH session.">Paul_S_Johnson at mnb.uscourts.gov
+       </A><BR>
+    <I>Thu Sep 27 16:00:14 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="016090.html">[Twisted-Python] Discovering Twisted : reactor.stop()
+</A></li>
+        <LI>Next message: <A HREF="016092.html">[Twisted-Python] How to switch users in SSH session.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16091">[ date ]</a>
+              <a href="thread.html#16091">[ thread ]</a>
+              <a href="subject.html#16091">[ subject ]</a>
+              <a href="author.html#16091">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>After much wrangling and a small miracle I have managed to write an object 
+that fetches the output of three commands in the order given through an 
+SSH connection. How come I cannot switch users? Some of the information I 
+need can only be fetched through a root account and security is such that 
+I cannot log in remotely from a root account but must switch once logged 
+in from an account with less than root privileges.
+
+Here's the line that instaniates my SSH object (also repeated at the end 
+of my code):
+
+myssh = SSH(&quot;my.host.com&quot;, &quot;myusername&quot;, &quot;mypasswd&quot;, [&quot;id; su - root; 
+myrootpasswd; id&quot;, &quot;pwd&quot;, &quot;ls -l&quot;])
+
+The last argument above is a  list of three commands. Inside one command 
+&quot;;&quot; separates the piece parts.
+I am not even able to su to accounts that don't require a password.
+
+###========= CODE STARTS ================###
+from twisted.conch import error
+from twisted.conch.ssh import transport, connection, keys, userauth, 
+channel, common
+from twisted.internet import defer, protocol, reactor
+import sys, getpass, os, string
+
+class ClientCommandTransport(transport.SSHClientTransport):
+    def __init__(self, username, password, cmds, caller):
+        self.username = username
+        self.password = password
+        self.cmds = cmds
+        self.caller = caller
+ 
+    def verifyHostKey(self, pubKey, fingerprint):
+        # in a real app, you should verify that the fingerprint matches
+        # the one you expected to get from this server
+        return defer.succeed(True)
+
+    def connectionSecure(self):
+        self.requestService(PasswordAuth(self.username, self.password, 
+ClientConnection(self.cmds, self.caller)))
+
+class PasswordAuth(userauth.SSHUserAuthClient):
+    def __init__(self, user, password, connection):
+        userauth.SSHUserAuthClient.__init__(self, user, connection)
+        self.password = password
+ 
+    def getPassword(self, prompt=None):
+        return defer.succeed(self.password)
+
+class ClientConnection(connection.SSHConnection):
+    def __init__(self, cmds, caller, *args, **kwargs):
+        connection.SSHConnection.__init__(self)
+        self.cmds = cmds
+        self.caller = caller
+
+    #======================
+    def serviceStarted(self):
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbFirst)
+        self.d.addErrback(self._ebFirst)
+        self.openChannel(CommandChannel(self.cmds[0], lastcmd=0, 
+conn=self))
+
+    def _cbFirst(self, result):
+        #print 'CALLBACK Result 1:', result
+        self.caller.responses.append(result.rstrip())
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbSecond)
+        self.d.addErrback(self._ebSecond)
+        self.openChannel(CommandChannel(self.cmds[1], lastcmd=0, 
+conn=self))
+
+    def _ebFirst(self, f):
+        self.caller.responses.append(None)
+        print &quot;Error 1&quot;
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbSecond)
+        self.d.addErrback(self._ebSecond)
+        self.openChannel(CommandChannel(self.cmds[1], lastcmd=0, 
+conn=self))
+        #log.err()
+
+    def _cbSecond(self, result):
+        #print 'CALLBACK Result 2:', result
+        self.caller.responses.append(result.rstrip())
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbThird)
+        self.d.addErrback(self._ebThird)
+        self.openChannel(CommandChannel(self.cmds[2], lastcmd=1, 
+conn=self))
+
+    def _ebSecond(self, f):
+        self.caller.responses.append(None)
+        self.d = defer.Deferred()
+        self.d.addCallback(self._cbThird)
+        self.d.addErrback(self._ebThird)
+        self.openChannel(CommandChannel(self.cmds[2], lastcmd=1, 
+conn=self))
+        #log.err()
+
+    def _cbThird(self, result):
+        self.caller.responses.append(result.rstrip())
+        #print 'CALLBACK Result 3:', result
+        reactor.stop()
+
+    def _ebThird(self, f):
+        self.caller.responses.append(None)
+        log.err()
+        reactor.stop()
+    #======================
+
+class CommandChannel(channel.SSHChannel):
+    name = 'session'
+ 
+    def __init__(self, command, lastcmd, *args, **kwargs):
+        channel.SSHChannel.__init__(self, *args, **kwargs)
+        self.command = command
+        self.lastcmd = lastcmd
+        self.data = &quot;&quot;
+
+    def channelOpen(self, data):
+        self.conn.sendRequest(self, 'exec', common.NS(self.command), 
+wantReply=True).addCallback(self._gotResponse)
+
+    def _gotResponse(self, _):
+        #print &quot;RESPONSE&quot;
+        self.conn.sendEOF(self)
+
+    def dataReceived(self, data):
+        #print &quot;Data Received:&quot;, data
+        self.data += data
+
+    def closed(self):
+        self.conn.d.callback(self.data)
+        self.loseConnection()
+        ##        if self.lastcmd:
+        ##            print &quot;closing reactor.&quot;
+        ##            reactor.stop()
+
+class ClientCommandFactory(protocol.ClientFactory):
+    def __init__(self, username, password, cmds, caller):
+        self.username = username
+        self.password = password
+        self.cmds = cmds
+        self.caller = caller
+
+    def buildProtocol(self, addr):
+        protocol = ClientCommandTransport(self.username, self.password, 
+self.cmds, self.caller)
+        return protocol
+
+ 
+class SSH():
+    &quot;&quot;&quot; Contains a SSH connection, runs commands, and stores results. &quot;&quot;&quot;
+    def __init__(self, host, username, password, cmds):
+        self.host = host
+        self.username = username
+        self.password = password
+        self.cmds = cmds
+        self.responses = []
+        self.run_commands()
+
+    def run_commands(self):
+        factory = ClientCommandFactory(self.username, self.password, 
+self.cmds, self)
+        reactor.connectTCP(self.host, 22, factory)
+        reactor.run()
+
+myssh = SSH(&quot;my.host.com&quot;, &quot;myacct&quot;, &quot;mypasswd&quot;, [&quot;id; su - root; 
+myrootpasswd; id&quot;, &quot;pwd&quot;, &quot;ls -l&quot;])
+
+print &quot;=&quot; * 25
+for i, response in enumerate(myssh.responses):
+    print i, response
+    print &quot;=&quot; * 25
+
+print &quot;\nDone.&quot;
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20070927/1ab7670f/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20070927/1ab7670f/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="016090.html">[Twisted-Python] Discovering Twisted : reactor.stop()
+</A></li>
+	<LI>Next message: <A HREF="016092.html">[Twisted-Python] How to switch users in SSH session.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16091">[ date ]</a>
+              <a href="thread.html#16091">[ thread ]</a>
+              <a href="subject.html#16091">[ subject ]</a>
+              <a href="author.html#16091">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

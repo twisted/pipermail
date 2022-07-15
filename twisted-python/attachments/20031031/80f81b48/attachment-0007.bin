@@ -1,0 +1,105 @@
+import os, sys
+
+from twisted.application import internet, service, strports
+
+from twisted.python import usage, log, reflect
+from twisted.python.util import sibpath
+
+from twisted.web.server import Site
+from twisted.cred.portal import Portal
+from twisted.cred.checkers import AllowAnonymousAccess, InMemoryUsernamePasswordDatabaseDontUse, FilePasswordDB
+from twisted.web.woven.guard import UsernamePasswordWrapper, SessionWrapper
+from twisted.cred.credentials import CramMD5Credentials, IAnonymous, IUsernamePassword
+from twisted.internet import ssl
+from twisted.web.util import Redirect
+
+from twisted.spread import pb
+
+from ratcontrol import login
+from ratcontrol.web import pages, utility
+import ratcontrol
+
+class MissingDependency(Exception):
+    """A required dependency was missing.
+    """
+
+def checkDependency(name, url):
+    try:
+        reflect.namedModule(name)
+    except ImportError:
+        raise MissingDependency(
+            "RatControl requires the \"%s\" module.  You can get it at %s" % (name,url))
+
+#checkDependency("WConio", "http://newcenturycomputers.net/projects/wconio.html")
+#checkDependency("anycons", "http://newcenturycomputers.net/projects/anycons.html")
+
+class Options(usage.Options):
+    optParameters = [
+        ['httpport', "p", 8888,
+            "Port to run web server on."],
+        ['dir', "p", None,
+            "Directory to serve."],
+    ]
+
+    def opt_httpport(self, port):
+        """Set the port to run the web server on"""
+        self['httpport'] = port
+
+    def opt_dir(self, dir):
+        """Set the directory to serve"""
+        self['directory'] = dir
+
+def addHTTP(config, realm, service, ctx=None):
+    portal = Portal(realm)
+    #portal.registerChecker(realm)
+    # Allow anonymous access.
+    portal.registerChecker(AllowAnonymousAccess(), IAnonymous)
+    # Allow users registered in the password file.
+    portal.registerChecker(FilePasswordDB(sibpath(__file__, "passwords.txt")))
+
+    site = Site(
+        SessionWrapper(
+              UsernamePasswordWrapper(portal, callback=utility.loginCallback)
+        ),
+        #logPath = config['weblogfile'],
+    )
+
+    strports.service("tcp:8888", site).setServiceParent(service)
+
+
+def addPB(config, realm, service, ctx=None):
+    portal = Portal(realm)
+    # Allow anonymous access.
+    portal.registerChecker(AllowAnonymousAccess(), IAnonymous)
+    # Allow users registered in the password file.
+    portal.registerChecker(FilePasswordDB(sibpath(__file__, "passwords.txt")))
+
+    factory = pb.PBServerFactory(portal)
+    svc = internet.TCPServer(ratcontrol.config.portNumber, factory)
+    svc.setName("RatControl PB Service")
+    svc.setServiceParent(service)
+
+
+def makeService(config):
+    s = service.MultiService()
+    rlm = login.RatControlRealm()
+
+    ctx = None
+    if config.get('certificate'):
+        if not ssl.supported:
+            log.msg('Warning: SSL not available')
+        else:
+            f = config['certificate']
+            ctx = ssl.DefaultOpenSSLContextFactory(f, f)
+
+    systems = (
+        ('web', addHTTP),
+        ('pb',        addPB),
+    )
+
+    for (key, func) in systems:
+        # Add the service if it is enabled in the config obj
+        if config[key]:
+            func(config, rlm, s, ctx)
+
+    return s

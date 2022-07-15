@@ -1,0 +1,92 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Endpoints &amp; Reactors (was Re: Integrating Twisted	with ZeroMQ)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Endpoints%20%26%20Reactors%20%28was%20Re%3A%20Integrating%20Twisted%0A%09with%20ZeroMQ%29&In-Reply-To=%3C8BFFFDD7-0CD3-444A-8302-2BD151C9F1EA%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="054813.html">
+   <LINK REL="Next"  HREF="054815.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Endpoints &amp; Reactors (was Re: Integrating Twisted	with ZeroMQ)</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Endpoints%20%26%20Reactors%20%28was%20Re%3A%20Integrating%20Twisted%0A%09with%20ZeroMQ%29&In-Reply-To=%3C8BFFFDD7-0CD3-444A-8302-2BD151C9F1EA%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] Endpoints &amp; Reactors (was Re: Integrating Twisted	with ZeroMQ)">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Mon Jun  7 23:40:21 MDT 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="054813.html">[Twisted-Python] Integrating Twisted with ZeroMQ
+</A></li>
+        <LI>Next message (by thread): <A HREF="054815.html">[Twisted-Python] Integrating Twisted with ZeroMQ
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#54814">[ date ]</a>
+              <a href="thread.html#54814">[ thread ]</a>
+              <a href="subject.html#54814">[ subject ]</a>
+              <a href="author.html#54814">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Jun 7, 2010, at 6:07 PM, Christopher Armstrong wrote:
+
+&gt;<i> But will that &quot;lower-level than endpoints&quot; API need to be TCP-specific?
+</I>&gt;<i> 
+</I>&gt;<i> We don't have a listenSerialPort, so why do we need listenTCP (by the way, we should totally have a SerialPortEndpoint)?
+</I>
+We totally *should* have a SerialPortEndpoint, but I definitely prefer the way that calling 'reactor.listenTCP(...)' implicitly selects a back-end to the platform-detection junk at the bottom of twisted.internet.serialport.  The wonky platform-detection has some practical implications, as shown here: &lt;<A HREF="http://twistedmatrix.com/trac/ticket/3802">http://twistedmatrix.com/trac/ticket/3802</A>&gt;.  I would actually prefer a nice 'AttributeError: SelectReactor has no attribute &quot;listenSerialPort&quot;' to the mess that it currently produces.
+
+&gt;<i> I understand your point that some reactors provide addReader while others provide addOverlappedIOObject (or whatever the heck it's called), but an Endpoints implementation can DTRT based on the interfaces that the supplied reactor provides, so I don't see why TCPServerEndpoint can't just instantiate a port and call addReader/addWriter or the IOCPreactor equivalent.
+</I>
+&gt;<i> And maybe we need a better way to deal with the differences between those reactors, but I don't see why that requires us to have public transport-specific methods on the reactor.
+</I>
+Well, we need to deal with the differences *somehow*.  Currently, we just have a listenTCP on the reactor.  This makes the implementation of endpoints dead simple, and it doesn't really vary at all per-platform.  It seems to work okay; the main drawback, as far as I can tell, is that it deepens the inheritance hierarchy of the reactors a bit, because we use inheritance to grab the many similar method implementations that many similar reactors share.
+
+In the current model, we can add new types of socket-ish things - the ones that I can think of which may one day actually matter are Java SelectableChannel objects and maybe System.Net.Socket.Select if we ever support Jython and IronPython, respectively - by adding new reactors, and these things need new reactors anyway in order to invoke the multiplexors that understand these objects.  So that sorta makes sense to me.  You call listenTCP on something somewhat opaque, and the opaque thing knows how to give you back an appropriate IListeningPort, ITransport, etc.  With the reactor plugin API, we can even add these new types of things outside of Twisted, pretty straightforwardly.
+
+This dispatch point *could* be handled internally in each endpoint implementation, and that does seem hypothetically more elegant to me, since it's the endpoint that should care about the TCP-ness and the reactor that should care about the file-descriptor-ness, abstractly.  But at some point, the rubber must meet the road, and IReactorFDSet needs to be mapped to twisted.internet.tcp.Port, and twisted.internet.tcp.Connector, or similar, and IReactorIOCPMumbleMumble (btw, this interface should exist) to twisted.internet.iocpreactor.tcp.Port, etc.
+
+If I want to do that mapping under the current system, I just implement my own reactor plugin and implement listenTCP to do the right thing.  Under a new system where the endpoint was responsible for handling that mapping, can I add a reactor plugin that has a meaningfully different idea of what a multiplexable I/O resource is?  I have some vague ideas... something sort of shaped like an adapter registry, maybe?  A different plugin API, for things to talk specifically to the TCP endpoint code?  I can brainstorm up some vague ideas but none of them really sit right, and certainly none of them are as straightforward as just implementing a bunch of methods specified by interfaces.
+
+Now, I'm pretty sure you know how I feel about this, Chris, but just so nobody else takes away the wrong conclusion from this: I'm not saying that the current internal reactor factoring is perfect, or even particularly good.  That code needs a lot of cleanup, a lot of documentation, and in many places a general sorting-out of what really constitutes the intended public API.  It's far too hard to implement an external reactor, because you can't sensibly inherit any of that code which all reactors practically need to inherit.  It's mostly undocumented and it has even changed incompatibly a few times.   For example, &lt;<A HREF="http://twistedmatrix.com/trac/changeset/24132">http://twistedmatrix.com/trac/changeset/24132</A>&gt; incompatibly changed the signature of 'tcp.Port.__init__'.  However, it seems like a more straightforward job to me to figure out a reasonable signature for tcp.Port.__init__, and to do some general de-duplication of code between the IOCP modules and the UNIX-file-descriptor modules, than to come up with a whole new way to correlate endpoint implementations to their respective concrete transport implementations.
+
+This quality problem in the core multiplexing code is actually one of the reasons I want to vocally defend the current architecture.  Until we have a defined path forward, with a clear design that's better in a way that has some positive, practical ramifications, I don't want to put anyone off doing this necessary maintenance work in twisted.internet.  There's not a huge amount of maintenance going on in that area already, but if we adopt the attitude of &quot;Oh, let's forget about that, it's going to get deprecated anyway&quot;, I have a feeling the amount of work will drop to zero.
+
+&gt;<i> However, of course I'm not advocating we jump the gun on deprecating listenTCP and so forth. We shouldn't deprecate them now, and when we do, we should make it an *extremely* long period of PendingDeprecation followed by Deprecation.
+</I>
+Well, Python 2.7 isn't going to display DeprecationWarning by default anyway, so I think PendingDeprecation may be pointless.  But I definitely echo the sentiment, regardless.
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20100608/ab104fb4/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="054813.html">[Twisted-Python] Integrating Twisted with ZeroMQ
+</A></li>
+	<LI>Next message (by thread): <A HREF="054815.html">[Twisted-Python] Integrating Twisted with ZeroMQ
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#54814">[ date ]</a>
+              <a href="thread.html#54814">[ thread ]</a>
+              <a href="subject.html#54814">[ subject ]</a>
+              <a href="author.html#54814">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

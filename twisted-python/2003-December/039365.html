@@ -1,0 +1,167 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Unjellying per broker vs. global jelly.unjellyableRegistry
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Unjellying%20per%20broker%20vs.%20global%20jelly.unjellyableRegistry&In-Reply-To=%3C86smjbdlgs.fsf%40stronzo.brainbot.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="039364.html">
+   <LINK REL="Next"  HREF="039366.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Unjellying per broker vs. global jelly.unjellyableRegistry</H1>
+    <B>Ralf Schmitt</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Unjellying%20per%20broker%20vs.%20global%20jelly.unjellyableRegistry&In-Reply-To=%3C86smjbdlgs.fsf%40stronzo.brainbot.com%3E"
+       TITLE="[Twisted-Python] Unjellying per broker vs. global jelly.unjellyableRegistry">ralf at brainbot.com
+       </A><BR>
+    <I>Tue Dec 23 18:59:47 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="039364.html">[Twisted-Python] Recovering PB references on broken connection?
+</A></li>
+        <LI>Next message (by thread): <A HREF="039366.html">[Twisted-Python] Unjellying per broker vs. global	jelly.unjellyableRegistry
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39365">[ date ]</a>
+              <a href="thread.html#39365">[ thread ]</a>
+              <a href="subject.html#39365">[ subject ]</a>
+              <a href="author.html#39365">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+I have attached a patch, which makes it possible to unjelly different
+classes depending on the broker they were sent through (basically one
+can set a brokers 'unjellyableRegistry' attribute, which then get's
+used instead of the global one). Has such a feature already been
+planned? Any chance of getting it included? 
+
+- Ralf
+
+===================================================================
+RCS file: /cvs/Twisted/twisted/spread/jelly.py,v
+retrieving revision 1.48
+diff -u -u -r1.48 jelly.py
+--- twisted/spread/jelly.py	4 Jun 2003 00:18:03 -0000	1.48
++++ twisted/spread/jelly.py	24 Dec 2003 01:36:31 -0000
+@@ -495,13 +495,22 @@
+ 
+ 
+ class _Unjellier:
+-    def __init__(self, taster, persistentLoad, invoker):
++    unjellyableRegistry = unjellyableRegistry
++    unjellyableFactoryRegistry = unjellyableFactoryRegistry
++    
++    def __init__(self, taster, persistentLoad, invoker,
++                 unjellyableRegistry=None, unjellyableFactoryRegistry=None):
+         self.taster = taster
+         self.persistentLoad = persistentLoad
+         self.references = {}
+         self.postCallbacks = []
+         self.invoker = invoker
+ 
++        if unjellyableRegistry is not None:
++            self.unjellyableRegistry = unjellyableRegistry
++        if unjellyableFactoryRegistry is not None:
++            self.unjellyableFactoryRegistry = unjellyableFactoryRegistry
++            
+     def unjellyFull(self, obj):
+         o = self.unjelly(obj)
+         for m in self.postCallbacks:
+@@ -514,7 +523,7 @@
+         jelType = obj[0]
+         if not self.taster.isTypeAllowed(jelType):
+             raise InsecureJelly(jelType)
+-        regClass = unjellyableRegistry.get(jelType)
++        regClass = self.unjellyableRegistry.get(jelType)
+         if regClass is not None:
+             if isinstance(regClass, ClassType):
+                 inst = _Dummy() # XXX chomp, chomp
+@@ -526,7 +535,7 @@
+             if hasattr(val, 'postUnjelly'):
+                 self.postCallbacks.append(inst.postUnjelly)
+             return val
+-        regFactory = unjellyableFactoryRegistry.get(jelType)
++        regFactory = self.unjellyableFactoryRegistry.get(jelType)
+         if regFactory is not None:
+             state = self.unjelly(obj[1])
+             inst = regFactory(state)
+@@ -845,7 +854,9 @@
+     return _Jellier(taster, persistentStore, invoker).jelly(object)
+ 
+ 
+-def unjelly(sexp, taster = DummySecurityOptions(), persistentLoad=None, invoker=None):
++def unjelly(sexp, taster = DummySecurityOptions(), persistentLoad=None, invoker=None,
++            unjellyableRegistry=None, unjellyableFactoryRegistry=None):
++
+     &quot;&quot;&quot;Unserialize from s-expression.
+ 
+     Takes an list that was the result from a call to jelly() and unserializes
+@@ -853,4 +864,4 @@
+     of SecurityOptions, will cause an InsecureJelly exception to be raised if a
+     disallowed type, module, or class attempted to unserialize.
+     &quot;&quot;&quot;
+-    return _Unjellier(taster, persistentLoad, invoker).unjellyFull(sexp)
++    return _Unjellier(taster, persistentLoad, invoker, unjellyableRegistry, unjellyableFactoryRegistry).unjellyFull(sexp)
+Index: twisted/spread/pb.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/spread/pb.py,v
+retrieving revision 1.154
+diff -u -u -r1.154 pb.py
+--- twisted/spread/pb.py	17 Oct 2003 19:06:23 -0000	1.154
++++ twisted/spread/pb.py	24 Dec 2003 01:36:33 -0000
+@@ -500,6 +500,8 @@
+     version = 6
+     username = None
+     factory = None
++    unjellyableRegistry = None
++    unjellyableFactoryRegistry = None
+     
+     def __init__(self, isClient=1, security=globalSecurity):
+         banana.Banana.__init__(self, isClient)
+@@ -826,7 +828,7 @@
+ 
+         self.unserializingPerspective = perspective
+         try:
+-            return unjelly(sexp, self.security, None, self)
++            return unjelly(sexp, self.security, None, self, self.unjellyableRegistry, self.unjellyableFactoryRegistry)
+         finally:
+             self.unserializingPerspective = None
+ 
+
+-- 
+brainbot technologies ag
+boppstrasse 64 . 55118 mainz . germany
+fon +49 6131 211639-1 . fax +49 6131 211639-2
+<A HREF="http://brainbot.com/">http://brainbot.com/</A>  mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ralf at brainbot.com</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="039364.html">[Twisted-Python] Recovering PB references on broken connection?
+</A></li>
+	<LI>Next message (by thread): <A HREF="039366.html">[Twisted-Python] Unjellying per broker vs. global	jelly.unjellyableRegistry
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39365">[ date ]</a>
+              <a href="thread.html#39365">[ thread ]</a>
+              <a href="subject.html#39365">[ subject ]</a>
+              <a href="author.html#39365">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,140 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Re: [Twisted-Python] WSGI Thread-management strategy
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BTwisted-Python%5D%20WSGI%20Thread-management%20strategy&In-Reply-To=B50EC6B5-6B3D-4254-9FC5-AD0CE32CC568%40fuhm.net">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002229.html">
+   <LINK REL="Next"  HREF="002231.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Re: [Twisted-Python] WSGI Thread-management strategy</H1>
+    <B>Jim Fulton</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Re%3A%20%5BTwisted-Python%5D%20WSGI%20Thread-management%20strategy&In-Reply-To=B50EC6B5-6B3D-4254-9FC5-AD0CE32CC568%40fuhm.net"
+       TITLE="[Twisted-web] Re: [Twisted-Python] WSGI Thread-management strategy">jim at zope.com
+       </A><BR>
+    <I>Fri Dec 16 10:27:15 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002229.html">[Twisted-web] pgasync INTERVAL
+</A></li>
+        <LI>Next message: <A HREF="002231.html">[Twisted-web] Using Twisted Web for browser-based control
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2230">[ date ]</a>
+              <a href="thread.html#2230">[ thread ]</a>
+              <a href="subject.html#2230">[ subject ]</a>
+              <a href="author.html#2230">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>James Y Knight wrote:
+&gt;<i> (BTW, the correct mailing list for twisted webbish stuff is twisted- 
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">web at twistedmatrix.com</A>)
+</I>&gt;<i> On Dec 15, 2005, at 4:22 PM, Jim Fulton wrote:
+</I>&gt;<i> 
+</I>&gt;&gt;<i> The strategy used by twisted WSGI, as I understand it, doesn't meet
+</I>&gt;&gt;<i> our needs. Currently, a thread is created for each request.  The total
+</I>&gt;&gt;<i> number of threads is throttled, I gather using a general Twisted
+</I>&gt;&gt;<i> thread limit.  WSGI applications are called as soon as input headers
+</I>&gt;&gt;<i> have been received completely. An application may be called before all
+</I>&gt;&gt;<i> body input is received.  We need application calls to be delayed until
+</I>&gt;&gt;<i> all request input has been received,
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> [...]
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> I propose that the default thread-management strategy should be to  delay
+</I>&gt;&gt;<i> calling an application until all request input has been received. If
+</I>&gt;&gt;<i> this isn't the default, then there should at least be an option to get
+</I>&gt;&gt;<i> this behavior.  (Of course, the buffering strategy needs to be clever
+</I>&gt;&gt;<i> enough to switch to a file when the input gets over some size.)
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> Sounds sensible,
+</I>
+Does this mean you will make this the default in the future?
+
+
+ &gt; and is doable external to the WSGI wrapper. Here's a
+&gt;<i> little bit I whipped up. (works on the 2.1.x branch and head). Could  be 
+</I>&gt;<i> smarter, by starting out the buffer in memory and switching to a  file 
+</I>&gt;<i> if necessary. Also shows off a couple of minor bugs I need to  fix. :)
+</I>&gt;<i> 
+</I>&gt;<i> def simple_wsgi_app(environ, start_response):
+</I>&gt;<i>     print &quot;Starting wsgi app&quot;
+</I>&gt;<i>     start_response(&quot;200 OK&quot;, [('Content-type','text/html;  
+</I>&gt;<i> charset=ISO-8859-1')])
+</I>&gt;<i>     data = environ['wsgi.input'].read()
+</I>&gt;<i>     return ['&lt;pre&gt;', data, '&lt;/pre&gt;']
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> class Prebuffer(resource.WrapperResource):
+</I>&gt;<i>     def hook(self, ctx):
+</I>&gt;<i>         req = iweb.IRequest(ctx)
+</I>&gt;<i>         temp = tempfile.TemporaryFile()
+</I>&gt;<i>         def done(_):
+</I>&gt;<i>             temp.seek(0)
+</I>&gt;<i>             # Replace the request's stream object with the tempfile
+</I>&gt;<i>             req.stream = stream.FileStream(temp)
+</I>&gt;<i>             # Hm, this shouldn't be required:
+</I>&gt;<i>             req.stream.doStartReading = None
+</I>&gt;<i>         return stream.readStream(req.stream, temp.write).addCallback (done)
+</I>&gt;<i> 
+</I>&gt;<i>     # Oops, fix missing () in lambda in WrapperResource
+</I>&gt;<i>     def locateChild(self, ctx, segments):
+</I>&gt;<i>         x = self.hook(ctx)
+</I>&gt;<i>         if x is not None:
+</I>&gt;<i>             return x.addCallback(lambda data: (self.res, segments))
+</I>&gt;<i>         return self.res, segments
+</I>&gt;<i> 
+</I>&gt;<i> if __name__ == '__builtin__':
+</I>&gt;<i>     from twisted.application import service, strports
+</I>&gt;<i>     from twisted.web2 import server, channel
+</I>&gt;<i> 
+</I>&gt;<i>     res = Prebuffer(wsgi.WSGIResource(simple_wsgi_app))
+</I>&gt;<i> 
+</I>&gt;<i>     site = server.Site(res)
+</I>&gt;<i>     application = service.Application(&quot;demo&quot;)
+</I>&gt;<i> 
+</I>&gt;<i>     s = strports.service('tcp:8080', channel.HTTPFactory(site))
+</I>&gt;<i>     s.setServiceParent(application)
+</I>
+This is greek to me. I'd forward this to the people who did the
+Twisted Zope integration.
+
+Thanks!
+
+Jim
+
+-- 
+Jim Fulton           mailto:<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">jim at zope.com</A>       Python Powered!
+CTO                  (540) 361-1714            <A HREF="http://www.python.org">http://www.python.org</A>
+Zope Corporation     <A HREF="http://www.zope.com">http://www.zope.com</A>       <A HREF="http://www.zope.org">http://www.zope.org</A>
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002229.html">[Twisted-web] pgasync INTERVAL
+</A></li>
+	<LI>Next message: <A HREF="002231.html">[Twisted-web] Using Twisted Web for browser-based control
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2230">[ date ]</a>
+              <a href="thread.html#2230">[ thread ]</a>
+              <a href="subject.html#2230">[ subject ]</a>
+              <a href="author.html#2230">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

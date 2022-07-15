@@ -1,0 +1,155 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Crash when using XmlRPC during reactor shutdown
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Crash%20when%20using%20XmlRPC%20during%20reactor%20shutdown&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="012994.html">
+   <LINK REL="Next"  HREF="013003.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Crash when using XmlRPC during reactor shutdown</H1>
+    <B>David Anderson</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Crash%20when%20using%20XmlRPC%20during%20reactor%20shutdown&In-Reply-To="
+       TITLE="[Twisted-Python] Crash when using XmlRPC during reactor shutdown">david.anderson at calixo.net
+       </A><BR>
+    <I>Sat Apr 29 11:10:06 EDT 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="012994.html">[Twisted-Python] SMTP client with authentication
+</A></li>
+        <LI>Next message: <A HREF="013003.html">[Twisted-Python] Crash when using XmlRPC during reactor shutdown
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#13001">[ date ]</a>
+              <a href="thread.html#13001">[ thread ]</a>
+              <a href="subject.html#13001">[ subject ]</a>
+              <a href="author.html#13001">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+I have been experiencing a crash when trying to use the XmlRPC query
+subsystem while the reactor is shutting down.
+
+The context of it is that my twisted application talks to an upstream
+server using XmlRPC.  When it comes online, it registers, and when it
+goes offline, it should unregister itself, using a simple XmlRPC
+query.
+
+So, I figured the natural place to put the notifications were in the
+startService and stopService methods, that get called at just the
+right time.  startService is not a problem, and works fine.  for
+stopService, I made the method return the XmlRPC Deferred, so that the
+reactor would wait until request completion before continuing the
+shutdown.
+
+The thing is, with this scheme Twisted dumps an exception during
+shutdown, because the XmlRPC Deferred gets fired twice.  I've
+reproduced this behaviour with a minimal application:
+
+****************************************************************
+****************************************************************
+from twisted.application.service import Service
+from twisted.python import log
+from twisted.web.xmlrpc import Proxy
+from twisted.application.service import Application, IServiceCollection
+from twisted.internet import reactor, defer
+
+class TestXmlRpcService(Service):
+    def startService(self):
+        log.msg(&quot;Starting service&quot;)
+        reactor.callLater(0, reactor.stop)
+
+    def stopService(self):
+        def handle_success(res):
+            log.msg(&quot;Unregistration successful, but reactor will now crash&quot;)
+            return True
+        def handle_error(e):
+            log.msg(&quot;Unregistration failed...&quot;)
+            return False
+
+        log.msg(&quot;Calling XmlRPC backend (and crashing)&quot;)
+        p = Proxy('<A HREF="http://natulte.net/pub/fgs/RPC2.php'">http://natulte.net/pub/fgs/RPC2.php'</A>)
+        defer.setDebugging(True)
+        # Call any old method, this is just a proof of concept
+        d = p.callRemote('fgsd.register',
+                         &quot;00000000000000000000000000000000&quot;,
+                         &quot;bleh&quot;)
+        d.addCallbacks(handle_success, handle_error)
+        return d
+
+
+service = TestXmlRpcService()
+application = Application(&quot;proxy&quot;)
+service.setServiceParent(application)
+****************************************************************
+****************************************************************
+
+If you run that with `twistd -n -l- -y test.tac`, you should see the
+crash immediately.
+
+I know that patients shouldn't give diagnostics about their problems
+to the doctor, but nevertheless, examining the exception log, I
+believe I know what the problem is.
+
+ - When stopService returns a Deferred, the reactor stops the shutdown
+   and adds callbacks to the Deferred, to resume shutdown at the right
+   time.
+
+ - The XmlRPC query succeeds, and fires the Deferred. It walks right
+   down the notification chain, and eventually trips the reactor's
+   callback.
+
+ - The reactor, within the callback, resumes shutdown, and calls
+   disconnectAll to kill all active connections.
+
+ - At this point, the XmlRPC query still has its socket open, and so
+   gets notified that the connection was lost.  It attempts to fire
+   our Deferred's errback to notify of this, and foom,
+   AlreadyCalledError.
+
+If this makes sense, the resolution might be simple: close the
+transport connection before firing the deferred, so that the reactor
+can't kill the connection and trigger the double-call.
+
+The other option would be to include a flag in the xmlrpc query
+object, to avoid double-firing in this (admitedly corner-case)
+situation.
+
+Does all that make sense?  And, of course, does anyone have an idea of
+a workaround I could use in the meantime?  As I'm shutting down the
+service anyway, the exception is not really a problem in itself, it's
+just a little unclean to have an exception dump in the logs at each
+shutdown.
+
+Thanks in advance (and already, for Twisted :-),
+- Dave.
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="012994.html">[Twisted-Python] SMTP client with authentication
+</A></li>
+	<LI>Next message: <A HREF="013003.html">[Twisted-Python] Crash when using XmlRPC during reactor shutdown
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#13001">[ date ]</a>
+              <a href="thread.html#13001">[ thread ]</a>
+              <a href="subject.html#13001">[ subject ]</a>
+              <a href="author.html#13001">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

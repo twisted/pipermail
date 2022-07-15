@@ -1,0 +1,207 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] mktap dns is broken if you switch subnets
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20mktap%20dns%20is%20broken%20if%20you%20switch%20subnets&In-Reply-To=%3C20030430160159.GA28522%40lapdog%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="036390.html">
+   <LINK REL="Next"  HREF="036377.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] mktap dns is broken if you switch subnets</H1>
+    <B>Tommi Virtanen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20mktap%20dns%20is%20broken%20if%20you%20switch%20subnets&In-Reply-To=%3C20030430160159.GA28522%40lapdog%3E"
+       TITLE="[Twisted-Python] mktap dns is broken if you switch subnets">tv at twistedmatrix.com
+       </A><BR>
+    <I>Wed Apr 30 10:01:59 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="036390.html">[Twisted-Python] twisted 30% slower than asyncore?
+</A></li>
+        <LI>Next message (by thread): <A HREF="036377.html">[Twisted-Python] mktap dns is broken if you switch subnets
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36373">[ date ]</a>
+              <a href="thread.html#36373">[ thread ]</a>
+              <a href="subject.html#36373">[ subject ]</a>
+              <a href="author.html#36373">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>	Hi. Lately, I've been playing with using &quot;mktap dns&quot; as a
+	resolver for my laptop. Except, it's making me angry.
+
+	It doesn't reload resolv.conf. My resolv.conf nameserver list
+	is changed by DHCP about twice per day, atleast.
+
+	In fact, it even loads the resolv.conf only in __init__, so
+	the list gets stored in the tap file. I need to mktap, tap2deb
+	and dpkg -i whenever I switch subnets!
+
+	Here's a quick-and-stupid patch that makes it reload
+	resolv.conf regularly, currently made to reread it every
+	minute. This is &quot;close enough&quot;. Actually, I want to make
+	it get a notification from somewhere..
+
+	I definitely want this implemented. Please tell what direction
+	should I go with the patch, and what do you think is missing
+	from &quot;production quality&quot;?
+
+Index: twisted/names/client.py
+===================================================================
+RCS file: /cvs/Twisted/twisted/names/client.py,v
+retrieving revision 1.31
+diff -u -r1.31 client.py
+--- twisted/names/client.py	29 Mar 2003 18:10:14 -0000	1.31
++++ twisted/names/client.py	30 Apr 2003 15:56:00 -0000
+@@ -30,6 +30,8 @@
+ 
+ import socket
+ import os
++import errno
++import time
+ 
+ # Twisted imports
+ from twisted.python.runtime import platform
+@@ -52,6 +54,10 @@
+     protocol = None
+     connections = None
+ 
++    resolv = None
++    resolv_last_read = 0
++    resolv_read_interval = 60
++
+     def __init__(self, resolv = None, servers = None, timeout = (1, 3, 11, 45)):
+         &quot;&quot;&quot;
+         @type servers: C{list} of C{(str, int)} or C{None}
+@@ -78,10 +84,9 @@
+         else:
+             self.servers = servers
+         
+-        if resolv and os.path.exists(resolv):
+-            self.parseConfig(resolv)
++        self.resolv = resolv
+         
+-        if not len(self.servers):
++        if not len(self.servers) and not resolv:
+             raise ValueError, &quot;No nameservers specified&quot;
+         
+         self.factory = DNSClientFactory(self, timeout)
+@@ -99,20 +104,36 @@
+         d['connections'] = []
+         return d
+ 
++    def maybeParseConfig(self):
++        if self.resolv_last_read + self.resolv_read_interval &lt; time.time():
++            self.parseConfig()
+ 
+-    def parseConfig(self, conf):
+-        lines = open(conf).readlines()
++    def parseConfig(self):
++        try:
++            file = open(self.resolv)
++        except IOError, e:
++            if e.errno == errno.ENOENT:
++                return
++            else:
++                raise
++
++        lines = file.readlines()
++        self.resolv_last_read = os.fstat(file.fileno()).st_mtime
++        file.close()
++        servers = []
+         for l in lines:
+             l = l.strip()
+             if l.startswith('nameserver'):
+-                self.servers.append((l.split()[1], dns.PORT))
+-                log.msg(&quot;Resolver added %r to server list&quot; % (self.servers[-1],))
++                resolver = (l.split()[1], dns.PORT)
++                servers.append(resolver)
++                log.msg(&quot;Resolver added %r to server list&quot; % (resolver,))
+             elif l.startswith('domain'):
+                 self.domain = l.split()[1]
+                 self.search = None
+             elif l.startswith('search'):
+                 self.search = l.split()[1:]
+                 self.domain = None
++        self.dynamicServers = servers
+ 
+ 
+     def pickServer(self):
+@@ -122,8 +143,15 @@
+         TODO: Weight servers for response time so faster ones can be
+         preferred.
+         &quot;&quot;&quot;
+-        self.index = (self.index + 1) % len(self.servers)
+-        return self.servers[self.index]
++        self.parseConfig()
++        if not self.servers and not self.dynamicServers:
++            return None
++        self.index = ((self.index + 1)
++                      % (len(self.servers) + len(self.dynamicServers)))
++        if self.index &lt; len(self.servers):
++            return self.servers[self.index]
++        else:
++            return self.dynamicServers[self.index - len(self.servers)]
+ 
+ 
+     def connectionMade(self, protocol):
+@@ -155,7 +183,10 @@
+         if timeout is None:
+             timeout = self.timeout
+         address = self.pickServer()
+-        d = self.protocol.query(address, queries, timeout[0])
++        if address is not None:
++            d = self.protocol.query(address, queries, timeout[0])
++        else:
++            d = defer.fail()
+         d.addErrback(self._reissue, address, queries, timeout[1:])
+         return d
+ 
+@@ -186,7 +217,10 @@
+         @rtype: C{Deferred}
+         &quot;&quot;&quot;
+         if not len(self.connections):
+-            host, port = self.pickServer()
++            address = self.pickServer()
++            if address is None:
++                return defer.fail()
++            host, port = address
+             from twisted.internet import reactor
+             reactor.connectTCP(host, port, self.factory)
+             self.pending.append((defer.Deferred(), queries, timeout))
+
+-- 
+:<i>(){ :|:&amp;};:
+</I>
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="036390.html">[Twisted-Python] twisted 30% slower than asyncore?
+</A></li>
+	<LI>Next message (by thread): <A HREF="036377.html">[Twisted-Python] mktap dns is broken if you switch subnets
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36373">[ date ]</a>
+              <a href="thread.html#36373">[ thread ]</a>
+              <a href="subject.html#36373">[ subject ]</a>
+              <a href="author.html#36373">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

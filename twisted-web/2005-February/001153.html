@@ -1,0 +1,332 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] caching patch updated
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20caching%20patch%20updated&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001158.html">
+   <LINK REL="Next"  HREF="001154.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] caching patch updated</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20caching%20patch%20updated&In-Reply-To="
+       TITLE="[Twisted-web] caching patch updated">andrea at cpushare.com
+       </A><BR>
+    <I>Wed Feb  9 18:59:00 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001158.html">[Twisted-web] HTTPClientFactory questions
+</A></li>
+        <LI>Next message: <A HREF="001154.html">[Twisted-web] Bug found 1.3.0 twisted.web.static module
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1153">[ date ]</a>
+              <a href="thread.html#1153">[ thread ]</a>
+              <a href="subject.html#1153">[ subject ]</a>
+              <a href="author.html#1153">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello everyone,
+
+This is an updated version of the caching patch against current SVN.
+This is mostly code from the Nevow-caching branch from dialtone with the
+addition of a cacheTimeout logic on the whole rendering that I use for
+the whole non-user dependent dynamic pages of my site. I also use
+dialtone's stan cache for some fragment (not all unfortunately) and that
+was a significant speedup but I still need the other more aggressive
+caching in the Page class.
+
+Please let me know if you see any bug in this code, thanks! To me it
+looks useful enough to be merged in trunk but that's just my humble
+opinion.
+
+This code allows &gt;200req per second to be served for dynamic but mostly
+static data. It doesn't max out a 100mbit yet with &lt;5k pages, but it
+greatly exceeds the bandwidth of a 10mbit.
+
+Index: Nevow/nevow/tags.py
+===================================================================
+--- Nevow/nevow/tags.py	(revision 1185)
++++ Nevow/nevow/tags.py	(working copy)
+@@ -25,7 +25,7 @@
+ &quot;&quot;&quot;
+ 
+ 
+-from nevow.stan import Proto, Tag, directive, raw, xml, CommentProto, invisible, slot, cdata
++from nevow.stan import Proto, Tag, directive, raw, xml, CommentProto, invisible, slot, cdata, cached
+ 
+ 
+ comment = CommentProto()
+@@ -62,7 +62,9 @@
+ def inlineJS(s):
+     return script(type=&quot;text/javascript&quot;, language=&quot;JavaScript&quot;)[xml('\n//&lt;![CDATA[\n%s\n//]]&gt;\n' % s)]
+ 
+-__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object', '_map', 'drange', 'Tag', 'directive', 'xml', 'raw', 'slot', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
++__all__ = tags + ['invisible', 'comment', '_dir', '_del', '_object',
++                  '_map', 'drange', 'Tag', 'directive', 'xml', 'raw',
++                  'slot', 'cached', 'cdata', 'inlineJS'] + ['_%s' % x for x in range(100)]
+ 
+ 
+ ########################
+Index: Nevow/nevow/__init__.py
+===================================================================
+--- Nevow/nevow/__init__.py	(revision 1185)
++++ Nevow/nevow/__init__.py	(working copy)
+@@ -183,6 +183,7 @@
+ nevow.flat.flatstan.RendererSerializer            nevow.inevow.IRenderer
+ nevow.flat.flatstan.DirectiveSerializer           nevow.stan.directive
+ nevow.flat.flatstan.SlotSerializer                nevow.stan.slot
++nevow.flat.flatstan.CachedSerializer              nevow.stan.cached 
+ nevow.flat.flatstan.ContextSerializer             nevow.context.WovenContext
+ nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.Deferred
+ nevow.flat.flatstan.DeferredSerializer            twisted.internet.defer.DeferredList
+Index: Nevow/nevow/flat/flatstan.py
+===================================================================
+--- Nevow/nevow/flat/flatstan.py	(revision 1185)
++++ Nevow/nevow/flat/flatstan.py	(working copy)
+@@ -9,10 +9,14 @@
+ from nevow import util
+ from nevow.stan import Proto, Tag, xml, directive, Unset, invisible
+ from nevow.inevow import IRenderer, IRendererFactory, IGettable, IData
+-from nevow.flat import precompile, serialize
++from nevow.flat import precompile, serialize, iterflatten
+ from nevow.accessors import convertToData
+ from nevow.context import WovenContext
+ 
++from time import time as now
++from cStringIO import StringIO
++from twisted.internet import defer
++
+ allowSingleton = ('img', 'br', 'hr', 'base', 'meta', 'link', 'param', 'area',
+                   'input', 'col', 'basefont', 'isindex', 'frame')
+ 
+@@ -226,6 +230,45 @@
+         return serialize(original.default, context)
+     return serialize(data, context)
+ 
++_CACHE = {}
++def CachedSerializer(original, context):
++    cached = _CACHE.get(original.name, None)
++    _now = now()
++    life = _now-original.lifetime
++    if cached and (cached[0] &gt; life or not original.lifetime):
++        yield cached[1]
++        return
++    io = StringIO()
++    for child in iterflatten(original.children, context, io.write,
++                             lambda item: True):
++        if isinstance(child, tuple):
++            childDeferred, childReturner = child
++ 
++            d = defer.Deferred() ## A new deferred for the outer loop, whose result
++            ## we don't care about, because we don't want the outer loop to write
++            ## anything when this deferred fires -- only when the entire for loop
++            ## has completed and we have all the &quot;children&quot; flattened
++ 
++            def innerDeferredResultAvailable(result):
++                childReturner(result) ## Cause the inner iterflatten to continue
++                d.callback('') ## Cause the outer iterflatten to continue
++                return ''
++ 
++            childDeferred.addCallback(innerDeferredResultAvailable)
++ 
++            ## Make the outer loop wait on our new deferred.
++            ## We call the new deferred back with ''
++            ## Which will cause the outer loop to write '' to the request,
++            ## which doesn't matter. It will then call our &quot;returner&quot;,
++            ## which is just the noop lambda below, because we don't care
++            ## about the return result of the new deferred, which is just
++            ## ''
++ 
++            yield d, lambda result: ''    
++    result = io.getvalue()
++    _CACHE[original.name] = (_now, result)
++    yield result
++
+ def ContextSerializer(original, context):
+     originalContext = original.clone(deep=False)
+     originalContext.precompile = context and context.precompile or False
+Index: Nevow/nevow/stan.py
+===================================================================
+--- Nevow/nevow/stan.py	(revision 1185)
++++ Nevow/nevow/stan.py	(working copy)
+@@ -119,8 +119,33 @@
+         &quot;&quot;&quot;
+         raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
+ 
++class cached(object):
++    &quot;&quot;&quot;Marker for cached content
++    &quot;&quot;&quot;
++    __slots__ = ['name', 'children', 'lifetime']
+ 
++    def __init__(self, name, lifetime=0):
++        self.name = name
++        self.children = []
++        self.lifetime = lifetime
+ 
++    def __repr__(self):
++        return &quot;cached('%s','%s')&quot; % self.name, self.lifetime
++
++    def __getitem__(self, children):
++        &quot;&quot;&quot;cached content is what is being cached
++        &quot;&quot;&quot;
++        if not isinstance(children, (list, tuple)):
++            children = [children]
++        self.children.extend(children)
++        return self
++
++    def __iter__(self):
++        &quot;&quot;&quot;Prevent an infinite loop if someone tries to do
++            for x in cached('foo'):
++        &quot;&quot;&quot;
++        raise NotImplementedError, &quot;Stan slot instances are not iterable.&quot;
++
+ class Tag(object):
+     &quot;&quot;&quot;Tag instances represent XML tags with a tag name, attributes,
+     and children. Tag instances can be constructed using the Prototype
+Index: Nevow/nevow/rend.py
+===================================================================
+--- Nevow/nevow/rend.py	(revision 1185)
++++ Nevow/nevow/rend.py	(working copy)
+@@ -30,6 +30,7 @@
+ from nevow import flat
+ from nevow.util import log
+ from nevow import util
++from nevow import url
+ 
+ import formless
+ from formless import iformless
+@@ -374,6 +375,7 @@
+             self.children = {}
+         self.children[name] = child
+     
++_CACHE = {}
+ 
+ class Page(Fragment, ConfigurableFactory, ChildLookupMixin):
+     &quot;&quot;&quot;A page is the main Nevow resource and renders a document loaded
+@@ -384,12 +386,48 @@
+ 
+     buffered = False
+ 
++    cacheTimeout = None # 0 means cache forever, &gt;0 sets the seconds of caching
++    __lastCacheRendering = 0 # this should not be touched by the parent class
++
+     beforeRender = None
+     afterRender = None
+     addSlash = None
+ 
+     flattenFactory = flat.flattenFactory
+ 
++    def hasCache(self, ctx):
++        if self.cacheTimeout is None:
++            return None
++
++        _now = now() # run gettimeofday only once
++        timeout = _now &gt; self.__lastCacheRendering + self.cacheTimeout and \
++                  self.cacheTimeout &gt; 0
++        c = self.lookupCache(ctx)
++        if timeout or c is None:
++            self.__lastCacheRendering = _now # stop other renders
++            from twisted.internet.defer import Deferred
++            d = Deferred()
++            self.storeCache(ctx, d)
++            # force only this rendering, others will wait the deferred
++            c = None
++        return c
++    def chainDeferredCache(self, ctx, d):
++        if self.cacheTimeout is None:
++            return d
++
++        from twisted.internet.defer import Deferred
++        c = self.lookupCache(ctx)
++        if isinstance(c, Deferred):
++            # we're the thread that went ahead to refresh the cache
++            d.chainDeferred(c)
++        return d
++    def cacheIDX(self, ctx):
++        return str(url.URL.fromContext(ctx))
++    def storeCache(self, ctx, c):
++        _CACHE[self.cacheIDX(ctx)] = c
++    def lookupCache(self, ctx):
++        return _CACHE.get(self.cacheIDX(ctx))
++
+     def renderHTTP(self, ctx, doBefore=True):
+         ## XXX request is really ctx now, change the name here
+         request = inevow.IRequest(ctx)
+@@ -412,11 +450,17 @@
+             if self.afterRender is not None:
+                 return util.maybeDeferred(self.afterRender,ctx)
+ 
+-        if self.buffered:
++        c = self.hasCache(ctx)
++        if c:
++            return util.maybeDeferred(finishRequest).addCallback(lambda r: c)
++
++        if self.buffered or self.cacheTimeout is not None:
+             io = StringIO()
+             writer = io.write
+             def finisher(result):
+-                request.write(io.getvalue())
++                c = io.getvalue()
++                self.storeCache(ctx, c)
++                request.write(c)
+                 return util.maybeDeferred(finishRequest).addCallback(lambda r: result)
+         else:
+             writer = request.write
+@@ -426,7 +470,7 @@
+         doc = self.docFactory.load()
+         ctx =  WovenContext(ctx, tags.invisible[doc])
+ 
+-        return self.flattenFactory(doc, ctx, writer, finisher)
++        return self.chainDeferredCache(ctx, self.flattenFactory(doc, ctx, writer, finisher))
+ 
+     def rememberStuff(self, ctx):
+         Fragment.rememberStuff(self, ctx)
+
+
+This last bit avoids an error at runtime, clearly getStyleSheet should
+be overriden then (not stylesheet).
+
+Index: Nevow/nevow/vhost.py
+===================================================================
+--- Nevow/nevow/vhost.py	(revision 1185)
++++ Nevow/nevow/vhost.py	(working copy)
+@@ -19,7 +19,7 @@
+ &quot;&quot;&quot;
+ 
+     def getStyleSheet(self):
+-        return self.stylesheet
++        return VirtualHostList.stylesheet
+  
+     def data_hostlist(self, context, data):
+         return self.nvh.hosts.keys()
+
+</PRE>
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001158.html">[Twisted-web] HTTPClientFactory questions
+</A></li>
+	<LI>Next message: <A HREF="001154.html">[Twisted-web] Bug found 1.3.0 twisted.web.static module
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1153">[ date ]</a>
+              <a href="thread.html#1153">[ thread ]</a>
+              <a href="subject.html#1153">[ subject ]</a>
+              <a href="author.html#1153">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

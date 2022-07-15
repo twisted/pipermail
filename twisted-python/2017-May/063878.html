@@ -1,0 +1,145 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] HTTP PUT a GET's streaming response with treq
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20HTTP%20PUT%20a%20GET%27s%20streaming%20response%20with%20treq&In-Reply-To=%3CD0FE2A5D-17F7-4BFC-AD78-2CDAA49D3942%40lukasa.co.uk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="063881.html">
+   <LINK REL="Next"  HREF="063879.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] HTTP PUT a GET's streaming response with treq</H1>
+    <B>Cory Benfield</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20HTTP%20PUT%20a%20GET%27s%20streaming%20response%20with%20treq&In-Reply-To=%3CD0FE2A5D-17F7-4BFC-AD78-2CDAA49D3942%40lukasa.co.uk%3E"
+       TITLE="[Twisted-Python] HTTP PUT a GET's streaming response with treq">cory at lukasa.co.uk
+       </A><BR>
+    <I>Fri May  5 05:10:47 MDT 2017</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="063881.html">[Twisted-Python] HTTP PUT a GET's streaming response with treq
+</A></li>
+        <LI>Next message (by thread): <A HREF="063879.html">[Twisted-Python] HTTP PUT a GET's streaming response with treq
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#63878">[ date ]</a>
+              <a href="thread.html#63878">[ thread ]</a>
+              <a href="subject.html#63878">[ subject ]</a>
+              <a href="author.html#63878">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On 5 May 2017, at 10:41, Nagy, Attila &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">bra at fsn.hu</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;<i> On 05/05/2017 10:26 AM, Phil Mayers wrote:
+</I>&gt;&gt;<i> On 04/05/17 16:30, Nagy, Attila wrote:
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;&gt;<i> I would like to use the simplest (and correct of course) solution.
+</I>&gt;&gt;&gt;<i> Juggling with buffering/data by hand seems even more risky to me.
+</I>&gt;&gt;<i> 
+</I>&gt;&gt;<i> The problem with the approach you've outlined is that it treats the transport (a private member) in ways that I suspect are invalid. In particular there's no handling of the length of the object or chunked encodings - I suspect what you're doing will only work on simple HTTP requests with no connection reuse.
+</I>&gt;<i> What possible side effects do you see here? What problems could it cause?
+</I>
+The first is that Twisted will break your code eventually. Private member attributes are not covered by Twisted’s deprecation policy, and they can be changed without warning for any reason. So you’ll need to pin your Twisted version.
+
+As a second note, you may lock yourself out of HTTP/2. HTTP/2 is not guaranteed to give you access to a raw transport object (though it might), because in HTTP/2 the protocol is not a dumb byte pipe like it is in HTTP/1.1. Code like this forces Twisted devs who want to add HTTP/2 support (like myself) to implement HTTP/2 as a multiple-object abstraction to allow each request/response pair’s underlying “transport” member to act like a dumb byte-pipe transport, when we’d much rather use a less complex abstraction (as an example you should look at the HTTP/2 server code in twisted.web, which has multiple classes to maintain this fiction that you can just call “transport.write” and expect that to work).
+
+As a third note, your code does not handle the possibility that original._transport may not implement IPushProducer. While *in practice* it tends to, it needn’t. On top of that, it is not forbidden for an IPushProducer implementation to call write() even when paused, and code that wants to be correct in the face of all situations will need to be able to buffer anyway.
+
+However, you’re right that this is not ideal. I think the best solution would be an enhancement to twisted.web that updates the default Response object to accept an IConsumer as the protocol argument of deliverBody. This would allow t.w._newclient.Response to be the arbiter of what it means to “pause” production, and allow you to continue to proxy between the two but without accessing a private member (you’d get given the producer you need to pause in registerProducer).
+
+If that’s an enhancement you’d be interested in, I can work with you to get that patch in place. Then your code would change a bit (note that this code won’t work right now):
+
+class UploadProducer(protocol.Protocol):
+    implements(IBodyProducer)
+    implements(IConsumer)
+
+    def __init__(self, get_resp):
+        self.length = get_resp.length
+        self.producing = False
+        self._producer = None
+        self._consumer = None
+        self._completed = Deferred()
+
+    # IConsumer
+    def registerProducer(self, producer, streaming):
+        assert streaming
+        self._producer = producer
+        if self._consumer is None:
+            self._producer.pauseProducing()
+
+    def unregisterProducer(self):
+        # Raise an error or something
+        pass
+
+    def write(self, data):
+        self._consumer.write(data)
+
+    # IProtocol
+    def connectionLost(self, reason):
+        self._completed.callback(reason)
+    
+    # IBodyProducer
+    def startProducing(self, consumer):
+        if self._producer is not None:
+            self._producer.resumeProducing()
+        self._consumer = consumer
+        return completed
+
+    def resumeProducing(self):
+        self._producer.resumeProducing()
+    
+    def pauseProducing(self):
+        self._producer.pauseProducing()
+    
+    def stopProducing(self):
+        self._producer.stopProducing()
+
+
+@inlineCallbacks
+def copy(src, dst):
+    get_resp = yield treq.get(src, unbuffered=True)
+    print &quot;GET&quot;, get_resp.code, get_resp.original
+    producer = UploadProducer(get_resp)
+    get_resp.deliverBody(producer)
+    
+    put_resp = yield treq.put(dst,data=producer)
+    print &quot;PUT&quot;, put_resp, put_resp.code    
+
+
+With this arrangement as well it’d potentially be possible to use something like tubes, or at least get closer to using tubes for this use case. Right now it’s a bit of an annoyance that t.w._newclient doesn’t allow the body receiving protocol to exert backpressure on the data.
+
+Anyway, just a thought.
+
+Cory
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="063881.html">[Twisted-Python] HTTP PUT a GET's streaming response with treq
+</A></li>
+	<LI>Next message (by thread): <A HREF="063879.html">[Twisted-Python] HTTP PUT a GET's streaming response with treq
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#63878">[ date ]</a>
+              <a href="thread.html#63878">[ thread ]</a>
+              <a href="subject.html#63878">[ subject ]</a>
+              <a href="author.html#63878">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

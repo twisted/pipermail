@@ -1,0 +1,254 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] making streams optional in web2
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20making%20streams%20optional%20in%20web2&In-Reply-To=20060209112118.2697.1388459534.divmod.quotient.13659%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002474.html">
+   <LINK REL="Next"  HREF="002482.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] making streams optional in web2</H1>
+    <B>James Y Knight</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20making%20streams%20optional%20in%20web2&In-Reply-To=20060209112118.2697.1388459534.divmod.quotient.13659%40ohm"
+       TITLE="[Twisted-web] making streams optional in web2">foom at fuhm.net
+       </A><BR>
+    <I>Thu Feb  9 11:40:49 MST 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002474.html">[Twisted-web] making streams optional in web2
+</A></li>
+        <LI>Next message: <A HREF="002482.html">[Twisted-web] making streams optional in web2
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2479">[ date ]</a>
+              <a href="thread.html#2479">[ thread ]</a>
+              <a href="subject.html#2479">[ subject ]</a>
+              <a href="author.html#2479">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Feb 9, 2006, at 6:21 AM, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">glyph at divmod.com</A> wrote:
+&gt;<i> A few days ago, JP showed me some benchmarks of web2 vs. CherryPy  
+</I>&gt;<i> hosting a trivial WSGI application.
+</I>&gt;<i>
+</I>&gt;<i> It turns out it's 4x slower, clocking in only ~250 req/sec on a  
+</I>&gt;<i> middle-spec Opteron, as opposed to CherryPy's ~1000.  From previous  
+</I>&gt;<i> benchmarks, I happen to know that Apache can do ~3000 req/sec on  
+</I>&gt;<i> that same hardware, making web2 well over 10x slower.
+</I>&gt;<i>
+</I>&gt;<i> I didn't look at the profile too closely, but preliminarily it  
+</I>&gt;<i> seemed clear that the major bottleneck at this point was the  
+</I>&gt;<i> creation and invocation of tons of Deferreds in  
+</I>&gt;<i> _NotifyingProducerStream, while generating the response.
+</I>&gt;<i>
+</I>&gt;<i> Considering that streams aren't used at all in the actual HTTP  
+</I>&gt;<i> protocol implementation (and thank goodness for that, given this  
+</I>&gt;<i> discovery) it strikes me that the use of them in the response- 
+</I>&gt;<i> generating API ought to be more optional, for cases where  
+</I>&gt;<i> efficiency is important.  Like, for example, DAV, which also seems  
+</I>&gt;<i> to be making embarrassingly heavy use of the streams API - I  
+</I>&gt;<i> haven't benchmarked that yet, but I'm sure it will be an adventure  
+</I>&gt;<i> if I do :).
+</I>
+Benchmarking is a dangerous activity.
+
+I only get 131req/sec from ab on my mac from the following IResource  
+resource, vs 114 from the wsgi resource, vs 706 from apache. Vs 74  
+from cherrypy's tut01_helloworld.py. So, shrug, I'm sure my benchmark  
+sucks, and must be measuring something completely different than  
+yours, given the wide variance in relative numbers. Anyhow, I'm happy  
+that someone is benchmarking web2, because I haven't done so any time  
+recently, but what you write above comes quite close to random flaming.
+
+Here's the simple resources:
+
+def simple_wsgi_app(environ, start_response):
+     start_response(&quot;200 OK&quot;, [])
+     return ['Hello world!']
+
+class SimpleResource(object):
+     implements(iweb.IResource)
+     def renderHTTP(self, req):
+         return http.Response(200, None,  &quot;Hello world!&quot;)
+     def locateChild(self, req, seg):
+         return self, ()
+
+Here's all the construction of Deferreds from the native response.  
+Only one is from the streams module. Looks like some of the others  
+could be removed without changing any APIs, if that actually helps  
+things. Going through the WSGI interface adds one additional deferred  
+construction in addition to these 4.
+
+(Pdb) break twisted.internet.defer.Deferred.__init__
+Breakpoint 1 at /Users/jknight/Tw/trunk/twisted/internet/defer.py:163
+
+(Pdb) bt
+   /Users/jknight/Tw/trunk/twisted/internet/selectreactor.py(139) 
+_doReadOrWrite()
+-&gt; why = getattr(selectable, method)()
+   /Users/jknight/Tw/trunk/twisted/internet/tcp.py(350)doRead()
+-&gt; return self.protocol.dataReceived(data)
+   /Users/jknight/Tw/trunk/twisted/protocols/basic.py(232)dataReceived()
+-&gt; why = self.lineReceived(line)
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(664) 
+lineReceived()
+-&gt; self.chanRequest.lineReceived(line)
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(142) 
+lineReceived()
+-&gt; self.processRequest()
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(384) 
+processRequest()
+-&gt; self.request.process()
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(256)process()
+-&gt; d = self._getChild(self.site.resource, self.postpath)
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(283)_getChild()
+-&gt; return defer.maybeDeferred(
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(116)maybeDeferred()
+-&gt; return succeed(result)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(49)succeed()
+-&gt; d = Deferred()
+ &gt; /Users/jknight/Tw/trunk/twisted/internet/defer.py(163)__init__()
+-&gt; self.callbacks = []
+
+(Pdb) bt
+   /Users/jknight/Tw/trunk/twisted/internet/selectreactor.py(139) 
+_doReadOrWrite()
+-&gt; why = getattr(selectable, method)()
+   /Users/jknight/Tw/trunk/twisted/internet/tcp.py(350)doRead()
+-&gt; return self.protocol.dataReceived(data)
+   /Users/jknight/Tw/trunk/twisted/protocols/basic.py(232)dataReceived()
+-&gt; why = self.lineReceived(line)
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(664) 
+lineReceived()
+-&gt; self.chanRequest.lineReceived(line)
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(142) 
+lineReceived()
+-&gt; self.processRequest()
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(384) 
+processRequest()
+-&gt; self.request.process()
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(256)process()
+-&gt; d = self._getChild(self.site.resource, self.postpath)
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(283)_getChild()
+-&gt; return defer.maybeDeferred(
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(191)addCallback()
+-&gt; callbackKeywords=kw)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(182)addCallbacks()
+-&gt; self._runCallbacks()
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(307)_runCallbacks()
+-&gt; self.result = callback(self.result, *args, **kw)
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(312)_handleSegment()
+-&gt; return self._getChild(newres, newpath)
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(281)_getChild()
+-&gt; return defer.succeed(res)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(49)succeed()
+-&gt; d = Deferred()
+ &gt; /Users/jknight/Tw/trunk/twisted/internet/defer.py(163)__init__()
+-&gt; self.callbacks = []
+
+(Pdb) bt
+   /Users/jknight/Tw/trunk/twisted/internet/selectreactor.py(139) 
+_doReadOrWrite()
+-&gt; why = getattr(selectable, method)()
+   /Users/jknight/Tw/trunk/twisted/internet/tcp.py(350)doRead()
+-&gt; return self.protocol.dataReceived(data)
+   /Users/jknight/Tw/trunk/twisted/protocols/basic.py(232)dataReceived()
+-&gt; why = self.lineReceived(line)
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(664) 
+lineReceived()
+-&gt; self.chanRequest.lineReceived(line)
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(142) 
+lineReceived()
+-&gt; self.processRequest()
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(384) 
+processRequest()
+-&gt; self.request.process()
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(258)process()
+-&gt; d.addCallback(self._cbFinishRender)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(191)addCallback()
+-&gt; callbackKeywords=kw)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(182)addCallbacks()
+-&gt; self._runCallbacks()
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(307)_runCallbacks()
+-&gt; self.result = callback(self.result, *args, **kw)
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(355)_cbFinishRender()
+-&gt; d = defer.Deferred()
+ &gt; /Users/jknight/Tw/trunk/twisted/internet/defer.py(163)__init__()
+-&gt; self.callbacks = []
+
+(Pdb) bt
+   /Users/jknight/Tw/trunk/twisted/internet/selectreactor.py(139) 
+_doReadOrWrite()
+-&gt; why = getattr(selectable, method)()
+   /Users/jknight/Tw/trunk/twisted/internet/tcp.py(350)doRead()
+-&gt; return self.protocol.dataReceived(data)
+   /Users/jknight/Tw/trunk/twisted/protocols/basic.py(232)dataReceived()
+-&gt; why = self.lineReceived(line)
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(664) 
+lineReceived()
+-&gt; self.chanRequest.lineReceived(line)
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(142) 
+lineReceived()
+-&gt; self.processRequest()
+   /Users/jknight/Tw/trunk/twisted/web2/channel/http.py(384) 
+processRequest()
+-&gt; self.request.process()
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(258)process()
+-&gt; d.addCallback(self._cbFinishRender)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(191)addCallback()
+-&gt; callbackKeywords=kw)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(182)addCallbacks()
+-&gt; self._runCallbacks()
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(307)_runCallbacks()
+-&gt; self.result = callback(self.result, *args, **kw)
+   /Users/jknight/Tw/trunk/twisted/web2/server.py(359)_cbFinishRender()
+-&gt; d.callback(response)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(229)callback()
+-&gt; self._startRunCallbacks(result)
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(294) 
+_startRunCallbacks()
+-&gt; self._runCallbacks()
+   /Users/jknight/Tw/trunk/twisted/internet/defer.py(307)_runCallbacks()
+-&gt; self.result = callback(self.result, *args, **kw)
+   /Users/jknight/Tw/trunk/twisted/web2/http.py(419)writeResponse()
+-&gt; d = stream.StreamProducer(response.stream).beginProducing 
+(self.chanRequest)
+   /Users/jknight/Tw/trunk/twisted/web2/stream.py(725)beginProducing()
+-&gt; finishedCallback = self.finishedCallback = Deferred()
+ &gt; /Users/jknight/Tw/trunk/twisted/internet/defer.py(163)__init__()
+-&gt; self.callbacks = []
+
+
+
+James
+
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002474.html">[Twisted-web] making streams optional in web2
+</A></li>
+	<LI>Next message: <A HREF="002482.html">[Twisted-web] making streams optional in web2
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2479">[ date ]</a>
+              <a href="thread.html#2479">[ thread ]</a>
+              <a href="subject.html#2479">[ subject ]</a>
+              <a href="author.html#2479">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

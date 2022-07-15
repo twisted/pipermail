@@ -1,0 +1,309 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] HTTP-AUTH for web2 / Kudos on web2's operation
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20HTTP-AUTH%20for%20web2%20/%20Kudos%20on%20web2%27s%20operation&In-Reply-To=20051118194817.32735.1400407017.divmod.quotient.204%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002107.html">
+   <LINK REL="Next"  HREF="002110.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] HTTP-AUTH for web2 / Kudos on web2's operation</H1>
+    <B>Clark C. Evans</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20HTTP-AUTH%20for%20web2%20/%20Kudos%20on%20web2%27s%20operation&In-Reply-To=20051118194817.32735.1400407017.divmod.quotient.204%40ohm"
+       TITLE="[Twisted-web] HTTP-AUTH for web2 / Kudos on web2's operation">cce at clarkevans.com
+       </A><BR>
+    <I>Fri Nov 18 14:47:02 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002107.html">[Twisted-web] HTTP-AUTH for web2 / Kudos on web2's operation
+</A></li>
+        <LI>Next message: <A HREF="002110.html">[Twisted-web] HTTP-AUTH for web2 / Kudos on web2's operation
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2109">[ date ]</a>
+              <a href="thread.html#2109">[ thread ]</a>
+              <a href="subject.html#2109">[ subject ]</a>
+              <a href="author.html#2109">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Glyph,
+
+Thank you for taking time to discuss this more.  I think I disagree that
+twisted core currently is, or should be an object publishing system.
+It's ok if Nevow is an object publishing system; but you should not
+restrict the applications of twisted.web2 to object publishing.
+
+By an &quot;object publishing system&quot;, I mean a system where every object
+in the system is a Resource, and hence has a *unique* URL.  That is,
+if I have two distinct objects in the system, they have different
+URLs; and if I have two URLs that refer to actual resources in the
+system, they refer to different objects.
+
+For starters, some objects in the system (such as a Session) by 
+default do not have a URL, and thus by definition, is not a 
+Published Object (aka a Resource).  But the current implementation
+of web2 goes even further; it is possible for two distinct &quot;Resource&quot;
+objects to have been accessed by the same URL (see web2.static.File,
+which dynamically creates a Resource object for children).
+
+But overall, I think the decision to give &quot;special meaning&quot; to path
+segments is a mistake at such a low-level of web2; it seems to imply
+this 1-1 correspondence which doesn't actually exist.  A better 
+low-level interface would just be something like:
+
+class IRequestHandler
+     def handleRequest(self, request):
+          # returns one of:
+          # - a IResponse to be returned to the client
+          # - an IRequestHandler which is used for further processing
+          # or, a deferred which yields one of the above.
+      
+Then, an IResource is defined as a _kind_ of request handler that eats
+exactly one path segment from the request; and it breaks handleRequest
+into two cases:  (a) one that returns another IResource aka locateChild(),
+or (b) one that returns a Response, aka render(). However, a IResource
+is a very special kind of IRequestHandler -- one that respects the
+uniqueness constraints of an object publshing system.
+
+In this logic, an IAuthenticator is _not_ a resource, but rather a
+IRequestHandler that does a bunch of checks; but otherwise largly
+passes-through the request onto the next processing stage. I'm not sure
+how an ISession fits into this, but it is not a request handler (and it
+certainly isn't a resource). A Session object is the product of an
+ISessionManager request handler when applied to the particular request.
+
+In logical terms, the ISessionManager should associate each IRequest
+with an ISession; you can then adapt(request,ISession) to obtain the 
+given session.  If the IRequest interface provides a short-cut for
+this is really an implementation detail; but one with clear value.
+
+In summary, I think you're confusing arbitrary objects in the system
+with Resources; and I think the web2 module is already overly-complicated 
+since it is addressing a higher level of abstraction than what is
+absolutely required.   In my application, I do not have Resources
+via the definition of an object publishing system -- nor do I want
+to be burdened with this distinction.  I have my own URL processing
+and I don't find the web2 concept of &quot;segments&quot; helpful.  
+
+Following are specific comments related to the above...
+
+On Fri, Nov 18, 2005 at 02:48:17PM -0500, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">glyph at divmod.com</A> wrote:
+|<i> Graphs can be problematic as a web data structure, for example, graphs 
+</I>|<i> can have cycles, which Nevow specifically disallows (and I think that is 
+</I>|<i> generally a good decision).
+</I>
+If you're talking about Resources, yes, I absolutely agree.  However,
+this is not a necessary restriction on a RequestHandler; in deed, a
+RequestHandler might return itself from handleRequest -- this forms
+a cyclic graph, no?
+
+|<i> You'll continue to be able to do that indefinitely.  It certainly breaks 
+</I>|<i> encapsulation however, and encouraging it as a general technique will 
+</I>|<i> almost certainly create problems related to namespace clashes.  We 
+</I>|<i> shouldn't break it, but we also shouldn't suggest it.
+</I>
+Ok.  The _primary_ problem with Request objects is that you don't
+want to get into naming clashes.  This is legitimate.  I think 
+some sort of adapt() mechanism is needed.  How about this...
+
+Each IRequest object has a member variable, 'peer', which is a mapping
+from interfaces, such as IFoo onto the object that implements that
+interface.  So, request.peer[ISession] will give me the session
+associated with that request.  The appropriate __conform__ logic can
+also be implemented so that adapt(peer,ISession) works.
+
+|<i> I've gone through that message now and more thoroughly understood what is 
+</I>|<i> going on.  Those stages are interesting, but I don't think that any of 
+</I>|<i> them belong in twisted.web2.  Twisted's model of web interoperability is, 
+</I>|<i> and has always been, object publishing.  We aren't going to change that 
+</I>|<i> to a stage-based or filter-based scheme.
+</I>
+Assume for a moment that IRequestHandler is the basis for web2, 
+and that IResource layers on &quot;object publishing&quot; semantics.  Further
+assume that the 'peer' attribute on each request maps interfaces
+onto objects associated with that interface.
+
+In this case, my &quot;alternative&quot; to object publishing has an IState
+object associated with each request; and an IStage interface that
+inherits from IRequestHandler.  That said, there is no reason why
+I should be forced to layer my IStage on top of an IResource; my
+stages are not resources.
+
+|<i> A resource is an object.  It may process requests for one user, or for 
+</I>|<i> many.  In the twisted.cred model of looking at resources, each user's top 
+</I>|<i> resource is unique to that user. 
+</I>
+Are all objects resources?  If not, what must an object have to be
+a resource.  If the answer is &quot;implements IResource&quot;, then I ask
+you, is a Session a resource?  If so, what does it's locateChild
+look like?
+
+
+
+|<i> Depending on session management policy 
+</I>|<i> the anonymous resource may or may not be shared between anonymous 
+</I>|<i> sessions.  It may *wrap* a resource which is common to all users, but the 
+</I>|<i> cred way of looking at an object is that each user has a distinct object 
+</I>|<i> they communicate with, which determines their view of the world.
+</I>
+Ok.  That's good, an Avatar; but is an Avatar an IResource?
+
+|<i> Think of it this way: a resource should know what it looks like.  If you 
+</I>|<i> are looking at a page that says &quot;Welcome, Clark!&quot;, then &quot;Welcome, Clark!&quot; 
+</I>|<i> should be an attribute of that resource.  Perhaps that data came from a 
+</I>|<i> cookie, perhaps it was somehow identified by a session identifier in the 
+</I>|<i> URL, but by whatever technique, by the time you are rendering a resource, 
+</I>|<i> it should not be looking at the Request object to determine every little 
+</I>|<i> thing about itself. 
+</I>
+Here is where we part ways.  This view of the the processing model
+is an unnecessary restriction and should not be pladed upon web2.
+
+
+|<i> Things like accept-encodings and accept-languages 
+</I>|<i> can modify or filter the result, but the basic data that's there should 
+</I>|<i> be accessed by the application by looking at self, not by looking at 
+</I>|<i> request.getSession().getComponent(IMyApplication).dataFor(self).(...) or 
+</I>|<i> some similar monstrosity.
+</I>
+adapt(request,IState).bing
+
+|<i> &gt;   (a) An Avatar is a &quot;auto-generated&quot; resource perhaps constructed
+</I>|<i> &gt;       from the SessionManager resource?
+</I>|<i> 
+</I>|<i> That's the way guard works and should continue to work, yes.
+</I>
+An avatar is not a resrouce; if it is, what is it's URL?  What does it
+look like (to phrase it with your definition)?
+
+|<i> &gt;   (b) Each Request object would have a 'stack' of 'previous-resources'
+</I>|<i> &gt;       that it has visited?  And that I could ask for the 'Avatar'
+</I>|<i> &gt;       resource in that 'stack' via a method on the request object?
+</I>|<i> 
+</I>|<i> It's not a stack; certain resources can just put themselves into a slot.  
+</I>|<i> If an API is provided to build up large amounts of implicit state through 
+</I>|<i> accretion during resource traversal, then the request will snowball in 
+</I>|<i> complexity as more and more junk gets stuck to it by different bits of 
+</I>|<i> different applications.
+</I>
+Assuming a 'peers' collection; you only need to access the peers
+that your RequestHandler (or IResource) knows or cares about.
+
+|<i> getSession is designed to bridge requests automatically from within the 
+</I>|<i> HTTP server's framework code, by setting cookies and such.  Session 
+</I>|<i> management is a task that should be accomplished by a resource object 
+</I>|<i> which can be independently tested, not by the server code.
+</I>
+No disagreement here.
+
+|<i> The proposed interface is something that would probably be *used* by a 
+</I>|<i> session-manager resource, and might even represent the session, but its 
+</I>|<i> purpose is simply to provide some per-request data that can be shared 
+</I>|<i> between resources processing the same request, without resorting to 
+</I>|<i> random attributes on the request, and with some way to link to the 
+</I>|<i> resource that provided that data.
+</I>
+It is not necessary to link data associated with a request with 
+the 'Resource' that provided the data.
+
+|<i> &gt;Ok.  That's very nice.   Just remove the word 'Resource' and you're all
+</I>|<i> &gt;set; just let it be a regular object.
+</I>|<i> 
+</I>|<i> I suppose this doesn't make much difference.  I want it to be the 
+</I>|<i> resource because the accompanying URL should point to it, but I suppose 
+</I>|<i> that might be unnecessarily restrictive; at least the URL will point at 
+</I>|<i> the thing that set it.
+</I>
+Well, if you want to _expose_ a URL to the user for them to view
+their session; then, it is indeed a Resource.  However, not all
+sessions need to be Resources, no?
+
+|<i> &gt;This similar system would work with Session then?
+</I>|<i> &gt;
+</I>|<i> &gt;  request.setSession( my ISession object )
+</I>|<i> 
+</I>|<i> We could call this object a session, although in that case there is no 
+</I>|<i> &quot;ISession&quot; - as I mentioned before, the object passed is 
+</I>|<i> application-specific, and the framework should expect absolutely nothing 
+</I>|<i> from it.
+</I>
+request.peer[IMySession] = mysession
+
+|<i> &gt;Ok.  This is where I get confused.  The top level resource can handle
+</I>|<i> &gt;multiple requests.  I think you're just referring to one's application
+</I>|<i> &gt;data?  Perhaps...
+</I>|<i> &gt;
+</I>|<i> &gt;  request.setAppData(an IAppData object)
+</I>|<i> &gt;
+</I>|<i> &gt;where IAppData is any old object that the application wants.
+</I>|<i> 
+</I>|<i> The topmost resource for a particular user is unique to that user, 
+</I>|<i> assuming they have logged in with a system like cred.  It's shared among 
+</I>|<i> all users if there is no session management going on - in which case, why 
+</I>|<i> would you need to know the currently logged in user :).
+</I>
+Does this top-most &quot;resource&quot; have a URL?  If not, then it
+isn't a resource.  *poke*
+
+|<i> error-reporting behavior with Nevow
+</I>
+Ouch.  Is this good?
+
+|<i> In a similar situation, I need a Foo on the request.  It's set by 
+</I>|<i> /my-app/foo.  I put my Foo resources at /my-app/foo/&lt;blah&gt;.  Someone else 
+</I>|<i> puts one at /my-app/stuff/extra/current-foo.  The error-reporting now 
+</I>|<i> becomes:
+</I>|<i> 
+</I>|<i>  SiteMismatchError: expected current site resource to provide 'IFoo', but 
+</I>|<i>  instead found 'IMyApp' &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">MyApp at 13715</A>&gt; from <A HREF="http://example.com/my-app/">http://example.com/my-app/</A>
+</I>|<i> 
+</I>|<i> It is then possible for the developer to insert a 'print' statement into 
+</I>|<i> a working Foo and watch the logs, which would allow them to see that the 
+</I>|<i> URL which sets the IFoo it's using is <A HREF="http://example.com/my-app/foo/">http://example.com/my-app/foo/</A> - 
+</I>|<i> this might assist in figuring out how to set up a similar structure for 
+</I>|<i> /stuff/.
+</I>
+Wow.  Is this good?
+
+I think this is overly complicated, and it stems from the attempt to
+make &quot;everything a resource&quot;.   My system is very very incompatible with
+this approach; and I have lots and lots of customers who have written
+custom code dependent on my current URLs, so I cannot be changing them.
+No way am I adding a /foo/ to my path to reflect that 'foo' logged-in;
+or perhaps I didn't understand.
+
+I do hope I'm being helpful; I know it sounds argumentative, but
+really, I'm trying to contribute.
+
+Best,
+
+Clark
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002107.html">[Twisted-web] HTTP-AUTH for web2 / Kudos on web2's operation
+</A></li>
+	<LI>Next message: <A HREF="002110.html">[Twisted-web] HTTP-AUTH for web2 / Kudos on web2's operation
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2109">[ date ]</a>
+              <a href="thread.html#2109">[ thread ]</a>
+              <a href="subject.html#2109">[ subject ]</a>
+              <a href="author.html#2109">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

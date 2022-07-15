@@ -1,0 +1,262 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Hanging%20test%20cases%20%28Was%3A%20Evangelism%20notes...%29&In-Reply-To=%3Cu1x8jkhum.fsf%40fitlinxx.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="042883.html">
+   <LINK REL="Next"  HREF="042890.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re%3A%20Hanging%20test%20cases%20%28Was%3A%20Evangelism%20notes...%29&In-Reply-To=%3Cu1x8jkhum.fsf%40fitlinxx.com%3E"
+       TITLE="[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)">db3l at fitlinxx.com
+       </A><BR>
+    <I>Fri May  6 18:19:45 MDT 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="042883.html">[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+</A></li>
+        <LI>Next message (by thread): <A HREF="042890.html">[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#42884">[ date ]</a>
+              <a href="thread.html#42884">[ thread ]</a>
+              <a href="subject.html#42884">[ subject ]</a>
+              <a href="author.html#42884">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Bob Ippolito &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">bob at redivi.com</A>&gt; writes:
+
+&gt;<i> (1) Reactors can only be (meaningfully/predictably/etc) iterated if
+</I>&gt;<i> Twisted rules the universe AND the implementation of that reactor is
+</I>&gt;<i> amenable to that feature.  This is not a tautology.
+</I>&gt;<i> (2) Reactors need to fire various startup/shutdown events.  Reactors
+</I>&gt;<i> shouldn't be doing ANYTHING unless they are in a running state.
+</I>&gt;<i> 
+</I>&gt;<i> The current deferredResult/deferredError breaks both of these
+</I>&gt;<i> conditions.
+</I>&gt;<i> (1) It iterates the reactor (which is a historically public, but
+</I>&gt;<i> conceptually broken interface)
+</I>&gt;<i> (2) It iterates the reactor in a STOPPED state.  The reactor is never
+</I>&gt;<i> &quot;running&quot; during these tests.  Startup/Shutdown does not happen!
+</I>
+This seems like an internal implementation issue to me - when a
+reactor is &quot;running&quot; (I've called run()), it's basically stuck in a
+loop doing runUntilCurrent and then doIteration.  That's precisely
+what iterate does.
+
+Now, I agree that if you have tests that never initiate the run, that
+you skip over some startup events.  But except for the uppermost
+tests, what is being tested is a specific unit test for a piece of the
+system that should be testable in isolation.  If the item under test
+has a dependency on startup events, the test should arrange for them.
+
+&gt;<i> The fact that the doc strings talk about re-entrancy of certain
+</I>&gt;<i> reactor functions and whatnot scares the shit out of me.  They should
+</I>&gt;<i> not have to be re-entrant.  What their current implementation is
+</I>&gt;<i> doing is really really broken.
+</I>
+Not sure which doc strings those are, but I don't see a re-entrancy
+problem in the sort of scenario I'm looking at - rather than:
+
+        reactor.run which calls
+           reactor.runUntilCurrent/doIteration which causes
+               my deferrable stuff to operate
+
+I have
+
+        deferredResult which calls
+           reactor.iterate which uses
+               reactor.runUntilCurrent/doIteration which causes
+                   my deferrable stuff to operate
+       
+I don't think there's any more room for re-entrancy issues than in a normal
+running reactor.
+
+Maybe this is a key difference with trial?  If trial has a top level
+reactor.run that is always above any test, then I do see how you could
+get re-entrancy problems, since you'd be re-entering reactor.iterate
+from within an existing reactor.iterate call.
+
+I guess that's true of any nested use of deferredResult too, but we
+don't nest our deferredResult calls - no real need since any
+deferrable is directly wrapped with the deferredResult call, and
+deferredResult is only used in the tests, so what they are calling is
+always production code that is written properly with callbacks and
+what not.
+
+&gt;<i> The problem, for tests, is that using a properly written
+</I>&gt;<i> deferredResult / deferredError the reactor would startup/shutdown
+</I>&gt;<i> violently throughout the course of a single test, and will break the
+</I>&gt;<i> hell out of it if it has anything to do with services/etc.  So, while
+</I>&gt;<i> for SOME deferreds it would work fine, but for others, it wouldn't.
+</I>&gt;<i> Basically, unless you can encapsulate the entire test in a single
+</I>&gt;<i> deferred, then it shouldn't be using deferredResult/deferredError.
+</I>
+I still don't necessarily see that (the last sentence).  We use
+multiple deferrable operations in single tests, but never more than
+one at a time (e.g., no recursive or nested uses).  But certainly more
+than a single deferrable operation within a single test.
+
+I would, however, agree that I'd prefer even more the ability to
+completely start/stop a reactor during the course of a test, but would
+still like to be able to iterate it manually during the test to
+provide a natural blocking flow to the test.
+
+But in my current scenario, the majority of my components under test
+are having interfaces tested that are not impacted by startup/shutdown
+(and we don't use any services, in the Twisted sense, for example).
+
+&gt;<i> Therefore, what SHOULD happen is that trial should let you write
+</I>&gt;<i> tests that return deferreds, and it should let you write it in the
+</I>&gt;<i> deferredGenerator style (so it doesn't suck so much).
+</I>
+I don't think I'd disagree with that - we pretty much stayed away from
+trial since I wasn't comfortable with it initially, so we're a pure
+Unittest approach, which certainly doesn't provide any framework for
+something like that.
+
+&gt;<i> Trial *could*, in theory, put the reactor into a &quot;started&quot; state at
+</I>&gt;<i> the beginning of every tests and a &quot;stopped&quot; state at the end, but
+</I>&gt;<i> then you're testing in a strange environment that doesn't really
+</I>&gt;<i> mimic how Twisted actually works, and it still breaks (1) which makes
+</I>&gt;<i> it unsuitable for testing the reactors where Twisted does not rule
+</I>&gt;<i> the universe.  Testing this theory would require changes to the
+</I>&gt;<i> reactor interface to make some parts of if re-entrant (bleargh).
+</I>
+Yeah, that's a tough problem, although one that would also simplify
+the fact that we often run the tests under the unittest GUI, and
+occasionally have to fight cross-test pollution from the reactor
+persisting across test runs, which is a wart from the current
+restrictions.
+
+&gt;<i> Well, it causes you to write two lines of code instead of one.  That
+</I>&gt;<i> sucks, but so what?  You don't have to write big callback chains..
+</I>&gt;<i> It's conceptually identical, it's just that you have to throw in some
+</I>&gt;<i> extra boiler plate that says THIS IS A DEFERRED.  If the way we say
+</I>&gt;<i> that wasn't so ugly, it might actually be a good thing from a
+</I>&gt;<i> readability standpoint :)
+</I>
+Well, seeing &quot;deferredResult&quot; sort of already says &quot;THIS IS A
+DEFERRED&quot; in the test.  And it's less the number of lines than the
+inversion of the logic.  In my example, it's tougher to read through
+that test and see the underlying core test of the user() and
+saveUser() calls.  This is true really of any deferred code in
+general, so I find the ability to simplify things in the test level an
+improvement.  As you say, the way we &quot;say&quot; this currently is ugly.
+
+&gt;<i> &gt;     self.user = deferredResult(self.umgr.user())
+</I>&gt;<i> &gt;     self.user.email = '<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">test at dom.ain</A>'
+</I>&gt;<i> &gt;     deferredResult(self.umgr.saveUser(self.user))
+</I>&gt;<i> 
+</I>&gt;<i> # let's assume I've aliased waitForDeferred to &quot;wait&quot;
+</I>&gt;<i> 
+</I>&gt;<i> d = waitForDeferred(self.umgr.user())
+</I>&gt;<i> yield d
+</I>&gt;<i> self.user = d.getResult()
+</I>&gt;<i> self.user.email = '<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">test at dom.ain</A>'
+</I>&gt;<i> d = waitForDeferred(self.umgr.saveUser(self.user))
+</I>&gt;<i> yield d
+</I>&gt;<i> d.getResult()
+</I>&gt;<i> 
+</I>&gt;<i> So, the test is 6 lines instead of 3.  Which sucks, but it's  correct.
+</I>&gt;<i> For tests that do more stuff, it probably should be even  less of a
+</I>&gt;<i> problem.
+</I>
+Except that you didn't include the additional code I'd now have to
+write to actually turn that into a generator which is iterated over by
+the test in order to actually process the deferrable yields.  (Unless
+this is something trial does automatically somehow).
+
+That's what I meant by saying that the integration into generators is
+slick (and goes a good way to linearizing what is normally a callback
+chain), but still isn't quite as simple as the interface provided by
+the deferred{Result,Error} functions.
+
+&gt;<i> Well, let's say your database thing is a service, that maintains some
+</I>&gt;<i> kind of ephemeral state that's required in some way.  If
+</I>&gt;<i> deferredResult were properly written, this ephemeral state would hit
+</I>&gt;<i> the bit bucket on each deferredResult, probably breaking your code
+</I>&gt;<i> even though the test are &quot;correct&quot;.
+</I>
+I might be getting lost on the &quot;properly written&quot; part, but if I were
+testing a component that did have state triggered during reactor
+startup/shutdown (which is what I think you're referring to), that
+test would likely be using direct calls to the component to trigger
+the startup/shutdown actions as part of the test setup/teardown, but
+without using the reactor.
+
+That's because the test would be focused on the component and not on
+Twisted itself (which in the context of such a test would be a
+&quot;system&quot; component that I'm trusting would do the right thing).  This
+is clearly different than when testing Twisted itself.
+
+Now that would cover the lion's share of the component tests but
+somewhere there's the question of who plugs the components interface
+into the twisted events and is that done right.  And I agree that's
+messy right now, but it's such a small bit of initialization code that
+even if it doesn't get full coverage in the tests it's not hard to
+validate.  But I'd certainly welcome ways to test that more fully.
+
+So my tests should be fine for what they are testing (the component).
+
+&gt;<i> If you add such a component to the system, you might have to rewrite
+</I>&gt;<i> all of your tests, because it would not be possible to fix the way
+</I>&gt;<i> deferredResult works.
+</I>
+I'm not following this.
+
+&gt;<i> So, use deferredGenerator / waitForDeferred.
+</I>
+Once we move to 2.0 we might consider that (I'm not quite up for
+back-porting into 1.3 that we're using now), but I still think that
+would complicate the tests (in terms of the overhead to actually run
+each test like a generator) - but different people can have different
+views on what is more maintainable.
+
+Since we're not running our entire test bed under control of a single
+&quot;reactor.run&quot; call (I presume that's more of what trial does?), even
+using the generator would effectively be iterating the reactor
+somewhere along the line.
+
+I don't know - maybe my use case is just limited enough (non trial, no
+nesting, etc...) that I don't see any true exposures through
+deferred{Result,Error} while I'm getting benefits.
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="042883.html">[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+</A></li>
+	<LI>Next message (by thread): <A HREF="042890.html">[Twisted-Python] Re: Hanging test cases (Was: Evangelism notes...)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#42884">[ date ]</a>
+              <a href="thread.html#42884">[ thread ]</a>
+              <a href="subject.html#42884">[ subject ]</a>
+              <a href="author.html#42884">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

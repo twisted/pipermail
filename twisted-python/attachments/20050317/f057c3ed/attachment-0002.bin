@@ -1,0 +1,96 @@
+
+import Queue, threading, time, xmlrpclib, sys
+from sets import Set
+
+from twisted.internet import reactor, defer
+from twisted.python import failure, log
+
+stop = object()
+
+class TaskRunner(object):
+    def __init__(self, queue):
+        self.queue = queue
+        self._running = Set()
+
+    def _startTimer(self):
+        taskId = object()
+        self._running.add(taskId)
+        def timer():
+            time.sleep(5)
+            if taskId in self._running:
+                print 'Warning: long running process'
+        t = threading.Thread(target=timer)
+        t.setDaemon(True)
+        t.start()
+        return taskId
+
+    def _result(self, d, result):
+        d.callback(result)
+
+    def _error(self, d, info):
+        d.errback(failure.Failure(info[1], info[0], info[2]))
+
+    def run(self):
+        while True:
+            task = self.queue.get()
+            if task is stop:
+                print 'Shutting down', self
+                break
+
+            print 'Got a task', self.queue.qsize(), 'queued'
+            d, f, a, kw = task
+            print 'Executing', f, a, kw
+            taskId = self._startTimer()
+            try:
+                try:
+                    result = f(*a, **kw)
+                except:
+                    reactor.callFromThread(self._error, d, sys.exc_info())
+                else:
+                    reactor.callFromThread(self._result, d, result)
+            finally:
+                self._running.remove(taskId)
+
+from twisted.web import xmlrpc
+
+class QueuedXMLRPCServer(xmlrpc.XMLRPC):
+    def __init__(self):
+        xmlrpc.XMLRPC.__init__(self)
+        self.queue = Queue.Queue()
+        self.runner = TaskRunner(self.queue)
+        reactor.callInThread(self.runner.run)
+
+    def render(self,request):
+        # MOSTLY COPIED FROM PARENT CLASS
+        request.content.seek(0, 0)
+        args, functionPath = xmlrpclib.loads(request.content.read())
+        try:
+            function = self._getFunction(functionPath)
+        except xmlrpc.Fault, f:
+            self._cbRender(f, request)
+        else:
+            request.setHeader("content-type", "text/xml")
+            d = defer.Deferred()
+            d.addErrback(
+                self._ebRender
+            ).addCallback(
+                self._cbRender, request
+            )
+            self.queue.put((d, function, args, {}))
+        return server.NOT_DONE_YET
+
+    def xmlrpc_echo(self, x):
+        """ Echo back to client."""
+        if x.endswith('3'):
+            # cause one task to trip the warning
+            time.sleep(15)
+        else:
+            time.sleep(3)
+        return x
+
+from twisted.web import server
+from twisted.application import service, internet
+
+application = service.Application("XMLRPC Queue")
+internet.TCPServer(8080, server.Site(QueuedXMLRPCServer())).setServiceParent(application)
+

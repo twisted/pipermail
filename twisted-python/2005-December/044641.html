@@ -1,0 +1,153 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Question on deferreds
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Question%20on%20deferreds&In-Reply-To=%3C439965ED.6050105%40imperial.ac.uk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="044640.html">
+   <LINK REL="Next"  HREF="044627.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Question on deferreds</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Question%20on%20deferreds&In-Reply-To=%3C439965ED.6050105%40imperial.ac.uk%3E"
+       TITLE="[Twisted-Python] Question on deferreds">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Fri Dec  9 04:09:33 MST 2005</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="044640.html">[Twisted-Python] Question on deferreds
+</A></li>
+        <LI>Next message (by thread): <A HREF="044627.html">[Twisted-Python] [patch] issue 630: timezone in twisted log
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44641">[ date ]</a>
+              <a href="thread.html#44641">[ thread ]</a>
+              <a href="subject.html#44641">[ subject ]</a>
+              <a href="author.html#44641">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Frank Millman wrote:
+
+&gt;<i> I have been experimenting with using a socket client instead of Twisted, and
+</I>&gt;<i> I got something up and running quite quickly. When I take a step back and
+</I>&gt;<i> look at how I got it working, I feel that I should be able to apply the same
+</I>&gt;<i> technique to Twisted, but I cannot get it to work. I will show both methods,
+</I>&gt;<i> and perhaps someone can point me in the right direction.
+</I>
+No, of course you can't apply the same technique. A socket client is a 
+blocking, synchronous bit of code. The ENTIRE POINT of Twisted is that 
+all operations are non-blocking, and asynchronous. Basically you're 
+going to find it hard going until that's clear (I know I did).
+
+And sadly you're using wx, which is REALLY BAD and does not interact 
+well with Twisted until recent developments (see below).
+
+&gt;<i> 
+</I>&gt;<i> The trick is that I have two threads running concurrently - a wxPython main
+</I>&gt;<i> loop, and a subthread that monitors the socket. The socket loop looks like
+</I>&gt;<i> this (simplified), subclassed from threading.Thread -
+</I>
+
+&gt;<i> 
+</I>&gt;<i>     def run(self):
+</I>&gt;<i>         readable = [s.fileno()]
+</I>&gt;<i>         error = []
+</I>&gt;<i>         self.sendData = []
+</I>&gt;<i>         while 1:
+</I>&gt;<i>             if self.sendData:
+</I>&gt;<i>                 writable = [s.fileno()]
+</I>&gt;<i>             else:
+</I>&gt;<i>                 writable = []
+</I>&gt;<i>             r,w,e = select.select(readable,writable,error,0.01)
+</I>&gt;<i>             if r:
+</I>&gt;<i>                 self.recvData = s.recv(1024)
+</I>&gt;<i>             if w:
+</I>&gt;<i>                 s.send(self.sendData.pop(0))
+</I>&gt;<i> 
+</I>&gt;<i>     def checkData(self,item,value):  # this is called from the *wx* thread
+</I>&gt;<i>         self.recvData = None
+</I>&gt;<i>         self.sendData.append(cPickle.dumps((CHECK,item,value)))
+</I>&gt;<i>         while self.recvData is None:
+</I>&gt;<i>             sleep(0.01)
+</I>&gt;<i>         return self.recvData
+</I>&gt;<i> 
+</I>&gt;<i> As you can see, checkData() blocks the wxPython thread until it receives a
+</I>&gt;<i> response from the socket thread.
+</I>
+Fine. Odd, but fine (I'd use a semaphore as opposed to while True: sleep 
+but whatever floats your boat)
+
+&gt;<i> 
+</I>&gt;<i> This is how I tried with Twisted -
+</I>&gt;<i> 
+</I>&gt;<i>     def checkData(self,item,value):  # this is called from the *wx* thread
+</I>&gt;<i>         self.recvData = None
+</I>&gt;<i>         self.callCheckData(item,value)
+</I>&gt;<i>         while self.recvData is None:
+</I>&gt;<i>             sleep(0.01)
+</I>&gt;<i>         return self.recvData
+</I>&gt;<i> 
+</I>
+Bzzt! Error.
+
+You cannot call twisted functions from a thread. See extensive (and 
+repetitive) posts in the archives about &quot;threadselectreactor AND wx&quot; for 
+about a million posts describing this.
+
+Other than that, and the fact you've got no locking around mutable data 
+structures, that code would probably work.
+
+&gt;<i>     def callCheckData(self,item,value):
+</I>&gt;<i>  
+</I>&gt;<i> self.avatar.callRemote('checkData',item,value).addCallback(self.dataChecked)
+</I>&gt;<i> 
+</I>&gt;<i>     def dataChecked(self,answer):
+</I>&gt;<i>         self.recvData = answer
+</I>&gt;<i> 
+</I>&gt;<i> It looks as if it should work, but the server method 'perspective_checkData'
+</I>&gt;<i> never gets called.
+</I>
+It should not and does not work for the reason above.
+
+I believe &quot;threadselectreactor&quot; is what you want for wx integation. 
+Sadly, I've never used threadselectreactor or wx, so can't be more 
+useful to you.
+
+See:
+
+<A HREF="http://bob.pythonmac.org/archives/2005/04/17/twisted-and-foreign-event-loops/">http://bob.pythonmac.org/archives/2005/04/17/twisted-and-foreign-event-loops/</A>
+<A HREF="http://twistedmatrix.com/pipermail/twisted-python/2005-April/thread.html#10146">http://twistedmatrix.com/pipermail/twisted-python/2005-April/thread.html#10146</A>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="044640.html">[Twisted-Python] Question on deferreds
+</A></li>
+	<LI>Next message (by thread): <A HREF="044627.html">[Twisted-Python] [patch] issue 630: timezone in twisted log
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#44641">[ date ]</a>
+              <a href="thread.html#44641">[ thread ]</a>
+              <a href="subject.html#44641">[ subject ]</a>
+              <a href="author.html#44641">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

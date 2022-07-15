@@ -1,0 +1,185 @@
+This patch should be applied to python-twisted-snmp package. It allows
+to use deferred values in bisectoidstore on agent-side.
+
+--- twistedsnmp-0.3.13/agent.py	2005-10-04 03:03:36.000000000 +0200
++++ twistedsnmp-0.3.13/agent.py	2008-01-22 08:56:37.000000000 +0100
+@@ -4,7 +4,7 @@
+ from twistedsnmp import datatypes
+ from twistedsnmp.pysnmpproto import v2c,v1, error, resolveVersion, oid
+ from twistedsnmp.errors import noError, tooBig, noSuchName, badValue
+-from twistedsnmp import errors
++from twistedsnmp import errors, datatypes
+ from twisted.internet import reactor, defer
+ 
+ __metaclass__ = type
+@@ -35,6 +35,76 @@
+ 	def setProtocol( self, protocol ):
+ 		"""Set the protocol for the agent object"""
+ 		self.protocol = protocol
++    def getOrGetNext( self, request, address, implementation, real ):
++        """Get OID(s), handling deferred as needed"""
++        def _processRemainingValues(cbresult, protocol, response, address, pdu, variables, result):
++            # We assume that all deferred values has been processed
++            cberrors = [(c,f) for (c, f) in cbresult if not c]
++            if cberrors:
++                # There is at least an error
++                # We need one error that is OIDNameError
++                oiderrors = [(c,f) for (c,f) in cberrors if f.check(errors.OIDNameError)]
++                if oiderrors:
++                    pdu.apiGenSetErrorStatus( oiderrors[0][1].value.errorCode )
++                    pdu.apiGenSetErrorIndex( oiderrors[0][1].value.errorIndex + 1 ) # 1-indexed
++                else:
++                    # Unknown error, we raise it
++                    cberrors[0][1].raiseException()
++                pdu.apiGenSetVarBind(variables)
++            else:
++                new = []
++                for r in result:
++                    if isinstance(r, defer.Deferred):
++                        new.append(r.result)
++                    else:
++                        (key, value) = r
++                        if isinstance(value, defer.Deferred):
++                            new.append((key, value.result))
++                        else:
++                            new.append((key,value))
++                pdu.apiGenSetVarBind([
++                    (key,datatypes.typeCoerce(value,implementation))
++                    for (key,value) in new
++                ])
++            protocol.send( response.encode(), address )
++        variables = request.apiGenGetPdu().apiGenGetVarBind()
++        response = request.reply()
++        pdu = response.apiGenGetPdu()
++        try:
++            if real == self.getTableOIDs:
++                # Get the repetition counts...
++                # if < 0, set to 0, though for maxRepetitions we set to 255 since
++                # that's the default and 0 would mean no repetitions at all
++                # nonRepeaters is the set of OIDs which are treated as get-next
++                # requests, while the rest of the query OIDs are get-bulk, repeating
++                # up to maxRepetitions times.
++                nonRepeaters = max((request.apiGenGetPdu().apiGenGetNonRepeaters(),0))
++                maxRepetitions = max((request.apiGenGetPdu().apiGenGetMaxRepetitions(),0)) or 255
++                result = real( [ oid for (oid,_) in variables[:nonRepeaters] ],
++                               [ oid for (oid,_) in variables[nonRepeaters:] ],
++                               maxRepetitions,
++                               )
++            else:
++                result = real( [key for (key,_) in variables] )
++        except errors.OIDNameError, err:
++            pdu.apiGenSetErrorStatus( err.errorCode )
++            pdu.apiGenSetErrorIndex( err.errorIndex + 1 ) # 1-indexed
++            pdu.apiGenSetVarBind(variables)
++            result = None
++            self.protocol.send( response.encode(), address )
++        else:
++            # Handle deferred results
++            deferredlist = []
++            for d in result:
++                if isinstance(d, defer.Deferred):
++                    deferredlist.append(d)
++                else:
++                    if isinstance(d[1], defer.Deferred):
++                        deferredlist.append(d[1])
++            deferredValues = defer.DeferredList(deferredlist,
++                                                consumeErrors=1)
++            deferredValues.addCallback(_processRemainingValues, self.protocol,
++                                       response, address, pdu, variables, result)
+ 	def get( self, request, address, implementation ):
+ 		"""Get OID(s) for the request and return response
+ 
+@@ -48,23 +118,7 @@
+ 		
+ 		returns the sent response
+ 		"""
+-		variables = request.apiGenGetPdu().apiGenGetVarBind()
+-		response = request.reply()
+-		pdu = response.apiGenGetPdu()
+-		try:
+-			result = self.getOIDs( [key for (key,_) in variables] )
+-		except errors.OIDNameError, err:
+-			pdu.apiGenSetErrorStatus( err.errorCode )
+-			pdu.apiGenSetErrorIndex( err.errorIndex + 1 ) # 1-indexed
+-			pdu.apiGenSetVarBind(variables)
+-			result = None
+-		else:
+-			pdu.apiGenSetVarBind([
+-				(key,datatypes.typeCoerce(value,implementation))
+-				for (key,value) in result
+-			])
+-		self.protocol.send( response.encode(), address )
+-		return response
++        return self.getOrGetNext(request, address, implementation, self.getOIDs)
+ 	def getOIDs( self, oids ):
+ 		"""Get the given set of OIDs
+ 
+@@ -141,23 +195,7 @@
+ 		http://www.faqs.org/rfcs/rfc1157.html
+ 		Section: 4.1.3, GetNextRequest
+ 		"""
+-		variables = request.apiGenGetPdu().apiGenGetVarBind()
+-		response = request.reply()
+-		pdu = response.apiGenGetPdu()
+-		try:
+-			result = self.getNextOIDs( [key for (key,_) in variables] )
+-		except errors.OIDNameError, err:
+-			pdu.apiGenSetErrorStatus( err.errorCode )
+-			pdu.apiGenSetErrorIndex( err.errorIndex + 1 ) # 1-indexed
+-			pdu.apiGenSetVarBind(variables)
+-			result = None
+-		else:
+-			pdu.apiGenSetVarBind([
+-				(key,datatypes.typeCoerce(value,implementation))
+-				for (key,value) in result
+-			])
+-		self.protocol.send( response.encode(), address )
+-		return response
++        return self.getOrGetNext(request, address, implementation, self.getNextOIDs)
+ 	def getNextOIDs( self, oids ):
+ 		"""Get the given set of OIDs' next items
+ 
+@@ -199,42 +237,7 @@
+ 		http://www.faqs.org/rfcs/rfc1448.html
+ 		Section 4.2.3, The GetBulkRequest-PDU
+ 		"""
+-		from twistedsnmp import datatypes
+-		variables = request.apiGenGetPdu().apiGenGetVarBind()
+-		result = []
+-		errorCode = None
+-		errorIndex = None
+-		# Get the repetition counts...
+-		# if < 0, set to 0, though for maxRepetitions we set to 255 since
+-		# that's the default and 0 would mean no repetitions at all
+-		# nonRepeaters is the set of OIDs which are treated as get-next
+-		# requests, while the rest of the query OIDs are get-bulk, repeating
+-		# up to maxRepetitions times.
+-		nonRepeaters = max((request.apiGenGetPdu().apiGenGetNonRepeaters(),0))
+-		maxRepetitions = max((request.apiGenGetPdu().apiGenGetMaxRepetitions(),0)) or 255
+-
+-		response = request.reply()
+-		pdu = response.apiGenGetPdu()
+-
+-		try:
+-			result = self.getTableOIDs(
+-				[ oid for (oid,_) in variables[:nonRepeaters] ],
+-				[ oid for (oid,_) in variables[nonRepeaters:] ],
+-				maxRepetitions,
+-			)
+-		except errors.OIDNameError, err:
+-			# should never happen, but who knows...
+-			pdu.apiGenSetErrorStatus( err.errorCode )
+-			pdu.apiGenSetErrorIndex( err.errorIndex + 1 ) # 1-indexed
+-			pdu.apiGenSetVarBind(variables)
+-			result = None
+-		else:
+-			pdu.apiGenSetVarBind([
+-				(key,datatypes.typeCoerce(value,implementation))
+-				for (key,value) in result
+-			])
+-		self.protocol.send( response.encode(), address )
+-		return response
++        return self.getOrGetNext(request, address, implementation, self.getTableOIDs)
+ 	def getTableOIDs( self, nonRepeating=(), repeating=(), maxRepetitions=255 ):
+ 		"""Get non-repeating and repeating OID values
+ 

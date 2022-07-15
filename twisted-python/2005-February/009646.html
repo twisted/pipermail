@@ -1,0 +1,201 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Dealing with an intermittent PB server
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Dealing%20with%20an%20intermittent%20PB%20server&In-Reply-To=7a59f025050215195672e3698c%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="009582.html">
+   <LINK REL="Next"  HREF="009583.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Dealing with an intermittent PB server</H1>
+    <B>Ken Kinder</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Dealing%20with%20an%20intermittent%20PB%20server&In-Reply-To=7a59f025050215195672e3698c%40mail.gmail.com"
+       TITLE="[Twisted-Python] Dealing with an intermittent PB server">ken at kenkinder.com
+       </A><BR>
+    <I>Fri Feb 25 14:45:42 EST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="009582.html">[Twisted-Python] Dealing with an intermittent PB server
+</A></li>
+        <LI>Next message: <A HREF="009583.html">[Twisted-Python] Is delivered mail
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9646">[ date ]</a>
+              <a href="thread.html#9646">[ thread ]</a>
+              <a href="subject.html#9646">[ subject ]</a>
+              <a href="author.html#9646">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>For what it's worth, I had a similar need and I don't pass objects 
+around on PB (just data structures), so this class works out well for 
+me. If the remote server isn't up or goes down, the returned deferred 
+just waits. I tried to take out all the logic that relates to my 
+application.
+
+-Ken
+
+class SimplePBProxy(object):
+    &quot;&quot;&quot;
+    A simple U{Perspective 
+Broker&lt;<A HREF="http://twistedmatrix.com/documents/current/howto/pb-intro">http://twistedmatrix.com/documents/current/howto/pb-intro</A>&gt;} proxy for
+    remote servers. This works similar to the xmlrpc proxy, but uses 
+Perspective
+    Broker.
+   
+    Example::
+       
+        hostname = 'remotebox'
+        pb_port = 5053
+        proxy = SimplePBProxy(hostname, pb_port)
+        deferred_object = proxy.callRemote('somecall')
+   
+    B{NOTE:} Unlike the default Perspective Broker behavior, this 
+doesn't wig out
+    if the connection is lost. Deferred objects simple won't be returned 
+until
+    the remote server comes back up. Likewise, if the remote server 
+isn't yet up,
+    the deferred will simply be held open until the remote box is up.
+    &quot;&quot;&quot;
+    def __init__(self, host, port):
+        &quot;&quot;&quot;
+        @param host: Host to connect to.
+        @rtype host: String
+       
+        @param port: Port PB is on.
+        @rtype port: Integer
+        &quot;&quot;&quot;
+        self.host = host
+        self.port = port
+        self.pending_calls = []
+
+        self.rootobj = None
+        self.connect()
+
+    def connect(self):
+        &quot;&quot;&quot;
+        Used internally. Connects to remote server.
+        &quot;&quot;&quot;
+        def handle_error(failure):
+            reactor.callLater(1, self.connect)
+        factory = pb.PBClientFactory()
+        factory.unsafeTracebacks = 1
+        reactor.connectTCP(self.host, self.port, factory)
+        d = factory.getRootObject()
+        d.addCallback(self._set_root_object)
+        d.addErrback(handle_error)
+        return d
+
+    def _set_root_object(self, rootobj):
+        self.rootobj = rootobj
+       
+        def pending_act(data, deferred):
+            deferred.callback(data)
+        def pending_err(failure, deferred):
+            deferred.errback(failure)
+
+        for deferred, method, args, kwargs in self.pending_calls:
+            d = self.callRemote(method, *args, **kwargs)
+            d.addCallback(pending_act, deferred)
+            d.addErrback(pending_err, deferred)
+        self.pending_calls = []
+
+    def callRemote(self, method, *args, **kwargs):
+        &quot;&quot;&quot;
+        Call method on remote API. Method is a string. Any additional 
+arguments
+        and keyword arguments are passed to that method as arguments and
+        keyword arguments.
+        &quot;&quot;&quot;
+        if not self.rootobj:
+            d = Deferred()
+            self.pending_calls.append((d, method, args, kwargs))
+            self.connect()
+            return d
+
+        try:
+            d = self.rootobj.callRemote(method, *args, **kwargs)
+            d.addErrback(self._error_back, method, args, kwargs)
+            return d
+        except pb.DeadReferenceError:
+            self.rootobj = None
+            d = Deferred()
+            self.pending_calls.append((d, method, args, kwargs))
+            self.connect()
+            return d
+   
+    def _error_back(self, failure, method, args, kwargs):
+        if failure.type is twisted.spread.pb.PBConnectionLost:
+            self.rootobj = None
+            d = Deferred()
+            self.pending_calls.append((d, method, args, kwargs))
+            self.connect()
+            return d
+        else:
+            return failure
+
+
+Dave Cook wrote:
+
+&gt;<i>I'm rendering the results of a remote method call:
+</I>&gt;<i>
+</I>&gt;<i>    def data_tableList(self, ctx, data):
+</I>&gt;<i>        ...
+</I>&gt;<i>        d =   self.pbClientFactory.login(creds)
+</I>&gt;<i>        d.addCallback(lambda object: object.callRemote(&quot;foo&quot;))
+</I>&gt;<i>        return d
+</I>&gt;<i> 
+</I>&gt;<i>Works, great if the PB server is up,  but if it's down the browser
+</I>&gt;<i>just hangs.  Is there a correct way to check that the connection is up
+</I>&gt;<i>at this point?  This works:
+</I>&gt;<i>
+</I>&gt;<i>       if self.pbClientFactory._broker:
+</I>&gt;<i>            d = self.pbClientFactory.login(creds)
+</I>&gt;<i>            d.addCallback(lambda object: object.callRemote(&quot;getAlertReports&quot;))
+</I>&gt;<i>        else:
+</I>&gt;<i>            d = []
+</I>&gt;<i>        return d
+</I>&gt;<i>
+</I>&gt;<i>but seems like a hack.  Also, ideally, I'd like to attempt a
+</I>&gt;<i>reconnection to the PB server at this point if it's not running. 
+</I>&gt;<i>What's the best way to do that?
+</I>&gt;<i>
+</I>&gt;<i>Thanks,
+</I>&gt;<i>Dave Cook
+</I>&gt;<i>
+</I>&gt;<i>_______________________________________________
+</I>&gt;<i>Twisted-Python mailing list
+</I>&gt;<i><A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i><A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>  
+</I>&gt;<i>
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="009582.html">[Twisted-Python] Dealing with an intermittent PB server
+</A></li>
+	<LI>Next message: <A HREF="009583.html">[Twisted-Python] Is delivered mail
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9646">[ date ]</a>
+              <a href="thread.html#9646">[ thread ]</a>
+              <a href="subject.html#9646">[ subject ]</a>
+              <a href="author.html#9646">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

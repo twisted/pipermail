@@ -1,0 +1,166 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Streaming Requests
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Streaming%20Requests&In-Reply-To=%3C20170108064432.fscacjstbglfoisz%40hammal%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Streaming Requests</H1>
+    <B>Mark Williams</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Streaming%20Requests&In-Reply-To=%3C20170108064432.fscacjstbglfoisz%40hammal%3E"
+       TITLE="[Twisted-Python] Streaming Requests">markrwilliams at gmail.com
+       </A><BR>
+    <I>Sat Jan  7 23:44:32 MST 2017</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#63499">[ date ]</a>
+              <a href="thread.html#63499">[ thread ]</a>
+              <a href="subject.html#63499">[ subject ]</a>
+              <a href="author.html#63499">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>* What?
+  A new year means renewed ambition.  So let's talk about receiving
+  streaming requests!
+
+* Why?
+  Twisted's HTTP server implementation does not allow application code
+  to interact with a request until its body has been entirely
+  received.  It also doesn't allow incremental access to the request's
+  body as it arrives.  This shortcoming has been an issue for a while;
+  see <A HREF="http://twistedmatrix.com/trac/ticket/288">http://twistedmatrix.com/trac/ticket/288</A>
+
+  Some of the discussion in #288 focuses on twisted.web.server and
+  twisted.web.resource.  The approach I'll propose in this email will
+  not.  There are two reasons for this.
+
+  The first: I want twisted.web.proxy.Proxy to support the CONNECT
+  HTTP method.  That requires that Request.process be called before
+  any part of the body has been written by the client.  I'd also like
+  to write proxies that connected the incoming request as an
+  IPushProducer to an outgoing one as an IConsumer.  It just so
+  happens that Proxy inherits directly from HTTPChannel and doesn't
+  touch any of twisted.web.server.
+
+  The second: the consensus after some discussion on IRC in
+  #twisted-dev seems to be that we have to fix HTTPChannel first
+  anyway, and that progress there can be made entirely in Twisted's
+  private API.  Once we have some kind of Request-like thing that
+  HTTPChannel can begin processing before the body has arrived, we can
+  work out how to integrate it in twisted.web.server and and
+  twisted.web.resource.
+
+  In other words, we can make this change incrementally and
+  backwards-compatibly, and get a better Proxy implementation out of
+  it, too.
+
+* Quickly: How?
+  1. Define the Request interface HTTPChannel currently uses.  It will
+     be private.  Call it _IDeprecatedHTTPChannelToRequestInterface
+     because requests should eventually always be streaming.  There's
+     a ticket here: <A HREF="https://twistedmatrix.com/trac/ticket/8981">https://twistedmatrix.com/trac/ticket/8981</A> and
+     some code here:
+     <A HREF="https://github.com/twisted/twisted/compare/twisted:88a7194...markrwilliams:ed19197">https://github.com/twisted/twisted/compare/twisted:88a7194...markrwilliams:ed19197</A>
+  2. Define a new streaming Request interface that HTTPChannel knows
+     how to use.  It will be private.  Call it
+     _IHTTPChannelToStreamingRequest.  It won't have a .content, but
+     it will have a way to specify a protocol that receives the body
+     incrementally.  The interaction will probably look a lot like the
+     patch in <A HREF="https://twistedmatrix.com/trac/ticket/8143.">https://twistedmatrix.com/trac/ticket/8143.</A>  It won't be
+     HTTPChannel's default requestFactory.
+  3. Use the private _IHTTPChannelToStreamingRequest implementation in
+     a new proxy implementation that supports CONNECT and also
+     producer/consumer streaming between the client and proxy
+     requests.
+  4. Take stock and figure out how to make things work for
+     twisted.web.server.
+
+* Slowly: How?
+  (Note: attributions are for posterity only.  Any mistakes in
+  reasoning are because I transcribed something badly.)
+
+  Tom Prince explained that HTTPChannel doesn't provide Request with
+  the HTTP method, URI, or version until the body has arrived.
+  Request.requestReceived, the method that receives these, calls
+  Request.process, which means without change this behavior we can't
+  change Proxy or Site, both of which begin their work by overriding
+  Request.process.  So we have to start with HTTPChannel.  (For what
+  it's worth, <A HREF="http://twistedmatrix.com/trac/ticket/288#comment:31">http://twistedmatrix.com/trac/ticket/288#comment:31</A>
+  supports this approach.)
+
+  He also noted that the Request interface with which HTTPChannel
+  interacts is mostly not described by twisted.iweb.IRequest.  That
+  means we can augment the ways HTTPChannel talks to Request-like
+  things without breaking many public APIs.
+
+  Glyph said we should make this existing interface explicit but
+  private.  That will let HTTPChannel (eventually) use the interface
+  provided by requestFactory to determine whether to treat the Request
+  as streaming or not.
+
+  We can then define a new interface, _IHTTPChannelToStreamingRequest,
+  and a new implementation that's completely separate from
+  twisted.web.http.Request.  Both will be private.
+
+  Tom Prince pointed out that with these two in place, we can then
+  write a replacement for twisted.web.proxy.Proxy that uses these
+  private APIs to provide HTTPS support via HTTP's CONNECT method.
+  HTTPChannel's default requestFactory will continue to be
+  twisted.web.http.Request.  The new proxy code will use the new
+  _IHTTPChannelToStreamingRequest implementation.
+
+  Exarkun pointed out that this new proxy implementation can be
+  completely separate and indeed deprecate the existing one, avoiding
+  the need to make twisted.web.proxy.ProxyRequest.process work with
+  both the new _IHTTPChannelToStreamingRequest process()
+  implementation and the existing one.  I am hopeful this new
+  implementation will also close
+  <A HREF="https://twistedmatrix.com/trac/ticket/8961">https://twistedmatrix.com/trac/ticket/8961</A>
+
+  If all that works, we can then work out an IStreamingRequest
+  interface that will enable Twisted's web server utilize the private
+  streaming request APIs.
+
+* Comments?
+  Will this approach break a public API?  Does it sound terrible?  Or
+  good?  Please share your thoughts!
+
+Let's hope 2017 is the year of the streaming request!
+
+-Mark
+
+
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#63499">[ date ]</a>
+              <a href="thread.html#63499">[ thread ]</a>
+              <a href="subject.html#63499">[ subject ]</a>
+              <a href="author.html#63499">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,157 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Conch: multiple commands
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Conch%3A%20multiple%20commands&In-Reply-To=%3C43EBED71.1050002%40imperial.ac.uk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="045046.html">
+   <LINK REL="Next"  HREF="045039.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Conch: multiple commands</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Conch%3A%20multiple%20commands&In-Reply-To=%3C43EBED71.1050002%40imperial.ac.uk%3E"
+       TITLE="[Twisted-Python] Conch: multiple commands">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Thu Feb  9 18:33:37 MST 2006</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="045046.html">[Twisted-Python] Conch: multiple commands
+</A></li>
+        <LI>Next message (by thread): <A HREF="045039.html">[Twisted-Python] Re: [Twisted-commits] r15860 - Move	checkPreconditions() from web2.dav.static.DAVFile to	web2.resource.RenderMixIn.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45047">[ date ]</a>
+              <a href="thread.html#45047">[ thread ]</a>
+              <a href="subject.html#45047">[ subject ]</a>
+              <a href="author.html#45047">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Brendan Simon wrote:
+&gt;<i> 
+</I>&gt;<i> Maybe I just answered my own question.  The sshd server runs &quot;login&quot; (or 
+</I>&gt;<i> something) which in turn looks in /etc/passwd for the user and shell, 
+</I>&gt;<i> and then invokes that shell (eg. bash).  Is that the way it works?  i.e. 
+</I>&gt;<i> the ssh client only sends _one_ command and as far as it is concerned is 
+</I>&gt;<i> only invoked one program and it doesn't care that the server has fired 
+</I>&gt;<i> off many apps.
+</I>
+Correct
+
+&gt;<i> 
+</I>&gt;<i> If that's the case, then maybe I can invoke bash as my command, and just 
+</I>&gt;<i> write data to the channel and grab the results ???
+</I>
+It might not be quite that simple. Bash and most shells expect to be 
+attached to a TTY with a VT emulation on top, to provide output, 
+prompting and so forth. To do it &quot;correctly&quot; you would need some kind of 
+TTY client attached to the channel that would present you with prompts.
+
+That said for simple commands that don't cause any complex terminal 
+operations, it works fine. I've done it with SSH logins into firewalls 
+and routers as an alternative to the (frankly POS) &quot;expect&quot; approach. I 
+basically did something like this (though I was talking to an SSH 
+process rathern than Twisted's SSH support as I needed SSHv1 - modify as 
+appropriate):
+
+class sshSession(TheBases):
+   # match &quot;[thing]$&quot; or &quot;[<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">foo at bar</A>]# &quot;
+   PROMPT_RE = re.compile(r'[[][^]]+]. ')
+   def __init__(self):
+     self.stdout = stdout
+     self.stdout_lines = []
+     self.stderr = stderr
+     self.stdin = []
+     self.atprompt = False
+     self.deferred = None
+
+   def sendCmd(cmd):
+     &quot;&quot;&quot;Queue up the command - returns a deferred callbacked with the
+     command stdout or errbacked with stderr if any&quot;&quot;&quot;
+     d = defer.Deferred()
+     self.stdin.append((d, cmd))
+     if self.atprompt:
+       self.atprompt = False
+       self.deferred, cmd = self.stdin.pop(0)
+       self.transport.write(cmd+'\r')
+     return d
+
+   def errReceived(self, data):
+     self.stderr += data
+
+   def outReceived(self, data):
+     line = None
+
+     # accumulate stdout
+     self.stdout += data
+     while self.stdout:
+       # look for an end of line in the buffer
+       pos = self.stdout.find('\r\n')
+       if pos==-1:
+         break
+       line = self.stdout[:pos]
+       self.stdout = self.stdout[pos+2:]
+       self.stdout_lines.append(line)
+
+     # ok we've looked at all the complete lines - is whats
+     # left in the buffer the prompt?
+     if self.PROMPT_RE.match(self.stdout):
+       if self.deferred:
+         if self.stderr:
+           self.deferred.errback(self.stderr)
+           self.deferred = None
+
+         if self.stdin:
+           # there's another command waiting
+           self.atprompt = False
+           self.deferred, cmd = self.stdin.pop(0)
+           self.transport.write(cmd+'\r\n')
+         else:
+           self.atprompt = True
+
+...and hopefully that makes sense!
+
+&gt;<i> Is that good or bad???
+</I>&gt;<i> 
+</I>&gt;<i> Thanks,
+</I>&gt;<i> Brendan.
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="045046.html">[Twisted-Python] Conch: multiple commands
+</A></li>
+	<LI>Next message (by thread): <A HREF="045039.html">[Twisted-Python] Re: [Twisted-commits] r15860 - Move	checkPreconditions() from web2.dav.static.DAVFile to	web2.resource.RenderMixIn.
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#45047">[ date ]</a>
+              <a href="thread.html#45047">[ thread ]</a>
+              <a href="subject.html#45047">[ subject ]</a>
+              <a href="author.html#45047">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

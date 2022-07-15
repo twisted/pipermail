@@ -1,0 +1,484 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] SessionWrapper rewrapped ;-)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20SessionWrapper%20rewrapped%20%3B-%29&In-Reply-To=%3Cpan.2003.05.13.08.45.12.321602%40smurf.noris.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="036564.html">
+   <LINK REL="Next"  HREF="036555.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] SessionWrapper rewrapped ;-)</H1>
+    <B>Matthias Urlichs</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20SessionWrapper%20rewrapped%20%3B-%29&In-Reply-To=%3Cpan.2003.05.13.08.45.12.321602%40smurf.noris.de%3E"
+       TITLE="[Twisted-Python] SessionWrapper rewrapped ;-)">smurf at smurf.noris.de
+       </A><BR>
+    <I>Tue May 13 02:45:18 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="036564.html">[Twisted-Python] Allow static.Data to be at the root
+</A></li>
+        <LI>Next message (by thread): <A HREF="036555.html">[Twisted-Python] twisted.world question
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36563">[ date ]</a>
+              <a href="thread.html#36563">[ thread ]</a>
+              <a href="subject.html#36563">[ subject ]</a>
+              <a href="author.html#36563">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Here's my current code WRT a (partially) rewritten SessionWrapper, with
+expanded test case, and a small example on how to do authorization.
+
+--- a/twisted/web/woven/guard.py	Tue May 13 10:42:34 2003
++++ b/twisted/web/woven/guard.py	Tue May 13 10:42:34 2003
+@@ -8,6 +8,7 @@
+ import random
+ import time
+ import md5
++import base64
+ 
+ # Twisted Imports
+ 
+@@ -17,8 +18,10 @@
+ from twisted.internet import reactor
+ from twisted.cred.error import Unauthorized
+ 
++_trans={&quot;/&quot;:&quot;.&quot;, &quot;+&quot;:&quot;-&quot;, &quot;=&quot;:&quot;&quot;, &quot;\n&quot;:&quot;&quot;}
+ def _sessionCookie():
+-    return md5.new(&quot;%s_%s&quot; % (str(random.random()) , str(time.time()))).hexdigest()
++    hash = md5.new(&quot;%s_%s&quot; % (str(random.random()) , str(time.time())))
++    return &quot;&quot;.join(map(lambda k: _trans.get(k,k), base64.encodestring(hash.digest())))
+ 
+ class GuardSession(components.Componentized):
+     &quot;&quot;&quot;A user's session with a system.
+@@ -129,22 +132,29 @@
+     req.getSession = req.session._getSelf
+ 
+ class SessionWrapper(Resource):
++	# XXX TODO: This wrapper doesn't pass query strings.
+ 
+-    def __init__(self, rsrc, cookieKey=None):
++    def __init__(self, rsrc, cookieKey=None, on_timeout=None, lifetime=1800):
+         Resource.__init__(self)
+         self.resource = rsrc
+         if cookieKey is None:
+             cookieKey = &quot;woven_session_&quot; + _sessionCookie()
+         self.cookieKey = cookieKey
++        self.on_timeout = on_timeout
+         self.sessions = {}
++        self.lifetime = lifetime
+ 
+     def getChild(self, path, request):
+         # XXX refactor with PerspectiveWrapper
+         if not request.prepath:
+             return None
+-        pp = request.prepath.pop()
+-        _urlToMe = request.prePathURL()
+-        request.prepath.append(pp)
++        if path is not None:
++            pp = request.prepath.pop()
++            _urlToMe = request.prePathURL()
++            request.prepath.append(pp)
++        else:
++            _urlToMe = request.prePathURL()
++
+         def urlToChild(*ar):
+             c = '/'.join(ar)
+             if _urlToMe[-1] == '/':
+@@ -152,55 +162,102 @@
+                 return _urlToMe + c
+             else:
+                 return _urlToMe + '/' + c
+-        # XXX
+-        # print &quot;I think I'm at:&quot;, _urlToMe
++
++		# Strictly speaking, the additional step through INIT_SESSION is
++		# not necessary. TODO: As soon as PerspectiveWrapper and
++		# SessionWrapper are folded into one class, the INIT_SESSION
++		# step can be removed.
++
+         cookie = request.getCookie(self.cookieKey)
+-        setupURL = request.setupSessionURL = urlToChild(INIT_SESSION, *([path]+request.postpath))
++        setupURL = request.setupSessionURL = urlToChild(self.cookieKey+&quot;_&quot;+INIT_SESSION, *request.postpath)
+         request.setupSession = lambda: Redirect(setupURL)
+-        if self.sessions.has_key(path):
+-            self.sessions[path].setLifetime(1800)
+-            if cookie == path:
+-                # /sessionized-url/aef9c34aecc3d9148/foo
+-                #                  ^
+-                #                  we are this getChild
+-                # with a matching cookie
+-                rd = Redirect(urlToChild(*request.postpath))
+-                rd.isLeaf = 1
+-                return rd
+-            else:
+-                # We attempted to negotiate the session but failed (the user
+-                # probably has cookies disabled): now we're going to return the
+-                # resource we contain.  In general the getChild shouldn't stop
+-                # there.
+-                # /sessionized-url/aef9c34aecc3d9148/foo
+-                #                 ^ we are this getChild
+-                # without a cookie (or with a mismatched cookie)
+-                _setSession(self, request, path)
++
++        if path == self.cookieKey:
++            # /sessionized-url/KEY/foo
++            #                  ^ this getChild
++            # standard case if the client does cookies
++            if self.sessions.has_key(cookie):
++                self.sessions[cookie].setLifetime(self.lifetime)
++                _setSession(self, request, cookie)
+                 return self.resource
+-        elif self.sessions.has_key(cookie):
+-            # /sessionized-url/foo
+-            #                 ^ we are this getChild
+-            # with a session
+-            _setSession(self, request, cookie)
+-            return self.resource.getChildWithDefault(path, request)
+-        elif path == INIT_SESSION:
++            else:
++                request.getSession = lambda interface=None: None
++                if cookie is not None and self.on_timeout:
++                    # The session cookie has expired.
++                    return self.on_timeout(path,request)
++                else:
++                    # The client probably used a cached link.
++                    return self.resource
++
++        elif path == self.cookieKey+&quot;_&quot;+INIT_SESSION:
+             # initialize the session
+-            # /sessionized-url/session-init
++            # /sessionized-url/KEY_session-init/foo
+             #                  ^ this getChild
+-            # without a session
++            # I setup a cookie and redirect the client
++            # to the cookie test, below.
+             newCookie = _sessionCookie()
+             request.addCookie(self.cookieKey, newCookie, path=&quot;/&quot;)
+-            rd = Redirect(urlToChild(newCookie,*request.postpath))
+-            rd.isLeaf = 1
+             sz = self.sessions[newCookie] = GuardSession(self, newCookie)
+             sz.checkExpired()
+-            return rd
++            return Redirect(urlToChild(self.cookieKey+&quot;__&quot;+newCookie,
++                                       *request.postpath))
++
++        elif path is not None and path.startswith(self.cookieKey+&quot;__&quot;):
++            # /sessionized-url/KEY__cookie/foo
++            #                  ^ this getChild
++            # Check whether the cookie was returned
++            path_cookie = path[len(self.cookieKey)+2:]
++            if cookie == path_cookie: # yes: use session-less path
++                return Redirect(urlToChild(self.cookieKey,*request.postpath))
++            else: # no: use session-ized path
++                return Redirect(urlToChild(self.cookieKey+&quot;_&quot;+path_cookie,*request.postpath))
++
++        elif path is not None and path.startswith(self.cookieKey+&quot;_&quot;):
++            # /sessionized-url/KEY_cookie/foo
++            #                  ^ this getChild
++            # standard case if the client doesn't do cookies
++            cookie = path[len(self.cookieKey)+1:]
++            if self.sessions.has_key(cookie):
++                self.sessions[cookie].setLifetime(self.lifetime)
++                _setSession(self, request, cookie)
++                return self.resource.getChildWithDefault(path, request)
++            else:
++                # I need to setup a session.
++                request.getSession = lambda interface=None: None
++                return self.resource
++
+         else:
+             # /sessionized-url/foo
+-            #                 ^ we are this getChild
+-            # without a session
+-            request.getSession = lambda interface=None: None
+-            return self.resource.getChildWithDefault(path, request)
++            #                  ^ this getChild
++            # either there is no session data yet, or the client
++            # re-entered via an external link
++
++            # This is the only case where the path is not a session
++            # element, so change the setupURL to include it.
++            if path is None:
++                ppath=[]
++            else:
++                ppath=[path]
++            setupURL = request.setupSessionURL = urlToChild(self.cookieKey+&quot;_&quot;+INIT_SESSION, *(ppath+request.postpath))
++            request.setupSession = lambda: Redirect(setupURL)
++
++            if self.sessions.has_key(cookie):
++                # I need to (re-)insert the session marker into the path
++                self.sessions[cookie].setLifetime(self.lifetime)
++                return Redirect(urlToChild(self.cookieKey,*(ppath+request.postpath)))
++            else:
++                # I need to setup a session. No way to figure out
++                # whether this is a re-enter, unfortunately.
++                request.getSession = lambda interface=None: None
++                if path is None:
++                    return self.resource
++                else:
++                    return self.resource.getChildWithDefault(path, request)
++
++    def render(self,request):
++        &quot;&quot;&quot;A session-ized path is called directly.&quot;&quot;&quot;
++        # For now, just munge /foo into /foo/.
++        return self.getChild(None,request).render(request)
+ 
+ INIT_PERSPECTIVE = 'perspective-init'
+ DESTROY_PERSPECTIVE = 'perspective-destroy'
+@@ -284,6 +341,18 @@
+             if sc:
+                 return sc.getChildWithDefault(path, request)
+             return self.noAuthResource.getChildWithDefault(path, request)
++
++    def render(self,request):
++        &quot;&quot;&quot;A perspective is called directly.&quot;&quot;&quot;
++        s = request.getSession()
++        if s is None:
++            return request.setupSession().render(request)
++
++        sc = s.clientForService(self.service)
++        if sc:
++            return sc.render(request)
++        return self.noAuthResource.render(request)
++
+ 
+ 
+ from twisted.web.woven import interfaces, utils
+--- a/ChangeLog	Tue May 13 10:42:34 2003
++++ b/ChangeLog	Tue May 13 10:42:34 2003
+@@ -1,4 +1,11 @@
+-2003-5-12  Moshe Zadka &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">moshez at twistedmatrix.com</A>&gt;
++2003-05-13  Matthias Urlichs &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">smurf at smurf.noris.de</A>&gt;
++
++	* twisted/web/woven/guard.py, twisted/test/test_woven.py: Rewrote
++	  SessionWrapper to have constant-length paths. Made its logic more
++	  transparent.
++	* doc/examples/woven_guard.py: Added example code to use it.
++
++2003-05-12  Moshe Zadka &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">moshez at twistedmatrix.com</A>&gt;
+ 
+ 	* twisted/lore/default.py twisted/lore/latex.py
+ 	  twisted/lore/lint.py twisted/lore/math.py twisted/lore/tree.py
+--- /dev/null	Wed Dec 31 16:00:00 1969
++++ b/doc/examples/woven_guard.py	Tue May 13 10:42:34 2003
+@@ -0,0 +1,70 @@
++import sys
++import os
++from twisted.internet import app
++from twisted.web import static, server
++from twisted.protocols import http, policies
++from twisted.cred import authorizer
++from twisted.web.woven import guard
++
++class termFile(static.File):
++    def getChild(self,name,*args,**kwargs):
++        return self
++
++# authHelper and authFactory could easily be written as inline or lambda
++# functions. Don't do that, though -- otherwise twisted.persisted will
++# crash when it tries to save your PerspectiveWrapper.
++class authHelper:
++    def __init__(self,page):
++        self.page = page
++    def __call__(self,p,q=None):
++        if q is None:
++            q=self.page
++        return q
++def authFactory(page): return page
++
++# This resource shows yes_page if you're logged in, and no_page if you aren't.
++def setup_auth(yes_page, no_page):
++    from twisted.internet.app import MultiService
++    from twisted.cred.authorizer import DefaultAuthorizer
++    from twisted.cred.service import Service
++
++    ms = MultiService(&quot;security_test&quot;)
++    auth = DefaultAuthorizer(ms)
++    svc = Service(&quot;security_test_service&quot;, ms, auth)
++    myp = svc.createPerspective(&quot;test_one&quot;)
++    myp.makeIdentity(&quot;test_two&quot;)
++
++    pwrap = guard.PerspectiveWrapper(svc, no_page, authHelper(yes_page),
++        callback=authFactory)
++    swrap = guard.SessionWrapper(pwrap, cookieKey=&quot;GuardTest&quot;)
++    return swrap
++
++def main():
++    root = static.Data(&quot;&quot;&quot;\
++        &lt;html&gt;&lt;body&gt;
++            Test.&lt;br /&gt;The authorizer is &lt;a href=&quot;auth-test&quot;&gt;here.&lt;/a&gt;
++        &lt;/body&gt;&lt;/html&gt;
++        &quot;&quot;&quot;,'text/html')
++
++    yes = static.Data(&quot;&quot;&quot;\
++        &lt;html&gt;&lt;head&gt;Success!&lt;/head&gt;
++        &lt;body&gt;Login successful!&lt;/body&gt;&lt;/html&gt;
++        &quot;&quot;&quot;,'text/html')
++    no = static.Data(&quot;&quot;&quot;\
++        &lt;html&gt;&lt;head&gt;Not logged in&lt;/head&gt;
++        &lt;body&gt;&lt;p&gt;Log in &lt;a href=&quot;perspective-init&quot;&gt;here&lt;/a&gt;&lt;/p&gt;
++        &lt;code&gt;test_one test_two&lt;/code&gt;&lt;/body&gt;&lt;/html&gt;
++        &quot;&quot;&quot;,'text/html')
++    root.putChild(&quot;auth-test&quot;,setup_auth(yes,no))
++
++    site = server.Site(root)
++    site = policies.TimeoutFactory(site,300)
++    
++    basename = os.path.splitext(os.path.basename(sys.argv[0]))[0]
++    me = app.Application(basename)
++    me.listenTCP(50080, site)
++    me.bindPorts()
++    me.run()
++    
++if __name__ == '__main__':
++    main()
+--- a/twisted/test/test_woven.py	Tue May 13 10:42:34 2003
++++ b/twisted/test/test_woven.py	Tue May 13 10:42:34 2003
+@@ -474,7 +474,7 @@
+         sessWrapped = static.Data(&quot;you should never see this&quot;, &quot;text/plain&quot;)
+         swChild = static.Data(&quot;NO&quot;, &quot;text/plain&quot;)
+         sessWrapped.putChild(&quot;yyy&quot;,swChild)
+-        swrap = guard.SessionWrapper(sessWrapped)
++        swrap = guard.SessionWrapper(sessWrapped,cookieKey=&quot;TesT&quot;)
+         da = static.Data(&quot;b&quot;,&quot;text/plain&quot;)
+         da.putChild(&quot;xxx&quot;, swrap)
+         st = FakeSite(da)
+@@ -491,23 +491,56 @@
+ 
+         # now we're going to make sure that the redirect and cookie are properly set
+         req = FakeHTTPRequest(chan, queued=0)
+-        req.requestReceived(&quot;GET&quot;, &quot;/xxx/&quot;+guard.INIT_SESSION, &quot;1.0&quot;)
++        req.requestReceived(&quot;GET&quot;, &quot;/xxx/TesT_&quot;+guard.INIT_SESSION, &quot;1.0&quot;)
+         ccv = req._cookieCache.values()
+         self.assertEquals(len(ccv),1)
+         cookie = ccv[0]
+         # redirect set?
+         self.failUnless(req.headers.has_key('location'))
+         # redirect matches cookie?
+-        self.assertEquals(req.headers['location'].split('/')[-1], cookie)
++        self.assertEquals(req.headers['location'].split('/')[-1], &quot;TesT__&quot;+cookie)
+         # URL is correct?
+         self.assertEquals(req.headers['location'],
+-                          '<A HREF="http://fake.com/xxx/">http://fake.com/xxx/</A>'+cookie)
++                          '<A HREF="http://fake.com/xxx/TesT__">http://fake.com/xxx/TesT__</A>'+cookie)
+         oldreq = req
++
++        # now we're going to make sure that the redirect and cookie are properly set
++        req = FakeHTTPRequest(chan, queued=0)
++        req.received_cookies[&quot;TesT&quot;] = cookie
++        req.requestReceived(&quot;GET&quot;, &quot;/xxx/TesT__&quot;+cookie, &quot;1.0&quot;)
++        ccv = req._cookieCache.values()
++        self.assertEquals(len(ccv),0) # no cookie sent back here
++        # redirect set?
++        self.failUnless(req.headers.has_key('location'))
++        # redirect matches cookie?
++        self.assertEquals(req.headers['location'].split('/')[-1], 'TesT')
++        # URL is correct?
++        self.assertEquals(req.headers['location'],
++                          '<A HREF="http://fake.com/xxx/TesT">http://fake.com/xxx/TesT</A>')
+         
+-        # now let's try with a request for the session-cookie URL that has a cookie set
+-        url = &quot;/&quot;+(oldreq.headers['location'].split('<A HREF="http://fake.com/">http://fake.com/</A>',1))[1]
+-        req = chan.makeFakeRequest(url)
+-        self.assertEquals(req.headers['location'], '<A HREF="http://fake.com/xxx/">http://fake.com/xxx/</A>')
++        # If there's a cookie but the session element is missing, it
++		# gets added in.
++        req = FakeHTTPRequest(chan, queued=0)
++        req.received_cookies[&quot;TesT&quot;] = cookie
++        req.requestReceived(&quot;GET&quot;, &quot;/xxx/yyy&quot;, &quot;1.0&quot;)
++        self.assertEquals(req.headers['location'], '<A HREF="http://fake.com/xxx/TesT/yyy">http://fake.com/xxx/TesT/yyy</A>')
++
++        # now do the same with a client that doesn't accept cookies:
++        # we get a cookie-ized path back
++        req = FakeHTTPRequest(chan, queued=0)
++        req.requestReceived(&quot;GET&quot;, &quot;/xxx/TesT__&quot;+cookie, &quot;1.0&quot;)
++        ccv = req._cookieCache.values()
++        self.assertEquals(len(ccv),0) # no cookie here, either
++        # redirect set?
++        self.failUnless(req.headers.has_key('location'))
++        # redirect matches cookie?
++        self.assertEquals(req.headers['location'].split('/')[-1], 'TesT_'+cookie)
++        # URL is correct?
++        self.assertEquals(req.headers['location'],
++                          '<A HREF="http://fake.com/xxx/TesT_">http://fake.com/xxx/TesT_</A>'+cookie)
++        
++
++		# clean up
+         for sz in swrap.sessions.values():
+             sz.expire()
+ 
+@@ -531,23 +564,23 @@
+         q.putChild(&quot;yyy&quot;, static.Data(&quot;YES&quot;, &quot;text/plain&quot;))
+         authFactory = lambda p, q=q: q
+         pwrap = guard.PerspectiveWrapper(svc, sessWrapped, authFactory)
+-        swrap = guard.SessionWrapper(pwrap)
++        swrap = guard.SessionWrapper(pwrap, cookieKey=&quot;TesT&quot;) # as above
+         da.putChild(&quot;xxx&quot;, swrap)
+         st = FakeSite(da)
+         chan = FakeHTTPChannel()
+         chan.site = st
+ 
+-        req = chan.makeFakeRequest(&quot;/xxx/&quot;+guard.INIT_SESSION+&quot;/yyy&quot;)
+-        req = chan.makeFakeRequest(&quot;/xxx/yyy&quot;)
++        req = chan.makeFakeRequest(&quot;/xxx/TesT_&quot;+guard.INIT_SESSION+&quot;/yyy&quot;)
++        req = chan.makeFakeRequest(&quot;/xxx/TesT/yyy&quot;)
+         self.assertEquals(req.written.getvalue(),&quot;NO&quot;)
+-        req = chan.makeFakeRequest(&quot;/xxx/&quot;+guard.INIT_PERSPECTIVE+
++        req = chan.makeFakeRequest(&quot;/xxx/TesT/&quot;+guard.INIT_PERSPECTIVE+
+                                    &quot;?identity=test&amp;password=tenxt&quot;)
+         assert not req.session.services.values()
+-        req = chan.makeFakeRequest(&quot;/xxx/&quot;+guard.INIT_PERSPECTIVE+
++        req = chan.makeFakeRequest(&quot;/xxx/TesT/&quot;+guard.INIT_PERSPECTIVE+
+                                    &quot;?identity=test&amp;password=test&quot;)
+         self.assertEquals(req.session.services.values()[0][0], myp)
+         # print req.written.getvalue()
+-        req = chan.makeFakeRequest(&quot;/xxx/yyy&quot;)
++        req = chan.makeFakeRequest(&quot;/xxx/TesT/yyy&quot;)
+         self.assertEquals(req.written.getvalue(), &quot;YES&quot;)
+         # print req.session.services
+         for sz in swrap.sessions.values():
+
+-- 
+Matthias Urlichs  | {M:U} IT Consulting @ m-u-it.de  |  <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">smurf at smurf.noris.de</A>
+Disclaimer: The quote was selected randomly. Really. | <A HREF="http://smurf.noris.de">http://smurf.noris.de</A>
+-- 
+When voting on appropriations bills, more is not necessarily better. It is
+as wasteful to have a B-1 bomber in every garage as it is to have a welfare
+program for every conceivable form of deprivation.
+					-- Pierre S. du Pont
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="036564.html">[Twisted-Python] Allow static.Data to be at the root
+</A></li>
+	<LI>Next message (by thread): <A HREF="036555.html">[Twisted-Python] twisted.world question
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#36563">[ date ]</a>
+              <a href="thread.html#36563">[ thread ]</a>
+              <a href="subject.html#36563">[ subject ]</a>
+              <a href="author.html#36563">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

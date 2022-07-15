@@ -1,0 +1,124 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Circular references in TLSMemoryBIOProtocol
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Circular%20references%20in%20TLSMemoryBIOProtocol&In-Reply-To=%3CCAOG7vkw5GSRcz%3DSPQMoiF%2BsFy3e-WsW2f3n7nwH0mGMtgTzudA%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Circular references in TLSMemoryBIOProtocol</H1>
+    <B>Ilya Skriblovsky</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Circular%20references%20in%20TLSMemoryBIOProtocol&In-Reply-To=%3CCAOG7vkw5GSRcz%3DSPQMoiF%2BsFy3e-WsW2f3n7nwH0mGMtgTzudA%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Circular references in TLSMemoryBIOProtocol">ilyaskriblovsky at gmail.com
+       </A><BR>
+    <I>Wed Jan 17 14:09:21 MST 2018</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64259">[ date ]</a>
+              <a href="thread.html#64259">[ thread ]</a>
+              <a href="subject.html#64259">[ subject ]</a>
+              <a href="author.html#64259">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+
+I have the Twisted app that serves tons of short-lived TLS connections
+using TLSMemoryBIOFactory. I usually set loosened garbage collector
+thresholds in production environment for the sake of performance. But I've
+noticed that this app's RAM usage quickly grows up to unreasonable values.
+Digging into the issue using pdb and objgraph showed that protocol
+instances are still living long after they were closed.
+
+I found two circular dependencies which are created for each TLS connection:
+1. Between twisted.protocols.policies.ProtocolWrapper and its
+self.wrappedProtocol
+2. Between twisted.protocols.tls.TLSMemoryBIOProtocol and its
+self._tlsConnection
+
+Both of them cause protocol instance to not be deleted when the connection
+is closed. So all OpenSSL-related objects and all business-related data
+attached to that protocol instance are still living untill the next GC
+collection. This affects both RAM usage and performance (due to much more
+often GC collections)
+
+I've tried to fix both circular dependencies:
+
+replaced
+<A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/protocols/policies.py#L75">https://github.com/twisted/twisted/blob/trunk/src/twisted/protocols/policies.py#L75</A>
+ by
+self.wrappedProtocol.makeConnection(weakref.proxy(self))
+and replaced
+<A HREF="https://github.com/twisted/twisted/blob/trunk/src/twisted/protocols/tls.py#L199">https://github.com/twisted/twisted/blob/trunk/src/twisted/protocols/tls.py#L199</A>
+ by:
+self._tlsConnection = self.factory._createConnection(weakref.proxy(self))
+
+Memory usage pattern changed drastically after this change.
+
+I've created demo script that makes 10k TLS loopback connections with GC
+disabled and measures the number of objects are still living after the work
+is done and total resident RAM consumption:
+<A HREF="https://gist.github.com/IlyaSkriblovsky/4dd3abfd5f67c64b13f1c673f56466f9">https://gist.github.com/IlyaSkriblovsky/4dd3abfd5f67c64b13f1c673f56466f9</A>
+
+Output without the fix:
+    N = 10000 , K = 100
+    objects before 50136
+    DummyServerProtocols still living 10000
+    objects after 439919
+    mem 778 mb
+
+Output with the fix:
+    N = 10000 , K = 100
+    objects before 50133
+    DummyServerProtocols still living 0
+    objects after 159919
+    mem 96 mb
+
+So using weakrefs makes all protocol instances and instances of
+TLSMemoryBIOProtocol to be deleted right after a connection is closed. Less
+circular-dependent objects → less GC invocations → better performance. And
+I see much nicer RAM usage pattern in my app.
+
+Is it possible to fix circular deps in some more clean way? Can this be
+solved at all while user's code is able to try to touch both sides of
+circular dep after connection is closed? Please advice
+
+Thanks for consideration
+
+Best regards,
+    Ilya
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20180117/65d42580/attachment-0002.html&gt;
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#64259">[ date ]</a>
+              <a href="thread.html#64259">[ thread ]</a>
+              <a href="subject.html#64259">[ subject ]</a>
+              <a href="author.html#64259">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

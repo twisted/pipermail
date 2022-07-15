@@ -1,0 +1,157 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Tracebacks being dropped from exceptions when	using inlineCallbacks
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Tracebacks%20being%20dropped%20from%20exceptions%20when%0A%09using%20inlineCallbacks&In-Reply-To=%3C18795.61464.631046.43215%40jon.es%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051512.html">
+   <LINK REL="Next"  HREF="051510.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Tracebacks being dropped from exceptions when	using inlineCallbacks</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Tracebacks%20being%20dropped%20from%20exceptions%20when%0A%09using%20inlineCallbacks&In-Reply-To=%3C18795.61464.631046.43215%40jon.es%3E"
+       TITLE="[Twisted-Python] Tracebacks being dropped from exceptions when	using inlineCallbacks">terry at jon.es
+       </A><BR>
+    <I>Mon Jan 12 18:36:24 MST 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051512.html">[Twisted-Python] Manhole and StandardIO
+</A></li>
+        <LI>Next message (by thread): <A HREF="051510.html">[Twisted-Python] Tracebacks being dropped from exceptions when	using inlineCallbacks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51509">[ date ]</a>
+              <a href="thread.html#51509">[ thread ]</a>
+              <a href="subject.html#51509">[ subject ]</a>
+              <a href="author.html#51509">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I think I've finally gotten to the bottom of why exceptions sometimes lose
+their tracebacks when using inlineCallbacks.
+
+I've spent many hours trying to track down problems that result from
+this. I find the code handling failures, deferreds, and inlineCallbacks
+non-trivial even in isolation, let alone when those things start
+interacting. There are a lot of things that are subtle and some that I
+still haven't gotten to the bottom of. The following ignores some of these
+subtleties in the interest of showing how things can go wrong for the
+innocent user of inlineCallbacks. I'm happy to go into detail later.
+
+First, consider this:
+
+    import sys
+    from twisted.internet import defer
+    from twisted.python import failure
+
+    d = defer.Deferred()
+    try:
+        1 / 0
+    except Exception:
+        info = sys.exc_info()
+        f = failure.Failure(*info)
+        print &quot;f.tb is %r&quot; % f.tb
+        d.errback(f)
+        print &quot;f.tb is %r&quot; % f.tb
+
+
+Which prints:
+
+    f.tb is &lt;traceback object at 0x9a19e0&gt;
+    f.tb is None
+    Unhandled error in Deferred:
+
+That's the heart of the issue. We make a failure object, it has a
+traceback, but after passing it to the errback method on a deferred the
+traceback is gone.
+
+This happens because _runCallbacks in defer.py finds no call/errback
+functions to call on the deferred, drops into this code:
+
+        if isinstance(self.result, failure.Failure):
+            self.result.cleanFailure()
+
+which sets the __dict__ on the failure object to the result of the
+failure's __getstate__ method, which sets the traceback to None:
+
+        # added 2003-06-23. See comment above in __init__
+        c['tb'] = None
+
+But the comment in __init__ seems to have been deleted.
+
+So in summary, passing the failure to errback() results in its traceback
+disappearing.
+
+
+(Note that, as mentioned, there are subtleties here. E.g., try calling
+failure() with no args. The above is just a very simple example.)
+
+
+So what does this have to do with inlineCallbacks?
+
+Briefly: when you decorate a function F1 with inlineCallbacks, a new
+function F2 is created. When you call F2, you get back a deferred. But
+before you get that deferred, F2 calls F1. F1 returns a generator G (it
+yields, right?). F2 passes that generator G to _inlineCallbacks.
+_inlineCallbacks initially starts G by calling its send (passing None). If
+G raises an exception (other than StopIteration or returning a final value
+via _DefGen_Return), _inlineCallbacks catches it via:
+
+        except:
+            deferred.errback()
+            return deferred
+
+I.e., it calls the errback on the deferred that F2 is about to hand back to
+your original code (which called the inlineCallbacks decorated F1 function).
+
+Unfortunately, the result of this is as above. A failure is created in
+errback, it correctly has a traceback on it, but the traceback is then
+immediately removed in _runCallbacks!
+
+By the time your code gets its deferred back from calling the
+inlineCallbacks decorated F1, the exception has fired, the errback has been
+called, the deferred you get has its result sitting there waiting for you,
+but the traceback is gone, gone, gone. Without the original traceback, you
+end up cursing inlineCallbacks and digging around in what your function
+called and what that called, and so on. Not fun :-(
+
+I'll stop for now. I have some suggestions for fixes, but I'm already in
+over my head.
+
+BTW, I get the impression that the Twisted core developers don't really use
+inlineCallbacks. Is that correct?
+
+Terry
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051512.html">[Twisted-Python] Manhole and StandardIO
+</A></li>
+	<LI>Next message (by thread): <A HREF="051510.html">[Twisted-Python] Tracebacks being dropped from exceptions when	using inlineCallbacks
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51509">[ date ]</a>
+              <a href="thread.html#51509">[ thread ]</a>
+              <a href="subject.html#51509">[ subject ]</a>
+              <a href="author.html#51509">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

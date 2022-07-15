@@ -1,0 +1,247 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Another approach to allowing __init__ to work with	Deferreds
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Another%20approach%20to%20allowing%20__init__%20to%20work%20with%0A%09Deferreds&In-Reply-To=%3C18952.20484.534748.921408%40jon.es%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="052139.html">
+   <LINK REL="Next"  HREF="052113.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Another approach to allowing __init__ to work with	Deferreds</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Another%20approach%20to%20allowing%20__init__%20to%20work%20with%0A%09Deferreds&In-Reply-To=%3C18952.20484.534748.921408%40jon.es%3E"
+       TITLE="[Twisted-Python] Another approach to allowing __init__ to work with	Deferreds">terry.jones at gmail.com
+       </A><BR>
+    <I>Mon May 11 10:19:16 MDT 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="052139.html">[Twisted-Python] XMPP/Jabber server example
+</A></li>
+        <LI>Next message (by thread): <A HREF="052113.html">[Twisted-Python] Another approach to allowing __init__ to work	with Deferreds
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52109">[ date ]</a>
+              <a href="thread.html#52109">[ thread ]</a>
+              <a href="subject.html#52109">[ subject ]</a>
+              <a href="author.html#52109">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I posted to this list back in Nov 2008 with subject:
+A Python metaclass for Twisted allowing __init__ to return a Deferred
+
+Briefly, I was trying to find a nice way to allow the __init__ method of a
+class to work with deferreds in such a way that methods of the class could
+use work done by __init__ safe in the knowledge that the deferreds had
+completed.  E.g., if you have
+
+    class X(object):
+        def __init__(self, host, port):
+            def final(connection):
+                self.db = connection
+            d = makeDBConnection(host, port)
+            d.addCallback(final)
+
+        def query(self, q):
+            return self.db.runQuery(q)
+
+Then when you make an X and call query on it, there's a chance the deferred
+wont have fired, and you'll get an error.  This is just a very simple
+illustrative example.  There are many more, and this is a general problem
+of the synchronous world (in which __init__ is supposed to prepare a
+fully-fledged class instance and cannot return a deferred) meeting the
+asynchronous world in which we would like to (and must) use deferreds.
+
+The earlier thread:
+
+  <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2008-November/018600.html">http://twistedmatrix.com/pipermail/twisted-python/2008-November/018600.html</A>
+
+Although I learned a lot in that thread, I wasn't completely happy with any
+of the solutions. Some of the things that still bugged me are in posts
+towards the end of the thread:
+
+  <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2008-November/018624.html">http://twistedmatrix.com/pipermail/twisted-python/2008-November/018624.html</A>
+  <A HREF="http://twistedmatrix.com/pipermail/twisted-python/2008-November/018634.html">http://twistedmatrix.com/pipermail/twisted-python/2008-November/018634.html</A>
+
+The various approaches we took back then all boiled down to waiting for a
+deferred to fire before the class instance was fully ready to use. When
+that happened, you had your instance and could call its methods.
+
+I had also thought about an alternate approach: having __init__ add a
+callback to the deferreds it dealt with to set a flag in self and then have
+all dependent methods check that flag to see if the class instance was
+ready for use. But that 1) is ugly (too much extra code); 2) means the
+caller has to be prepared to deal with errors due to the class instance not
+being ready, and 3) adds a check to every method call. It would look
+something like this:
+
+    class X(object):
+        def __init__(self, host, port):
+            self.ready = False
+            def final(connection):
+                self.db = connection
+                self.ready = True
+            d = makeDBConnection(host, port)
+            d.addCallback(final)
+
+        def query(self, q):
+            if not self.ready:
+                raise IAmNotReadyException()
+            return self.db.runQuery(q)
+
+That was too ugly for my taste, for all of the above reasons, most
+especially for forcing the unfortunate caller of my code to handle
+IAmNotReadyException.
+
+
+Anyway.... fast forward 6 months and I've hit the same problem again. It's
+with existing code, in which I would like an __init__ to call something
+that (now, due to changes elsewhere) returns a deferred. So I started
+thinking again, and came up with a much cleaner way to do the alternate
+approach via a class mixin:
+
+    from twisted.internet import defer
+
+    class deferredInitMixin(object):
+        def wrap(self, d, *wrappedMethods):
+            self.waiting = []
+            self.stored = {}
+
+            def restore(_):
+                for method in self.stored:
+                    setattr(self, method, self.stored[method])
+                for d in self.waiting:
+                    d.callback(None)
+
+            def makeWrapper(method):
+                def wrapper(*args, **kw):
+                    d = defer.Deferred()
+                    d.addCallback(lambda _: self.stored[method](*args, **kw))
+                    self.waiting.append(d)
+                    return d
+                return wrapper
+
+            for method in wrappedMethods:
+                self.stored[method] = getattr(self, method)
+                setattr(self, method, makeWrapper(method))
+
+            d.addCallback(restore)
+
+
+You use it as in the class Test below:
+
+    from twisted.internet import defer, reactor
+
+    def fire(d, value):
+        print &quot;I finally fired, with value&quot;, value
+        d.callback(value)
+
+    def late(value):
+        d = defer.Deferred()
+        reactor.callLater(1, fire, d, value)
+        return d
+
+    def called(result, what):
+        print 'final callback of %s, result = %s' % (what, result)
+
+    def stop(_):
+        reactor.stop()
+
+
+    class Test(deferredInitMixin):
+        def __init__(self):
+            d = late('Test')
+            deferredInitMixin.wrap(self, d, 'f1', 'f2')
+
+        def f1(self, arg):
+            print &quot;f1 called with&quot;, arg
+            return late(arg)
+
+        def f2(self, arg):
+            print &quot;f2 called with&quot;, arg
+            return late(arg)
+
+
+    if __name__ == '__main__':
+        t = Test()
+        d1 = t.f1(44)
+        d1.addCallback(called, 'f1')
+        d2 = t.f1(33)
+        d2.addCallback(called, 'f1')
+        d3 = t.f2(11)
+        d3.addCallback(called, 'f2')
+        d = defer.DeferredList([d1, d2, d3])
+        d.addBoth(stop)
+        reactor.run()
+
+
+Effectively, the __init__ of my Test class asks deferredInitMixin to wrap
+some of its methods. deferredInitMixin stores the original methods away and
+replaces each of them with a function that immediately returns a deferred.
+So after __init__ finishes, code that calls the now-wrapped methods of the
+class instance before the deferred has fired will get a deferred back as
+usual (but see * below). As far as they know, everything is normal.  Behind
+the scenes, deferredInitMixin has arranged for these deferreds to fire only
+after the deferred passed from __init__ has fired.  Once that happens,
+deferredInitMixin also restores the original functions to the instance. As
+a result there is no overhead later to check a flag to see if the instance
+is ready to use. If the deferred from __init__ happens to fire before any
+of the instance's methods are called, it will simply restore the original
+methods.  Finally (obviously?) you only pass the method names to
+deferredInitMixin that depend on the deferred in __init__ being done.
+
+BTW, calling the methods passed to deferredInitMixin &quot;wrapped&quot; isn't really
+accurate. They're just temporarily replaced.
+
+
+I quite like this approach.  It's a second example of something I did in
+<A HREF="http://twistedmatrix.com/pipermail/twisted-python/2009-April/019522.html">http://twistedmatrix.com/pipermail/twisted-python/2009-April/019522.html</A> in
+which a pool of deferreds is accumulated and they're all fired when another
+deferred fires. It's nice because you don't reply with an error and there's
+no need for locking or other form of coordination - the work you need done
+is already in progress, so you get back a fresh deferred and everything
+goes swimmingly.
+
+* Minor note: the methods you wrap should probably be ones that already
+return deferreds. That way you always get a deferred back from them,
+whether they're temporarily wrapped or not. The above mixin works just fine
+if you ask it to wrap non-deferred-returning functions, but you have to
+deal with the possibility that they will return a deferred (i.e., if you
+call them while they're wrapped).
+
+Comments welcome / wanted.
+
+Terry
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="052139.html">[Twisted-Python] XMPP/Jabber server example
+</A></li>
+	<LI>Next message (by thread): <A HREF="052113.html">[Twisted-Python] Another approach to allowing __init__ to work	with Deferreds
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52109">[ date ]</a>
+              <a href="thread.html#52109">[ thread ]</a>
+              <a href="subject.html#52109">[ subject ]</a>
+              <a href="author.html#52109">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

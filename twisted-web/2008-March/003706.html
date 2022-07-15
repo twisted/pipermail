@@ -1,0 +1,209 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Stuck twisted-web2 worker threads after client closes
+	socket after sending data &lt; content length of HTTP Post
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Stuck%20twisted-web2%20worker%20threads%20after%20client%20closes%0A%09socket%20after%20sending%20data%20%3C%20content%20length%20of%20HTTP%20Post&In-Reply-To=7386643e0803130632i5b12b60fx8f88a01cd4e4492b%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003705.html">
+   <LINK REL="Next"  HREF="003710.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Stuck twisted-web2 worker threads after client closes
+	socket after sending data &lt; content length of HTTP Post</H1>
+    <B>Kamal Choudhary</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Stuck%20twisted-web2%20worker%20threads%20after%20client%20closes%0A%09socket%20after%20sending%20data%20%3C%20content%20length%20of%20HTTP%20Post&In-Reply-To=7386643e0803130632i5b12b60fx8f88a01cd4e4492b%40mail.gmail.com"
+       TITLE="[Twisted-web] Stuck twisted-web2 worker threads after client closes
+	socket after sending data &lt; content length of HTTP Post">kamal.choudhary at gmail.com
+       </A><BR>
+    <I>Thu Mar 13 09:36:06 EDT 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003705.html">[Twisted-web] Stuck twisted-web2 worker threads after client closes
+	socket after sending data &lt; content length of HTTP Post
+</A></li>
+        <LI>Next message: <A HREF="003710.html">[Twisted-web] proxy and https
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3706">[ date ]</a>
+              <a href="thread.html#3706">[ thread ]</a>
+              <a href="subject.html#3706">[ subject ]</a>
+              <a href="author.html#3706">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On my app server which is built upon twisted+web2 I have seen that at times
+some of worker threads will get blocked and won't get released ever.
+Eventually my app server runs out of worker threads and starts throwing
+message &quot;503 Service not available&quot;
+
+On more debugging I have found that I can easily recreate this situation by
+doing a incomplete HTTP Post with data less then content length specified in
+POST header. After this incomplete HTTP Post with lesser bytes of data if I
+close the client socket or kill client process or reboot client machine, in
+all these three cases it results in a hanged thread on my app server. This
+hanged threads remains on app server for ever till kill app server process,
+no time out of any kind.
+
+Further debugging into web2 code I found that
+stream.BufferedStream.readExactly doesn't come out of
+stream.BufferedStrem._readUntil even if I close client side socket. After
+putting some debug statements I found that self.stream.read() in
+stream.BufferedStream._readUntil doesn't return None as a signal for End Of
+File even after client has closed the socket connection. Since it doesn't
+get None it will never return with whatever data it has received so far from
+client.
+
+To reproduce this issue, I have written a minimal twisted-web2 server and a
+client that does a HTTP Post to it with incomplete data. After Post it
+closes the client socket and sleeps for sometime. Finally it prints the
+stack of all process threads, which clearly shows one blocked twisted worker
+thread. In the same program if you change it to do complete HTTP Post, in
+the thread dump there is no blocked twisted worker thread.
+
+Here is the stack traceback of blocked twisted worker thread.
+
+  File &quot;C:\Python24\lib\threading.py&quot;, line 442, in __bootstrap
+    self.run()
+
+  File &quot;C:\Python24\lib\threading.py&quot;, line 422, in run
+    self.__target(*self.__args, **self.__kwargs)
+
+  File
+&quot;/home/lotus/Desktop/pywork3.3/lm/foreign-common/src/twisted/python/threadp=
+ool.py&quot;,
+line 161, in _worker
+
+  File
+&quot;/home/lotus/Desktop/pywork3.3/lm/foreign-common/src/twisted/python/context=
+.py&quot;,
+line 59, in callWithContext
+
+  File
+&quot;/home/lotus/Desktop/pywork3.3/lm/foreign-common/src/twisted/python/context=
+.py&quot;,
+line 37, in callWithContext
+
+  File
+&quot;/home/lotus/Desktop/pywork3.3/lm/foreign-common/src/twisted/web2/wsgi.py&quot;,
+line 190, in run
+
+  File &quot;C:\work\twisted-head\twisted_server3.py&quot;, line 18, in dummy_app
+    out_content =3D environ['wsgi.input'].read(int(environ['CONTENT_LENGTH'=
+]))
+
+  File
+&quot;/home/lotus/Desktop/pywork3.3/lm/foreign-common/src/twisted/web2/wsgi.py&quot;,
+line 74, in read
+
+  File
+&quot;/home/lotus/Desktop/pywork3.3/lm/foreign-common/src/twisted/internet/threa=
+ds.py&quot;,
+line 81, in blockingCallFromThread
+
+  File &quot;C:\Python24\lib\Queue.py&quot;, line 119, in get
+    self.not_empty.wait()
+
+  File &quot;C:\Python24\lib\threading.py&quot;, line 203, in wait
+    waiter.acquire()
+
+
+To run this program twisted, twisted.web2, zope and threadframe modules are
+required.
+
+
+
+import sys, time, socket
+from threading import Thread
+import threadframe, traceback
+from twisted.web2 import server, channel, static, wsgi, resource
+from twisted.internet import reactor
+
+class TwistedWebServerThread(Thread):
+
+    def __init__(self, app):
+        Thread.__init__(self, name=3D&quot;Twisted&quot;)
+        factory =3D channel.HTTPFactory(server.Site(wsgi.WSGIResource(app)))
+        reactor.listenTCP(8080, factory, interface=3D&quot;0.0.0.0&quot;)
+
+    def run(self):
+        reactor.run(installSignalHandlers=3DFalse)
+
+def dummy_app(environ, start_response):
+    out_content =3D environ['wsgi.input'].read(int(environ['CONTENT_LENGTH'=
+]))
+    start_response('200 OK', [('Content-type', 'text/plain')])
+    return [out_content]
+
+#data intentionally less then content length
+D =3D &quot;POST /cgi-bin/minapi.py HTTP/1.0\r\n&quot;+ \
+ &quot;Host: 127.0.0.1:8080\r\n&quot;+\
+ &quot;Content-Type: text/xml\r\n&quot;+\
+ &quot;Content-Length: 152\r\n&quot;+\
+ &quot;\r\n&quot;+\
+ &quot;&lt;?xml version=3D'1.0'?&gt;\n&quot;+\
+ &quot;&lt;methodCall&gt;\n&quot;+\
+ &quot;&lt;methodName&gt;getStateName&lt;/methodName&gt;\n&quot; +\
+ &quot;&lt;params&gt;\n&quot; +\
+ &quot;&lt;param&gt;\n&quot; +\
+ &quot;&lt;value&gt;&lt;int&gt;41&lt;/int&gt;&lt;/value&gt;\n&quot; #+\
+# &quot;&lt;/param&gt;\n&quot; +\
+# &quot;&lt;/params&gt;\n&quot; +\
+# &quot;&lt;/methodCall&gt;\n&quot;
+
+#D =3D open(&quot;data.txt3&quot;, &quot;rb&quot;).read()
+
+def half_post():
+    s =3D socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect((&quot;127.0.0.1&quot;, 8080))
+    s.send(D)
+    s.close()
+
+def write_server_threads():
+    frames =3D threadframe.threadframe()
+    for frame in frames:
+        print '-' * 72
+        for linestr in traceback.format_stack(frame):
+            print linestr
+
+if __name__ =3D=3D &quot;__main__&quot;:
+    s =3D TwistedWebServerThread(dummy_app)
+    s.start()
+    time.sleep(0.2)
+    half_post()
+    time.sleep(5)
+    write_server_threads()
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-web/attachments/20080313/52=">http://twistedmatrix.com/pipermail/twisted-web/attachments/20080313/52=</A>
+79c354/attachment.htm
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003705.html">[Twisted-web] Stuck twisted-web2 worker threads after client closes
+	socket after sending data &lt; content length of HTTP Post
+</A></li>
+	<LI>Next message: <A HREF="003710.html">[Twisted-web] proxy and https
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3706">[ date ]</a>
+              <a href="thread.html#3706">[ thread ]</a>
+              <a href="subject.html#3706">[ subject ]</a>
+              <a href="author.html#3706">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

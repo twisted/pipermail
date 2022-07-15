@@ -1,0 +1,171 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] breaking distrib.ResourceSubscription
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20breaking%20distrib.ResourceSubscription&In-Reply-To=%3C20020924.192833.105432764.glyph%40twistedmatrix.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="034240.html">
+   <LINK REL="Next"  HREF="034242.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] breaking distrib.ResourceSubscription</H1>
+    <B>Glyph Lefkowitz</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20breaking%20distrib.ResourceSubscription&In-Reply-To=%3C20020924.192833.105432764.glyph%40twistedmatrix.com%3E"
+       TITLE="[Twisted-Python] breaking distrib.ResourceSubscription">glyph at twistedmatrix.com
+       </A><BR>
+    <I>Tue Sep 24 18:28:33 MDT 2002</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="034240.html">[Twisted-Python] breaking distrib.ResourceSubscription
+</A></li>
+        <LI>Next message (by thread): <A HREF="034242.html">[Twisted-Python] interface for Last-Modified
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#34241">[ date ]</a>
+              <a href="thread.html#34241">[ thread ]</a>
+              <a href="subject.html#34241">[ subject ]</a>
+              <a href="author.html#34241">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 24 Sep 2002 15:11:41 -0700, Kevin Turner &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">acapnotic at twistedmatrix.com</A>&gt; wrote:
+&gt;<i> On Tue, 2002-09-24 at 06:57, Glyph Lefkowitz wrote:
+</I>&gt;<i> [...]
+</I>&gt;<i> &gt; ResourcePublisher instance has no attribute 'remote_wasModifiedSince'
+</I>&gt;<i> 
+</I>&gt;<i> I'm surprised that this is in the logs much, since it should only happen
+</I>&gt;<i> for distributed servers that set a Last-Modified header.  Are personal
+</I>&gt;<i> servers serving that many static files?  I would have thought that would
+</I>&gt;<i> be handled by ~/public_html.
+</I>
+The tracebacks I was seeing were for wikis and viewcvs; either moin is setting
+those headers or it's serving the images / static data from a personal server
+directory.
+
+&gt;<i> &gt; I thought that I'd mentioned this over IRC before, but let me stress it: I
+</I>&gt;<i> &gt; think that twisted.web.server is implementing *WAAAAY* too much of HTTP right
+</I>&gt;<i> &gt; now. 
+</I>&gt;<i> 
+</I>&gt;<i> Interesting position.  I know you're not a fan of complete support for a
+</I>&gt;<i> protocol when you believe the protocol itself is broken, and I'll admit
+</I>&gt;<i> that nobody actually uses ETags, but I would hardly say that
+</I>&gt;<i> Last-Modified and HEAD are obscure or unnecessary.
+</I>
+Nor would I.  After much discussion with itamar I conceded that HEAD ought to
+cause the body of the request to be eaten there before being sent to the
+client.
+
+What I mean here is that the actual module, twisted.web.server, is being too
+smart about stuff like Last-Modified and ETags.  HTTP should be fully
+implemented, but parts of the responsibility lie elsewhere.
+twisted.web.Resource subclasses can implement those themselves if they want to,
+because the 99.9% cases should be handled: static.File will handle filesystem
+content and woven.* will handle dynamic content.  We can also provide a helper
+for mix-in that does conditional-rendering stuff.
+
+&gt;<i> &gt; First of all, this is killing performance -- you have a minimum of 4 or 5
+</I>&gt;<i> &gt; PB server/client interactions now for each conditional request instead of 2.
+</I>&gt;<i> &gt; Those method calls are not cheap.
+</I>&gt;<i> 
+</I>&gt;<i> Recognized.  Although I thought I only increased the count by one, not
+</I>&gt;<i> two or three?
+</I>
+Looking at it now, I guess ETags and last-modified support are exclusive.  (Is
+this correct, protocol-wise?)  However, each call that requires an answer is
+minimum of 2 interactions (request/response).  Plus most resources will want to
+do a .write().
+
+&gt;<i> Also take into consideration that these calls only happen for the
+</I>&gt;<i> *conditional* requests.
+</I>
+The only heuristic I have for how often these happen are the once-per-minute
+tracebacks I was seeing while bots were crawling the website yesterday.  So it
+looked quite often. :)
+
+&gt;<i> &gt; Second, this is exploding the complexity of the webserver: its goal should
+</I>&gt;<i> &gt; be to get to the endpoint resource *as simply as possible* and then invoke
+</I>&gt;<i> &gt; endpoint behavior on that resource.  If clever header-parsing things need
+</I>&gt;<i> &gt; to happen, then we need to make a lower-level 'request' method and make
+</I>&gt;<i> &gt; *it* clever, not do request processing before the request is dispatched.
+</I>
+&gt;<i> This I agree with.  I knew something was wrong when I had three remote
+</I>&gt;<i> methods in ResourcePublisher all independently doing getResourceFor.  It
+</I>&gt;<i> would be more symmetric if Request.process was invoked on the distri --
+</I>
+Right. :-)
+
+&gt;<i> ggrngh.  What is Request.process anyway.  Is it just supposed to do
+</I>&gt;<i> site.getResourceFor and pass itself off?  Yes.  All the rest of the junk
+</I>&gt;<i> in there is stuff I added (though the HEAD/supportedMethods stuff was
+</I>&gt;<i> quite some time ago) with the possible exception of the
+</I>&gt;<i> util.Unauthorized block.  And it's probably all logic that belongs in
+</I>&gt;<i> web..Resource rather than Request.
+</I>
+HEAD definitely ought to still have a little bit of logic in Request, since it
+should discard any body that the resource attempts to return.  However, the
+rest of what you're saying is definitely...
+
+&gt;<i> ([...] just re-iterating what you've been telling me.)
+</I>
+&gt;<i> So how do we fix it?  You're suggesting that Request.process call
+</I>&gt;<i> Resource.request, which contains most of the stuff currently in
+</I>&gt;<i> Request.process, and Resource.request calls Resource.render if it's not
+</I>&gt;<i> a conditional request?
+</I>
+See above for my suggestion.  I think that Resource is too low-level for this
+sort of thing (since the default implementation of wasModifiedSince is going to
+be 'return 1', why invoke it at all by default?).  I don't feel strongly that
+my suggestion is better than this one though, if you think that dynamic
+resource implementors are going to want to use this functionality a lot.
+(Thoughts, Donovan?)
+
+&gt;<i> Sounds like we need an inter-version test harness.  Runs peer1 under
+</I>&gt;<i> version X and peer2 on Y, or starts server on version X, pickles it, and
+</I>&gt;<i> re-starts under Y, etc.
+</I>
+Yes.  This is something that I think radix hacked up manually a little while
+back, but it needs to be added to accepttests.
+
+Sounds like we're in general agreement, then...
+
+-- 
+ |    &lt;`'&gt;    |  Glyph Lefkowitz: Traveling Sorcerer   |
+ |   &lt; _/ &gt;   |  Lead Developer,  the Twisted project  |
+ |  &lt; ___/ &gt;  |      <A HREF="http://www.twistedmatrix.com">http://www.twistedmatrix.com</A>      |
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 189 bytes
+Desc: not available
+URL: &lt;/pipermail/twisted-python/attachments/20020924/879e7dc8/attachment.sig&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="034240.html">[Twisted-Python] breaking distrib.ResourceSubscription
+</A></li>
+	<LI>Next message (by thread): <A HREF="034242.html">[Twisted-Python] interface for Last-Modified
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#34241">[ date ]</a>
+              <a href="thread.html#34241">[ thread ]</a>
+              <a href="subject.html#34241">[ subject ]</a>
+              <a href="author.html#34241">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

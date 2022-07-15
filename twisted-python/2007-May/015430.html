@@ -1,0 +1,218 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Sequential use of asynchronous calls
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Sequential%20use%20of%20asynchronous%20calls&In-Reply-To=200705261622.22995.maarten%40treewalker.org">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="015429.html">
+   <LINK REL="Next"  HREF="015431.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Sequential use of asynchronous calls</H1>
+    <B>Ed Suominen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Sequential%20use%20of%20asynchronous%20calls&In-Reply-To=200705261622.22995.maarten%40treewalker.org"
+       TITLE="[Twisted-Python] Sequential use of asynchronous calls">general at eepatents.com
+       </A><BR>
+    <I>Sat May 26 11:18:28 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="015429.html">[Twisted-Python] Sequential use of asynchronous calls
+</A></li>
+        <LI>Next message: <A HREF="015431.html">[Twisted-Python] Sequential use of asynchronous calls
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15430">[ date ]</a>
+              <a href="thread.html#15430">[ thread ]</a>
+              <a href="subject.html#15430">[ subject ]</a>
+              <a href="author.html#15430">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE><A HREF="http://foss.eepatents.com/api/twisted-goodies/taskqueue.base.TaskQueue.html">http://foss.eepatents.com/api/twisted-goodies/taskqueue.base.TaskQueue.html</A>
+
+Maarten ter Huurne wrote:
+&gt;<i> Hi,
+</I>&gt;<i> 
+</I>&gt;<i> Sometimes I want to use several asynchronous calls in a fixed sequence. For 
+</I>&gt;<i> example, a web application might:
+</I>&gt;<i> - authenticate the user
+</I>&gt;<i> - fetch info from a database
+</I>&gt;<i> - present the result
+</I>&gt;<i> 
+</I>&gt;<i> Implementing this using Deferreds and separate callback+errback functions has 
+</I>&gt;<i> the disadvantage that the sequence itself is not easy to recognise anymore, 
+</I>&gt;<i> as it gets spread out over multiple functions.
+</I>&gt;<i> 
+</I>&gt;<i> So I got creative with the new generator features of Python 2.5 and came up 
+</I>&gt;<i> with a decorator named &quot;sequential&quot;, which can be applied to generator 
+</I>&gt;<i> functions. It consumes Deferreds that are yielded by the generator and sends 
+</I>&gt;<i> back the result when it becomes available, or raises an Exception in the 
+</I>&gt;<i> generator if the deferred action fails.
+</I>&gt;<i> 
+</I>&gt;<i> The decorated function returns a Deferred itself, which is fired upon 
+</I>&gt;<i> completion of the sequence. In particular, this allows nesting sequences 
+</I>&gt;<i> inside sequences.
+</I>&gt;<i> 
+</I>&gt;<i> This is an example of a program using it, it is an elaborated version of the 
+</I>&gt;<i> first example from the Deferred Reference:
+</I>&gt;<i> 
+</I>&gt;<i> ===
+</I>&gt;<i> from twisted.internet import defer, reactor
+</I>&gt;<i> from twisted.python import log
+</I>&gt;<i> 
+</I>&gt;<i> from sequential import sequential
+</I>&gt;<i> 
+</I>&gt;<i> def getDummyData(x):
+</I>&gt;<i>     d = defer.Deferred()
+</I>&gt;<i>     if x &lt; 0:
+</I>&gt;<i>         reactor.callLater(1, d.errback, ValueError('negative value: %d' % x))
+</I>&gt;<i>     else:
+</I>&gt;<i>         reactor.callLater(1, d.callback, x * 3)
+</I>&gt;<i>     return d
+</I>&gt;<i> 
+</I>&gt;<i> @sequential
+</I>&gt;<i> def work():
+</I>&gt;<i>     print (yield getDummyData(3))
+</I>&gt;<i>     print (yield getDummyData(4))
+</I>&gt;<i>     print (yield 'immediate')
+</I>&gt;<i>     print (yield getDummyData(6))
+</I>&gt;<i>     try:
+</I>&gt;<i>         print (yield getDummyData(-7))
+</I>&gt;<i>     except ValueError, e:
+</I>&gt;<i>         print 'failed:', e
+</I>&gt;<i> 
+</I>&gt;<i> @sequential
+</I>&gt;<i> def main(message):
+</I>&gt;<i>     print message, 'once...'
+</I>&gt;<i>     yield work()
+</I>&gt;<i>     print message, 'twice...'
+</I>&gt;<i>     yield work()
+</I>&gt;<i> 
+</I>&gt;<i> def done(result):
+</I>&gt;<i>     reactor.stop()
+</I>&gt;<i> 
+</I>&gt;<i> def failed(fail):
+</I>&gt;<i>     log.err(fail)
+</I>&gt;<i>     reactor.stop()
+</I>&gt;<i> 
+</I>&gt;<i> d = main('going')
+</I>&gt;<i> d.addCallback(done)
+</I>&gt;<i> d.addErrback(failed)
+</I>&gt;<i> 
+</I>&gt;<i> reactor.run()
+</I>&gt;<i> ===
+</I>&gt;<i> 
+</I>&gt;<i> And here is the implementation of the &quot;sequential&quot; module:
+</I>&gt;<i> 
+</I>&gt;<i> ===
+</I>&gt;<i> from twisted.internet import defer
+</I>&gt;<i> from twisted.python import failure
+</I>&gt;<i> 
+</I>&gt;<i> from functools import wraps
+</I>&gt;<i> from compiler.consts import CO_GENERATOR
+</I>&gt;<i> 
+</I>&gt;<i> class _SequentialCaller(object):
+</I>&gt;<i>     '''Repeatedly reads a Deferred from a generator and feeds it back the 
+</I>&gt;<i>     result when it becomes available.
+</I>&gt;<i>     '''
+</I>&gt;<i> 
+</I>&gt;<i>     def __init__(self, gen):
+</I>&gt;<i>         self.gen = gen
+</I>&gt;<i>         self.deferred = defer.Deferred()
+</I>&gt;<i> 
+</I>&gt;<i>     def start(self):
+</I>&gt;<i>         self.next(None)
+</I>&gt;<i>         return self.deferred
+</I>&gt;<i> 
+</I>&gt;<i>     def next(self, result):
+</I>&gt;<i>         while True:
+</I>&gt;<i>             try:
+</I>&gt;<i>                 if isinstance(result, failure.Failure):
+</I>&gt;<i>                     traceback = result.getTracebackObject() \
+</I>&gt;<i>                         if hasattr(result, 'getTracebackObject') else None
+</I>&gt;<i>                     d = self.gen.throw(
+</I>&gt;<i>                         result.type, result.getErrorMessage(), traceback
+</I>&gt;<i>                         )
+</I>&gt;<i>                 else:
+</I>&gt;<i>                     d = self.gen.send(result)
+</I>&gt;<i>             except StopIteration:
+</I>&gt;<i>                 self.deferred.callback(None)
+</I>&gt;<i>                 return
+</I>&gt;<i>             except StandardError:
+</I>&gt;<i>                 self.deferred.errback(failure.Failure())
+</I>&gt;<i>                 return
+</I>&gt;<i>             if isinstance(d, defer.Deferred):
+</I>&gt;<i>                 d.addCallback(lambda result: self.next(result))
+</I>&gt;<i>                 d.addErrback(lambda fail: self.next(fail))
+</I>&gt;<i>                 return
+</I>&gt;<i>             else:
+</I>&gt;<i>                 # Allow non-deferred values as well: for some Twisted calls,
+</I>&gt;<i>                 # you don't know whether the result will be deferred or not.
+</I>&gt;<i>                 result = d
+</I>&gt;<i> 
+</I>&gt;<i> def sequential(f):
+</I>&gt;<i>     if not (f.func_code.co_flags &amp; CO_GENERATOR):
+</I>&gt;<i>         raise TypeError('function &quot;%s&quot; is not a generator' % f.__name__)
+</I>&gt;<i>     @wraps(f)
+</I>&gt;<i>     def wrapper(*args, **kvArgs):
+</I>&gt;<i>         return _SequentialCaller(f(*args, **kvArgs)).start()
+</I>&gt;<i>     return wrapper
+</I>&gt;<i> ===
+</I>&gt;<i> 
+</I>&gt;<i> I'd like some feedback on this:
+</I>&gt;<i> - would you consider this useful?
+</I>&gt;<i> - is the interface right or can it be improved?
+</I>&gt;<i> - is the implementation correct? (the example scenario doesn't test the error 
+</I>&gt;<i> path extensively, so there might be problems there)
+</I>&gt;<i> - is the use of Failure.getTracebackObject correct? (the version of Twisted 
+</I>&gt;<i> installed on my machine does not have it yet, I only read about it in the 
+</I>&gt;<i> sources on the API documentation site)
+</I>&gt;<i> - the &quot;compiler.consts&quot; module is not documented in the Python Library 
+</I>&gt;<i> Reference, does that mean it should not be used or did they forget to 
+</I>&gt;<i> document it?
+</I>&gt;<i> - anything else you'd like to say about it
+</I>&gt;<i> 
+</I>&gt;<i> Is there already something like this in Twisted or one of the toolkits built 
+</I>&gt;<i> on Twisted? I took a quick look at the &quot;flow&quot; modules, but that seems like a 
+</I>&gt;<i> more generic and flexible, but also more complex, approach.
+</I>&gt;<i> 
+</I>&gt;<i> If it would be a useful addition to Twisted or a Twisted-based toolkit, I'm 
+</I>&gt;<i> willing to improve the documentation and write test cases.
+</I>&gt;<i> 
+</I>&gt;<i> Bye,
+</I>&gt;<i> 		Maarten
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> ------------------------------------------------------------------------
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="015429.html">[Twisted-Python] Sequential use of asynchronous calls
+</A></li>
+	<LI>Next message: <A HREF="015431.html">[Twisted-Python] Sequential use of asynchronous calls
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15430">[ date ]</a>
+              <a href="thread.html#15430">[ thread ]</a>
+              <a href="subject.html#15430">[ subject ]</a>
+              <a href="author.html#15430">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

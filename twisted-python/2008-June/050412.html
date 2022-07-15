@@ -1,0 +1,157 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re-working a synchronous iterator to use Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re-working%20a%20synchronous%20iterator%20to%20use%20Twisted&In-Reply-To=%3C18519.56098.678826.294578%40jon.es%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="050426.html">
+   <LINK REL="Next"  HREF="050422.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re-working a synchronous iterator to use Twisted</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Re-working%20a%20synchronous%20iterator%20to%20use%20Twisted&In-Reply-To=%3C18519.56098.678826.294578%40jon.es%3E"
+       TITLE="[Twisted-Python] Re-working a synchronous iterator to use Twisted">terry at jon.es
+       </A><BR>
+    <I>Tue Jun 17 09:41:22 MDT 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="050426.html">[Twisted-Python] Re: Writing industrial grade twisted servers
+</A></li>
+        <LI>Next message (by thread): <A HREF="050422.html">[Twisted-Python] Re-working a synchronous iterator to use Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#50412">[ date ]</a>
+              <a href="thread.html#50412">[ thread ]</a>
+              <a href="subject.html#50412">[ subject ]</a>
+              <a href="author.html#50412">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I'm trying to rework some synchronous code to use Twisted and I've hit an
+interesting case. The following code is my simplification of the situation.
+I've not run it, but will happily flesh it out if people want this to be
+more concrete.
+
+First, a general helper function for use below:
+
+    def process(result):
+        # process a single result.
+        pass
+
+
+I have the following simple synchronous function and code that calls it:
+
+    # SYNCHRONOUS result producer
+    def getResults(uri):
+        done = False
+        offset = 0
+        while not done:
+            results, done, offset = fetchPageViaSynchronousHttp(uri, offset)
+            for result in results:
+                yield result
+
+    # SYNCHRONOUS calling
+    for result in getResult(uri):
+        process(result)
+
+
+I.e., there are an indeterminate number of results available out there via
+some web page. The iterator above periodically goes to get more, and yields
+the new batch one by one to the calling code which processes them one by
+one. This has the advantage that process() can be called as soon as any
+results are available.
+
+
+So how to do the above (more or less) in Twisted?  Here's one approach:
+
+    def getResults(page):
+        # Helper func: get results from page, return them in a list
+        pass
+
+    def needToCallAgain(page):
+        # Helper func: see if there are more results, given page. return bool.
+        pass
+
+    # ASYNCHRONOUS result producer
+    def getResults(uri, offset=0):
+        def parsePage(page, offset):
+            results = getResults(page)
+            if needToCallAgain(page):
+                d = getResults(uri, offset + len(results))
+            else:
+                d = None
+            return results, d
+        def returnTheseResults(page, offset):
+            resultIterator, done, offset = parsePage(page, offset)
+            return resultIterator, done
+        from twisted.web import client
+        return client.getPage(uri).addCallback(returnTheseResults, offset)
+
+    # ASYNCHRONOUS calling
+    def processResults(uri):
+        def cb(resultIterator, deferred):
+            for result in resultIterator:
+                process(result)
+            if deferred is not None:
+                deferred.addCallback(cb)
+        return getResults(uri).addCallback(cb)
+
+
+I'm fairly sure something like this can be made to work. The idea is to
+have getResults call a callback that takes a current set of results and a
+new deferred that will be called with the next set of results and a new
+deferred that will be called with the next set of results and...... so on
+until the deferred that comes back is None, at which point you're done
+(i.e., there are no more results).
+
+The result is that process() gets called asynchronously with incoming
+results, and, as with the synchronous approach, we don't have to wait until
+the whole result set is in before we can begin processing results.
+
+But this approach is definitely not simple (or at least it's not, given my
+beginner-level of sophistication producing and consuming deferreds). Note
+too that you don't actually use the deferred coming back from processResults.
+
+I wanted to have the fun of thinking about this and writing my own
+pseudo-solution before I posted here, but I imagine that people working
+with Twisted must have many times dealt with something like the above. How
+would you handle it? Other approaches are also possible, but I'll stop for
+now to see what people say.
+
+Let me know if you want the above fleshed out to working code.
+
+Regards,
+Terry
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="050426.html">[Twisted-Python] Re: Writing industrial grade twisted servers
+</A></li>
+	<LI>Next message (by thread): <A HREF="050422.html">[Twisted-Python] Re-working a synchronous iterator to use Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#50412">[ date ]</a>
+              <a href="thread.html#50412">[ thread ]</a>
+              <a href="subject.html#50412">[ subject ]</a>
+              <a href="author.html#50412">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

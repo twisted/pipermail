@@ -1,0 +1,274 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] t.p.nntp woes
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20t.p.nntp%20woes&In-Reply-To=%3Cpan.2003.07.13.22.53.44.624640%40smurf.noris.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="037520.html">
+   <LINK REL="Next"  HREF="037525.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] t.p.nntp woes</H1>
+    <B>Matthias Urlichs</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20t.p.nntp%20woes&In-Reply-To=%3Cpan.2003.07.13.22.53.44.624640%40smurf.noris.de%3E"
+       TITLE="[Twisted-Python] t.p.nntp woes">smurf at smurf.noris.de
+       </A><BR>
+    <I>Sun Jul 13 16:53:48 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="037520.html">[Twisted-Python] new cred with pb
+</A></li>
+        <LI>Next message (by thread): <A HREF="037525.html">[Twisted-Python] t.p.nntp woes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37524">[ date ]</a>
+              <a href="thread.html#37524">[ thread ]</a>
+              <a href="subject.html#37524">[ subject ]</a>
+              <a href="author.html#37524">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+I seem to have found a few bugs in the current NNTP code.
+
+- The client-&gt;server transfer does not escape leading '.' at all.
+  To reproduce: edit the testcase to have one dot, not three.
+- The server-&gt;client article transfer actually uses \r\r\n line endings.
+  Ouch!
+- The server-&gt;client code does not escape leading '.' when the
+  linefeed/dot pair is on a block boundary.
+- Article length is not preserved; the client drops the trailing
+  linefeed when receiving article bodies.
+
+Besides these easily-fixed problems, twisted.protocols.nntp stores
+articles as a mix of host and network storage formats.
+
+Network format has dots escaped and ends lines with CRLF.
+Host format has dots not escaped and ends lines with LF only.
+
+IMHO it doesn't make sense to mix these two. Either the NNTP code can
+store the data in unchanged form (it needs to convert articles for local
+processing), or it can't (it needs to convert articles when re-sending).
+It doesn't make sense to require special handling in _both_ cases.
+
+Since twisted.news.database expects CRLF line endings for header
+analysis, I have changed the server side to use network format.
+
+On the other hand, the client side should probably use host format,
+since that is what a client usually needs.
+
+In any way, the test case submits an article. It should get the original
+article back, EXACTLY the way it was. The following patch fixes the code
+so that this in fact happens.
+
+This patch requires that article backends are updated (escape those
+dots!). If that's unacceptable (personally I don't think so),
+I might be persuaded to add a compatibility flag.
+
+
+===== twisted/protocols/basic.py 1.38 vs edited =====
+--- 1.38/twisted/protocols/basic.py	Wed Jun 25 14:06:38 2003
++++ edited/twisted/protocols/basic.py	Sun Jul 13 23:55:24 2003
+@@ -340,7 +340,7 @@
+     lastSent = ''
+     deferred = None
+ 
+-    def beginFileTransfer(self, file, consumer, transform):
++    def beginFileTransfer(self, file, consumer, transform = None):
+         &quot;&quot;&quot;Begin transferring a file
+         
+         @type file: Any file-like object
+@@ -377,7 +377,8 @@
+             self.consumer.unregisterProducer()
+             return
+         
+-        chunk = self.transform(chunk)
++        if self.transform:
++            chunk = self.transform(chunk)
+         self.consumer.write(chunk)
+         self.lastSent = chunk[-1]
+ 
+===== twisted/protocols/nntp.py 1.29 vs edited =====
+--- 1.29/twisted/protocols/nntp.py	Thu Jul  3 22:55:47 2003
++++ edited/twisted/protocols/nntp.py	Mon Jul 14 00:10:18 2003
+@@ -461,9 +461,11 @@
+ 
+     def _stateArticle(self, line):
+         if line != '.':
++            if line.startswith('.'):
++                line = line[1:]
+             self._newLine(line, 0)
+         else:
+-            self.gotArticle('\n'.join(self._endState()))
++            self.gotArticle('\n'.join(self._endState())+'\n')
+ 
+ 
+     def _stateHead(self, line):
+@@ -475,16 +477,18 @@
+ 
+     def _stateBody(self, line):
+         if line != '.':
++            if line.startswith('.'):
++                line = line[1:]
+             self._newLine(line, 0)
+         else:
+-            self.gotBody('\n'.join(self._endState()))
++            self.gotBody('\n'.join(self._endState())+'\n')
+ 
+ 
+     def _headerPost(self, (code, message)):
+         if code == 340:
+-            self.transport.write(self._postText[0])
+-            if self._postText[-2:] != '\r\n':
+-                self.sendLine('\r\n')
++            self.transport.write(self._postText[0].replace('\n', '\r\n').replace('\r\n.', '\r\n..'))
++            if self._postText[0][-1] != '\n':
++                self.sendLine('')
+             self.sendLine('.')
+             del self._postText[0]
+             self._newState(None, self.postFailed, self._headerPosted)
+@@ -748,8 +752,6 @@
+             defer = self.factory.backend.postRequest(article)
+             defer.addCallbacks(self._gotPost, self._errPost)
+         else:
+-            if line and line[0] == '.':
+-                line = line[1:]
+             self.message = self.message + line + '\r\n'
+ 
+ 
+@@ -792,8 +794,6 @@
+             d = self.factory.backend.postRequest(article)
+             d.addCallbacks(self._didTakeThis, self._errTakeThis)
+         else:
+-            if line and line[0] == '.':
+-                line = line[1:]
+             self.message = self.message + line + '\r\n'
+ 
+ 
+@@ -859,15 +859,12 @@
+         self.currentIndex = index
+         self.sendLine('220 %d %s article' % (index, id))
+         s = basic.FileSender()
+-        d = s.beginFileTransfer(article, self.transport, self.transformChunk)
++        d = s.beginFileTransfer(article, self.transport)
+         d.addCallback(self.finishedFileTransfer)
+     
+     ##   
+-    ## Helpers for FileSender
++    ## Helper for FileSender
+     ##
+-    def transformChunk(self, chunk):
+-        return chunk.replace('\n', '\r\n').replace('\r\n.', '\r\n..')
+-
+     def finishedFileTransfer(self, lastsent):
+         if lastsent != '\n':
+             line = '\r\n.'
+@@ -931,8 +928,8 @@
+             body = StringIO.StringIO(body)
+         self.currentIndex = index
+         self.sendLine('221 %d %s article retrieved' % (index, id))
+         s = basic.FileSender()
+-        d = s.beginFileTransfer(body, self.transport, self.transformChunk)
++        d = s.beginFileTransfer(body, self.transport)
+         d.addCallback(self.finishedFileTransfer)
+ 
+     def _errBody(self, failure):
+@@ -1021,8 +1019,6 @@
+             
+             self.message = ''
+         else:
+-            if line.startswith('.'):
+-                line = line[1:]
+             self.message = self.message + line + '\r\n'
+ 
+ 
+===== twisted/test/test_nntp.py 1.13 vs edited =====
+--- 1.13/twisted/test/test_nntp.py	Thu Jul  3 22:55:47 2003
++++ edited/twisted/test/test_nntp.py	Mon Jul 14 00:05:40 2003
+@@ -34,6 +34,8 @@
+ User-Agent: tin/1.4.5-20010409 (&quot;One More Nightmare&quot;) (UNIX) (Linux/2.4.17 (i686))
+ 
+ this is a test
++.
++..
+ ...
+ lala
+ moo
+@@ -78,7 +80,7 @@
+         self.assertEquals(len(info), 6)
+         self.assertEquals(info, GROUP)
+         
+-        self.postArticle(string.replace(POST_STRING, '\n', '\r\n'))
++        self.postArticle(POST_STRING)
+     
+     
+     def getSubscriptionsFailed(self, error):
+@@ -89,7 +91,7 @@
+         raise AssertionError(&quot;fetchGroup() failed: %s&quot; % (error,))
+ 
+ 
+-    def postFailed(self, err):
++    def postFailed(self, error):
+         raise AssertionError(&quot;postArticle() failed: %s&quot; % (error,))
+ 
+ 
+@@ -98,15 +100,10 @@
+ 
+     
+     def gotArticle(self, info):
+-        origPost = POST_STRING.replace('\n', '\r\n')
+-        origBody = origPost.split('\r\n\r\n')[1]
+-        newBody = info.split('\r\n\r\n', 1)[1]
+-
+-        # XXX The strip shouldn't be necessary, but I don't
+-        # know where it needs fixing and I don't want to commit
+-        # a broken test.  Tailing whitespace is irrelevant anyway. :)
+-        self.assertEquals(origBody.strip(), newBody.strip())
++        origBody = POST_STRING.split('\n\n')[1]
++        newBody = info.split('\n\n', 1)[1]
+ 
++        self.assertEquals(origBody, newBody)
+         
+         # We're done
+         self.transport.loseConnection()
+-- 
+Matthias Urlichs   |   {M:U} IT Design @ m-u-it.de   |  <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">smurf at smurf.noris.de</A>
+Disclaimer: The quote was selected randomly. Really. | <A HREF="http://smurf.noris.de">http://smurf.noris.de</A>
+-- 
+:<i>huff: v. To compress data using a Huffman code. Various programs that
+</I>   use such methods have been called `HUFF' or some variant thereof. Oppose
+   {puff}. Compare {crunch}, {compress}.
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="037520.html">[Twisted-Python] new cred with pb
+</A></li>
+	<LI>Next message (by thread): <A HREF="037525.html">[Twisted-Python] t.p.nntp woes
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37524">[ date ]</a>
+              <a href="thread.html#37524">[ thread ]</a>
+              <a href="subject.html#37524">[ subject ]</a>
+              <a href="author.html#37524">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,148 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Advice sought on application evolution
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Advice%20sought%20on%20application%20evolution&In-Reply-To=%3C47ECD4ED.8070100%40imperial.ac.uk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="049667.html">
+   <LINK REL="Next"  HREF="049693.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Advice sought on application evolution</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Advice%20sought%20on%20application%20evolution&In-Reply-To=%3C47ECD4ED.8070100%40imperial.ac.uk%3E"
+       TITLE="[Twisted-Python] Advice sought on application evolution">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Fri Mar 28 05:22:21 MDT 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="049667.html">[Twisted-Python] Advice sought on application evolution
+</A></li>
+        <LI>Next message (by thread): <A HREF="049693.html">[Twisted-Python] Advice sought on application evolution
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#49721">[ date ]</a>
+              <a href="thread.html#49721">[ thread ]</a>
+              <a href="subject.html#49721">[ subject ]</a>
+              <a href="author.html#49721">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE><A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at divmod.com</A> wrote:
+&gt;<i> On 11:06 am, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">p.mayers at imperial.ac.uk</A> wrote:
+</I>&gt;&gt;&gt;<i>
+</I>&gt;&gt;&gt;<i> It's great as a high-level prototyping tool and an orchestration 
+</I>&gt;&gt;&gt;<i> language for distributed conversations with large numbers of steps 
+</I>&gt;&gt;&gt;<i> and coarse- grained error handling.  It's bad as a way of 
+</I>&gt;&gt;&gt;<i> representing state machines or continuous processes.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Why?
+</I>&gt;<i> 
+</I>&gt;<i> Here's something which we probably should have done with a state 
+</I>&gt;<i> machine, but instead did with deferredGenerator (the predecessor to 
+</I>&gt;<i> inlineCallbacks).
+</I>&gt;<i> 
+</I>&gt;<i> <A HREF="http://divmod.org/trac/browser/trunk/Quotient/xquotient/grabber.py#L438">http://divmod.org/trac/browser/trunk/Quotient/xquotient/grabber.py#L438</A>
+</I>
+Ok.
+
+I would have written it more like this, dump the error handling and let 
+it propagate upwards to someone who is interested, and obviously clean 
+it up with inlineCallbacks:
+
+@inlineCallbacks
+def grabber(self):
+   yield self.login(self._username, self._password)
+
+   uids = []
+   yield self.listUID(uids.append)
+
+   for idx in range(0, len(uids), batchsize):
+       uidset = uids[idx:idx+batchsize]
+       L = self.shouldRetrieve(uidset).sorted()
+
+...etc. and I guess what I'm getting at is why is the above worse than:
+
+def grab(self):
+   return self.login.addCallbacks(self.login_done, self.login_err)
+
+def login_done(self, loginResult):
+   uids = []
+   d = self.listUID(uids.append)
+   d.addCallback(self.uids_done, uids)
+   d.addErrback(self.uids_err)
+
+def uids_done(self, unk, uids):
+   dlist = []
+   for idx in range(0, len(uids), batchsize):
+     uid_slice = uids[idx:idx+batchsize]
+     d = self.sometinymethod(uid_slice)
+     d.addErrback(self.tinymethod_err)
+     dlist.append(d)
+   dlist = defer.DeferredList(dlist)
+   dlist.addCallback(self.next_method)
+
+...etc.
+
+I'm not disputing the point - I'm trying to figure out why 
+inlineCallbacks might be inappropriate because I'm using it for just 
+such an application and I'm finding it greatly superior to the previous 
+multi-callback chain solution, which frankly was incomprehensible and 
+error-prone (oops I forgot to return the deferred. again).
+
+On the other hand, I *removed* inlineCallbacks from some lower-level 
+calls in my SNMP libs as it was clearly cleaner, so another way of 
+asking the question is &quot;how do I detect that inlineCallbacks is bad code 
+smell?&quot;
+
+&gt;<i> 
+</I>&gt;<i> The function's really long, and there's a ton of duplication between all 
+</I>&gt;<i> of the &quot;except&quot; clauses, and there needs to be a try/except around every 
+</I>&gt;<i> single deferred call.  This probably would have been better implemented 
+</I>&gt;<i> as a regular state-machine, because that would have allowed decomposing 
+</I>&gt;<i> the problem further.
+</I>&gt;<i> 
+</I>&gt;<i> Granted, you could blame the factoring here on any number of things.  It 
+</I>&gt;<i> could have been broken into different steps even with deferredGenerator, 
+</I>&gt;<i> it could have been documented better, it could have stored more state on 
+</I>&gt;<i> the instance so that you could inspect its state rather than hiding it 
+</I>&gt;<i> as local variables... but given that this is general stylistic advice I 
+</I>&gt;<i> think that the point holds.
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="049667.html">[Twisted-Python] Advice sought on application evolution
+</A></li>
+	<LI>Next message (by thread): <A HREF="049693.html">[Twisted-Python] Advice sought on application evolution
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#49721">[ date ]</a>
+              <a href="thread.html#49721">[ thread ]</a>
+              <a href="subject.html#49721">[ subject ]</a>
+              <a href="author.html#49721">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

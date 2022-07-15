@@ -1,0 +1,195 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] deferreds, and .rpy resources
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20deferreds%2C%20and%20.rpy%20resources&In-Reply-To=%3CB03E27DF-2F84-11D7-9D1A-000393756786%40ruggier.org%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="035185.html">
+   <LINK REL="Next"  HREF="035188.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] deferreds, and .rpy resources</H1>
+    <B>Mario Ruggier</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20deferreds%2C%20and%20.rpy%20resources&In-Reply-To=%3CB03E27DF-2F84-11D7-9D1A-000393756786%40ruggier.org%3E"
+       TITLE="[Twisted-Python] deferreds, and .rpy resources">mario at ruggier.org
+       </A><BR>
+    <I>Fri Jan 24 03:14:56 MST 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="035185.html">[Twisted-Python] deferreds, and .rpy resources
+</A></li>
+        <LI>Next message (by thread): <A HREF="035188.html">[Twisted-Python] deferreds, and .rpy resources
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35186">[ date ]</a>
+              <a href="thread.html#35186">[ thread ]</a>
+              <a href="subject.html#35186">[ subject ]</a>
+              <a href="author.html#35186">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thanks a lot Daniel, that was very helpful. The code you sent works
+almost verbatim on a test table in postgres. I have also tried mapped
+the same solution to adbapi. Tthe rpy code for both versions is below.
+To switch between the 2 just toggle commenting the resource defns.
+In the adbapi version, I have some questions:
+
+1.  First of all, would this be the correct way to do this with adbapi?
+2. If I stop the reactor at the end of databaseResult_adbapi, twistdweb
+returns the http request with correct content, but crashes  
+(consistently on
+each request).
+3. If i just import the reactor privately inside the render() method  
+(thus,
+never call stop() on it), everything seems to work fine. But is this the
+way it should be done?
+
+Thanks again, mario
+
+
+&gt;&gt;<i> Hi, sorry for the newbie questions but I do not understand how I
+</I>&gt;&gt;<i> can combine the resource interface with deferred callbacks.  Or,
+</I>&gt;&gt;<i> specifically, can anyone point me to a simple example of a .rpy
+</I>&gt;&gt;<i> that does a simple database call, and returns the result to the
+</I>&gt;&gt;<i> http response?
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Many thanks,
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Mario
+</I>&gt;<i>
+</I>&gt;<i> I'm no expert, but you can do something like this (UNTESTED):
+</I>
+...
+
+&gt;<i> Of course, you could also use twisted.enterprise.adbapi, but I've  
+</I>&gt;<i> experienced a lot of memory leaks occurring when going that route, so  
+</I>&gt;<i> I just use deferToThread instead.
+</I>&gt;<i>
+</I>&gt;<i> There is probably a better way to code this, but I'm not far enough  
+</I>&gt;<i> along in my Python/Twisted experience to provide it.
+</I>&gt;<i>
+</I>&gt;<i> L. Daniel Burr
+</I>
+========================
+# common twisted imports
+from twisted.web import resource
+from twisted.web.server import NOT_DONE_YET
+
+dbname = 'db'
+dbuser = 'user'
+dbpass = 'pw'
+
+### dbapi
+
+def databaseResult(result, httpRequest):
+     httpRequest.write(str(result))
+     httpRequest.finish()
+
+def errBack(err, httpRequest):
+     httpRequest.write('error: ' + str(err) )
+     httpRequest.finish()
+
+def databaseOperation():
+     from pyPgSQL import PgSQL
+     con = PgSQL.connect(database=dbname,user=dbuser,password=dbpass)
+     cur = con.cursor()
+     cur.execute(&quot;SELECT foo_id,name,weight FROM foo&quot;)
+     databaseResult = cur.fetchall()
+     cur.close()
+     con.close()
+     return databaseResult #[0][0]
+
+class MyResource(resource.Resource):
+     def render(self, request):
+         from twisted.internet import threads
+         d = threads.deferToThread(databaseOperation)
+         d.addCallback(databaseResult, request)
+         d.addErrback(errBack, request)
+         return NOT_DONE_YET
+
+### adpapi
+
+from twisted.internet import reactor
+from twisted.enterprise import row
+
+class FooRow(row.RowObject):
+   rowColumns = [
+           ('foo_id', 'int'),
+           ('name', 'varchar'),
+           ('weight', 'int'),
+                ]
+   rowKeyColumns = [('foo_id', 'int4')]
+   rowTableName = 'foo'
+   #rowFactoryMethod = ['testFactoryMethod']
+
+def databaseResult_adbapi(result, httpRequest):
+     if result:
+         for foo in result:
+             httpRequest.write('foo: '+str(foo.__dict__)+'&lt;br/&gt;')
+     else:
+         httpRequest.write('stop:')
+     httpRequest.finish()
+     #reactor.stop()
+
+def errBack_adbapi(err, httpRequest):
+     httpRequest.write('error: '+str(err) )
+     httpRequest.finish()
+     #reactor.stop()
+
+class MyResource_adbapi(resource.Resource):
+     def render(self, request):
+         #from twisted.internet import reactor
+         from twisted.enterprise import adbapi, reflector
+         from twisted.enterprise.sqlreflector import SQLReflector
+         dbpool =  
+adbapi.ConnectionPool('pyPgSQL.PgSQL',database=dbname,user=dbuser,passwo 
+rd=dbpass)
+         r = SQLReflector(dbpool,[FooRow])
+         d = r.loadObjectsFrom('foo',whereClause=[('foo_id',  
+reflector.LESSTHAN, 5)])
+         d.addCallback(databaseResult_adbapi, request)
+         d.addErrback(errBack_adbapi, request)
+         reactor.run()
+         return NOT_DONE_YET
+
+###
+
+#resource = MyResource()
+resource = MyResource_adbapi()
+
+###
+========================
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="035185.html">[Twisted-Python] deferreds, and .rpy resources
+</A></li>
+	<LI>Next message (by thread): <A HREF="035188.html">[Twisted-Python] deferreds, and .rpy resources
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#35186">[ date ]</a>
+              <a href="thread.html#35186">[ thread ]</a>
+              <a href="subject.html#35186">[ subject ]</a>
+              <a href="author.html#35186">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

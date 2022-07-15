@@ -1,0 +1,212 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Daemon processes on windows
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Daemon%20processes%20on%20windows&In-Reply-To=%3Cm2my2w8lh3.fsf%40valheru.db3l.homeip.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="053411.html">
+   <LINK REL="Next"  HREF="053417.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Daemon processes on windows</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Daemon%20processes%20on%20windows&In-Reply-To=%3Cm2my2w8lh3.fsf%40valheru.db3l.homeip.net%3E"
+       TITLE="[Twisted-Python] Daemon processes on windows">db3l.net at gmail.com
+       </A><BR>
+    <I>Sun Nov  8 19:45:28 MST 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="053411.html">[Twisted-Python] Daemon processes on windows
+</A></li>
+        <LI>Next message (by thread): <A HREF="053417.html">[Twisted-Python] Daemon processes on windows
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#53415">[ date ]</a>
+              <a href="thread.html#53415">[ thread ]</a>
+              <a href="subject.html#53415">[ subject ]</a>
+              <a href="author.html#53415">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Žiga Seilnacht &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">ziga.seilnacht at gmail.com</A>&gt; writes:
+
+&gt;<i> It is possible to daemonize a process on Windows. I experimented with 
+</I>&gt;<i> adding that support to the twistd script, but got swamped with other 
+</I>&gt;<i> work and couldn't finish it. Below is the code that I have so far. You 
+</I>&gt;<i> can save it in a module and call the daemonize() function from your script.
+</I>
+While this process is certainly doable, I'll also point out that on
+Windows, the more &quot;natural&quot; approach to this is to implement the
+process as a service.  That also buys you some regular Windows
+approaches to management (net stop/start from command line, services
+UI from the control panel) and status inquiry (sc query from command
+line).  So while it may be a little platform-specific code you're
+final result will integrate more naturally into that environment for
+any system administrators.
+
+While I haven't done this with a twistd based Twisted service, I've
+done it with a lot of Twisted code in general.  It's easiest if you have
+pywin32 installed and can use it's utility service wrappers, for which
+the pywin32 package has examples.
+
+I've tended to offload the service definition to its own module, and
+have it just import and execute the main code (with the twisted
+reactor.run call) after the service gets started - that way you can
+also manually run the twisted code without involving any of the
+service support, or to support execution on non-Windows platforms.
+
+Here's one example of a service object that invoices Twisted-based
+code.  When stopping, you use callFromThread because the thread that
+handles the request from the Windows service manager is separate from
+the thread executing the main code (which is a thread created during
+the startup process).
+
+That's also why you start the reactor without signal initialization,
+since it'll be in a secondary thread.  In SvcDoRun is where you could
+import platform-generic modules to set up your twisted code, and then
+this code starts the reactor.
+
+Oh, and I left some code in that shows retrieving service-specific
+parameters from the registry as is typical for Windows services
+(stored in HKLM/System/CurrentControlSet/Services/&lt;svc_name&gt;/Parameters
+if I recall corrrectly):
+
+                              - - - - -
+
+class DataImportService(win32serviceutil.ServiceFramework):
+
+    __version__ = '1.0.0'
+
+    _svc_name_ = 'fdi'
+    _svc_display_name_ = 'SomeCompany Data Integration'
+
+    stopping = False
+    debug = False
+
+    def __init__(self, *args, **kwargs):
+        win32serviceutil.ServiceFramework.__init__(self, *args, **kwargs)
+        self.initialize()
+        self._stopped = threading.Event()
+        self.log = None
+
+    def initialize(self):
+        # This is separate from __init__ so during debugging the bootstrap
+        # code can override __init__ but still finish initialization.
+
+    def _getOption(self, option, default):
+        return win32serviceutil.GetServiceCustomOption(self._svc_name_,
+                                                       option,
+                                                       default)
+
+    def SvcStop(self):
+        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        print '%s Service stopping' % self._svc_display_name_
+        reactor.callFromThread(reactor.stop)
+        self._stopped.wait(5)
+        print '%s Service stopped' % self._svc_display_name_
+        if self.log:
+            self.log.close()
+
+    def SvcDoRun(self):
+        &quot;&quot;&quot;Main entry point for service execution&quot;&quot;&quot;
+
+        if hasattr(sys, 'frozen'):
+            home_dir = os.path.dirname(sys.executable)
+        else:
+            home_dir = os.path.dirname(__file__)
+
+        # First, let's set up some logging
+        if self.debug:
+            dupstdout = True
+            logprefix = None
+        else:
+            dupstdout = False
+            logprefix = os.path.join(home_dir, 'logs', 'dataimport.log')
+
+        self.log = LogClass(logprefix, dupstdout)
+
+        # And then reroute stdout/stderr to that file object
+        sys.stdout = self.log
+        sys.stderr = self.log
+
+        print '%s Service %s starting' % (self._svc_display_name_,
+                                          self.__version__)
+
+        try:
+
+            # Process config file
+            config_file = self._getOption('config',
+                                          os.path.join(home_dir, 'data',
+                                                       'dataimport.ini'))
+
+            # ... other service-related initialization ...
+
+            # ... do any Twisted related initialization ...
+
+            # Start everything up
+            reactor.callLater(0, self.log.write,
+                              '%s Service operational\n' %
+                              self._svc_display_name_)
+            reactor.run(installSignalHandlers=False)
+
+            # We're shutting down.
+            
+            # ... do any shutdown processing ...
+
+            # Flag that we're exiting so service thread can be more
+            # accurate in terms of declaring shutdown.
+            self._stopped.set()
+
+        except:
+
+            # For right now just log a traceback and abort
+            log.err()
+            # But try to gracefully close down log to let final traceback
+            # information make it out to the log file.
+            if self.log:
+                self.log.close()
+
+                              - - - - -
+
+Your main startup code in the service wrapper module can use helper
+functions from win32serviceutil for startup (see the pywin32 examples)
+which provides some automatic support for installing/uninstalling the
+service, or you can implement your own startup if you want to support
+different options and what not.  This all works under py2exe as well
+if you want to package things up and have a nice self-contained exe as
+a Windows service.
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="053411.html">[Twisted-Python] Daemon processes on windows
+</A></li>
+	<LI>Next message (by thread): <A HREF="053417.html">[Twisted-Python] Daemon processes on windows
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#53415">[ date ]</a>
+              <a href="thread.html#53415">[ thread ]</a>
+              <a href="subject.html#53415">[ subject ]</a>
+              <a href="author.html#53415">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,148 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] freeing the reactor to do other jobs
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20freeing%20the%20reactor%20to%20do%20other%20jobs&In-Reply-To=%3C8496caf30811070959i78263341i5517e38f83357fac%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051168.html">
+   <LINK REL="Next"  HREF="051173.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] freeing the reactor to do other jobs</H1>
+    <B>Jeff Dyke</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20freeing%20the%20reactor%20to%20do%20other%20jobs&In-Reply-To=%3C8496caf30811070959i78263341i5517e38f83357fac%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] freeing the reactor to do other jobs">jeff.dyke at gmail.com
+       </A><BR>
+    <I>Fri Nov  7 10:59:52 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051168.html">[Twisted-Python] freeing the reactor to do other jobs
+</A></li>
+        <LI>Next message (by thread): <A HREF="051173.html">[Twisted-Python] Running a client within a thread... do I need to	rewrite?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51171">[ date ]</a>
+              <a href="thread.html#51171">[ thread ]</a>
+              <a href="subject.html#51171">[ subject ]</a>
+              <a href="author.html#51171">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Fri, Nov 7, 2008 at 10:26 AM, David Ripton &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">dripton at ripton.net</A>&gt; wrote:
+&gt;<i> On 2008.11.07 08:29:50 -0500, Jeff Dyke wrote:
+</I>&gt;&gt;<i> I'm using the XMLRPC server in twisted and a few methods call other,
+</I>&gt;&gt;<i> sometimes long running, functions/methods.  I'm trying to get my brain
+</I>&gt;&gt;<i> around how to free the reactor to respond to other requests while this
+</I>&gt;&gt;<i> is happening.
+</I>&gt;<i>
+</I>&gt;<i> There are two ways:
+</I>&gt;<i>
+</I>&gt;<i> 1. Instead, write functions that don't block for long, but instead do a
+</I>&gt;<i> little bit of work, schedule a call to do the rest of the work, and then
+</I>&gt;<i> return, so the reactor can have the CPU back.
+</I>&gt;<i>
+</I>&gt;<i> 2. Farm out big chunks of work that you can't or don't want to split up
+</I>&gt;<i> to a subprocess or thread.
+</I>&gt;<i>
+</I>&gt;&gt;<i> A scenario.  A call is made to the server, which selects say 10K rows
+</I>&gt;&gt;<i> from a db and needs to check each row against a table and if they do
+</I>&gt;&gt;<i> not exist, insert them.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> &quot;&quot;&quot; Oversimplified version of the process &quot;&quot;&quot;
+</I>&gt;&gt;<i> def getData(self,user_id):
+</I>&gt;&gt;<i>     rows = self.getUserData(user_id)
+</I>&gt;&gt;<i>     for row in rows:
+</I>&gt;&gt;<i>         if self.existsInQueue(row['some_id']):
+</I>&gt;&gt;<i>             continue
+</I>&gt;&gt;<i>         else:
+</I>&gt;&gt;<i>              self.insertQueue(row)
+</I>&gt;<i>
+</I>&gt;<i> If the long-running work is in a blocking database call, and the
+</I>&gt;<i> database does not support a less-blocking version and you can't change
+</I>&gt;<i> the database, then you probably want to use deferToThread for that part.
+</I>&gt;<i>
+</I>&gt;<i> And then move the rest of getData into a separate function, that gets
+</I>&gt;<i> called in a callback after getUserData finishes.
+</I>&gt;<i>
+</I>&gt;<i> def getData(self,user_id):
+</I>&gt;<i>    deferred1 = reactor.deferToThread(self.getUserData, user_id)
+</I>&gt;<i>    deferred1.addCallback(self._addRowsToQueue)
+</I>&gt;<i>    deferred1.addErrback(self._getUserDataFailed)
+</I>&gt;<i>
+</I>&gt;<i> If adding the rows to the queue is fast, then you're done.  Just move
+</I>&gt;<i> everything after getUserData into _addRowsToQueue.
+</I>&gt;<i>
+</I>&gt;<i> def _addRowsToQueue(self, rows):
+</I>&gt;<i>    for row in rows:
+</I>&gt;<i>        if not self.existsInQueue(row['some_id']):
+</I>&gt;<i>            self.insertQueue(row)
+</I>&gt;<i>
+</I>&gt;<i> But if adding all the rows to the queue in one function call is too
+</I>&gt;<i> slow, then you need to split it up.  It's a loop, so splitting it up is
+</I>&gt;<i> easy.  Here's the simple scheduling-only version:
+</I>&gt;<i>
+</I>&gt;<i> def _addSomeRowsToQueue(self, rows):
+</I>&gt;<i>    if rows:
+</I>&gt;<i>        row = rows.pop(0)
+</I>&gt;<i>        if not self.existsInQueue(row['some_id']):
+</I>&gt;<i>            self.insertQueue(row)
+</I>&gt;<i>        reactor.callLater(0, self._addSomeRowsToQueue, rows)
+</I>&gt;<i>
+</I>&gt;<i> Adding deferreds to the mix so that a callback function is called when
+</I>&gt;<i> all the rows are added to the queue is the next step, after you
+</I>&gt;<i> understand how this much works.
+</I>&gt;<i>
+</I>&gt;&gt;<i> I want the caller to wait on a result from this process, but I also
+</I>&gt;&gt;<i> want the reactor to be able to handle other requests as they come in.
+</I>&gt;<i>
+</I>&gt;<i> I hope you can live with &quot;I want something to happen using the results
+</I>&gt;<i> from this process&quot;, rather than &quot;I want the caller to wait on a result
+</I>&gt;<i> from this process.&quot;
+</I>&gt;<i>
+</I>&gt;<i> You can simulate blocking flow somewhat with deferredGenerator or
+</I>&gt;<i> inlineCallbacks, but I recommend sticking to the old way at first.
+</I>&gt;<i> It's simpler and less magical.
+</I>&gt;<i>
+</I>&gt;<i> --
+</I>&gt;<i> David Ripton    <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">dripton at ripton.net</A>
+</I>
+
+Thanks all for the input... this will be a great help.
+&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051168.html">[Twisted-Python] freeing the reactor to do other jobs
+</A></li>
+	<LI>Next message (by thread): <A HREF="051173.html">[Twisted-Python] Running a client within a thread... do I need to	rewrite?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51171">[ date ]</a>
+              <a href="thread.html#51171">[ thread ]</a>
+              <a href="subject.html#51171">[ subject ]</a>
+              <a href="author.html#51171">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

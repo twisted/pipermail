@@ -1,0 +1,151 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] mailman with twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20mailman%20with%20twisted&In-Reply-To=20050210221445.GY18573%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="001160.html">
+   <LINK REL="Next"  HREF="001163.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] mailman with twisted</H1>
+    <B>Tommi Virtanen</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20mailman%20with%20twisted&In-Reply-To=20050210221445.GY18573%40opteron.random"
+       TITLE="[Twisted-web] mailman with twisted">tv at twistedmatrix.com
+       </A><BR>
+    <I>Thu Feb 10 16:10:38 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="001160.html">[Twisted-web] mailman with twisted
+</A></li>
+        <LI>Next message: <A HREF="001163.html">[Twisted-web] mailman with twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1162">[ date ]</a>
+              <a href="thread.html#1162">[ thread ]</a>
+              <a href="subject.html#1162">[ subject ]</a>
+              <a href="author.html#1162">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Andrea Arcangeli wrote:
+&gt;<i> Index: Nevow/nevow/vhost.py
+</I>&gt;<i> ===================================================================
+</I>&gt;<i> --- Nevow/nevow/vhost.py	(revision 1192)
+</I>&gt;<i> +++ Nevow/nevow/vhost.py	(working copy)
+</I>&gt;<i> @@ -19,7 +19,7 @@
+</I>&gt;<i>  &quot;&quot;&quot;
+</I>&gt;<i>  
+</I>&gt;<i>      def getStyleSheet(self):
+</I>&gt;<i> -        return self.stylesheet
+</I>&gt;<i> +        return VirtualHostList.stylesheet
+</I>&gt;<i>   
+</I>&gt;<i>      def data_hostlist(self, context, data):
+</I>&gt;<i>          return self.nvh.hosts.keys()
+</I>
+Why would you do that?
+
+self.stylesheet allows subclasses to override the stylesheet easily.
+
+&gt;<i> Index: Nevow/nevow/static.py
+</I>&gt;<i> ===================================================================
+</I>&gt;<i> --- Nevow/nevow/static.py	(revision 1192)
+</I>&gt;<i> +++ Nevow/nevow/static.py	(working copy)
+</I>&gt;<i> @@ -271,7 +271,7 @@
+</I>&gt;<i>              return self.redirect(request)
+</I>&gt;<i>  
+</I>&gt;<i>          #for content-length
+</I>&gt;<i> -        fsize = size = self.getFileSize()
+</I>&gt;<i> +        fsize = csize = self.getFileSize()
+</I>&gt;<i>  
+</I>&gt;<i>          request.setHeader('accept-ranges','bytes')
+</I>&gt;<i>  
+</I>&gt;<i> @@ -302,20 +302,20 @@
+</I>&gt;<i>                         &quot;Syntactically invalid http range header!&quot;
+</I>&gt;<i>                  start, end = string.split(bytesrange[1],'-')
+</I>&gt;<i>                  if start:
+</I>&gt;<i> -                    f.seek(int(start))
+</I>&gt;<i> +                    start = int(start)
+</I>&gt;<i> +                    f.seek(start)
+</I>&gt;<i>                  if end:
+</I>&gt;<i> -                    end = int(end)
+</I>&gt;<i> -                    size = end
+</I>&gt;<i> +                    csize = int(end) - start + 1
+</I>&gt;<i>                  else:
+</I>&gt;<i> -                    end = size
+</I>&gt;<i> +                    csize -= start
+</I>&gt;<i>                  request.setResponseCode(http.PARTIAL_CONTENT)
+</I>&gt;<i>                  request.setHeader('content-range',&quot;bytes %s-%s/%s &quot; % (
+</I>&gt;<i> -                    str(start), str(end), str(size)))
+</I>&gt;<i> +                    str(start), str(end), str(fsize)))
+</I>&gt;<i>                  #content-length should be the actual size of the stuff we're
+</I>&gt;<i>                  #sending, not the full size of the on-server entity.
+</I>&gt;<i>                  fsize = end - int(start)
+</I>&gt;<i>  
+</I>&gt;<i> -            request.setHeader('content-length', str(fsize))
+</I>&gt;<i> +            request.setHeader('content-length', str(csize))
+</I>&gt;<i>          except:
+</I>&gt;<i>              traceback.print_exc(file=log.logfile)
+</I>&gt;<i>  
+</I>&gt;<i> @@ -323,7 +323,7 @@
+</I>&gt;<i>              return ''
+</I>&gt;<i>  
+</I>&gt;<i>          # return data
+</I>&gt;<i> -        FileTransfer(f, size, request)
+</I>&gt;<i> +        FileTransfer(f, csize, request)
+</I>&gt;<i>          # and make sure the connection doesn't get closed
+</I>&gt;<i>          return request.deferred
+</I>&gt;<i>  
+</I>
+This part I just wrote independently and committed.
+
+&gt;<i> @@ -354,17 +354,16 @@
+</I>&gt;<i>          self.file = file
+</I>&gt;<i>          self.size = size
+</I>&gt;<i>          self.request = request
+</I>&gt;<i> -        self.written = self.file.tell()
+</I>&gt;<i>          request.registerProducer(self, 0)
+</I>&gt;<i>  
+</I>&gt;<i>      def resumeProducing(self):
+</I>&gt;<i>          if not self.request:
+</I>&gt;<i>              return
+</I>&gt;<i> -        data = self.file.read(min(abstract.FileDescriptor.bufferSize, self.size - self.written))
+</I>&gt;<i> +        data = self.file.read(min(abstract.FileDescriptor.bufferSize, self.size))
+</I>&gt;<i>          if data:
+</I>&gt;<i> -            self.written += len(data)
+</I>&gt;<i>              self.request.write(data)
+</I>&gt;<i> -        if self.file.tell() == self.size:
+</I>&gt;<i> +            self.size -= len(data)
+</I>&gt;<i> +        if self.size &lt;= 0:
+</I>&gt;<i>              self.request.unregisterProducer()
+</I>&gt;<i>              self.request.finish()
+</I>&gt;<i>              self.request = None
+</I>
+..and now this part, too. r1197
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="001160.html">[Twisted-web] mailman with twisted
+</A></li>
+	<LI>Next message: <A HREF="001163.html">[Twisted-web] mailman with twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#1162">[ date ]</a>
+              <a href="thread.html#1162">[ thread ]</a>
+              <a href="subject.html#1162">[ subject ]</a>
+              <a href="author.html#1162">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,161 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] AMP WebSockets bridging
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20AMP%20WebSockets%20bridging&In-Reply-To=%3C444A546E-683F-4699-AD60-C5CDCD4E97C1%40lvh.cc%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="058131.html">
+   <LINK REL="Next"  HREF="058126.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] AMP WebSockets bridging</H1>
+    <B>Laurens Van Houtven</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20AMP%20WebSockets%20bridging&In-Reply-To=%3C444A546E-683F-4699-AD60-C5CDCD4E97C1%40lvh.cc%3E"
+       TITLE="[Twisted-Python] AMP WebSockets bridging">_ at lvh.cc
+       </A><BR>
+    <I>Fri Jun 15 11:13:22 MDT 2012</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="058131.html">[Twisted-Python] [OT] Re:  twisted/python3/ubuntu 12.10
+</A></li>
+        <LI>Next message (by thread): <A HREF="058126.html">[Twisted-Python] AMP WebSockets bridging
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#58125">[ date ]</a>
+              <a href="thread.html#58125">[ thread ]</a>
+              <a href="subject.html#58125">[ subject ]</a>
+              <a href="author.html#58125">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+I'm trying to get browsers to communicate with an AMP API. Right now I'm trying to do that using WebSockets with Corbin SImpson's txWS. Eventually I'll try to write a Twisted implementation of SockJS, which is basically portable websockets all the way down to IE6.
+
+The issue is that while AMP is inherently a binary protocol, WebSockets transfer text (well, that's a lie: there's a binary version, but it's even less widely supported than WebSockets themselves -- and SockJS doesn't support it at all, although it's on the roadmap). So, I need an alternative, preferably 7-bit, serialization for AMP boxes.
+
+My first attempt at that serialization is JSON -- widely supported in browsers, and should map pretty closely to what AMP can do:
+
+  - AMPLIsts are objects
+  - ListOfs are arrays
+  - numeric types and strings are more or less natively supported (except JSON is always text, never bytes)
+  - booleans are booleans
+
+Right now I have something that almost works, but is really a crude, cheap, untested hack. I'm wondering if there's a better integration point.
+
+&quot;&quot;&quot;
+AMP over WebSockets support.
+&quot;&quot;&quot;
+import json
+import txws
+
+from twisted.internet import defer, protocol
+from twisted.python import log
+
+
+class Bridge(protocol.Protocol):
+    &quot;&quot;&quot;
+    Two-way AMP over WebSockets bridge.
+    &quot;&quot;&quot;
+    def __init__(self, amp):
+        self._amp = amp
+        amp.startReceivingBoxes(self)
+        amp.boxSender = self
+
+
+    def sendBox(self, box):
+        &quot;&quot;&quot;
+        Sends a box over the WebSocket as JSON.
+        &quot;&quot;&quot;
+        log.msg(&quot;Sending box: {}&quot;.format(box))
+        self.transport.write(json.dumps(box))
+
+
+    def jsonObjectReceived(self, obj):
+        &quot;&quot;&quot;
+        Hands the JSON object (dict) over to ampBoxReceived.
+        &quot;&quot;&quot;
+        log.msg(&quot;JSON object received: {}&quot;.format(obj))
+        self._amp.boxReceiver.ampBoxReceived(obj)
+
+
+    def dataReceived(self, data):
+        &quot;&quot;&quot;
+        Calls jsonObjectReceived.
+
+        This assumes that JSON objects will always arrive as 1 chunk.
+        &quot;&quot;&quot;
+        self.jsonObjectReceived(json.loads(data))
+
+
+
+class BridgeFactory(protocol.Factory):
+    &quot;&quot;&quot;
+    A factory for AMP over WebSockets bridges.
+    &quot;&quot;&quot;
+    def __init__(self, ampFactory):
+        self._ampFactory = ampFactory
+
+
+    def buildProtocol(self, addr):
+        &quot;&quot;&quot;
+        Builds a bridge and associates it with an AMP protocol instance.
+        &quot;&quot;&quot;
+        return Bridge(self._ampFactory.buildProtocol(addr))
+
+
+
+def makeFactory(ampFactory):
+    &quot;&quot;&quot;
+    Makes a WebSocket factory that bridges AMP messages.
+    &quot;&quot;&quot;
+    return txws.WebSocketFactory(BridgeFactory(ampFactory))
+
+
+An issue I'm running into is an AMP ListOf. With the above code, ListOf still gets translated to a string, and obviously I want it to be a list. When that ListOf has actual data in it, I get the binary representation.
+
+The other issues that I predict will happen but haven't ran into yet (because I don't use that functionality) are:
+    - booleans -- expects &quot;True&quot; or &quot;False&quot; but gets True or False (true and false in JSON) -- can be fixed both on the client and the server side, not sure where the optimal place would be
+    - AMPList -- same reason as ListOf
+
+ints, floats… will magically work, but it's a bit ugly: the only reason it works is that the factory for them is int and float, and, well, int(5) == 5 == int(&quot;5&quot;), so it doesn't actually matter if it's already an int or a str.
+
+In my Command implementation, I'm returning {&quot;k&quot;: anAxiomQuery} -- so it's iterable but not a list. I can write a custom JSON encoder that can take arbitrary iterables, of course.
+
+cheers
+lvh
+
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="058131.html">[Twisted-Python] [OT] Re:  twisted/python3/ubuntu 12.10
+</A></li>
+	<LI>Next message (by thread): <A HREF="058126.html">[Twisted-Python] AMP WebSockets bridging
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#58125">[ date ]</a>
+              <a href="thread.html#58125">[ thread ]</a>
+              <a href="subject.html#58125">[ subject ]</a>
+              <a href="author.html#58125">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

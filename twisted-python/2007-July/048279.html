@@ -1,0 +1,164 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Handling PBConnectionLost errors
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Handling%20PBConnectionLost%20errors&In-Reply-To=%3C99A576C3-FE5E-4AE3-A48F-1720C9ECA16B%40keystonewood.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="048286.html">
+   <LINK REL="Next"  HREF="048293.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Handling PBConnectionLost errors</H1>
+    <B>Daniel Miller</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Handling%20PBConnectionLost%20errors&In-Reply-To=%3C99A576C3-FE5E-4AE3-A48F-1720C9ECA16B%40keystonewood.com%3E"
+       TITLE="[Twisted-Python] Handling PBConnectionLost errors">daniel at keystonewood.com
+       </A><BR>
+    <I>Fri Jul 20 09:52:51 MDT 2007</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="048286.html">[Twisted-Python] Testing with trial, adbapi questions
+</A></li>
+        <LI>Next message (by thread): <A HREF="048293.html">[Twisted-Python] Handling PBConnectionLost errors
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48279">[ date ]</a>
+              <a href="thread.html#48279">[ thread ]</a>
+              <a href="subject.html#48279">[ subject ]</a>
+              <a href="author.html#48279">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hello,
+
+Twisted PB sometimes loses its connection to the server. In this  
+case, a PBConnectionLost exception is raised on the client. It would  
+be nice to implement a fail-safe(er) way of calling remote methods  
+that would retry when necessary until the remote method has been  
+called successfully and the result has been returned. Note that this  
+is only necessary when the remote method call should be invoked  
+exactly once on the server (i.e. for POST-like calls that change  
+server state). In the case of GET-like requests, a simpler retry  
+mechanism will do.
+
+The motivation for this is based on my experience of using Twisted in  
+an application I am developing. The network communications are all  
+happening on a LAN. The good end of the network is connected directly  
+to a 100Mbps switch at the server. Failures occur more frequently at  
+the other end (my end) of the network, which is connected through a  
+10/100 hub that is connected to the main switch. I rigged up a quick  
+test with a 1000-request sample size; failures ranged from 28/1000 on  
+the good end of the network to 83/1000 on the bad end of the network.  
+One request consists of a single remote method call through PB. A  
+success was when I got the expected result, a failure was when I got  
+a PBConnectionLost error.
+
+The following is pseudo code that I came up with to mitigate the  
+problem.
+
+Simple request (GET - repeatedly call method until success or  
+RETRY_LIMIT is reached)
+    Client flow:
+       for x in range(RETRY_LIMIT)
+          invoke remote method without unique call identifier
+          if result is not PBConnectionLost
+             break
+       if result is PBConnectionLost
+          raise server not responding error
+    Server flow:
+       (nothing special, just plain PB)
+
+Complex request (POST - server-side method is invoked exactly once)
+    Client flow:
+       use simple retry method to get a unique call identifier from  
+server
+          a timeout value is also sent along to tell the server how  
+long to hold the results of this request
+       for x in range(RETRY_LIMIT)
+          invoke remote method with identifier
+          if return value is not PBConnectionLost
+             break
+       if result is PBConnectionLost
+          raise server not responding error
+       using simple retry method tell server to discard unique call  
+identifier
+    Server flow:
+       receive request for unique call identifier
+          create and store identifier with UNCALLED token
+          schedule identifier to be discarded with timeout value  
+supplied by client
+          return identifier to client
+       receive remote method invocation with unique call identifier
+          branch on value stored with unique call identifier
+          if UNCALLED
+             update identifier with CALLED token
+             invoke method
+             while result is deferred
+                get defer result
+             store COMPLETED token and unique with unique call  
+identifier
+             if there is another invocation WAITING
+                this means the connection was lost
+                signal the WAITING request with the result
+             else
+                return result to client
+          if CALLED
+             store WAITING token with unique identifier (must not  
+overwrite other call tokens)
+             defer until COMPLETED
+          if COMPLETED
+             return result to client
+          if unique call identifier does not exist
+             raise error
+       receive request to discard unique call identifier
+          if identifier exists
+             discard identifier, tokens, and result
+          return True
+
+I realize that implementing this would not eliminate network errors.  
+It would simply reduce the likelyhood of failed method calls due to  
+dropped connections. If I have my math correct (I always struggle a  
+bit with statistics), even a RETRY_LIMIT of 2 would reduce the  
+probability of a lost connection to 0.6% at the worst (&lt;0.1% on the  
+good end of the network).
+
+I have two questions:
+
+1. Does something like this already exist?
+2. Is this a totally stupid idea? (would it be better to improve our  
+physical network than to try to band-aid the problem with something  
+like this?)
+
+~ Daniel
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="048286.html">[Twisted-Python] Testing with trial, adbapi questions
+</A></li>
+	<LI>Next message (by thread): <A HREF="048293.html">[Twisted-Python] Handling PBConnectionLost errors
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#48279">[ date ]</a>
+              <a href="thread.html#48279">[ thread ]</a>
+              <a href="subject.html#48279">[ subject ]</a>
+              <a href="author.html#48279">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

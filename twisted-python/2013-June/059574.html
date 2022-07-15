@@ -1,0 +1,220 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] If the errbacks of a canceled Deferred are called with error other than CancelledError, is this acceptable?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20If%20the%20errbacks%20of%20a%20canceled%20Deferred%20are%0A%20called%20with%20error%20other%20than%20CancelledError%2C%20is%20this%20acceptable%3F&In-Reply-To=%3CCACqnu4UfWA%2BuiKKM3-3ChHU5BRnMi3CaodEGTKk-5UqUe%3Dk%3DGQ%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="059570.html">
+   <LINK REL="Next"  HREF="059572.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] If the errbacks of a canceled Deferred are called with error other than CancelledError, is this acceptable?</H1>
+    <B>Terry Jones</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20If%20the%20errbacks%20of%20a%20canceled%20Deferred%20are%0A%20called%20with%20error%20other%20than%20CancelledError%2C%20is%20this%20acceptable%3F&In-Reply-To=%3CCACqnu4UfWA%2BuiKKM3-3ChHU5BRnMi3CaodEGTKk-5UqUe%3Dk%3DGQ%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] If the errbacks of a canceled Deferred are called with error other than CancelledError, is this acceptable?">terry at jon.es
+       </A><BR>
+    <I>Tue Jun 18 15:33:14 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="059570.html">[Twisted-Python] If the errbacks of a canceled Deferred are	called with error other than CancelledError, is this acceptable?
+</A></li>
+        <LI>Next message (by thread): <A HREF="059572.html">[Twisted-Python] If the errbacks of a canceled Deferred are called with error other than CancelledError, is this acceptable?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59574">[ date ]</a>
+              <a href="thread.html#59574">[ thread ]</a>
+              <a href="subject.html#59574">[ subject ]</a>
+              <a href="author.html#59574">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>First off, +1 on propagating the CancelledError failure (or something even
+more specific) all the way back up the errback chain.
+
+lvh&gt; Personally, I think it's enough of a change in functionality to
+warrant a chance in ways a function can fail
+
+I'm not sure what change in functionality you mean. Deferreds are already
+cancelable, and functions aren't going to fail in new ways. The only thing
+that's new here is that a different value might be given to the
+failure.Failure constructor and passed along the errback chain.
+
+glyph&gt; In fact in this case you almost want *multiple* inheritance, so you
+can say 'except CancelledError:' or 'except ConnectionError:' as
+appropriate.
+
+If a deferred has been canceled and the errback fired, why can't code like
+`fail.check(CancelledError, ConnectionError, ...)` be used?
+
+Sorry if I'm wrong/forgetful (I'm old), but it seems like lvh &amp; glyph are
+talking about exceptions when they should be talking about handling Failure
+instances arriving via the errback chain.
+
+A couple of comments:
+
+ - There are conceptually 3 places a deferred might be cancelled. 1. The
+code that makes the deferred might call cancel for some reason (e.g.,
+service shutdown). 2. Intermediate code that called the code that creates
+the deferred and which passes the deferred on might cancel it. 3. The
+originating code (that uses a Twisted (or other library) API call) might
+decide to cancel it (e.g., due to timeout).
+
+In case 1, the documented interface of the API call can say what it does if
+it cancels a deferred. E.g., that a CancelledError failure will be
+delivered down the errback chain (the default behavior), or that some other
+kind of failure will be sent. A function could even allow the calling code
+to pass in a value that should be sent down the errback chain (wrapped in a
+Failure) when/if the deferred it creates is cancelled.  E.g. (pseudo-code):
+
+    def doSomething(cancelValue=None):
+        if cancelValue is not None:
+            deferred = Deferred(lambda d:
+d.errback(failure.Failure(cancelValue)))
+        else:
+            deferred = Deferred()
+        # Now do other things to arrange for 'deferred' to fire or fail.
+        return deferred
+
+Case 2 is almost never going to happen. The intermediate code gets a
+deferred from someplace, maybe adds call/errbacks to it, and passes it on.
+If that code wants to hold on to the deferred it received and cancel it for
+some reason, it could do so, but it wont have any control over the failure
+value that comes down the errback chain.
+
+Case 3 is more interesting, and is the main reason deferred cancelation was
+interesting me to (please see this thread for some background on how we got
+here:
+<A HREF="http://twistedmatrix.com/pipermail/twisted-python/2010-January/021298.html">http://twistedmatrix.com/pipermail/twisted-python/2010-January/021298.html</A>).
+In this case, the original calling code wants to cancel the deferred.
+E.g., it has made a call to something that makes a network call and after
+some timeout decides it needs to proceed without the result. Due to its
+setup (using deferreds) the cleanest way for that code to proceed is to
+trigger the deferred itself. If it can do that, the normal (errback) error
+processing chain can simply handle the case where the deferred is cancelled.
+
+A slight difficulty with the current situation is that code that obtains a
+deferred made by other code can't tell, if the deferred is cancelled, who
+cancelled it (or why). That includes the case where the code that received
+the deferred cancels it itself. I.e., if the code that makes the deferred
+cancels it (in the default way) or the code that receives the deferred
+cancels it (cases 1 and 3 above), the result is the same, a CancelledError
+in a failure.
+
+In what I originally proposed (see above link), the caller could errback
+the deferred it was given *with a value of its choosing*. That would allow
+code to cancel a deferred and also to detect (in an errback) that it had
+done so and/or why (code might cancel a deferred for different reasons).
+ You can't do that with the implementation that actually landed in Twisted,
+though.
+
+
+A possible way to add some functionality / flexibility (including the above
+possibility) in a backwards-compatible way would be to allow
+Deferred.cancel to be called with a value argument (default=None to keep it
+backwards compat).  If no canceller was given to the Deferred constructor
+(or the canceller function did not fire the deferred), Deferred.cancel
+would call self.errback(failure.Failure(CancelledError(value))). In that
+way, anyone could cancel a deferred and the specific reason passed to
+cancel(), if any, would be available in the Python CancelledError instance
+as its first argument, as with any Python exception (i.e., args[0]).  In
+addition (backwards incompatible, though) the value passed to
+Deferred.cancel could also be passed to self._canceller, along with the
+deferred itself. I don't think that's needed though, as code doing more
+elaborate cancellation can set up any kind of Failure it wants to propagate
+back, can document its behavior, and can also allow for caller-specific
+values to be passed back (see code fragment above), etc.
+
+OK, sorry if that's all a bit rambling &amp; hard to follow...
+
+Terry
+
+
+
+On Tue, Jun 18, 2013 at 8:54 PM, Glyph &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; wrote:
+
+&gt;<i>
+</I>&gt;<i> On Jun 18, 2013, at 12:03 PM, Laurens Van Houtven &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">_ at lvh.io</A>&gt; wrote:
+</I>&gt;<i>
+</I>&gt;<i> On Tue, Jun 18, 2013 at 8:22 PM, Glyph &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">glyph at twistedmatrix.com</A>&gt; wrote:
+</I>&gt;<i>
+</I>&gt;&gt;<i> I would say that if we want to percolate this information up to the
+</I>&gt;&gt;<i> caller, there should be a ConnectingCancelled exception that is a subtype
+</I>&gt;&gt;<i> of the previous exception type.
+</I>&gt;&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> Doesn't that mean we'll have many subclasses that mean that something was
+</I>&gt;<i> cancelled?
+</I>&gt;<i>
+</I>&gt;<i> If I didn't take backwards compatibility into account, I would say that
+</I>&gt;<i> composing the original exception into a new CancellationError (or
+</I>&gt;<i> something) exception would be preferable. Would you agree that it would be
+</I>&gt;<i> preferable? (Again, not taking compatibility into account -- I'm trying to
+</I>&gt;<i> get compatibility vs niceness of API to face off against each other.
+</I>&gt;<i> Personally, I think it's enough of a change in functionality to warrant a
+</I>&gt;<i> chance in ways a function can fail, but there's no point in even having
+</I>&gt;<i> that argument if there's no consensus that the composed way would even be
+</I>&gt;<i> better...)
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> I agree that it would be preferable, but I don't see how it's possible
+</I>&gt;<i> without making Exception itself composeable.
+</I>&gt;<i>
+</I>&gt;<i>  After all, if it's interesting that the operation was cancelled,
+</I>&gt;<i> presumably it's interesting *at what stage* the operation is cancelled.
+</I>&gt;<i>
+</I>&gt;<i> IIUC that would work the same with composition as inheritance :)
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> Unfortunately inheritance is built into the way Python handles exceptions.
+</I>&gt;<i>  In fact in this case you almost want *multiple* inheritance, so you can
+</I>&gt;<i> say 'except CancelledError:' or 'except ConnectionError:' as appropriate.
+</I>&gt;<i>  :-(
+</I>&gt;<i>
+</I>&gt;<i> The one saving grace here is that not a whole lot of useful logic can live
+</I>&gt;<i> on the exception objects, so there's a limited amount of opportunity for
+</I>&gt;<i> getting oneself into trouble.
+</I>&gt;<i>
+</I>&gt;<i> Please prove me wrong, though.
+</I>&gt;<i>
+</I>&gt;<i> -glyph
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>&gt;<i>
+</I>-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20130618/e93c9bfe/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="059570.html">[Twisted-Python] If the errbacks of a canceled Deferred are	called with error other than CancelledError, is this acceptable?
+</A></li>
+	<LI>Next message (by thread): <A HREF="059572.html">[Twisted-Python] If the errbacks of a canceled Deferred are called with error other than CancelledError, is this acceptable?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59574">[ date ]</a>
+              <a href="thread.html#59574">[ thread ]</a>
+              <a href="subject.html#59574">[ subject ]</a>
+              <a href="author.html#59574">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

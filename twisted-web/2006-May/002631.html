@@ -1,0 +1,146 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] [patch] 3/3 allow php cgi to run on top of web2
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5Bpatch%5D%203/3%20allow%20php%20cgi%20to%20run%20on%20top%20of%20web2&In-Reply-To=20060517145634.GA21766%40opteron.random">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002630.html">
+   <LINK REL="Next"  HREF="002632.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] [patch] 3/3 allow php cgi to run on top of web2</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20%5Bpatch%5D%203/3%20allow%20php%20cgi%20to%20run%20on%20top%20of%20web2&In-Reply-To=20060517145634.GA21766%40opteron.random"
+       TITLE="[Twisted-web] [patch] 3/3 allow php cgi to run on top of web2">andrea at cpushare.com
+       </A><BR>
+    <I>Wed May 17 10:15:25 CDT 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002630.html">[Twisted-web] [patch] 2/3 scgi logging
+</A></li>
+        <LI>Next message: <A HREF="002632.html">[Twisted-web] SSPI authentication (direct, or behind Apache)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2631">[ date ]</a>
+              <a href="thread.html#2631">[ thread ]</a>
+              <a href="subject.html#2631">[ subject ]</a>
+              <a href="author.html#2631">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>My suggestion to run php on top of web2 is to create an user &quot;php&quot; for
+higher security and run this as php user (clearly port 8828/8080 should
+be firewalled if you don't bind to the lo interface):
+
+-------- cut here --------
+from twisted.web2 import server, twcgi, channel, static, log
+
+LOGPATH = 'php_logs/http.log'
+
+class PHPScript(twcgi.PHPScript):
+	filters = ('/home/php/php/bin/php',)
+
+root = static.File('/home/php/root', processors = { '.php' : PHPScript }, indexNames=['index.php'])
+#root = static.File('/home/php/root')
+
+#root = log.LogWrapperResource(root)
+#log.FileAccessLoggingObserver(LOGPATH).start()
+site = server.Site(root)
+
+from twisted.application import service, strports
+application = service.Application(&quot;php&quot;)
+#s = strports.service('tcp:8080', channel.HTTPFactory(site))
+s = strports.service('tcp:8828:interface=127.0.0.1', channel.SCGIFactory(site))
+s.setServiceParent(application)
+-------- cut here --------
+
+Then on your main twisted server add a page like this:
+
+class page_class(resource.Resource):
+	addSlash = True
+
+	from twisted.web2 import twscgi
+	child_php = twscgi.SCGIClientResource(PHP_PORT)
+
+then page/php will run php inside directory /home/php/root.
+
+Result is visible here:
+
+<A HREF="http://webmail.cpushare.com/">http://webmail.cpushare.com/</A>
+
+Without the below that above doesn't work. This also fixes a bug in
+twcgi that was passing one more dangling empty string to all cgi as last
+parameter.  It's also unclear to me what the &quot;=&quot; check is about but it's
+unrelated with the fix.
+
+diff -r 493b5c24e0f3 twisted/web2/static.py
+--- a/twisted/web2/static.py	Tue May 16 04:57:00 2006 +0000
++++ b/twisted/web2/static.py	Wed May 17 15:59:28 2006 +0200
+@@ -303,12 +303,6 @@ class File(StaticRenderMixin):
+         child = self.putChildren.get(name, None)
+         if child: return child
+ 
+-        child_fp = self.fp.child(name)
+-        if child_fp.exists():
+-            return self.createSimilarFile(child_fp.path)
+-        else:
+-            return None
+-
+     def listChildren(self):
+         &quot;&quot;&quot;
+         @return: a sequence of the names of all known children of this resource.
+@@ -373,8 +367,12 @@ class File(StaticRenderMixin):
+             else:
+                 ifp = self.fp.childSearchPreauth(*self.indexNames)
+                 if ifp:
+-                    # Render from the index file
+-                    standin = self.createSimilarFile(ifp.path)
++                    ext = ifp.splitext()[1]
++                    if ext in self.processors:
++                        standin = self.processors[ext](ifp.path)
++                    else:
++                        # Render from the index file
++                        standin = self.createSimilarFile(ifp.path)
+                 else:
+                     # Render from a DirectoryLister
+                     standin = dirlist.DirectoryLister(
+diff -r 493b5c24e0f3 twisted/web2/twcgi.py
+--- a/twisted/web2/twcgi.py	Tue May 16 04:57:00 2006 +0000
++++ b/twisted/web2/twcgi.py	Wed May 17 15:59:28 2006 +0200
+@@ -107,7 +107,7 @@ def runCGI(request, filename, filterscri
+         return http.Response(responsecode.LENGTH_REQUIRED)
+     env = createCGIEnvironment(request)
+     env['SCRIPT_FILENAME'] = filename
+-    if '=' in request.querystring:
++    if not request.querystring or '=' in request.querystring:
+         qargs = []
+     else:
+         qargs = [urllib.unquote(x) for x in request.querystring.split('+')]
+
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002630.html">[Twisted-web] [patch] 2/3 scgi logging
+</A></li>
+	<LI>Next message: <A HREF="002632.html">[Twisted-web] SSPI authentication (direct, or behind Apache)
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2631">[ date ]</a>
+              <a href="thread.html#2631">[ thread ]</a>
+              <a href="subject.html#2631">[ subject ]</a>
+              <a href="author.html#2631">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

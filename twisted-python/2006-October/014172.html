@@ -1,0 +1,186 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Trial __del__ behavior change - intentional?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Trial%20__del__%20behavior%20change%20-%20intentional%3F&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="014171.html">
+   <LINK REL="Next"  HREF="014173.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Trial __del__ behavior change - intentional?</H1>
+    <B>Scott Lamb</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Trial%20__del__%20behavior%20change%20-%20intentional%3F&In-Reply-To="
+       TITLE="[Twisted-Python] Trial __del__ behavior change - intentional?">slamb at slamb.org
+       </A><BR>
+    <I>Mon Oct  9 20:58:52 EDT 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="014171.html">[Twisted-Python] Mailing List Hiccup
+</A></li>
+        <LI>Next message: <A HREF="014173.html">[Twisted-Python] Twisted &amp; Qt
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14172">[ date ]</a>
+              <a href="thread.html#14172">[ thread ]</a>
+              <a href="subject.html#14172">[ subject ]</a>
+              <a href="author.html#14172">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I'm seeing a weird thing on Twisted 2.2.0. It does not happen with  
+older versions of Twisted (trunk revision 16674, which I had sitting  
+around for some reason). It appears I can't use reference handling to  
+clean up resources within a trial - the output code apparently keeps  
+a reference to the stack trace or something until after it's done.  
+That's too late for me - this resource is essentially a mutex, so if  
+I have more than one TestCase in a single trial run, my tests don't  
+work.
+
+Is this change intentional?
+
+My test code's inline, along with results on both versions. I'm not  
+quite sure how make proper unit tests of trial itself, so  
+unfortunately you must interpret the results manually.
+
+$ cat resource_test.py
+#!/usr/bin/env
+&quot;&quot;&quot;A test of using __del__ for cleaning up resources within trial tests.
+
+On trunk revision 16674, this works fine. On Twisted 2.2.0, something  
+holds
+an extra reference to my resource object. Python actually exits without
+ever calling my __del__.
+&quot;&quot;&quot;
+
+from twisted.trial import unittest
+
+class MyResource:
+     def __init__(self, cleaned_up):
+         print '&lt;&lt;&lt;INIT CALLED&gt;&gt;&gt;'
+         self.cleaned_up = cleaned_up
+
+     def __del__(self):
+         print '&lt;&lt;&lt;DEL CALLED&gt;&gt;&gt;'
+         self.cleaned_up[0] = True
+
+     def raiseerror(self):
+         raise Exception('foo')
+
+class ReferenceTest(unittest.TestCase):
+     def setUp(self):
+         # This is an array so that the callee can make changes that  
+alter
+         # our copy.
+         self.cleaned_up = [False]
+         self.my_resource = MyResource(self.cleaned_up)
+
+     def tearDown(self):
+         self.my_resource = None
+         self.assertEquals(self.cleaned_up[0], True)
+
+     def testError(self):
+         self.my_resource.raiseerror()
+
+     def testPass(self):
+         pass
+
+
+[machine-a ~]$ svnversion svn/Twisted
+16674
+[machine-a ~]$ trial resource_test
+   resource_test
+     ReferenceTest
+&lt;&lt;&lt;INIT CALLED&gt;&gt;&gt;
+       testError ... &lt;&lt;&lt;DEL CALLED&gt;&gt;&gt;
+                                                     [ERROR]
+&lt;&lt;&lt;INIT CALLED&gt;&gt;&gt;
+       testPass ... &lt;&lt;&lt;DEL CALLED&gt;&gt;&gt;
+                                                         [OK]
+
+======================================================================== 
+=======
+[ERROR]: resource_test.ReferenceTest.testError
+
+   File &quot;twisted/internet/defer.py&quot;, line 109, in maybeDeferred
+
+   File &quot;/Users/slamb/resource_test.py&quot;, line 35, in testError
+     self.my_resource.raiseerror()
+   File &quot;/Users/slamb/resource_test.py&quot;, line 21, in raiseerror
+     raise Exception('foo')
+exceptions.Exception: foo
+------------------------------------------------------------------------ 
+-------
+Ran 2 tests in 0.030s
+
+FAILED (errors=1, successes=1)
+
+[machine-b ~]$ rpm -q python-twisted
+python-twisted-2.2.0-1
+[machine-b ~]$ trial resource_test
+Running 2 tests.
+resource_test
+   ReferenceTest
+     testError ... &lt;&lt;&lt;INIT CALLED&gt;&gt;&gt;
+                                                       [ERROR]
+                                                       [ERROR]
+   tearDown                                                          
+['ERROR']
+     testPass ... &lt;&lt;&lt;INIT CALLED&gt;&gt;&gt;
+&lt;&lt;&lt;DEL CALLED&gt;&gt;&gt;
+                                                           [OK]
+
+======================================================================== 
+=======
+[ERROR]: resource_test.ReferenceTest.testError
+
+   File &quot;/home/slamb/resource_test.py&quot;, line 35, in testError
+     self.my_resource.raiseerror()
+   File &quot;/home/slamb/resource_test.py&quot;, line 21, in raiseerror
+     raise Exception('foo')
+exceptions.Exception: foo
+======================================================================== 
+=======
+[ERROR]: resource_test.ReferenceTest.testError
+
+   File &quot;/home/slamb/resource_test.py&quot;, line 32, in tearDown
+     self.assertEquals(self.cleaned_up[0], True)
+twisted.trial.unittest.FailTest: False != True
+------------------------------------------------------------------------ 
+-------
+Ran 2 tests in 0.055s
+
+FAILED (errors=2, successes=1)
+&lt;&lt;&lt;DEL CALLED&gt;&gt;&gt;
+
+-- 
+Scott Lamb &lt;<A HREF="http://www.slamb.org/">http://www.slamb.org/</A>&gt;
+
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="014171.html">[Twisted-Python] Mailing List Hiccup
+</A></li>
+	<LI>Next message: <A HREF="014173.html">[Twisted-Python] Twisted &amp; Qt
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14172">[ date ]</a>
+              <a href="thread.html#14172">[ thread ]</a>
+              <a href="subject.html#14172">[ subject ]</a>
+              <a href="author.html#14172">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

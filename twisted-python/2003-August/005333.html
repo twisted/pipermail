@@ -1,0 +1,128 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Remote PB calls in ApplicationService.stopService
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Remote%20PB%20calls%20in%0A%20ApplicationService.stopService&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005337.html">
+   <LINK REL="Next"  HREF="005335.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Remote PB calls in ApplicationService.stopService</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Remote%20PB%20calls%20in%0A%20ApplicationService.stopService&In-Reply-To="
+       TITLE="[Twisted-Python] Remote PB calls in ApplicationService.stopService">warner at lothar.com
+       </A><BR>
+    <I>Sat Aug  2 04:09:50 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005337.html">[Twisted-Python] StepReactor?
+</A></li>
+        <LI>Next message: <A HREF="005335.html">[Twisted-Python] Remote PB calls in ApplicationService.stopService
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5333">[ date ]</a>
+              <a href="thread.html#5333">[ thread ]</a>
+              <a href="subject.html#5333">[ subject ]</a>
+              <a href="author.html#5333">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Alex Levy &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">mesozoic at polynode.com</A>&gt; writes:
+&gt;<i> 
+</I>&gt;<i>    def stopService(self):
+</I>&gt;<i>      somePBRemoteCall(i_am_dying_event)
+</I>&gt;<i>      app.ApplicationService.stopService(self)
+</I>&gt;<i> 
+</I>&gt;<i> On the sending side, this results in 'Connection failed'. On the receiving
+</I>&gt;<i> side, the following traceback appears. Could somebody more familiar with the
+</I>&gt;<i> internals of Perspective Broker explain what's going wrong, or how I might
+</I>&gt;<i> change my approach?
+</I>
+There are a couple of problems interacting here. One is that you're sending
+out data as the application is shutting down, which means that many of the
+usual assumptions (about the request eventually being sent over the wire,
+about a response eventually coming back) are not guaranteed to remain true.
+
+A second is that, currently, all PB calls require acknowledgement, even if
+you expect the answer to be a simple 'None' (like the None that's returned
+implicitly when you fall off the end of a Python function). There are hooks
+in place to allow a call to tell the receiver that no answer is expected (or
+will be accepted), allowing that end to skip the response phase, but those
+hooks are disabled because there is no way to the caller to know whether
+you're going to add a callback to the Deferred or not (especially because
+that callback could be added *after* the request has been sent). So for now,
+the far end always acknowleges every single PB call.
+
+Or at least it tries to. I suspect you're seeing the following sequence of
+events:
+
+ reactor.stop()
+  'shutdown' system event trigger is fired, callbacks are run
+    app._beforeShutDown is run as a 'before' trigger on the 'shutdown' event
+     stopService() is run on all Services
+      callRemote(aaaaaarrgh)
+       remote_aaaaaarrgh is serialized and queued, maybe sent, maybe not
+    app._afterShutDown is run as the 'after' trigger, does app.save()
+ reactor exits
+ program exits
+ all sockets are closed
+
+The serialized remote call may or may not get sent: if the transport's
+.write method tries to write some data immediately, then it will probably
+get out. But the connection will be dropped soon afterwards, probably before
+the far end has completed sending an answer.
+
+Given that PB is about acknowleged method invocations, it will probably be
+cleaner to try to delay shutdown briefly while you get your &quot;I am dying&quot;
+messages through. Fortunately, both .stopService and the before-shutdown
+event trigger that drives it have a useful property: you can return a
+Deferred from them and the rest of the shutdown process will be stalled
+until that Deferred is fired.
+
+So just do this:
+
+   def stopService(self):
+     d = somePBRemoteCall(i_am_dying_event)
+     app.ApplicationService.stopService(self)
+     return d
+
+(or do the superclass call first, it doesn't matter)
+
+This will send out your shutdown messages but then return to the main
+reactor loop, waiting for the messages to be acknowleged before proceeding
+with the rest of shutdown (app.save() and exiting the reactor).
+
+BTW: I think the exception you're seeing is a bug, and results from the
+connectionLost messages being invoked twice on the same Broker. I think this
+is an edge case that can only happen when a sender does something weird.
+
+hope that helps,
+ -Brian
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005337.html">[Twisted-Python] StepReactor?
+</A></li>
+	<LI>Next message: <A HREF="005335.html">[Twisted-Python] Remote PB calls in ApplicationService.stopService
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5333">[ date ]</a>
+              <a href="thread.html#5333">[ thread ]</a>
+              <a href="subject.html#5333">[ subject ]</a>
+              <a href="author.html#5333">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

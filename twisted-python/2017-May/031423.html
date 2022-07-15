@@ -1,0 +1,87 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] HTTP PUT a GET's streaming response with treq
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20HTTP%20PUT%20a%20GET%27s%20streaming%20response%20with%20treq&In-Reply-To=%3C891792F4-C404-48FF-82FB-38C859D2A47D%40lukasa.co.uk%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="031418.html">
+   <LINK REL="Next"  HREF="031424.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] HTTP PUT a GET's streaming response with treq</H1>
+    <B>Cory Benfield</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20HTTP%20PUT%20a%20GET%27s%20streaming%20response%20with%20treq&In-Reply-To=%3C891792F4-C404-48FF-82FB-38C859D2A47D%40lukasa.co.uk%3E"
+       TITLE="[Twisted-Python] HTTP PUT a GET's streaming response with treq">cory at lukasa.co.uk
+       </A><BR>
+    <I>Sat May  6 13:09:13 MDT 2017</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="031418.html">[Twisted-Python] HTTP PUT a GET's streaming response with treq
+</A></li>
+        <LI>Next message (by thread): <A HREF="031424.html">[Twisted-Python] HTTP PUT a GET's streaming response with treq
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#31423">[ date ]</a>
+              <a href="thread.html#31423">[ thread ]</a>
+              <a href="subject.html#31423">[ subject ]</a>
+              <a href="author.html#31423">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+&gt;<i> On 5 May 2017, at 12:38, Phil Mayers &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">p.mayers at imperial.ac.uk</A>&gt; wrote:
+</I>&gt;<i> 
+</I>&gt;&gt;<i> As a third note, your code does not handle the possibility that
+</I>&gt;&gt;<i> original._transport may not implement IPushProducer. While *in
+</I>&gt;<i> 
+</I>&gt;<i> IIUC IResponse.deliverBody *does* guarantee (currently) to provide a transport implementing IPushProducer to the supplied IProtocol, at least as far as the docstring says?
+</I>&gt;<i> 
+</I>&gt;<i> Obviously that doesn't make accessing the private _transport safe - an implementation could wrap the transport to implement the IPushProducer semantics.
+</I>
+Yeah, it does. Sadly, there’s some complexity hidden there.
+
+In this case, the “transport” object being provided to the IProtocol is a proxy to the TCP transport. However, that object does not write directly to the provided IProtocol, it writes to the t.w._newclient.HTTPClientParser and that chucks all kinds of data through the system. One of these layers is buffering, and that layer is *not* being told about calls to the IPushProducer methods. Thus, if you call pauseProducing from the IProtocol you provide, you may still get calls to your dataReceived method even though the producer is paused.
+
+Mostly this seems to happen when the first body bytes are delivered, which seems to call makeConnection and then immediately dispatch any body bytes that have been received, even if the makeConnection method called pauseProducing on its transport. Not so helpful!
+
+This also makes it impossible to avoid buffering. There seems to be no way to prevent the Response object from delivering the first bytes of the body before startProducing is called by treq for the upload. That’s pretty frustrating. Worse, the Response will *also* fire the “body complete” callback. All of this can and does happen before treq.put ever gets a chance to call startProducing, which means that you just have to buffer all of these events. This is really quite painful.
+
+This is a design pattern that is in a few different places in twisted.web: situations where the “transport” provided to a higher-level abstraction is a proxy to the TCP connection, but where intermediate layers are actually responsible for calling dataReceived on those higher level abstractions. This causes a real problem if there is any chance that intermediary layers will do any buffering at all, because those layers will not see calls to pauseProducing or anything similar, and so will not respect those calls. The Twisted HTTP/2 server tries very hard to avoid this by ensuring that its classes actually masquerade as transports, rather than delegating to the lower-level TCP transport (though of course, they have to do this because HTTP/2 is framed!).
+
+Fixing this is potentially a bit non-trivial. It involves changing t.w._newclient.Response to be able to act as a transport proxy (probably via some kind of mixin for the sake of code composition) and then to respect the producing state of the protocol receiving the body inside the _bodyDataReceived method, instead of just YOLOing data into that protocol assuming that it hasn’t immediately paused the production.
+
+I consider this a bug in Twisted: I’ll open a ticket.
+
+Cory
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="031418.html">[Twisted-Python] HTTP PUT a GET's streaming response with treq
+</A></li>
+	<LI>Next message (by thread): <A HREF="031424.html">[Twisted-Python] HTTP PUT a GET's streaming response with treq
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#31423">[ date ]</a>
+              <a href="thread.html#31423">[ thread ]</a>
+              <a href="subject.html#31423">[ subject ]</a>
+              <a href="author.html#31423">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

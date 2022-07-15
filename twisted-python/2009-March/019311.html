@@ -1,0 +1,189 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Reentrant reactor iteration
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Reentrant%20reactor%20iteration&In-Reply-To=20090307200415.12853.1055105314.divmod.quotient.19796%40henry.divmod.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="019310.html">
+   <LINK REL="Next"  HREF="019312.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Reentrant reactor iteration</H1>
+    <B>Martin Geisler</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Reentrant%20reactor%20iteration&In-Reply-To=20090307200415.12853.1055105314.divmod.quotient.19796%40henry.divmod.com"
+       TITLE="[Twisted-Python] Re: Reentrant reactor iteration">mg at daimi.au.dk
+       </A><BR>
+    <I>Sat Mar  7 16:58:01 EST 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="019310.html">[Twisted-Python] Re: Reentrant reactor iteration
+</A></li>
+        <LI>Next message: <A HREF="019312.html">[Twisted-Python] URL not Found Re: Twisted developers: please	donate your time!
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19311">[ date ]</a>
+              <a href="thread.html#19311">[ thread ]</a>
+              <a href="subject.html#19311">[ subject ]</a>
+              <a href="author.html#19311">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Jean-Paul Calderone &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at divmod.com</A>&gt; writes:
+
+&gt;<i> On Sat, 07 Mar 2009 19:38:46 +0100, Martin Geisler &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">mg at daimi.au.dk</A>&gt; wrote:
+</I>&gt;<i>
+</I>&gt;&gt;<i> We have overloaded the arithmetic operators in our library, so people
+</I>&gt;&gt;<i> will expect to be able to write
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>  # xs and ys are big lists of our objects
+</I>&gt;&gt;<i>  dot_product
+</I>&gt;&gt;<i>  for (x, y) in zip(xs, ys):
+</I>&gt;&gt;<i>    dot_product += x * y
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Here the multiplications involves network traffic and return
+</I>&gt;&gt;<i> Deferreds. We would like the network traffic for the first
+</I>&gt;&gt;<i> multiplication to begin immediately, *before* the remaining
+</I>&gt;&gt;<i> multiplications are done.
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> Doing all the multiplications up front makes the code block the
+</I>&gt;&gt;<i> reactor and uses an awful lot of RAM. If we let each multiplication
+</I>&gt;&gt;<i> trigger the sending of its data immediately, and if we process
+</I>&gt;&gt;<i> incoming messages along the way, memory can be reclaimed for the
+</I>&gt;&gt;<i> earlier multiplications and the above calculation should run in
+</I>&gt;&gt;<i> constant memory.
+</I>&gt;<i>
+</I>&gt;<i> Hm.  I would bet the constant would be pretty high, though.  Things will
+</I>&gt;<i> only balance out once the network is keeping up with the local for loop.
+</I>&gt;<i> Actually, I'm not sure why it would be constant at all.  Won't the local
+</I>&gt;<i> for loop always run much faster than any network operations can happen?
+</I>
+Yeah, you're right. Our results are very biased by only testing on a
+local area network so far...
+
+Three parties execute the same code, and each multiplication is done
+when we have heard from the two others. With a fast network we can move
+data around as fast as we can do the local operations needed (some
+additions and multiplications of numbers with 65 bits or more).
+
+&gt;<i> In this case, memory usage will go towards K(local) * set size -
+</I>&gt;<i> K(remote) * set size, or just O(set size); that is to say, linear.
+</I>
+Right, and that hints that the real goal is to throttle the
+multiplications (like you point out below).
+
+&gt;&gt;<i>Sending and processing data in a more even flow makes our benchmark
+</I>&gt;&gt;<i>results better and more consistent from one run to the next.
+</I>&gt;<i>
+</I>&gt;<i> It seems like what you'll really benefit from most is pipelining with a
+</I>&gt;<i> maximum pipeline depth that's not too big (so as to conserve memory) but
+</I>&gt;<i> not too small (so as to avoid wasting time on network round trip time).
+</I>
+Yes, that is exactly what we want!
+
+&gt;&gt;<i>Right -- we might be able to use these techniques. I haven't looked at
+</I>&gt;&gt;<i>coiterate yet. With inlineCallbacks I guess the code would look
+</I>&gt;&gt;<i>something like this:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>  # xs and ys are big lists of our objects
+</I>&gt;&gt;<i>  dot_product
+</I>&gt;&gt;<i>  for (x, y) in zip(xs, ys):
+</I>&gt;&gt;<i>    dot_product += (yield x * y)
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i>which is not so bad, expect that it destroys the nice illusion that x
+</I>&gt;&gt;<i>and y behave like normal integers even though the multiplication
+</I>&gt;&gt;<i>involves network traffic.
+</I>&gt;<i>
+</I>&gt;<i> Perhaps with coiterate this might look something like...
+</I>&gt;<i>
+</I>&gt;<i>    def op(xs, ys):
+</I>&gt;<i>        dot_product = 0
+</I>&gt;<i>        for (x, y) in zip(xs, ys):
+</I>&gt;<i>            dot_product += x * y
+</I>&gt;<i>            yield
+</I>&gt;<i>
+</I>&gt;<i>        yield dot_product
+</I>&gt;<i>
+</I>&gt;<i>    d = coiterate(op(xs, ys))
+</I>
+Cool, thanks for the example! That really helps in understanding the
+alternatives...
+
+&gt;<i> This is flawed, but maybe it can be fixed. What's good about it is
+</I>&gt;<i> that it doesn't try to drive the reactor re-entrantly. :) It also
+</I>&gt;<i> avoids the yield in the += and * operations, which somewhat preserves
+</I>&gt;<i> your illusion of normalcy (I'm not saying I like that illusion, but
+</I>&gt;<i> I'll leave that aside for now).
+</I>
+Hehe :-) I'm also not sure what to think of the illusion, but it just
+came very naturally with Twisted and the Deferreds. On the other hand it
+breaks down all the time since one still needs to directly add callbacks
+to do certain things...
+
+&gt;<i> What's bad about it is that it still lets the local loop run arbitrarily
+</I>&gt;<i> far ahead of the results from the network, giving you unbounded memory
+</I>&gt;<i> usage.  To fix that, it should yield a Deferred every once in a while.
+</I>&gt;<i> The reason I leave it flawed here is that it's a little tricky to figure
+</I>&gt;<i> out which Deferred to yield.  What would be great would be to yield the
+</I>&gt;<i> Deferred for an operation which preceeds the most recently executed
+</I>&gt;<i> operation by some number of operations.  The number of operations by
+</I>&gt;<i> which it preceeds the most recent will be your pipeline depth (roughly).
+</I>&gt;<i> The effect this has on coiterate is to cause your local loop to cease to
+</I>&gt;<i> execute until that Deferred has fired.  By making it a Deferred for an
+</I>&gt;<i> operation some time /before/ the most recent operation, you keep the
+</I>&gt;<i> network busy and avoid wasting time on round trip times.  Once the Deferred
+</I>&gt;<i> fires, your loop gets run a few more times which has the effect of putting
+</I>&gt;<i> more work into the pipeline - until you've got enough extra work to keep
+</I>&gt;<i> things from stalling again, and then coiterate puts you to sleep for a
+</I>&gt;<i> while again.
+</I>
+Thanks a lot for the info! I think I'll forward it to the VIFF mailing
+list and discuss a bit further there.
+
+&gt;&gt;<i>Are there other general problems with having a re-entrant reactor?
+</I>&gt;<i>
+</I>&gt;<i> One general problem is simply that the reactor is not written with this
+</I>&gt;<i> in mind.  So with the current implementation, even including the patch
+</I>&gt;<i> Marcel contributed, it doesn't work, period.  [...]
+</I>
+Hmm, lots of good reasons... :-/ Marcel also mentioned that his hack
+made some unit tests fail, but I don't know yet if that was Twisted or
+VIFF tests. Not that it matters much -- this change should of course be
+invisible to existing code.
+
+-- 
+Martin Geisler
+
+VIFF (Virtual Ideal Functionality Framework) brings easy and efficient
+SMPC (Secure Multiparty Computation) to Python. See: <A HREF="http://viff.dk/.">http://viff.dk/.</A>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: not available
+Type: application/pgp-signature
+Size: 196 bytes
+Desc: not available
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20090307/1f6459cf/attachment.pgp">http://twistedmatrix.com/pipermail/twisted-python/attachments/20090307/1f6459cf/attachment.pgp</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="019310.html">[Twisted-Python] Re: Reentrant reactor iteration
+</A></li>
+	<LI>Next message: <A HREF="019312.html">[Twisted-Python] URL not Found Re: Twisted developers: please	donate your time!
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19311">[ date ]</a>
+              <a href="thread.html#19311">[ thread ]</a>
+              <a href="subject.html#19311">[ subject ]</a>
+              <a href="author.html#19311">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,169 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Need some pointers for writing asynchronous code	for Twisted app
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Need%20some%20pointers%20for%20writing%20asynchronous%20code%0A%09for%20Twisted%20app&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="014955.html">
+   <LINK REL="Next"  HREF="014961.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Need some pointers for writing asynchronous code	for Twisted app</H1>
+    <B>Brian Costlow</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Need%20some%20pointers%20for%20writing%20asynchronous%20code%0A%09for%20Twisted%20app&In-Reply-To="
+       TITLE="[Twisted-Python] Need some pointers for writing asynchronous code	for Twisted app">brian.costlow at gmail.com
+       </A><BR>
+    <I>Fri Mar  9 18:34:17 EST 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="014955.html">[Twisted-Python] Re: how to get the result of a callLater-scheduled	func?
+</A></li>
+        <LI>Next message: <A HREF="014961.html">[Twisted-Python] Need some pointers for writing asynchronous code	for Twisted app
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14960">[ date ]</a>
+              <a href="thread.html#14960">[ thread ]</a>
+              <a href="subject.html#14960">[ subject ]</a>
+              <a href="author.html#14960">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I'm trying to rewrite an existing 'back end' server application. The old app
+worked something like this. Client boxes, using multiple methods (ftp, copy
+over nfs mount, even rsh sessions) create a file on disk on the server,
+which was either XML or a simple proprietary data format. The server was
+done in python. It loops over a direcory, looking for new files, and
+processes them into a MySQL database.
+
+I patched the client (not python, but proprietary vendor apps, which are
+glued together via TCL,) to just write the data to a TCP socket. Using
+Twisted, I now have a test TCP server running, which uses LineReceiver, with
+each line recieved added to a list, and a connection close callback that
+writes the data to a file. This last part isn't part of the final app, and
+it does block, i know. It's just for me to see the data we're gettiing. So
+we have a working system now that transmits the files via a unified method,
+to a server that can handle simultaneous connections. Cool. Now I have to do
+real work with the data.
+
+I have some architectural questions on how to proceed. Take the case of the
+XML data. In the old version, it reads the XML into an ElementTree, uses
+business logic to iterate through all or part of the tree, building a key,
+value dict, that dict is passed to another object whose methods construct
+sql inserts from the dict data and makes db calls. (That's simplified, the
+current db layer is a huge rube goldberg).
+
+So the easy way out, it seems to me, would be to make the LineRecever
+callback build the ElementTree as I get it. Then wrap minimally modfied
+versions of the code that processes the ElementTree to the dict, and the
+dict to the database, in a callInThread or deferToThread call. Which is a
+lot of use of the thread pool, which seems to violate the idea of a
+low-overhead asynchronous event loop.
+
+So is there a better way? For example, if I have a callback chain, when the
+first one fires, do they all fire in sequence as the prior callback returns,
+or does the chain yield to other events. If it does, I could potentially
+break the code into smaller chunks, say so each one processed enough tree
+data to generate 1 dict entry, and add the chunks as a callback chain on the
+connectionLost?
+
+Note: None of this code is tested, I'm just trying to get the basic logic
+worked out.
+
+Something like this?
+
+def connectionLost(self):
+    d = defer.Deferrred()
+    d.addCallback(chunkOne)
+    d.addCallback(chunkTwo)
+    d.addCallback(chunkThree)
+    d.addCallback(chunkN...)
+    d.addCallback(finish)
+    d.callback(self.myElementTree)
+
+If I have a bunch of connections that close as simultaneously as the
+implementation allows, does that sequence all fire first for one closing
+connection, then the next, and so on? Or do they intermix?
+
+Or do I need to set up a chain of deferreds with explicit scheduling?
+
+Something like:
+
+def connectionLost(self):
+   self.myDict = {}
+   finish()
+
+def finish(self)
+   d = defer.Deferred
+   def realFinish(d):
+         do stuff to clean up
+   d.addCallback(ChunkThree)
+   d.addCallback(realFinish)
+   reactor.callLater(0, d.callback, None)
+
+def chunkThree()
+    d = defer.Deferred
+    def realChunkThree(self.MyElementTree, self.myDict):
+         do stuff to process one dict key
+    d.addCallback(ChunkTwo)
+    d.addCallback(realChunkThree)
+    reactor.callLater(0, d.callback, None)
+    return d
+
+etc,
+
+The above doesn't really seem much different than the first, it's just that
+we schedule the calls explicitly, and pass data around in multiple
+deferreds.
+
+The  last thing I though about doing was something like this:
+
+def connectionLost(self):
+    myDict = {}
+    d.defer.Deferred()
+    d.addCallback(finish)
+    myIterObj = self.myElementTree.getIterator()
+    def processChunk():
+        try:
+            foo = myIterObj.next()
+            do stuff with foo to process element to dict entry
+        except StopIteration:
+            d.callback(None)
+        except:
+            error handling stuff
+        else
+            reactor.callLater(0, processChunk)
+    return d
+
+Except I found some really similar code in an old thread, where Bob Ippolito
+says, 'just use flow instead'
+<A HREF="http://twistedmatrix.com/pipermail/twisted-python/2003-July/005013.html">http://twistedmatrix.com/pipermail/twisted-python/2003-July/005013.html</A>
+
+But the current flow doc says: Don't use flow, write asynchronous code.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20070309/1925c925/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20070309/1925c925/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="014955.html">[Twisted-Python] Re: how to get the result of a callLater-scheduled	func?
+</A></li>
+	<LI>Next message: <A HREF="014961.html">[Twisted-Python] Need some pointers for writing asynchronous code	for Twisted app
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14960">[ date ]</a>
+              <a href="thread.html#14960">[ thread ]</a>
+              <a href="subject.html#14960">[ subject ]</a>
+              <a href="author.html#14960">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,164 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Streaming File Transfer Protocol?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Streaming%20File%20Transfer%20Protocol%3F&In-Reply-To=%3Cm2k4ug4nnh.fsf%40valheru.db3l.homeip.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="054052.html">
+   <LINK REL="Next"  HREF="054108.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Streaming File Transfer Protocol?</H1>
+    <B>David Bolen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Streaming%20File%20Transfer%20Protocol%3F&In-Reply-To=%3Cm2k4ug4nnh.fsf%40valheru.db3l.homeip.net%3E"
+       TITLE="[Twisted-Python] Streaming File Transfer Protocol?">db3l.net at gmail.com
+       </A><BR>
+    <I>Sat Feb 13 18:22:10 MST 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="054052.html">[Twisted-Python] Streaming File Transfer Protocol?
+</A></li>
+        <LI>Next message (by thread): <A HREF="054108.html">[Twisted-Python] Streaming File Transfer Protocol?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#54056">[ date ]</a>
+              <a href="thread.html#54056">[ thread ]</a>
+              <a href="subject.html#54056">[ subject ]</a>
+              <a href="author.html#54056">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Darren Govoni &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">darren at ontrenet.com</A>&gt; writes:
+
+&gt;<i> I spoke too fast. But pardon my noobiness.
+</I>&gt;<i>
+</I>&gt;<i> Ok, so I am using a simple protocol that is listening on a TCP port.
+</I>&gt;<i>
+</I>&gt;<i> One the client side, I write 4096 bytes using
+</I>&gt;<i> self.transport.write(bytes)
+</I>&gt;<i>
+</I>&gt;<i> on dataReceived side, I get only 1448. 
+</I>
+Quite possible, and even likely with a chunk of 4096, given likely
+network latencies and the physical packet sizes at each network hop
+along the way.
+
+However, dataReceived will eventually be called additional times until
+all of the 4096 bytes that was transmitted and received over the
+socket connection have been handed off to your protocol.  That's just
+the nature of a stream protocol - it's a constant stream of data being
+fed by one end and drained on the other, without any natural
+boundaries or structures within (other than, I suppose, the boundary
+of an octet since you can't receive a partial octet).
+
+The alternative is to use a datagram protocol like UDP, but then you
+have all the negatives of no guaranteed delivery, out of order
+delivery, completely impossible delivery (when trying a datagram
+larger than the UDP limit), etc...
+
+Far easier to just handle the TCP stream properly.
+
+&gt;<i> Now, what I &quot;want&quot; to happen is when I issue a write of a known
+</I>&gt;<i> number of bytes. I &quot;want&quot; those bytes to arrive in total because
+</I>&gt;<i> they represent a pickled object.  The server has no idea if the
+</I>&gt;<i> bytes are split and scattered (again, I want the control protocol to
+</I>&gt;<i> take affect).
+</I>
+I suspect it may just be a difference in phrasing, but note that I
+consider &quot;arrive in total&quot; to be different from &quot;arrive in the same
+number of I/O operations&quot;.  TCP guarantees the former (sans dropped
+connections) but not the latter.  It's a trade-off that you make in
+order to get the other benefits of guaranteed delivery with TCP,
+regardless of network disruptions, latency, etc...
+
+You're fine as long as you just accept up front that you can't make
+any assumptions as to how the data will arrive at the receiving end.
+So combine the data in whatever sizes it is received (and any number
+of received chunks) until you have it all.  You can then de-pickle it
+or do anything else with it.  As a comparison, that's really all PB is
+doing, although it's banana-encoding the object on the wire rather
+than pickling.
+
+Depending on the client/server interaction, you may also have the
+opposite problem - the final chunk of data received may cover more
+than one client transmission, and you'll have to split it up
+appropriately.
+
+That's why if you will be transmitting multiple sets of data over a
+single connection, you'll want some structure (unique boundary codes,
+encoded length information, parseable data like XML, etc...) in the wire
+protocol so your server knows when it is done.
+
+&gt;<i> 1) Am I doing something wrong here?
+</I>
+Not so much wrong, as perhaps a little misguided in terms of trying to
+have a stream protocol work less as a stream than it does.
+
+I suspect you may also be over-estimating a little the complexity of
+handling this aspect of TCP in your own code.
+
+&gt;<i> 2) Can I force twisted to send ALL the bytes I issue in the write
+</I>&gt;<i> without re-thinking TCP or forcing me to re-implement TCP?
+</I>
+Again, distinguish between &quot;send ALL the bytes&quot; which *does* in fact
+happen, versus &quot;receive bytes in identically sized chunks&quot; which will
+not happen.  Though I seriously doubt that your demands are such that
+it requires &quot;re-thinking&quot; or &quot;re-implement[ing]&quot; TCP.
+
+Much easier to stick with the TCP base (loads of benefits), and just
+encode enough structure into your stream to permit the server to
+identify the boundaries of the requests.  Then, code the server to
+look for such boundaries while accepting data in any size chunks, and
+you're done.  It's pretty much what every other TCP protocol that has
+structure to its data does, whether that's length counted, flag bytes,
+specific textual content (such as the final empty line in an HTTP
+request), etc...
+
+As has been posted in another response, you may find some of the
+existing protocols in twisted.protocol.basic to be helpful for this.
+The older posting of mine that you referenced used a subclass of
+LineReceiver to encode the length in ASCII as part of an initial
+header, for example, though it closed the connection when done.  And,
+for example, Netstring or the Int##String classes takes care of the
+counting on your behalf, and even give subclasses a nice single entry
+point (stringReceived) to use instead of dataReceived, so your server
+need not think about the aggregation or splitting of chunks.
+
+If nothing else, reading the source to one of those receiver classes
+might help provide a concrete example of the aggregation (or
+splitting) of the stream data that I mention above.
+
+-- David
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="054052.html">[Twisted-Python] Streaming File Transfer Protocol?
+</A></li>
+	<LI>Next message (by thread): <A HREF="054108.html">[Twisted-Python] Streaming File Transfer Protocol?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#54056">[ date ]</a>
+              <a href="thread.html#54056">[ thread ]</a>
+              <a href="subject.html#54056">[ subject ]</a>
+              <a href="author.html#54056">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

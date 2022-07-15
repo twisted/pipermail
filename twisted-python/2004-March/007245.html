@@ -1,0 +1,169 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] deferDirWalk code snipped
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20deferDirWalk%20code%20snipped&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="007244.html">
+   <LINK REL="Next"  HREF="007246.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] deferDirWalk code snipped</H1>
+    <B>Michal Pasternak</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20deferDirWalk%20code%20snipped&In-Reply-To="
+       TITLE="[Twisted-Python] deferDirWalk code snipped">michal at pasternak.w.lub.pl
+       </A><BR>
+    <I>Wed Mar  3 15:16:14 EST 2004</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="007244.html">[Twisted-Python] resource.render_METHOD
+</A></li>
+        <LI>Next message: <A HREF="007246.html">[Twisted-Python] deferDirWalk code snipped
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#7245">[ date ]</a>
+              <a href="thread.html#7245">[ thread ]</a>
+              <a href="subject.html#7245">[ subject ]</a>
+              <a href="author.html#7245">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+attached is a simple defer analogue to os.path.walk. It can be paused, it
+can be restarted. I've wrote this code making some simple gtk backup
+application. Perhaps this could be placed in examples somewhere (or even
+included in the library). If someone would like to comment on my code, feel
+free to do it, I always like constructive criticism ;)
+
+Keep hacking,
+-- 
+Michal Pasternak :: <A HREF="http://pasternak.w.lub.pl">http://pasternak.w.lub.pl</A> :: <A HREF="http://winsrc.sf.net">http://winsrc.sf.net</A>
+&quot;There's so much comedy on television. Does that cause comedy in the streets?&quot; 
+	-- Dick Cavett
+-------------- next part --------------
+#
+# deferDirWalk.py
+# (C) 2004 Michal Pasternak
+# This code is public domain
+#
+
+import dircache
+from twisted.internet import defer
+
+class deferDirWalk:
+    def __init__(self, baseDir, statusProc = None, skipList = [], getMTime = False):
+        &quot;&quot;&quot;
+        statusProc is sent 3 arguments: total files processed, total size of files processed and the last directory name,
+        skipList is a list of directories, that should be skipped,
+        getMTime is a boolean value, which tells the walker to get mtimes of files also
+        &quot;&quot;&quot;
+        self.baseDir = baseDir
+        self.skipList = skipList
+        self.statusProc = statusProc
+        self.getMTime = getMTime
+        self.restart()
+
+    def restart(self):
+        self.dirsToCheck = [os.path.realpath(self.baseDir)]
+        self.totalSize = 0
+        self.doPause = False
+        self.working = False
+        self.fileDict = {}  
+
+    def run(self):
+        &quot;&quot;&quot;
+        returns a defer, which will be called after processing of directories is finished.
+        &quot;&quot;&quot;
+        self.d = defer.Deferred()
+        self.working = True
+        reactor.callLater(0.1, self.nextStep)
+        return self.d
+
+    def nextStep(self):
+        if len(self.dirsToCheck):
+            if not self.doPause:
+                for entry in dircache.listdir(self.dirsToCheck[0]):
+                    p = os.path.join(self.dirsToCheck[0], entry)
+                    if os.path.islink(p):
+                        continue
+                    elif os.path.isdir(p):
+                        try:
+                            self.skipList.index(entry)
+                        except ValueError:
+                            self.dirsToCheck.append(p)
+                    elif os.path.isfile(p):
+                        try:
+                            s = os.path.getsize(p)
+                            if self.getMTime:
+                                self.fileDict[p]=(s, os.path.getmtime(p))
+                            else:
+                                self.fileDict[p]=(s, None)                                
+                            self.totalSize+=s
+                        except OSError:
+                            log(&quot;Cannot stat %s&quot; % p)
+                if self.statusProc:
+                    self.statusProc(len(self.fileDict.items()),
+                                    self.totalSize,
+                                    self.dirsToCheck[0])
+                self.dirsToCheck = self.dirsToCheck[1:]
+            reactor.callLater(0.01, self.nextStep)
+        else:
+            self.working = False
+            self.d.callback((self.fileDict, self.totalSize))
+
+    def pause(self, doPause):
+        &quot;&quot;&quot;
+        if doPause is True, work of walker is paused;
+        it is unpaused if it is not
+        &quot;&quot;&quot;
+        self.doPause = doPause
+
+
+if __name__ == &quot;__main__&quot;:
+    from twisted.internet import reactor
+    import os, sys
+
+    def archiveWalkStatus(fileCount, fileSize, lastDir):
+        sys.stdout.write(&quot;%s (analyzed %i files (total size: %.2f MB))...\r&quot; % (lastDir, fileCount, float(fileSize / (1024.0*1024.0))))
+        sys.stdout.flush()
+
+    def archiveWalkDone(retVal):
+        (fileDict, fileSize) = retVal
+        sys.stdout.write(&quot;\nJob done!\n&quot;)
+        sys.stdout.write(&quot;Totals:\n\tfiles: %i\n\tsize: %i bytes\n\n&quot; % (len(fileDict.keys()), fileSize))
+        sys.stdout.flush()
+        reactor.stop()
+
+    if len(sys.argv)&lt;2:
+        sys.stdout.write(&quot;usage: deferDirWalk.py dirname\n&quot;)
+        sys.exit(1)
+        
+    archiveWalker = deferDirWalk(os.path.realpath(sys.argv[1]), archiveWalkStatus)
+    archiveWalker.run().addCallback(archiveWalkDone)
+    reactor.run()
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="007244.html">[Twisted-Python] resource.render_METHOD
+</A></li>
+	<LI>Next message: <A HREF="007246.html">[Twisted-Python] deferDirWalk code snipped
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#7245">[ date ]</a>
+              <a href="thread.html#7245">[ thread ]</a>
+              <a href="subject.html#7245">[ subject ]</a>
+              <a href="author.html#7245">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

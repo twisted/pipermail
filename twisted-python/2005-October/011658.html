@@ -1,0 +1,134 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: [Twisted-commits] r14683 - Make the	toMainThread Queue unlimited in size, instead of max size 1.
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20%5BTwisted-commits%5D%20r14683%20-%20Make%20the%0A%09toMainThread%20Queue%20unlimited%20in%20size%2C%20instead%20of%20max%20size%201.&In-Reply-To=200510101106.24167.tdickenson%40devmail.geminidataloggers.co.uk">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="011623.html">
+   <LINK REL="Next"  HREF="011616.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: [Twisted-commits] r14683 - Make the	toMainThread Queue unlimited in size, instead of max size 1.</H1>
+    <B>Toby Dickenson</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20%5BTwisted-commits%5D%20r14683%20-%20Make%20the%0A%09toMainThread%20Queue%20unlimited%20in%20size%2C%20instead%20of%20max%20size%201.&In-Reply-To=200510101106.24167.tdickenson%40devmail.geminidataloggers.co.uk"
+       TITLE="[Twisted-Python] Re: [Twisted-commits] r14683 - Make the	toMainThread Queue unlimited in size, instead of max size 1.">tdickenson at devmail.geminidataloggers.co.uk
+       </A><BR>
+    <I>Wed Oct 12 05:19:08 EDT 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="011623.html">[Twisted-Python] Re: [Twisted-commits] r14683 - Make the	toMainThread Queue unlimited in size, instead of max size 1.
+</A></li>
+        <LI>Next message: <A HREF="011616.html">[Twisted-Python] How to emulate Python's getoutput function
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11658">[ date ]</a>
+              <a href="thread.html#11658">[ thread ]</a>
+              <a href="subject.html#11658">[ subject ]</a>
+              <a href="author.html#11658">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Monday 10 October 2005 11:06, Toby Dickenson wrote:
+&gt;<i> On Friday 07 October 2005 18:31, James Y Knight wrote:
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt; On Oct 7, 2005, at 11:05 AM, Stephen Thorne wrote:
+</I>&gt;<i> &gt; &gt; Make the toMainThread Queue unlimited in size, instead of max size 1.
+</I>&gt;<i> &gt; &gt; This can cause deadlocks.
+</I>&gt;<i> &gt; 
+</I>&gt;<i> &gt; Why does it cause deadlocks? 
+</I>&gt;<i> 
+</I>&gt;<i> I see one possible deadlock, but Im suprised you dont see other different 
+</I>&gt;<i> symptoms first:
+</I>&gt;<i> 
+</I>&gt;<i> In the blocking select thread:
+</I>&gt;<i> 1. _doSelectInThread calls _sendToMain, it calls mainWaker to wake up the 
+</I>&gt;<i> foreign event loop, then returns
+</I>&gt;<i> 
+</I>&gt;<i> In the main thread
+</I>&gt;<i> 2. some application code (?) calls doIteration
+</I>&gt;<i> 3. doIteration calls _sendToThread(_doIterationInThread
+</I>&gt;<i> 4. doIteration calls toMainThread.get(), expecting to block until 'its' 
+</I>&gt;<i> iteration is complete. However it immediately receives the message sent in 
+</I>&gt;<i> step 1.
+</I>&gt;<i> 5. doIteration returns
+</I>&gt;<i> 6. The foreign event loop gets round to calling _interleave because of the 
+</I>&gt;<i> request sent in step 1.
+</I>
+Hmmmm, no need for anything quite so elaborate above. get_nowait is documented 
+to raise the Queue.Empty exception (which leads to deadlock in tsr) if the 
+Queue is &quot;Empty or Locked&quot;. 
+
+<A HREF="http://www.python.org/doc/2.3.5/lib/module-Queue.html">http://www.python.org/doc/2.3.5/lib/module-Queue.html</A>
+
+Im sure that get_nowait needs to be replaced with a regular blocking get, as I 
+described below.
+
+&gt;<i> 7. _interleave calls toMainThread.get_nowait. This raises a Queue.Empty 
+</I>&gt;<i> exception, which escapes up to the foreign event loop integration code.
+</I>&gt;<i> 
+</I>&gt;<i> In the blocking select thread
+</I>&gt;<i> 
+</I>&gt;<i> 8. _doSelectInThread is called because of the request in step 3.
+</I>&gt;<i> 9. _doSelectInThread calls sendToMain. This never gets removed from the 
+</I>Queue.
+&gt;<i> 
+</I>&gt;<i> At this point:
+</I>&gt;<i> 
+</I>&gt;<i> * The reactor is stalled indefinitely because _interleave raised an 
+</I>exception 
+&gt;<i> before it called _sendToThread(_doIterationInThread.
+</I>&gt;<i> 
+</I>&gt;<i> * Any subsequent calls to doIteration will cause _doThreadIteration to 
+</I>&gt;<i> deadlock in sendToMain.
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> I believe the right solution involves replacing get_nowait with a regular 
+</I>get 
+&gt;<i> in _interleave.
+</I>&gt;<i> 
+</I>&gt;<i> I guess it is not a problem that doIteration sometimes does not perform a 
+</I>&gt;<i> whole iteration. There has never been a guarantee about how much work is 
+</I>done 
+&gt;<i> each iteration of the reactor loop, right?
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> -- 
+</I>&gt;<i> Toby Dickenson
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>
+-- 
+Toby Dickenson
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="011623.html">[Twisted-Python] Re: [Twisted-commits] r14683 - Make the	toMainThread Queue unlimited in size, instead of max size 1.
+</A></li>
+	<LI>Next message: <A HREF="011616.html">[Twisted-Python] How to emulate Python's getoutput function
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11658">[ date ]</a>
+              <a href="thread.html#11658">[ thread ]</a>
+              <a href="subject.html#11658">[ subject ]</a>
+              <a href="author.html#11658">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

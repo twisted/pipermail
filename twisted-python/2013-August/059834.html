@@ -1,0 +1,216 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Advice on porting Python application to Twisted
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Advice%20on%20porting%20Python%20application%20to%20Twisted&In-Reply-To=%3CCAMBtMcs0GbZgijgrYycmJV5XU%3Dozg-7NcaHkHYFZwObr4TYpuw%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="059830.html">
+   <LINK REL="Next"  HREF="059835.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Advice on porting Python application to Twisted</H1>
+    <B>Tom Sheffler</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Advice%20on%20porting%20Python%20application%20to%20Twisted&In-Reply-To=%3CCAMBtMcs0GbZgijgrYycmJV5XU%3Dozg-7NcaHkHYFZwObr4TYpuw%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] Advice on porting Python application to Twisted">tom.sheffler at gmail.com
+       </A><BR>
+    <I>Wed Aug 28 07:40:42 MDT 2013</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="059830.html">[Twisted-Python] Advice on porting Python application to Twisted
+</A></li>
+        <LI>Next message (by thread): <A HREF="059835.html">[Twisted-Python] Advice on porting Python application to Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59834">[ date ]</a>
+              <a href="thread.html#59834">[ thread ]</a>
+              <a href="subject.html#59834">[ subject ]</a>
+              <a href="author.html#59834">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi Matthew -
+
+I have a couple of idioms I use for #2 and #3 in your message.  Here they
+are.
+
+#2)
+
+For timer events, I create a function that when called, continuously
+schedules itself again in the reactor, does some work for the current
+tick, and then exits.  I've used this down to 1-second intervals.  If
+you're looking for sub-millisecond level timing, this may not be
+appropriate for your application.
+
+def timerFunction(reactor):
+
+    reactor.callLater(1.0, timerFunction, reactor)
+
+    # do the work for this time tick
+    # etc etc
+
+    return
+
+# Somewhere in main do this to kick it off
+from twisted.internet import reactor
+timerFunction(reactor)
+
+
+#3)
+
+For subprocesses, I like to create a custom protocol for each type of
+sub-command I am calling.  I also like to create an object to manage
+the process, its arguments, its results and its temp files.  The idiom
+below is suitable for calling a subprocess that accepts a small amount
+of buffered data on stdin, produces some output on stdout, and logs its
+stderr.
+
+Be careful examining the value of reason.value.exitCode in
+processExited.  The twisted docs show printing the exitCode as a &quot;%d&quot;,
+but sometimes the value is None --- if the process was terminated by a
+signal.  The mere printing of the value with &quot;%d&quot; will then trigger an
+exception!
+
+
+Here's my idiom:
+
+class FooprocProtocol(protocol.ProcessProtocol):
+
+    def __init__(self, foomgr):
+        # the object managing my subprocess
+        self.foomgr = foomgr
+
+        # my stdout data
+        self.data = &quot;&quot;
+
+    def connectionMade(self):
+        # Pump input data in using this, and then close stdin
+        log.msg(&quot;connectionMade!&quot;)
+        # self.transport.write(&quot;...&quot;)  # if there is any data to shove into
+stdin
+        self.transport.closeStdin()
+
+    def outReceived(self, data):
+        # collect up our stdout
+        log.msg(&quot;outReceived! with %d bytes!&quot; % len(data))
+        self.data = self.data + data
+
+    def errReceived(self, data):
+        # echo stderr messages to log with a marker
+        log.msg(&quot;&gt;%s&quot; % data)
+
+    def inConnectionLost(self):
+        print &quot;inConnectionLost! stdin is closed! (we probably did it)&quot;
+
+    def outConnectionLost(self):
+        log.msg(&quot;outConnectionLost! The child closed their stdout!&quot;)
+
+    def errConnectionLost(self):
+        log.msg(&quot;errConnectionLost! The child closed their stderr.&quot;)
+
+    def processExited(self, reason):
+        log.msg(&quot;processExited:%s:&quot; % reason)
+        exitcode = reason.value.exitCode         # an integer or None
+
+        # do some work upon processExit potentially make a decision on
+exitcode ...
+
+        log.msg(&quot;processExited:%s&quot; % exitcode)
+
+    def processEnded(self, reason):
+        print &quot;processEnded, status %s&quot; % (reason.value.exitCode,)
+
+        # process the data in the process manager
+        exitcode = reason.value.exitCode         # might be non-numeric
+        result = self.foomgr.processData(exitcode)
+
+
+
+# The main job of the Process Manager is to build the command list and
+# process the results.  It gives us a handy place to encapsulate this
+# logic.
+
+class FooprocManager(object):
+
+    CMD = &quot;/usr/local/foocmd&quot;
+
+    def __init__(self, arg1, arg2, arg3)
+
+        # create a Deferred to fire when we succeed or fail
+        self.d = Deferred()
+
+        # build our command argument list as appropriate for our command
+        self.cmdargs = self.build_cmd_args(arg1, arg2, arg3)
+
+        # define places to store the transport, pid and other things
+        self.ptransport = None
+        self.pid = None
+
+    def build_cmd_args(self, arg1, arg2, arg3):
+
+        # in my projects, this method has become fairly involved as it
+creates
+        # tmp files and builds potentially complicated argument lists.
+
+        arglist = [self.CMD, arg1, arg2, arg3]
+        return arglist
+
+    def run(self):
+
+        # instantiate a protocol connected to this manager
+        pp = FooprocProtocol(self)
+
+        # spawn the process, save the PID
+        self.ptransport = reactor.spawnProcess(pp, self.CMD, self.cmdargs,
+{ })
+        self.pid = self.ptransport.pid
+
+    def processData(exitcode):
+
+        # in my projects, this method opens up result files, parses results,
+        # moves things around, deletes tmp files, etc.
+
+        # return the result that we ran this subprocess for
+        return result
+
+
+# Instantiate a new process manager and run it this way.
+
+mgr = FooprocManager(args ...)
+d = mgr.run(args ...)
+
+
+=================
+T
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20130828/dbe47b07/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="059830.html">[Twisted-Python] Advice on porting Python application to Twisted
+</A></li>
+	<LI>Next message (by thread): <A HREF="059835.html">[Twisted-Python] Advice on porting Python application to Twisted
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#59834">[ date ]</a>
+              <a href="thread.html#59834">[ thread ]</a>
+              <a href="subject.html#59834">[ subject ]</a>
+              <a href="author.html#59834">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,202 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] deferring result to PB a callRemote method
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20deferring%20result%20to%20PB%20a%20callRemote%20method&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="021346.html">
+   <LINK REL="Next"  HREF="021350.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] deferring result to PB a callRemote method</H1>
+    <B>Chris Laws</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20deferring%20result%20to%20PB%20a%20callRemote%20method&In-Reply-To="
+       TITLE="[Twisted-Python] deferring result to PB a callRemote method">clawsicus at gmail.com
+       </A><BR>
+    <I>Mon Jan 18 09:32:05 EST 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="021346.html">[Twisted-Python] Plain windows sockets and twisted
+</A></li>
+        <LI>Next message: <A HREF="021350.html">[Twisted-Python] deferring result to PB a callRemote method
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21347">[ date ]</a>
+              <a href="thread.html#21347">[ thread ]</a>
+              <a href="subject.html#21347">[ subject ]</a>
+              <a href="author.html#21347">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>I am writing a tool for work that will run various software development aids
+such as message capturing and diagnostic control of system processes.
+My current design strategy is to implement these aids as plugins (not
+twisted plugins) to a generic plugin runner rather than stand alone
+applications.
+The plugins are spawned as separate processes by the plugin-runner and
+communicate using Perspective Broker during the plugin installation and
+shutdown phases.
+
+Some plugins may take a while to shutdown as they need to close
+sockets, finalize files, move large files, etc.
+I would like to instruct the plugin to shutdown and be told when it is
+finally ready to be shut down.
+
+To date all my callRemote methods have effectively returned immediately. For
+example:
+
+def remote_get_name(self):
+    return self.name
+
+My question to the list was going to be: Is there a pattern/example I could
+follow where I could call plugin.callRemote(&quot;shutdown&quot;) on a plugin and not
+return a result to the plugin-runner until the plugin has completed all
+it's, potentially, long running activities? However, while I was trying to
+write a small code snippet that would demonstrate what I was wanting, I
+think I got it working.
+I think the simple answer to my question is to just return a deferred as the
+result to the callRemote(&quot;shutdown&quot;) method and trigger it as normal.
+Google is my friend but I could not find examples of this usage. Is there
+any references to this usage in the twisted docs?
+
+Below (and attached in case the formatting goes screwy) is a short example
+which emulates a long running shutdown activity performed by the plugin
+prior to shutdown.
+It seems to delay the processing of the callRemote(&quot;shutdown&quot;) result until
+the plugin has completed it's long running activity.
+I have omitted the separate process stuff as it didn't seem relevant for
+this snippet.
+
+Is the following code snippet the standard/normal way to defer the return
+result of a callRemote method call?
+If this is the normal way, how does triggering the deferred on the plugin
+(client) side also trigger the same/copy deferred returned to the
+plugin-runner (server)?
+Is this PB magic, somehow managing deferreds across the PB interface?
+
+Regards,
+Chris
+
+
+
+from twisted.internet import reactor, defer
+from twisted.spread import pb
+import datetime
+
+class PluginClient(pb.Referenceable):
+    &quot;&quot;&quot; Plugin client interface exposed to PluginServer's &quot;&quot;&quot;
+
+    def __init__(self, shutdownCallback):
+        self.shutdownHandler = shutdownCallback
+
+    def remote_shutdown(self):
+        &quot;&quot;&quot; Instruct Plugin to shutdown &quot;&quot;&quot;
+        print &quot;plugin instructed to shutdown&quot;
+        d = defer.Deferred()
+        self.shutdownHandler(d)
+        return d
+
+class PluginServer(pb.Root):
+    &quot;&quot;&quot; Plugin server interface exposed to PluginClient's &quot;&quot;&quot;
+
+    def remote_set_client_perspective(self, pluginRef):
+        print &quot;plugin-runner got client reference&quot;
+        reactor.callLater(1.0, self.shutdown_plugin, pluginRef)
+
+    def shutdown_plugin(self, pluginRef):
+
+        def pluginShutdownCompleted(result, startTime):
+            endTime = datetime.datetime.now()
+            print &quot;Plugin shutdown took %s to complete.&quot; % (endTime -
+startTime)
+            return result
+
+        print &quot;plugin-runner asking plugin to shutdown&quot;
+        d = pluginRef.callRemote(&quot;shutdown&quot;)
+        d.addCallback(pluginShutdownCompleted, datetime.datetime.now())
+        d.addCallback(self.shutdown)
+
+    def shutdown(self, _):
+        reactor.stop()
+
+
+def startPluginServer(port):
+    &quot;&quot;&quot; Start a plugin communications server &quot;&quot;&quot;
+    print &quot;starting server&quot;
+    reactor.listenTCP(port=port,
+                      factory=pb.PBServerFactory(PluginServer()),
+                      interface='localhost')
+
+
+def startPluginClient(port, shutdownHandler):
+    &quot;&quot;&quot; Start a plugin communications client &quot;&quot;&quot;
+
+    def gotServerPerspective(serverPerspective, pluginPerspective):
+        &quot;&quot;&quot; Give the plugin-runner this client's perspective &quot;&quot;&quot;
+        serverPerspective.callRemote(&quot;set_client_perspective&quot;,
+pluginPerspective)
+        return serverPerspective
+
+    print &quot;starting plugin&quot;
+    client = PluginClient(shutdownHandler)
+    factory = pb.PBClientFactory()
+    reactor.connectTCP(host='localhost', port=port, factory=factory)
+    return factory.getRootObject().addCallback(gotServerPerspective, client)
+
+if __name__ == &quot;__main__&quot;:
+    port = 42155
+
+    def longRunningAction(d, countDown=10):
+        &quot;&quot;&quot; Emulate long running shutdown activities &quot;&quot;&quot;
+        print &quot;shuting down in %i seconds&quot; % countDown
+        if countDown == 0:
+            d.callback(True)
+        else:
+            countDown -= 1
+            reactor.callLater(1, longRunningAction, d, countDown)
+
+
+    # start plugin-runner
+    reactor.callWhenRunning(startPluginServer, port)
+    # start plugin
+    reactor.callLater(2.0, startPluginClient, port, longRunningAction)
+    reactor.run()
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20100119/a35c15fe/attachment-0001.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20100119/a35c15fe/attachment-0001.htm</A> 
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: test_shutdown.py
+Type: application/octet-stream
+Size: 2856 bytes
+Desc: not available
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20100119/a35c15fe/attachment-0001.obj">http://twistedmatrix.com/pipermail/twisted-python/attachments/20100119/a35c15fe/attachment-0001.obj</A> 
+</PRE>
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="021346.html">[Twisted-Python] Plain windows sockets and twisted
+</A></li>
+	<LI>Next message: <A HREF="021350.html">[Twisted-Python] deferring result to PB a callRemote method
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21347">[ date ]</a>
+              <a href="thread.html#21347">[ thread ]</a>
+              <a href="subject.html#21347">[ subject ]</a>
+              <a href="author.html#21347">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

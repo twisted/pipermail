@@ -1,0 +1,176 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20OT%20-%20adbapi%2C%20connection%20timeouts%2C%20mysql%20-%20OT&In-Reply-To=%3C20090826222558.11298.2068421709.divmod.xquotient.71%40localhost.localdomain%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="052789.html">
+   <LINK REL="Next"  HREF="052791.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20OT%20-%20adbapi%2C%20connection%20timeouts%2C%20mysql%20-%20OT&In-Reply-To=%3C20090826222558.11298.2068421709.divmod.xquotient.71%40localhost.localdomain%3E"
+       TITLE="[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Wed Aug 26 16:25:58 MDT 2009</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="052789.html">[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+</A></li>
+        <LI>Next message (by thread): <A HREF="052791.html">[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52790">[ date ]</a>
+              <a href="thread.html#52790">[ thread ]</a>
+              <a href="subject.html#52790">[ subject ]</a>
+              <a href="author.html#52790">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 09:49 pm, <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">clay.gerrard at rackspace.com</A> wrote:
+&gt;<i>I see this issue (ConnectionLost on MySQL) come up at least once a 
+</I>&gt;<i>month.  It's actually the reason I originally joined this discussion 
+</I>&gt;<i>list, but I've yet to see a wholly satisfactory solution.
+</I>&gt;<i>
+</I>&gt;<i>Since there is no one true perfect generic way to safely rerun a failed 
+</I>&gt;<i>interaction after ConnectionLost - the smart thing to do is just raise 
+</I>&gt;<i>the exception and let the application deal with (or bomb out on) what 
+</I>&gt;<i>*should* be a rare occurrence indicating some sort of problem.
+</I>&gt;<i>
+</I>&gt;<i>adabapi does exactly this.
+</I>&gt;<i>
+</I>&gt;<i>However, with MySQL (&gt;=v5.0 at least) you HAVE to make plans to deal 
+</I>&gt;<i>with ConnectionLost (or &quot;MySQL server has gone away&quot; if cp_reconnect != 
+</I>&gt;<i>True) or your twisted app WILL be quite broken.  Unfortunately, there's 
+</I>&gt;<i>no obvious way to separate a real connection &quot;problem&quot; from the 
+</I>&gt;<i>perfectly normal behavior of the MySQL server closing an idle 
+</I>&gt;<i>connection without making your code provider specific.
+</I>&gt;<i>e.g.
+</I>&gt;<i>from MySQLdb import OperationalError
+</I>&gt;<i>
+</I>&gt;<i>I've seen (and even begrudgingly implemented) non provider specific 
+</I>&gt;<i>solutions that just create a new connection every time, or that qualify 
+</I>&gt;<i>connections returned from the pool with &quot;good_sql&quot; before handing them 
+</I>&gt;<i>over to the app.  But, that overhead is obviously not acceptable in 
+</I>&gt;<i>many situations.
+</I>&gt;<i>
+</I>&gt;<i>I suggest &quot;the right way(tm)&quot; to fix this is with an optional 
+</I>&gt;<i>pool_recycle kwarg that sets the maximum time that a connection can be 
+</I>&gt;<i>reused before it must be recycled (many ORM's provide precedent for 
+</I>&gt;<i>this solution - sqlalchemy, dajngo.db, etc.)
+</I>
+Is this irrespective of idle time?  It sounds like not, though the MySQL 
+idle timeout is the motivation you mention above.
+&gt;<i>
+</I>&gt;<i>reconnectionpool.py
+</I>&gt;<i>
+</I>&gt;<i>'''
+</I>&gt;<i>Created on Aug 26, 2009
+</I>&gt;<i>
+</I>&gt;<i>@author: clayg
+</I>&gt;<i>'''
+</I>&gt;<i>
+</I>&gt;<i>from time import time
+</I>&gt;<i>
+</I>&gt;<i>from twisted.enterprise import adbapi
+</I>&gt;<i>from twisted.python import log
+</I>&gt;<i>
+</I>&gt;<i>class ReConnectionPool(adbapi.ConnectionPool):
+</I>&gt;<i>    '''
+</I>&gt;<i>    subclass of adbapi.ConnectionPool that supports pool_recycle
+</I>&gt;<i>    pool_recycle disabled by default (-1)
+</I>&gt;<i>    '''
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>    def __init__(self, *args, **kwargs):
+</I>&gt;<i>        self.pool_recycle = kwargs.pop('pool_recycle', -1)
+</I>&gt;<i>        self.conn_starttime = {} # connections starttime, hashed on 
+</I>&gt;<i>thread id
+</I>&gt;<i>        adbapi.ConnectionPool.__init__(self, *args, **kwargs)
+</I>&gt;<i>
+</I>&gt;<i>    def connect(self, *args, **kwargs):
+</I>&gt;<i>        # ask ConnectionPool for a connection
+</I>&gt;<i>        conn = adbapi.ConnectionPool.connect(self, *args, **kwargs)
+</I>&gt;<i>        # if pool_recycling is enabled
+</I>&gt;<i>        if self.pool_recycle &gt; -1:
+</I>&gt;<i>            # get the start time for this connection
+</I>&gt;<i>            tid = self.threadID()
+</I>&gt;<i>            starttime = self.conn_starttime.get(tid)
+</I>&gt;<i>            now = time()
+</I>&gt;<i>            if not starttime:
+</I>&gt;<i>                # init starttime for new conn
+</I>&gt;<i>                self.conn_starttime[tid] = starttime = now
+</I>&gt;<i>                log.msg(&quot;Connection %s was created at %s.&quot; % (tid, now))
+</I>&gt;<i>
+</I>&gt;<i>            # if the connection is older than limit in pool_recycle
+</I>&gt;<i>            if (now - starttime &gt;= self.pool_recycle):
+</I>&gt;<i>                self.disconnect(conn)
+</I>&gt;<i>                log.msg(&quot;Connection %s was recycled at %s.&quot; % (tid, 
+</I>&gt;<i>now))
+</I>&gt;<i>                conn = adbapi.ConnectionPool.connect(self, *args, 
+</I>&gt;<i>**kwargs)
+</I>&gt;<i>                self.conn_starttime[tid] = now
+</I>&gt;<i>
+</I>&gt;<i>        return conn
+</I>&gt;<i>
+</I>&gt;<i>I think it be quite a bit less messy if it was implemented inside the 
+</I>&gt;<i>ConnectionPool class instead of a subclass.  Someone else could 
+</I>&gt;<i>probably do a much better job than I, although I wouldn't mind taking a 
+</I>&gt;<i>crack at it.
+</I>&gt;<i>
+</I>&gt;<i>Thoughts?
+</I>
+This could be a cool feature.  I'm sure a lot of people would certainly 
+be happy for there to be a simple answer to the monthly MySQL question 
+you referred to above.
+
+Some random thoughts:
+
+  * you should use the reactor to keep track of time - reactor.seconds() 
+should someday actually be more reliable than time.time() (but it's the 
+same today); also, parameterize the reactor and use reactor.seconds() 
+and the code is more easily testable.
+  * this will throw reconnect overhead in front of whichever query 
+happens to get issued to a thread which has a connection which needs to 
+be recycled.  If it avoids a connection lost error, that's great; if it 
+doesn't, then it's just overhead.  This, combined with the fact that 
+queries are dispatched to basically a random connection, might not be 
+too nice.  It could be cool to do the reconnecting more proactively in 
+idle threads and improve the dispatch logic to give preference to fresh, 
+available connections when possible.
+  * tests tests tests ;)
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="052789.html">[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+</A></li>
+	<LI>Next message (by thread): <A HREF="052791.html">[Twisted-Python] OT - adbapi, connection timeouts, mysql - OT
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#52790">[ date ]</a>
+              <a href="thread.html#52790">[ thread ]</a>
+              <a href="subject.html#52790">[ subject ]</a>
+              <a href="author.html#52790">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

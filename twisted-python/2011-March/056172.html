@@ -1,0 +1,225 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] LoopingCalls and unclean reactor
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20LoopingCalls%20and%20unclean%20reactor&In-Reply-To=%3CAANLkTikfO-nGsjWVp8PjxC86hOi%2B_7wxnR8MwCWQMG79%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="056170.html">
+   <LINK REL="Next"  HREF="056171.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] LoopingCalls and unclean reactor</H1>
+    <B>Brad Milne</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20LoopingCalls%20and%20unclean%20reactor&In-Reply-To=%3CAANLkTikfO-nGsjWVp8PjxC86hOi%2B_7wxnR8MwCWQMG79%40mail.gmail.com%3E"
+       TITLE="[Twisted-Python] LoopingCalls and unclean reactor">brad.milne at devx.runthered.com
+       </A><BR>
+    <I>Wed Mar 16 15:13:17 MDT 2011</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="056170.html">[Twisted-Python] LoopingCalls and unclean reactor
+</A></li>
+        <LI>Next message (by thread): <A HREF="056171.html">[Twisted-Python] sample twistorm code?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56172">[ date ]</a>
+              <a href="thread.html#56172">[ thread ]</a>
+              <a href="subject.html#56172">[ subject ]</a>
+              <a href="author.html#56172">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thanks Drew
+
+Yes, you spotted an error in my email, which is not replicated in my code.
+ie My AdapterQueue in the code inherits from Service. It in turn is a
+service of a parent which *is* a MultiService instance.
+
+The tests are Integration tests, not unit tests, and as such run up an
+instance of our entire messaging gateway. To date we have run it up once at
+the start of the test run, run all test suites, then torn down (with unclean
+reactor). The Integration tests have been notoriously brittle, so am hoping
+that tearing down the gateway after *each* individual test will help with
+that. To that end, I have refactored the code to better utilise services, so
+that teardown (without just stopping the reactor) is possible.
+
+So in the setUp() of each trial.unittest.TestCase, is a call to
+test_utils.startGateway(). This returns the result of
+gateway_svc.startService() (starts the parent MultiService of all child
+services). Each of these setUp methods uses @inlineCallbacks and yields the
+deferred returned from this top-level startService().
+@inlineCallbacks
+def setUp(self):
+   yield test_utils.startGateway()
+   {do other set up}
+
+By the same token, the tearDown() in each test class calls
+test_utils.tearDown(), which looks like:
+
+class SomeTests(TestCase):
+    def tearDown(self):
+        self.extra_svc.stopService()
+        test_utils.tearDown()
+
+Haha! In writing this I've realised what I believe was the problem (and my
+repeat testing just now has failed to show the intermittent failure). Each
+test class's tearDown() was *not* *returning* the deferred returned from
+stopService(). Changing the final line above seems to solve the issue:
+
+return test_utils.tearDown()
+
+Thanks for the sounding board, Drew.
+Cheers
+Brad
+
+
+
+On 17 March 2011 05:06, Drew Smathers &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">drew.smathers at gmail.com</A>&gt; wrote:
+
+&gt;<i> On Tue, Mar 15, 2011 at 9:55 PM, Brad Milne
+</I>&gt;<i> &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">brad.milne at devx.runthered.com</A>&gt; wrote:
+</I>&gt;<i> &gt; Hi
+</I>&gt;<i> &gt; I have a series of MultiService objects, with child Services. Some of
+</I>&gt;<i> these
+</I>&gt;<i> &gt; services are TCPServers, for example, and others are my own objects
+</I>&gt;<i> &gt; (extending from Service).
+</I>&gt;<i> &gt; In the instance that I have a Service which controls a LoopingCall, I am
+</I>&gt;<i> &gt; getting intermittent 'unclean reactor' errors during tests. I feel I
+</I>&gt;<i> might
+</I>&gt;<i> &gt; be missing some handling of deferreds, perhaps.
+</I>&gt;<i> &gt; (using 8.2.0 - looking to migrate to 10.2.0 soon)
+</I>&gt;<i> &gt; Here is an example of the approach being used:
+</I>&gt;<i> &gt; class AdapterQueue(service.MultiService):
+</I>&gt;<i> &gt;     def startService(self):
+</I>&gt;<i> &gt;         service.Service.startService(self)
+</I>&gt;<i> &gt;         self._looping_controller = LoopingCall(self._action)
+</I>&gt;<i> &gt;         d = self._looping_controller.start(self.delay, False)
+</I>&gt;<i> &gt;         d.addErrback(self._errorInScheduler)
+</I>&gt;<i> &gt;     def stopService(self):
+</I>&gt;<i> &gt;         service.Service.stopService(self)
+</I>&gt;<i> &gt;         d = self._looping_controller.deferred
+</I>&gt;<i> &gt;         self._looping_controller.stop()
+</I>&gt;<i> &gt;         return d
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> I'm not sure if this is part of the issue or not, but it seems odd
+</I>&gt;<i> that you may have accidentally inherited from MultiService instead of
+</I>&gt;<i> Service.
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> &gt; And an example error (happens about 1/3 of the time):
+</I>&gt;<i> &gt; DirtyReactorAggregateError: Reactor was unclean.
+</I>&gt;<i> &gt; DelayedCalls: (set twisted.internet.base.DelayedCall.debug = True to
+</I>&gt;<i> debug)
+</I>&gt;<i> &gt; &lt;DelayedCall 30800112 [0.0189974308014s] called=0 cancelled=0
+</I>&gt;<i> &gt; LoopingCall&lt;0.033333333333333333&gt;(AdapterQueue._action, *(), **{})()
+</I>&gt;<i> &gt; traceback at creation:
+</I>&gt;<i> &gt;   File &quot;C:\Python26\lib\threading.py&quot;, line 497, in __bootstrap
+</I>&gt;<i> &gt;     self.__bootstrap_inner()
+</I>&gt;<i> &gt;       File &quot;C:\Python26\lib\threading.py&quot;, line 525, in __bootstrap_inner
+</I>&gt;<i> &gt;     self.run()
+</I>&gt;<i> &gt;       File &quot;C:\Python26\lib\threading.py&quot;, line 477, in run
+</I>&gt;<i> &gt;     self.__target(*self.__args, **self.__kwargs)
+</I>&gt;<i> &gt;       File &quot;D:\dev\eggs\nose-0.11.3-py2.6.egg\nose\twistedtools.py&quot;, line
+</I>&gt;<i> &gt; 57, in &lt;lambda&gt;
+</I>&gt;<i> &gt;     installSignalHandlers=False))
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\base.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 1128, in run
+</I>&gt;<i> &gt;     self.mainLoop()
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\base.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 1137, in mainLoop
+</I>&gt;<i> &gt;     self.runUntilCurrent()
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\base.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 757, in runUntilCurrent
+</I>&gt;<i> &gt;     call.func(*call.args, **call.kw)
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\task.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 115, in __call__
+</I>&gt;<i> &gt;     d.addCallback(cb)
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\defer.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 195, in addCallback
+</I>&gt;<i> &gt;     callbackKeywords=kw)
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\defer.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 186, in addCallbacks
+</I>&gt;<i> &gt;     self._runCallbacks()
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\defer.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 328, in _runCallbacks
+</I>&gt;<i> &gt;     self.result = callback(self.result, *args, **kw)
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\task.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 103, in cb
+</I>&gt;<i> &gt;     self._reschedule()
+</I>&gt;<i> &gt;       File
+</I>&gt;<i> &gt; &quot;D:\dev\eggs\twisted-8.2.0-py2.6-win32.egg\twisted\internet\task.py&quot;,
+</I>&gt;<i> line
+</I>&gt;<i> &gt; 139, in _reschedule
+</I>&gt;<i> &gt;     self.call = self.clock.callLater(nextTime - currentTime, self)
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> Can you post code for the test?  This means generally (as you
+</I>&gt;<i> suggested) that you haven't waited for all related deferreds to fire
+</I>&gt;<i> before ending the test. Return the deferred returned by stopService(),
+</I>&gt;<i> for example, and make final assertions in a callback; but I'm guessing
+</I>&gt;<i> you already know this.
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> -Drew
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>
+
+
+-- 
+Brad Milne | Run The Red | *<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">brad.milne at devx.runthered.com</A>*
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20110317/89f107e6/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="056170.html">[Twisted-Python] LoopingCalls and unclean reactor
+</A></li>
+	<LI>Next message (by thread): <A HREF="056171.html">[Twisted-Python] sample twistorm code?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#56172">[ date ]</a>
+              <a href="thread.html#56172">[ thread ]</a>
+              <a href="subject.html#56172">[ subject ]</a>
+              <a href="author.html#56172">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

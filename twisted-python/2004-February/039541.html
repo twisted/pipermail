@@ -1,0 +1,148 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Advice on doing thousands of simultaneous UDP	queries with Twisted...
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Advice%20on%20doing%20thousands%20of%20simultaneous%20UDP%0A%09queries%20with%20Twisted...&In-Reply-To=%3C1076326338.1012.4.camel%40shautha.thorne%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="039540.html">
+   <LINK REL="Next"  HREF="039542.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Advice on doing thousands of simultaneous UDP	queries with Twisted...</H1>
+    <B>Stephen Thorne</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Advice%20on%20doing%20thousands%20of%20simultaneous%20UDP%0A%09queries%20with%20Twisted...&In-Reply-To=%3C1076326338.1012.4.camel%40shautha.thorne%3E"
+       TITLE="[Twisted-Python] Advice on doing thousands of simultaneous UDP	queries with Twisted...">stephen at thorne.id.au
+       </A><BR>
+    <I>Mon Feb  9 04:32:18 MST 2004</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="039540.html">[Twisted-Python] Advice on doing thousands of simultaneous UDP queries with Twisted...
+</A></li>
+        <LI>Next message (by thread): <A HREF="039542.html">[Twisted-Python] Advice on doing thousands of simultaneous UDP queries with Twisted...
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39541">[ date ]</a>
+              <a href="thread.html#39541">[ thread ]</a>
+              <a href="subject.html#39541">[ subject ]</a>
+              <a href="author.html#39541">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Have a look at htb.py, you should be able to rate limit the udp
+throughput rather easily.
+
+For me doing web stuff it was (in its entirety) like this:
+
+
+def RateBucket(parent=None):
+    bucket = htb.Bucket(parent)
+    bucket.rate = 4000
+    bucket.maxburst = 12000
+    return bucket
+
+bucketFilter = htb.FilterByHost()
+bucketFilter.bucketFactory = RateBucket
+
+application = service.Application(&quot;simple&quot;)
+site_factory = server.Site( Directory() )
+internet.TCPServer( 
+    SERVER_PORT, 
+    site_factory
+).setServiceParent(application)
+site_factory.protocol = htb.ShapedProtocolFactory(
+    site_factory.protocol, 
+    bucketFilter
+)
+
+Hope that helps.
+
+Stephen Thorne
+
+On Mon, 2004-02-09 at 20:51, Mike C. Fletcher wrote:
+&gt;<i> I've written a UDP-based protocol adaptor (TwistedSNMP) where one of the 
+</I>&gt;<i> key requirements is the ability to scan thousands of SNMP Agents 
+</I>&gt;<i> &quot;simultaneously&quot; (i.e. the requests should be asynchronously sent and 
+</I>&gt;<i> retired as the Agents respond).
+</I>&gt;<i> 
+</I>&gt;<i> <A HREF="http://members.rogers.com/mcfletch/programming/index.htm#TwistedSNMP">http://members.rogers.com/mcfletch/programming/index.htm#TwistedSNMP</A>
+</I>&gt;<i> 
+</I>&gt;<i> Writing a simple asynchronous loop myself (poll on a simple socket, send 
+</I>&gt;<i> message from queue when writable, read one into other queue when 
+</I>&gt;<i> readable) allowed for doing a few thousand queries simultaneously), with 
+</I>&gt;<i> only a few dozen dropped messages.  However, with the Twisted equivalent 
+</I>&gt;<i> (UDPTransport with my simple protocol object), I was seeing huge drop 
+</I>&gt;<i> rates, so, gathering that Twisted isn't queueing up the UDP requests, I 
+</I>&gt;<i> wrote a (byzantine) query-throttling mechanism with Twisted defers.
+</I>&gt;<i> 
+</I>&gt;<i> Problem is, it's a byzantine, fragile (and *slow*) solution to what 
+</I>&gt;<i> would *seem* to be one of the most common requirements in networked 
+</I>&gt;<i> development.  Worse yet, because I am seeing such high drop rates I wind 
+</I>&gt;<i> up having to batch in very small groups, serially (instead of 
+</I>&gt;<i> parallel-ly), so the primary purpose of the system (fast querying of 
+</I>&gt;<i> thousands of agents) is lost.  (Instead of taking 1 or 2 minutes to 
+</I>&gt;<i> query 800 or so Agents it will take on the order of 10 minutes.)
+</I>&gt;<i> 
+</I>&gt;<i> So, the question: is there a simple way to turn on buffered mode in UDP 
+</I>&gt;<i> transports so that they can deal with queueing up a few thousand 
+</I>&gt;<i> messages to send, sending them, then having a few thousand computers 
+</I>&gt;<i> send a reply (within a few seconds of one another)?  Is Twisted just not 
+</I>&gt;<i> Queue-reliant via use of some mechanism I haven't discovered yet?  Even 
+</I>&gt;<i> if I do find a decent queueing mechanism, I'm still left with the 
+</I>&gt;<i> problem that timeouts and the like are going to wind up being measured 
+</I>&gt;<i> from queueing-time, rather than sending time... not an issue if 
+</I>&gt;<i> everything gets sent in a half-second or so, but a real problem if it 
+</I>&gt;<i> takes 8 or 9 seconds just to send the original messages out.
+</I>&gt;<i> 
+</I>&gt;<i> Looking at the udp.Port class, I'm not seeing anything providing a 
+</I>&gt;<i> queue, seems as though there's a non-blocking write or read, but nothing 
+</I>&gt;<i> to handle overflows of sends or receives AFAICT, though it looks as 
+</I>&gt;<i> though a protocol could do some queueing on incoming in its 
+</I>&gt;<i> datagramReceived... just not sure how that would work.
+</I>&gt;<i> 
+</I>&gt;<i> Thoughts appreciated,
+</I>&gt;<i> Mike
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________
+</I>&gt;<i>   Mike C. Fletcher
+</I>&gt;<i>   Designer, VR Plumber, Coder
+</I>&gt;<i>   <A HREF="http://members.rogers.com/mcfletch/">http://members.rogers.com/mcfletch/</A>
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="039540.html">[Twisted-Python] Advice on doing thousands of simultaneous UDP queries with Twisted...
+</A></li>
+	<LI>Next message (by thread): <A HREF="039542.html">[Twisted-Python] Advice on doing thousands of simultaneous UDP queries with Twisted...
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#39541">[ date ]</a>
+              <a href="thread.html#39541">[ thread ]</a>
+              <a href="subject.html#39541">[ subject ]</a>
+              <a href="author.html#39541">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

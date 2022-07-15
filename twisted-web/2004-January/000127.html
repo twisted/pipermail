@@ -1,0 +1,985 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] more nevow patches
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   
+   <LINK REL="Previous"  HREF="000126.html">
+   <LINK REL="Next"  HREF="000128.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] more nevow patches
+   </H1>
+    <B>James Y Knight
+    </B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com"
+       TITLE="[Twisted-web] more nevow patches">twisted-web@twistedmatrix.com
+       </A><BR>
+    <I>Fri, 16 Jan 2004 18:12:42 -0500</I>
+    <P><UL>
+        <LI> Previous message: <A HREF="000126.html">[Twisted-web] support for other languages in newov
+</A></li>
+        <LI> Next message: <A HREF="000128.html">[Twisted-web] LOTTERY WINNING NOTIFICATION
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#127">[ date ]</a>
+              <a href="thread.html#127">[ thread ]</a>
+              <a href="subject.html#127">[ subject ]</a>
+              <a href="author.html#127">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>--Apple-Mail-3--649201377
+Content-Transfer-Encoding: 7bit
+Content-Type: text/plain;
+	charset=US-ASCII;
+	format=flowed
+
+This time we've got the following:
+1) context.patterns: replaced 'raiseIfMissing' argument with 'default' 
+argument, as it's more flexible. Had to move 'invisible' into stan.py.
+2) renderer.flatten: made it smaller, faster, better.
+3) renderer.HTMLRenderer: class/initializer attribute 
+&quot;beExtremelyLenient&quot; that gets passed to microdom, so that even sucky 
+HTML can be used as a template, if desired. Defaults to false, of 
+course.
+5) stan.Proto has a clone method that returns self.
+4) replaced ISerializable adapter with a simple function call. 
+Currently looks up the function to call in the adapter binding list, 
+which is kinda a hack, but simplest for now.
+ISerializable(obj).serialize(obj, context, stream) is now 
+renderer.serialize(obj, context).
+
+The serialize and flatten changes together seriously sped up my app.
+
+James
+
+
+--Apple-Mail-3--649201377
+Content-Transfer-Encoding: 7bit
+Content-Type: application/octet-stream;
+	x-unix-mode=0644;
+	name=&quot;nevow2.patch&quot;
+Content-Disposition: attachment;
+	filename=nevow2.patch
+
+Index: context.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/context.py,v
+retrieving revision 1.15
+diff -u -r1.15 context.py
+--- context.py	16 Jan 2004 21:36:27 -0000	1.15
++++ context.py	16 Jan 2004 23:08:34 -0000
+@@ -173,13 +173,17 @@
+                 return
+         top.parent = context
+ 
+-    def patterns(self, pattern, raiseIfMissing=True):
++    def patterns(self, pattern, default=None):
+         &quot;&quot;&quot;Generate clones of pattern tags forever, looping around to the beginning
+         when we run out of unique matches.
++
++        If no matches are found, and default is None, raise an exception,
++        otherwise, return clones of default, forever.
++
+         &quot;&quot;&quot;
+         tag = self.tag.clone()
+         stripContexts(tag)
+-        patterner = self._locatePatterns(tag, pattern, raiseIfMissing)
++        patterner = self._locatePatterns(tag, pattern, default)
+         return PatternTag(patterner)
+ 
+     def slotted(self, slot):
+@@ -198,7 +202,7 @@
+         warnings.warn(&quot;use patterns instead&quot;, stacklevel=2)
+         return self.patterns(pattern)
+ 
+-    def _locatePatterns(self, tag, pattern, raiseIfMissing):
++    def _locatePatterns(self, tag, pattern, default):
+         keeplooking = True
+         while keeplooking:
+             keeplooking = False
+@@ -207,10 +211,10 @@
+                 cloned = x.clone()
+                 cloned.pattern = Unset
+                 yield cloned
+-        if raiseIfMissing:
++        if default is None:
+             raise RuntimeError, &quot;Pattern %s was not found.&quot; % pattern
+         while True:
+-            yield invisible
++            yield default.clone()
+ 
+     def _locateOne(self, name, locator, descr):
+         found = False
+Index: freeform.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/freeform.py,v
+retrieving revision 1.88
+diff -u -r1.88 freeform.py
+--- freeform.py	16 Jan 2004 21:36:27 -0000	1.88
++++ freeform.py	16 Jan 2004 23:08:34 -0000
+@@ -446,7 +446,7 @@
+                         ]
+                     else:
+                         ## No configurable, let's just throw whatever it was in the dom
+-                        if iwoven.ISerializable(value, None):
++                        if renderer.getSerializer(value):
+                             try:
+                                 for x in range(100):
+                                     theData = context.locate(iwoven.IData, x+1)
+@@ -529,7 +529,7 @@
+         if getattr(typedRenderer, 'complexType', False):
+             return invisible(data=data, renderer=typedRenderer)
+ 
+-        flat = flatten(iwoven.ISerializable(invisible(data=data, renderer=typedRenderer, key=data.name)).serialize(context, None))
++        flat = flatten(renderer.serialize(invisible(data=data, renderer=typedRenderer, key=data.name), context))
+         if not flat:
+             return ''
+         if isGrouped(context, 2):
+Index: iwoven.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/iwoven.py,v
+retrieving revision 1.9
+diff -u -r1.9 iwoven.py
+--- iwoven.py	13 Jan 2004 18:26:12 -0000	1.9
++++ iwoven.py	16 Jan 2004 23:08:34 -0000
+@@ -62,14 +62,13 @@
+     &quot;&quot;&quot;A web request
+     &quot;&quot;&quot;
+ 
+-
+ class ISerializable(components.Interface):
+-    def serialize(self, context, stream):
+-        &quot;&quot;&quot;Serialize the adaptee to the given stream, with the given context
++    ## fixme -- how to describe new interface?
++    def serialize(self, context):
++        &quot;&quot;&quot;Serialize the adaptee, with the given context
+         stack if necessary.
+         &quot;&quot;&quot;
+ 
+-
+ class IStatusMessage(components.Interface):
+     &quot;&quot;&quot;A marker interface, which should be set on the user's web session
+     to an object which can be cast to a string, which will be shown to the
+Index: renderer.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/renderer.py,v
+retrieving revision 1.32
+diff -u -r1.32 renderer.py
+--- renderer.py	16 Jan 2004 21:36:27 -0000	1.32
++++ renderer.py	16 Jan 2004 23:08:34 -0000
+@@ -25,39 +25,66 @@
+ from nevow import tags
+ from nevow.context import WovenContext
+ 
++from twisted.python import components
++# FIXME: hack!
++# and the way serialize is implemented is possibly an
++# abuse of the components system, but hey, it WORKS. :)
++
++cachedAdapters = {}
++def getSerializer(obj):
++    registry = components.getRegistry(None)
++    
++    if hasattr(obj, '__class__'):
++        klas = obj.__class__
++    else:
++        klas = type(obj)
++
++    adapter = cachedAdapters.get(klas, None)
++    if adapter is not None:
++        return adapter
++    
++    # print &quot;Adding cache entry for &quot;,klas
++    fromInterfaces = components.classToInterfaces(klas)
++    for fromInterface in fromInterfaces:
++        # print &quot; trying: &quot;, fromInterface
++        adapter = registry.getAdapterFactory(fromInterface, ISerializable, None)
++        if adapter is not None:
++            cachedAdapters[klas] = adapter
++            return adapter
++    return None
++
++def serialize(obj, context):
++    serializer = getSerializer(obj)
++    if serializer is not None:
++        return serializer(obj, context)
++    raise NotImplementedError('%s instance (type %s) does not implement %s, and '
++                              'there is no registered adapter.' %
++                              (obj, type(obj), ISerializable))
+ 
+-def flatten(gen):
+-    &quot;&quot;&quot;
+-    I am a permissive flattener for precompilation.
+-    &quot;&quot;&quot;
+-    results = []
+-    accumulator = ''
++
++def _flatten(gen, straccum, results):
+     for item in gen:
+         if isinstance(item, types.StringTypes):
+-            accumulator += item
++            straccum.append(item)
+         else:
+-            if isinstance(item, types.GeneratorType):
+-                for sub in flatten(item):
+-                    if isinstance(sub, types.StringTypes):
+-                        accumulator += sub
+-                    else:
+-                        if accumulator:
+-                            results.append(xml(accumulator))
+-                        results.append(sub)
+-                        accumulator = ''
+-            elif isinstance(item, types.ListType):
+-                 if accumulator:
+-                     results.append(xml(accumulator))
+-                 results.extend(item)
+-                 accumulator=''
++            if isinstance(item, (types.GeneratorType, types.ListType)):
++                _flatten(item, straccum, results)
+             else:
+-                # anything that can be adapted to ISerializable
+-                if accumulator:
+-                    results.append(xml(accumulator))
++                # anything that can be serialize()d
++                if straccum:
++                    results.append(xml(''.join(straccum)))
+                 results.append(item)
+-                accumulator = ''
+-    if accumulator:
+-        results.append(xml(accumulator))
++                del straccum[:]
++    
++def flatten(gen):
++    &quot;&quot;&quot;
++    I am a permissive flattener for precompilation.
++    &quot;&quot;&quot;
++    straccum = []
++    results = []
++    _flatten(gen, straccum, results)
++    if straccum:
++        results.append(xml(''.join(straccum)))
+     return results
+ 
+ def _strflatten(context, gen, buf):
+@@ -73,7 +100,7 @@
+                 print &quot;ERROR: Deferred has no result!&quot;
+                 buf(&quot;ERROR: Deferred has no result!&quot;)
+             else:
+-                for sub in _strflatten(context, ISerializable(item.result).serialize(context, None), buf):
++                for sub in _strflatten(context, serialize(item.result, context), buf):
+                     yield sub
+         else:
+             for sub in _strflatten(context, item, buf):
+@@ -215,7 +242,7 @@
+         context = WovenContext(precompile=True)
+         context.remember(self, resource.IResource)
+         context.remember(self, IRendererFactory)
+-        _documents[klsnm] = rv = flatten(ISerializable(self.document).serialize(context, None))
++        _documents[klsnm] = rv = flatten(serialize(self.document, context))
+         return rv
+ 
+     beforeRender = None
+@@ -258,7 +285,7 @@
+             def finisher():
+                 finishRequest()
+                 return request.finish()
+-        render(ISerializable(self.doc).serialize(context, request), context, writer, finisher)
++        render(serialize(self.doc, context), context, writer, finisher)
+         return server.NOT_DONE_YET
+ 
+ 
+@@ -268,21 +295,24 @@
+     &quot;&quot;&quot;
+     templateDirectory = ''
+     templateFile = ''
++    beExtremelyLenient=False
+     key = 'content'
+-    def __init__(self, original=None, templateDirectory=None, templateFile=None, key=None):
++    def __init__(self, original=None, templateDirectory=None, templateFile=None, key=None, beExtremelyLenient=None):
+         if templateDirectory is not None:
+             self.templateDirectory = templateDirectory
+         if templateFile is not None:
+             self.templateFile = templateFile
+         if key is not None:
+             self.key = key
++        if beExtremelyLenient is not None:
++            self.beExtremelyLenient = beExtremelyLenient
+         self.precompileTime = None
+         Renderer.__init__(self, original)
+ 
+     def precompile(self):
+         context = WovenContext(precompile=True).remember(self, resource.IResource)
+-        dom = microdom.parse(os.path.join(self.templateDirectory, self.templateFile))
+-        doc = flatten(ISerializable(dom).serialize(context, None))
++        dom = microdom.parse(os.path.join(self.templateDirectory, self.templateFile), beExtremelyLenient=self.beExtremelyLenient)
++        doc = flatten(serialize(dom, context))
+         # Precompiled. Record the time so we know when to reload the template.
+         self.precompileTime = time.time()
+         return doc
+@@ -325,7 +355,7 @@
+     def __init__(self, doc):
+         context = WovenContext(precompile=True).remember(self, resource.IResource)
+         context.remember(self, IRendererFactory)
+-        self.doc = flatten(ISerializable(doc).serialize(context, None))
++        self.doc = flatten(serialize(doc, context))
+         ## Bypass Renderer init
+         self.toremember = []
+         resource.Resource.__init__(self)
+Index: stan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/stan.py,v
+retrieving revision 1.17
+diff -u -r1.17 stan.py
+--- stan.py	16 Jan 2004 21:36:27 -0000	1.17
++++ stan.py	16 Jan 2004 23:08:34 -0000
+@@ -19,6 +19,8 @@
+     def __getitem__(self, children):
+         return Tag(self)[children]
+ 
++    def clone(self, deep=True):
++        return self
+ 
+ class xml(str):
+     &quot;&quot;&quot;Raw xml marker
+@@ -220,7 +222,7 @@
+ def sequence(context, data):
+     headers = specialMatches(context.tag, 'pattern', 'header')
+     pattern = context.patterns('item')
+-    divider = context.patterns('divider', raiseIfMissing=False)
++    divider = context.patterns('divider', default=Proto(''))
+     content = [(pattern(data=element), divider(data=element)) for element in data]
+     if not content:
+         content = specialMatches(context.tag, 'pattern', 'empty')
+@@ -251,5 +253,7 @@
+     def __call__(self, **kw):
+         return NotImplementedError('comments are not callable')
+ 
++invisible = Proto('')
++
+ 
+ 
+Index: tags.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/tags.py,v
+retrieving revision 1.8
+diff -u -r1.8 tags.py
+--- tags.py	13 Jan 2004 01:46:40 -0000	1.8
++++ tags.py	16 Jan 2004 23:08:34 -0000
+@@ -4,11 +4,9 @@
+ # Public License as published by the Free Software Foundation.
+ 
+ 
+-from nevow.stan import Proto, Tag, directive, xml, CommentProto
++from nevow.stan import Proto, Tag, directive, xml, CommentProto, invisible
+ 
+ 
+-invisible = Proto('')
+-
+ comment = CommentProto()
+ 
+ tags = [
+Index: url.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/url.py,v
+retrieving revision 1.6
+diff -u -r1.6 url.py
+--- url.py	16 Jan 2004 21:36:27 -0000	1.6
++++ url.py	16 Jan 2004 23:08:34 -0000
+@@ -64,19 +64,15 @@
+ root = URLOverlay(rootaccessor)
+ 
+ 
+-class URLOverlaySerializer(components.Adapter):
+-    __implements__ = iwoven.ISerializable,
+-
+-    def serialize(self, context, stream):
+-        over = self.original
+-        if context.precompile:
+-            yield self
+-        else:
+-            url = over.urlaccessor(context)
+-            for (cmd, args, kw) in over.dolater:
+-                url = getattr(url, cmd)(*args, **kw)
+-            url.query = urllib.urlencode(over.appendquery)
+-            yield xml(str(url))
++def URLOverlaySerializer(original, context, stream):
++    if context.precompile:
++        yield self
++    else:
++        url = original.urlaccessor(context)
++        for (cmd, args, kw) in original.dolater:
++            url = getattr(url, cmd)(*args, **kw)
++        url.query = urllib.urlencode(original.appendquery)
++        yield xml(str(url))
+ 
+ 
+ ## This is totally unfinished and doesn't work yet.
+Index: serial/flatmdom.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatmdom.py,v
+retrieving revision 1.12
+diff -u -r1.12 flatmdom.py
+--- serial/flatmdom.py	16 Jan 2004 21:36:27 -0000	1.12
++++ serial/flatmdom.py	16 Jan 2004 23:08:34 -0000
+@@ -5,38 +5,27 @@
+ 
+ from __future__ import generators
+ 
+-from nevow.iwoven import ISerializable
++from nevow.renderer import serialize
+ from nevow.stan import Tag, xml, directive
+ 
+ from twisted.python import components
+ 
+-class MicroDomTextSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-    
+-    def serialize(self, context, stream):
+-        if self.original.raw:
+-            yield self.original.nodeValue
+-        else:
+-            from twisted.xish.domish import escapeToXml
+-            yield escapeToXml(self.original.nodeValue)
++def MicroDomTextSerializer(original, context):
++    if original.raw:
++        yield original.nodeValue
++    else:
++        from twisted.xish.domish import escapeToXml
++        yield escapeToXml(original.nodeValue)
+ 
+ 
+-class MicroDomCommentSerializer(components.Adapter):
+-    __implements__ = ISerializable,
++def MicroDomCommentSerializer(original, context):
++    yield xml(&quot;&lt;!--%s--&gt;&quot; % original.data)
+     
+-    def serialize(self, context, stream):
+-        yield xml(&quot;&lt;!--%s--&gt;&quot; % self.original.data)
+-
+-class MicroDomEntityReferenceSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        yield xml(self.original.nodeValue)
+-
++def MicroDomEntityReferenceSerializer(original, context):
++    yield xml(original.nodeValue)
+ 
+-class MicroDomElementSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+ 
++def MicroDomElementSerializer(original, context):
+     directiveMapping = {
+         'render': 'renderer',
+         'data': 'data',
+@@ -46,43 +35,39 @@
+         'pattern', 'slot', 'macro', 'fill-slot', 'key',
+     ]
+ 
+-    def serialize(self, context, stream):
+-        element = self.original
+-        attrs = dict(element.attributes) # get rid of CaseInsensitiveDict
+-        specials = {}
+-        attributes = self.attributeList
+-        directives = self.directiveMapping
+-        for k, v in attrs.items():
+-            # I know, this is totally not the way to do xml namespaces but who cares right now
+-            ## I'll fix it later
+-            if not k.startswith('nevow:'):
+-                continue
+-            _, nons = k.split(':')
+-            if nons in directives:
+-                ## clean this up by making the names more consistent
+-                specials[directives[nons]] = directive(v)
+-                del attrs[k]
+-            if nons in attributes:
+-                specials[nons] = v
+-                del attrs[k]
+-
+-        yield ISerializable(
+-            Tag(
+-                element.tagName,
+-                attributes=attrs,
+-                children=element.childNodes,
+-                specials=specials
+-            )
+-        ).serialize(context, stream)
+-
+-
+-class MicroDomDocumentSerializer(components.Adapter):
+-    __implemenents__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        if self.original.doctype:
+-            yield &quot;&lt;!DOCTYPE %s!&gt;\n&quot; % self.original.doctype
+-        for n in self.original.childNodes:
+-            yield ISerializable(n).serialize(context, stream)
++    element = original
++    attrs = dict(element.attributes) # get rid of CaseInsensitiveDict
++    specials = {}
++    attributes = attributeList
++    directives = directiveMapping
++    for k, v in attrs.items():
++        # I know, this is totally not the way to do xml namespaces but who cares right now
++        ## I'll fix it later
++        if not k.startswith('nevow:'):
++            continue
++        _, nons = k.split(':')
++        if nons in directives:
++            ## clean this up by making the names more consistent
++            specials[directives[nons]] = directive(v)
++            del attrs[k]
++        if nons in attributes:
++            specials[nons] = v
++            del attrs[k]
++
++    yield serialize(
++        Tag(
++            element.tagName,
++            attributes=attrs,
++            children=element.childNodes,
++            specials=specials
++        ),
++        context)
++
++
++def MicroDomDocumentSerializer(original, context):
++    if original.doctype:
++        yield &quot;&lt;!DOCTYPE %s!&gt;\n&quot; % original.doctype
++    for n in original.childNodes:
++        yield serialize(n, context)
+ 
+ 
+Index: serial/flatstan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/serial/flatstan.py,v
+retrieving revision 1.20
+diff -u -r1.20 flatstan.py
+--- serial/flatstan.py	16 Jan 2004 21:36:27 -0000	1.20
++++ serial/flatstan.py	16 Jan 2004 23:08:34 -0000
+@@ -9,217 +9,181 @@
+ import warnings
+ 
+ from twisted.python import components, log
++from twisted.internet import defer
+ from nevow.stan import Proto, Tag, xml, directive
+-from nevow.iwoven import ISerializable, IRendererFactory, IData
+-from nevow.renderer import flatten
++from nevow.iwoven import IRendererFactory, IData
++from nevow.renderer import flatten, serialize
+ from nevow.accessors import convertToData
+ 
+-class ProtoSerializer(components.Adapter):
+-    __implements__ = ISerializable,
++def ProtoSerializer(original, context):
++    yield xml('&lt;%s /&gt;' % original)
+ 
+-    def serialize(self, context, stream):
+-        yield xml('&lt;%s /&gt;' % self.original)
+ 
+-
+-class TagSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-    
+-    def serialize(self, context, stream):
+-        visible = bool(self.original.tagName)
+-        singleton = not self.original.renderer and not self.original.children and not self.original.data
+-        special = context.precompile and self.original._specials
+-        if self.original.renderer:
+-            ## If we have a renderer function we want to render what it returns, not our tag
+-            visible = False
+-        if special:
+-            context = context.with(self.original)
+-            context.tag.children = flatten(ISerializable(context.tag.children).serialize(context, stream))
+-            yield context
++def TagSerializer(original, context):
++    visible = bool(original.tagName)
++    singleton = not original.renderer and not original.children and not original.data
++    special = context.precompile and original._specials
++    if original.renderer:
++        ## If we have a renderer function we want to render what it returns, not our tag
++        visible = False
++    if special:
++        context = context.with(original)
++        context.tag.children = flatten(serialize(context.tag.children, context))
++        yield context
++    else:
++        if visible:
++            yield xml('&lt;%s' % original.tagName)
++            if original.attributes:
++                for (k, v) in original.attributes.items():
++                    if v is None:
++#                            warnings.warn(&quot;An attribute value for key %r on tag %r was None; ignoring attribute&quot; % (original.tagName, v))
++                        continue
++                    yield xml(' %s=&quot;' % k)
++                    if context.precompile:
++                        yield v
++                    else:
++                        flat = flatten(serialize(v,context))
++                        if flat:
++                            val = flat[0]
++                            if isinstance(val, StringTypes):
++                                val = val.replace('&quot;', '&amp;quot;')
++                            yield xml(val)
++                    yield xml('&quot;')
++        if singleton:
++            if visible:
++                yield xml(' /&gt;')
+         else:
+             if visible:
+-                yield xml('&lt;%s' % self.original.tagName)
+-                if self.original.attributes:
+-                    for (k, v) in self.original.attributes.items():
+-                        if v is None:
+-                            warnings.warn(&quot;An attribute value for key %r on tag %r was None; ignoring attribute&quot; % (self.original.tagName, v))
+-                            continue
+-                        yield xml(' ')
+-                        yield xml('%s=&quot;' % k)
+-                        if context.precompile:
+-                            yield v
+-                        else:
+-                            flat = flatten(ISerializable(v).serialize(context, stream))
+-                            if flat:
+-                                val = flat[0]
+-                                if isinstance(val, StringTypes):
+-                                    val = val.replace('&quot;', '&amp;quot;')
+-                                yield xml(val)
+-                        yield xml('&quot;')
+-            if singleton:
+-                if visible:
+-                    yield xml(' /&gt;')
+-            else:
+-                if visible:
+-                    yield xml('&gt;')
+-                # TODO: Make this less buggy.
+-                try:
+-                    if context.locate(IData) != self.original.data:
+-                        context = context.with(self.original)
+-                except KeyError:
+-                    context = context.with(self.original)
+-                if self.original.renderer:
+-                    toBeRenderedBy = self.original.renderer
+-                    self.original.renderer = None
+-                    yield ISerializable(toBeRenderedBy, persist=False).serialize(context, stream)
+-                    self.original.wasRenderedBy = toBeRenderedBy
+-                elif self.original.children:
+-                    for child in self.original.children:
+-                        yield ISerializable(child).serialize(context, stream)
+-                if visible:
+-                    yield xml('&lt;/')
+-                    yield xml(self.original.tagName)
+-                    yield xml('&gt;')
+-
+-
+-class StringSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        from twisted.xish.domish import escapeToXml
+-        ## quote it
+-        yield escapeToXml(self.original)
+-
+-
+-class NoneWarningSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        yield xml('&lt;span style=&quot;position: relative; font-size: 100; font-weight: bold; color: red; border: thick solid red;&quot;&gt;None&lt;/span&gt;')
+-
+-
+-class StringCastSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        from twisted.xish.domish import escapeToXml
+-        ## quote it
+-        return escapeToXml(str(self.original))
+-
+-
+-class ListSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        for item in self.original:
+-            yield ISerializable(item).serialize(context, stream)
++                yield xml('&gt;')
++            # TODO: Make this less buggy.
++            try:
++                if context.locate(IData) != original.data:
++                    context = context.with(original)
++            except KeyError:
++                context = context.with(original)
++            except TypeError:
++                context = context.with(original)
++            if original.renderer:
++                toBeRenderedBy = original.renderer
++                original.renderer = None
++                yield serialize(toBeRenderedBy,context)
++                original.wasRenderedBy = toBeRenderedBy
++            elif original.children:
++                for child in original.children:
++                    yield serialize(child, context)
++            if visible:
++                yield xml('&lt;/%s&gt;' % original.tagName)
+ 
++def StringSerializer(original, context):
++    from twisted.xish.domish import escapeToXml
++    ## quote it
++    yield escapeToXml(original)
+ 
+-class XmlSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+ 
+-    def serialize(self, context, stream):
+-        return self.original
++def NoneWarningSerializer(original, context):
++    yield xml('&lt;span style=&quot;position: relative; font-size: 100; font-weight: bold; color: red; border: thick solid red;&quot;&gt;None&lt;/span&gt;')
+ 
+ 
+-PASS_SELF = object()
++def StringCastSerializer(original, context):
++    from twisted.xish.domish import escapeToXml
++    ## quote it
++    return escapeToXml(str(original))
+ 
+ 
+-class FunctionSerializer(components.Adapter):
+-    __implements__ = ISerializable,
++def ListSerializer(original, context):
++    for item in original:
++        yield serialize(item, context)
+ 
+-    def nocontext(self):
+-        code = getattr(self.original, 'func_code', None)
+-        if code is None:
+-            return True
+-        argcount = code.co_argcount
+-        if argcount == 1:
+-            return True
+-        if argcount == 3:
+-            return PASS_SELF
+-        return False
+-
+-    def serialize(self, context, stream):
+-        if context.precompile:
+-            yield self.original
+-        else:
+-            data = convertToData(context, context.locate(IData))
+-            try:
+-                nocontext = self.nocontext()
+-                if nocontext is True:
+-                    result = self.original(data)
++
++def XmlSerializer(original, context):
++    return original
++
++
++PASS_SELF = object()
++
++
++def FunctionSerializer_nocontext(original):
++    code = getattr(original, 'func_code', None)
++    if code is None:
++        return True
++    argcount = code.co_argcount
++    if argcount == 1:
++        return True
++    if argcount == 3:
++        return PASS_SELF
++    return False
++
++def FunctionSerializer(original, context, nocontextfun=FunctionSerializer_nocontext):
++    if context.precompile:
++        yield original
++    else:
++        data = convertToData(context, context.locate(IData))
++        try:
++            nocontext = nocontextfun(original)
++            if nocontext is True:
++                result = original(data)
++            else:
++                if nocontext is PASS_SELF:
++                    renderFactory = context.locate(IRendererFactory)
++                    result = original(renderFactory, context, data)
+                 else:
+-                    if nocontext is PASS_SELF:
+-                        renderFactory = context.locate(IRendererFactory)
+-                        result = self.original(renderFactory, context, data)
+-                    else:
+-                        result = self.original(context, data)
+-            except StopIteration:
+-                log.err()
+-                raise RuntimeError, &quot;User function %r raised StopIteration.&quot; % self.original
+-            yield ISerializable(result).serialize(context, stream)
++                    result = original(context, data)
++        except StopIteration:
++            log.err()
++            raise RuntimeError, &quot;User function %r raised StopIteration.&quot; % original
++        yield serialize(result, context)
+ 
+ 
+-class DeferredSerializer(components.Adapter):
+-    def serialize(self, context, stream):
+-        yield self.original
++def DeferredSerializer(original, context):
++    yield original
+ 
+ 
+-class MethodSerializer(FunctionSerializer):
+-    def nocontext(self):
+-        func = getattr(self.original, 'im_func', None)
++def MethodSerializer(original, context):
++    def nocontext(original):
++        func = getattr(original, 'im_func', None)
+         code = getattr(func, 'func_code', None)
+         return code is None or code.co_argcount == 2
++    return FunctionSerializer(original, context, nocontext)
+ 
+ 
+-class CallableInstanceSerializer(FunctionSerializer):
+-    def nocontext(self):
+-        func = getattr(self.original.__call__, 'im_func', None)
++def CallableInstanceSerializer(original, context):
++    def nocontext(original):
++        func = getattr(original.__call__, 'im_func', None)
+         code = getattr(func, 'func_code', None)
+         return code is None or code.co_argcount == 2
++    return FunctionSerializer(original, context, nocontext)
+ 
+-
+-class DirectiveSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        rendererFactory = context.locate(IRendererFactory)
+-        renderer = rendererFactory.renderer(context, self.original)
+-        return ISerializable(renderer).serialize(context, stream)
+-
+-
+-class ContextSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        originalContext = self.original.clone()
+-        originalContext.precompile = context.precompile
+-        originalContext.chain(context)
+-        try:
+-            yield flatten(ISerializable(originalContext.tag).serialize(originalContext, stream))
+-        except:
+-            from twisted.web import util
+-            from twisted.python import failure
+-            from twisted.internet import reactor, defer
+-            d = defer.Deferred()
+-            fail = failure.Failure()
+-            reactor.callLater(0, lambda: d.callback(xml(util.formatFailure(fail))))
+-            desc = str(fail.value)
+-            yield ISerializable([
+-                xml(&quot;&quot;&quot;&lt;div style=&quot;border: 1px dashed red; color: red; clear: both&quot; onclick=&quot;this.childNodes[1].style.display = this.childNodes[1].style.display == 'none' ? 'block': 'none'&quot;&gt;&quot;&quot;&quot;),
+-                desc,
+-                xml('&lt;div style=&quot;display: none&quot;&gt;'),
+-                d,
+-                xml('&lt;/div&gt;&lt;/div&gt;')
+-            ]).serialize(context, stream)
+-
+-
+-class CommentSerializer(components.Adapter):
+-    __implements__ = ISerializable,
+-
+-    def serialize(self, context, stream):
+-        yield xml(&quot;&lt;!--&quot;)
+-        for x in self.original.children:
+-            yield ISerializable(x).serialize(context, stream)
+-        yield(&quot;--&gt;&quot;)
+-
+-
++def DirectiveSerializer(original, context):
++    rendererFactory = context.locate(IRendererFactory)
++    renderer = rendererFactory.renderer(context, original)
++    return serialize(renderer, context)
++
++
++def ContextSerializer(original, context):
++    originalContext = original.clone()
++    originalContext.precompile = context and context.precompile or False
++    originalContext.chain(context)
++    try:
++        yield flatten(serialize(originalContext.tag, originalContext))
++    except:
++        from twisted.web import util
++        from twisted.python import failure
++        from twisted.internet import reactor, defer
++        d = defer.Deferred()
++        fail = failure.Failure()
++        reactor.callLater(0, lambda: d.callback(xml(util.formatFailure(fail))))
++        desc = str(fail.value)
++        yield serialize([
++            xml(&quot;&quot;&quot;&lt;div style=&quot;border: 1px dashed red; color: red; clear: both&quot; onclick=&quot;this.childNodes[1].style.display = this.childNodes[1].style.display == 'none' ? 'block': 'none'&quot;&gt;&quot;&quot;&quot;),
++            desc,
++            xml('&lt;div style=&quot;display: none&quot;&gt;'),
++            d,
++            xml('&lt;/div&gt;&lt;/div&gt;')
++        ], context)
++
++
++def CommentSerializer(self, context):
++    yield xml(&quot;&lt;!--&quot;)
++    for x in self.original.children:
++        yield serialize(x, context)
++    yield(&quot;--&gt;&quot;)
+Index: test/test_flatstan.py
+===================================================================
+RCS file: /cvs/Quotient/nevow/test/test_flatstan.py,v
+retrieving revision 1.16
+diff -u -r1.16 test_flatstan.py
+--- test/test_flatstan.py	16 Jan 2004 21:36:28 -0000	1.16
++++ test/test_flatstan.py	16 Jan 2004 23:08:34 -0000
+@@ -12,8 +12,8 @@
+ from nevow import stan
+ from nevow import context
+ from nevow import tags
+-from nevow.iwoven import ISerializable, IData, IRendererFactory, IRequest
+-from nevow.renderer import flatten, render
++from nevow.iwoven import IData, IRendererFactory, IRequest
++from nevow.renderer import flatten, render, serialize
+ from nevow.util import FakeRequest
+ 
+ from twisted.trial import unittest
+@@ -39,8 +39,8 @@
+         ctx = self.setupContext(precompile, setupRequest)
+         ctx = setupContext(ctx)
+         if precompile:
+-            return flatten(ISerializable(tag).serialize(ctx, None))
+-        rv = render(ISerializable(tag).serialize(ctx, None))
++            return flatten(serialize(tag, ctx))
++        rv = render(serialize(tag, ctx))
+         if isinstance(rv, defer.Deferred):
+             print &quot;DEFERRED RENDER&quot;
+             return unittest.deferredResult(rv)
+
+--Apple-Mail-3--649201377--
+
+
+
+</PRE>
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI> Previous message: <A HREF="000126.html">[Twisted-web] support for other languages in newov
+</A></li>
+	<LI> Next message: <A HREF="000128.html">[Twisted-web] LOTTERY WINNING NOTIFICATION
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#127">[ date ]</a>
+              <a href="thread.html#127">[ thread ]</a>
+              <a href="subject.html#127">[ subject ]</a>
+              <a href="author.html#127">[ author ]</a>
+         </LI>
+       </UL>
+</body></html>

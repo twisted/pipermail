@@ -1,0 +1,174 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] DOM manipulation in an athena widget
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20DOM%20manipulation%20in%20an%20athena%20widget&In-Reply-To=20061001140328.1717.395524689.divmod.quotient.64315%40ohm">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003072.html">
+   <LINK REL="Next"  HREF="003075.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] DOM manipulation in an athena widget</H1>
+    <B>Phil Mayers</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20DOM%20manipulation%20in%20an%20athena%20widget&In-Reply-To=20061001140328.1717.395524689.divmod.quotient.64315%40ohm"
+       TITLE="[Twisted-web] DOM manipulation in an athena widget">p.mayers at imperial.ac.uk
+       </A><BR>
+    <I>Sun Oct  1 17:57:01 CDT 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003072.html">[Twisted-web] DOM manipulation in an athena widget
+</A></li>
+        <LI>Next message: <A HREF="003075.html">[Twisted-web] DOM manipulation in an athena widget
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3074">[ date ]</a>
+              <a href="thread.html#3074">[ thread ]</a>
+              <a href="subject.html#3074">[ subject ]</a>
+              <a href="author.html#3074">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE><A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">glyph at divmod.com</A> wrote:
+&gt;&gt;<i> Also, I'm not an expert, but don't many browsers limit you to 2 HTTP 
+</I>&gt;&gt;<i> requests outstanding to a given server at once, meaning it's likely 
+</I>&gt;&gt;<i> you'd run into problems running e.g. the Mochikit xmlhttp and the 
+</I>&gt;&gt;<i> Athena one?
+</I>&gt;<i> 
+</I>&gt;<i> Yep.  This isn't a library problem though: if you're using Athena, you 
+</I>&gt;<i> _must not_ use any other XHR APIs in your page.  Athena goes to a good 
+</I>&gt;<i> deal of trouble to allow you to have more than 2 outstanding athena 
+</I>&gt;<i> requests when the browser allows you only 2 HTTP requests.  It needs 
+</I>&gt;<i> both of those requests though, one to wait for incoming notifications 
+</I>&gt;<i> and one to make outgoing requests.
+</I>
+Ah. That's an issue.
+
+This rules out safely calling other non-Nevow RPCs (which might be glued 
+into the same server &amp; URL space by reverse proxying, and in fact are in 
+my case). Obviously I can write (tedious) code to execute those RPCs on 
+the server, but scalability aside it also breaks single sign-on.
+
+(Note: I'm not saying Nevow or Athena are doing the wrong thing here - 
+as you correctly say, this is a browser limitation).
+
+I think this can be solved using IFRAMEs to make the RPCs, but at the 
+expense of another server name (and IP if using SSL in fact). Will have 
+to look into that.
+
+&gt;<i> 
+</I>&gt;&gt;<i> What I'm trying to get a feel for with the Athena stuff is what parts 
+</I>&gt;&gt;<i> of the javascript runtime, if any, are supposed to be used, and which 
+</I>&gt;&gt;<i> parts are private and just for implementing callRemote and friends.
+</I>&gt;<i> 
+</I>&gt;<i> I hope someone more knowledgeable about the intent of those APIs will 
+</I>&gt;<i> answer.  Technically speaking the rule is that the APIs are public 
+</I>&gt;<i> unless they start with &quot;_&quot;, but &quot;public&quot; doesn't necessarily mean 
+</I>&gt;<i> &quot;supported in perpetuity&quot;.
+</I>&gt;<i> 
+</I>&gt;<i> Please feel free to ask about specific things though; hopefully someone 
+</I>&gt;<i> more knowledgeable about the API's intent than I will answer.
+</I>
+Well, the specific thing I was thinking of was the JSON-RPC but knowing 
+that Athena consumes both available XHR requests makes the point moot.
+
+Interestingly, it seems we've reached a situation analogous with the 
+desire for a single event loop in the python standard library, only this 
+time in the JavaScript VM ;o)
+
+For the info of anyone reading, I did eventually get all this working, 
+and am using MochiKit for the client-side DOM stuff but calling athena 
+widget callRemote channels - cool stuff like (untested copy&amp;paste):
+
+function saveEditable(evt) {
+   var tb = event.src();
+   var span = tb.parentNode;
+   var widget = Nevow.Athena.Widget.get(span);
+
+   /* only if it has changed... */
+   if (tb.value!=tb.orig) {
+
+     /* mark it dirty */
+     addElementClass(span, 'dirty');
+     /* push update to server */
+     var d = widget.callRemote('update', span.id, tb.value);
+
+     /* wait for ok/fail */
+     d.addCallbacks(
+       /* ok, remove dirty mark */
+       function(v) {
+         removeElementClass(span, 'dirty');
+       },
+
+       /* fail, display error for 5 seconds,
+       function(e) {
+         var v = scrapeText(span);
+         replaceChildNodes(span, e);
+         callLater(5, replaceChildNodes, span, v);
+       });
+
+   }
+
+   /* convert the span back to a plain text holder */
+   replaceChildNodes(span, tb.value);
+   removeElementClass(span, 'editing');
+}
+
+function makeEditable(evt) {
+   var span = evt.src();
+
+   if (hasElementClass(span, 'editing')) return false;
+
+   /* get the contents of the span */
+   var text = scrapeText(span);
+   /* put it into a text field... */
+   var tb = INPUT({'type': 'text', 'value': text});
+   tb['orig'] = text;
+   /* ...inside the span */
+   replaceChildNodes(span, tb);
+   tb.focus();
+   connect(tb, 'onblur', saveEditable);
+
+   addElementClass(span, 'editing');
+}
+
+function setupEditFields(node) {
+   forEach(
+     getElementsByTagAndClassName('span', 'editable', node),
+     function(n) {
+       connect(n, 'onclick', makeEditable);
+     });
+}
+
+myApp.myWidget = Nevow.Athena.Widget.subclass('myApp.myWidget');
+myApp.myWidget.methods(
+   function __init__(self, node) {
+     myApp.myWidget.upcall(self, '__init__', node);
+     setupEditFields(node);
+   });
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003072.html">[Twisted-web] DOM manipulation in an athena widget
+</A></li>
+	<LI>Next message: <A HREF="003075.html">[Twisted-web] DOM manipulation in an athena widget
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3074">[ date ]</a>
+              <a href="thread.html#3074">[ thread ]</a>
+              <a href="subject.html#3074">[ subject ]</a>
+              <a href="author.html#3074">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

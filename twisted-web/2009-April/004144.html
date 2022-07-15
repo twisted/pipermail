@@ -1,0 +1,193 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] Finer-Grained Security System for Twisted Web/Nevow?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Finer-Grained%20Security%20System%20for%20Twisted%20Web/Nevow%3F&In-Reply-To=49EC570C.4010204%40taupro.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="004142.html">
+   <LINK REL="Next"  HREF="004145.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] Finer-Grained Security System for Twisted Web/Nevow?</H1>
+    <B>Valentino Volonghi</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20Finer-Grained%20Security%20System%20for%20Twisted%20Web/Nevow%3F&In-Reply-To=49EC570C.4010204%40taupro.com"
+       TITLE="[Twisted-web] Finer-Grained Security System for Twisted Web/Nevow?">dialtone at gmail.com
+       </A><BR>
+    <I>Mon Apr 20 15:17:31 EDT 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="004142.html">[Twisted-web] Finer-Grained Security System for Twisted Web/Nevow?
+</A></li>
+        <LI>Next message: <A HREF="004145.html">[Twisted-web] Finer-Grained Security System for Twisted Web/Nevow?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4144">[ date ]</a>
+              <a href="thread.html#4144">[ thread ]</a>
+              <a href="subject.html#4144">[ subject ]</a>
+              <a href="author.html#4144">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>
+On Apr 20, 2009, at 4:05 AM, Jeff Rush wrote:
+
+&gt;<i> Drew Perttula wrote:
+</I>&gt;&gt;<i> Jeff Rush wrote:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> I did openid logins as a mixin class that replaces locateChild:
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> <A HREF="http://bigasterisk.com/darcs/?r=exchangeMeeting;a=headblob;f=/nevowopenid.py">http://bigasterisk.com/darcs/?r=exchangeMeeting;a=headblob;f=/nevowopenid.py</A>
+</I>&gt;<i>
+</I>&gt;<i> Draw (and Glyph with his suggestion of Mantissa's approach), thanks  
+</I>&gt;<i> for the
+</I>&gt;<i> mentions of source I can study to better understand how I might wrap  
+</I>&gt;<i> the web
+</I>&gt;<i> delivery mechanism.
+</I>
+
+<A HREF="http://files.twisted.it/stiq_at_europython07.pdf">http://files.twisted.it/stiq_at_europython07.pdf</A>
+
+This is a presentation I gave at europython 07 about some of the  
+practices, that
+I consider best, in developing with Nevow.
+
+Basically I define a function that touches the database for some  
+reason, then
+I append that function to a role (or a set of roles) using a decorator:
+
+@forRoles('admin')
+def deleteUser(avatar, email):
+     @transact
+     def _(email):
+         return users.delete(users.c.email==email).execute()
+     return _(email)
+
+@forRoles('anonymous', 'user', 'admin')
+def &#64257;ndUser(avatar, email):
+     @transact
+     def _(email):
+         return users.select(sq.and_(users.c.email==email,
+users.c.enabled==True)).execute().fetchone()
+     return _(email)
+
+This is one example of such a thing. The avatar object is exactly  
+what's returned
+by cred/guard and it's defined in the following way:
+
+import zope.interface as z
+
+class Avatar(object):
+     z.implements(IAvatar)
+     def __init__(self, behavior, *args, **kw):
+         self.username = None
+         self.email = None
+         self.role = None
+         self.password = None
+         self.conf = None
+         super(Avatar, self).__init__(*args, **kw)
+         self._actions = dict(((f.__name__, f) for f in behavior))
+
+     def __getattr__(self, name):
+         try:
+             fun = self._actions[name]
+         except KeyError:
+             raise NoPermission(name)
+         return lambda *args, **kwargs: fun(self, *args, **kwargs)
+
+
+So that it takes a set of methods that it knows and allows you to call  
+them,
+if a method is not present you probably don't have enough permissions
+(or you made a mistake in writing it).
+
+This is paired with some clever use of patterns:
+
+  &lt;nevow:invisible nevow:render=&quot;optional&quot;&gt;
+              &lt;nevow:invisible nevow:pattern=&quot;None&quot;&gt;
+                Login to upload images.
+              &lt;/nevow:invisible&gt;
+
+              &lt;nevow:invisible nevow:pattern=&quot;default&quot;&gt;
+                &lt;nevow:invisible nevow:render=&quot;form upload&quot; /&gt;
+              &lt;/nevow:invisible&gt;
+&lt;/nevow:invisible&gt;
+
+The optional (bad name I know) checks for the role of the current  
+avatar,
+if it's None it means that the user is not logged in, otherwise you  
+can use
+a specific role or default for 'all the others':
+
+This is how it's implemented:
+
+def render_optional(self, ctx, data):
+     iq = inevow.IQ(ctx)
+     try:
+         t = iq.onePattern(str(self.avatar.role))
+     except stan.NodeNotFound:
+         try:
+             t = iq.onePattern('default')
+         except stan.NodeNotFound:
+             t = ''
+     return ctx.tag[t]
+
+I'm not sure it's still usable though with newer nevow versions,  
+although
+it might still be.
+
+The other part (navigating in the tree) should be solvable by using
+another decorator that could look like this:
+
+def requiresRole(role, loginPage=LoginPage):
+     def _f(fun):
+         def __f(avatar, *args, **kwargs):
+             if role not in avatar.roles:
+                  return loginPage(avatar)
+             return fun(avatar, *args, **kwargs)
+        return __f
+     return _f
+
+Or something similar (this is not tested).
+
+It's been a while since I last used this code but it's concept is  
+still good.
+
+--
+Valentino Volonghi aka Dialtone
+Now running MacOS X 10.5
+Home Page: <A HREF="http://www.twisted.it">http://www.twisted.it</A>
+<A HREF="http://www.adroll.com">http://www.adroll.com</A>
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: PGP.sig
+Type: application/pgp-signature
+Size: 194 bytes
+Desc: This is a digitally signed message part
+Url : <A HREF="http://twistedmatrix.com/pipermail/twisted-web/attachments/20090420/bc5ad838/PGP.pgp">http://twistedmatrix.com/pipermail/twisted-web/attachments/20090420/bc5ad838/PGP.pgp</A>
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="004142.html">[Twisted-web] Finer-Grained Security System for Twisted Web/Nevow?
+</A></li>
+	<LI>Next message: <A HREF="004145.html">[Twisted-web] Finer-Grained Security System for Twisted Web/Nevow?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#4144">[ date ]</a>
+              <a href="thread.html#4144">[ thread ]</a>
+              <a href="subject.html#4144">[ subject ]</a>
+              <a href="author.html#4144">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

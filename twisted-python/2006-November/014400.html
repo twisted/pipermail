@@ -1,0 +1,199 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Keeping a list of connected PB clients
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Keeping%20a%20list%20of%20connected%20PB%20clients&In-Reply-To=3af8969a0611241416k450611c6v256099b53742e8d6%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="014401.html">
+   <LINK REL="Next"  HREF="014407.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Keeping a list of connected PB clients</H1>
+    <B>Phil Christensen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Keeping%20a%20list%20of%20connected%20PB%20clients&In-Reply-To=3af8969a0611241416k450611c6v256099b53742e8d6%40mail.gmail.com"
+       TITLE="[Twisted-Python] Keeping a list of connected PB clients">phil at bubblehouse.org
+       </A><BR>
+    <I>Fri Nov 24 18:46:26 EST 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="014401.html">[Twisted-Python] Need Exception that will stop ther reactor	within twistd
+</A></li>
+        <LI>Next message: <A HREF="014407.html">[Twisted-Python] Keeping a list of connected PB clients
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14400">[ date ]</a>
+              <a href="thread.html#14400">[ thread ]</a>
+              <a href="subject.html#14400">[ subject ]</a>
+              <a href="author.html#14400">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Nov 24, 2006, at 5:16 PM, Yi Qiang wrote:
+
+&gt;<i> On 11/19/06, Phil Christensen &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">phil at bubblehouse.org</A>&gt; wrote:
+</I>&gt;<i> On Nov 19, 2006, at 7:00 PM, Yi Qiang wrote:
+</I>&gt;<i> &gt; There does not seem to be a corresponding clientConnectionLost
+</I>&gt;<i> &gt; method for the Factory class.  Any suggestions would be appreciated.
+</I>&gt;<i>
+</I>&gt;<i> My approach to this was to put any post-connection cleanup in the
+</I>&gt;<i> Avatar's &quot;logout&quot; method.
+</I>&gt;<i>
+</I>&gt;<i> Hi Phil,
+</I>&gt;<i> Do you happen to be able to share the code you've written to  
+</I>&gt;<i> accomplish just this?  Where do you store your list of connected  
+</I>&gt;<i> clients?
+</I>
+I'm CC'ing the list for posterity, but this is actually pretty  
+straightforward. I'm guessing the issue is that you're over-thinking  
+this.
+
+First of all, here's some code from your original post:
+
+On Nov 19, 2006, at 7:00 PM, Yi Qiang wrote:
+&gt;<i> from twisted.spread import pb
+</I>&gt;<i>
+</I>&gt;<i> class DSagePBServerFactory(pb.PBServerFactory):
+</I>[snip snip snip]
+&gt;<i>     def clientConnectionMade(self, broker):
+</I>&gt;<i>         self.clients.append((broker.transport,
+</I>&gt;<i>                              broker.transport.getPeer().host,
+</I>&gt;<i>                              broker.transport.getPeer().port))
+</I>&gt;<i>         print self.clients
+</I>
+First thing, there's not necessarily any need to subclass the  
+PBServerFactory if this is all you're doing. In the interest of  
+forward-compatibility (always a good idea with Twisted ;-), I try to  
+avoid making subclasses of essential framework classes unless I have  
+a very good reason (or a very bad one ;-).
+
+The place where you want to do all this is really in your Realm  
+instance. I think it's possible to create a PB server that doesn't  
+require login, but I've never had any need for it, so you're kind of  
+on your own there.
+
+&gt;<i> class MyRealm:
+</I>&gt;<i>     &quot;&quot;&quot;
+</I>&gt;<i>     Holds a reference to the main service object.
+</I>&gt;<i>     &quot;&quot;&quot;
+</I>&gt;<i>     __implements__ = portal.IRealm
+</I>&gt;<i>
+</I>&gt;<i>     def __init__(self, service):
+</I>&gt;<i>         &quot;&quot;&quot;
+</I>&gt;<i>         Create a realm with the given service.
+</I>&gt;<i>         &quot;&quot;&quot;
+</I>&gt;<i>         self.service = service
+</I>&gt;<i>
+</I>&gt;<i>     def requestAvatar(self, avatarId, mind, *interfaces):
+</I>&gt;<i>         &quot;&quot;&quot;
+</I>&gt;<i>         This function is called after the user has verified their
+</I>&gt;<i>         identity. It returns an object that represents the user
+</I>&gt;<i>         in the system, i.e., an avatar.
+</I>&gt;<i>         &quot;&quot;&quot;
+</I>&gt;<i>         if pb.IPerspective in interfaces:
+</I>&gt;<i>             avatar = self._getPBAvatar(avatarId, mind)
+</I>&gt;<i>             ####################### &lt;-- RIGHT HERE
+</I>&gt;<i>             return pb.IPerspective, avatar, avatar.logout
+</I>&gt;<i>         else:
+</I>&gt;<i>             raise NotImplementedError(&quot;no interface&quot;)
+</I>
+This is where you want to maintain your client list. The hardest part  
+is deciding on a place to put it that will be accessible from all  
+your code; I usually use a singleton pattern of some kind, where I  
+can import a module that holds onto client references and provides  
+functions to manipulate/retrieve that list.
+
+So, that point where I put all those hashes is a pretty good place to  
+add clients your client queue. The 'mind' argument is usually a  
+reference to the client on the other end, assuming your client passes  
+it properly. My client does this:
+
+&gt;<i>     # self.client is a Referenceable on the client side.
+</I>&gt;<i>     defer = self.factory.login(credentials.UsernamePassword 
+</I>&gt;<i> (username, password), self.client)
+</I>&gt;<i>     defer.addCallback(connected_callback, self)
+</I>
+This way, you can find all the necessary info you might need to  
+identify the user on the other end in the properties of this object.
+
+You'll also see that right after the hashes, I return a three-tuplet  
+that has avatar.logout as its third item. This is a method defined on  
+my avatar object, but any callable object can be returned here, and  
+that callable, of course, can remove clients from your list. So one  
+approach to keeping track of client connections would be:
+
+&gt;<i> class MyRealm(pb.Avatar):
+</I>&gt;<i>     # ... snip
+</I>&gt;<i>     # ... snip
+</I>&gt;<i>     def requestAvatar(self, avatarId, mind, *interfaces):
+</I>&gt;<i>         &quot;&quot;&quot;
+</I>&gt;<i>         This function is called after the user has verified their
+</I>&gt;<i>         identity. It returns an object that represents the user
+</I>&gt;<i>         in the system, i.e., an avatar.
+</I>&gt;<i>         &quot;&quot;&quot;
+</I>&gt;<i>         if pb.IPerspective in interfaces:
+</I>&gt;<i>             avatar = MyAvatar()
+</I>&gt;<i>
+</I>&gt;<i>             import clienttracker
+</I>&gt;<i>             clienttracker.append(avatar)
+</I>&gt;<i>
+</I>&gt;<i>             return pb.IPerspective, avatar, avatar.logout
+</I>&gt;<i>         else:
+</I>&gt;<i>             raise NotImplementedError(&quot;no interface&quot;)
+</I>&gt;<i>
+</I>&gt;<i> class MyAvatar(pb.Avatar):
+</I>&gt;<i>     # ... snip
+</I>&gt;<i>     # ... snip
+</I>&gt;<i>     def logout(self):
+</I>&gt;<i>         import clienttracker
+</I>&gt;<i>         clienttracker.remove(self)
+</I>
+There's a lot of flexibility there. You could move the  
+clienttracker.append call right inside your Avatar constructor -- the  
+only reason I didn't is because my server supports a number of  
+protocols besides PB, and I wanted to deal with them universally.
+
+One thing this approach doesn't do is keep track of clients that  
+connect, but fail authentication. To do that, you'd need to subclass  
+Broker, but that's a tough one. I looked into this once before, and  
+it certainly appears doable -- in the end, a Broker is still a  
+Protocol, which means it has a transport property you can get client  
+addresses out of.
+
+Of course, if a user fails authentication, they are immediately  
+disconnected, so this would only be a problem if you are concerned  
+about malevolent users. It would be possible to write a client that  
+connects but never authenticates; enough of those could cause some  
+discomfort on the server side, but if that happens, you likely have  
+more problems than keeping track of a client list.
+
+Hope this helps...
+
+-phil
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="014401.html">[Twisted-Python] Need Exception that will stop ther reactor	within twistd
+</A></li>
+	<LI>Next message: <A HREF="014407.html">[Twisted-Python] Keeping a list of connected PB clients
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14400">[ date ]</a>
+              <a href="thread.html#14400">[ thread ]</a>
+              <a href="subject.html#14400">[ subject ]</a>
+              <a href="author.html#14400">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

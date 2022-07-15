@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.0 (GNU/Linux)
+
+iD8DBQE+raA7edcO2BJA+4YRAt1iAJ9klgSCPxc1Pw98bNNavjiSoKw1pgCcDqCo
+pk/F5II5170AXfgh/RQnIjc=
+=B2Io
+-----END PGP SIGNATURE-----

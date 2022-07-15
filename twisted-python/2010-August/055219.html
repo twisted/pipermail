@@ -1,0 +1,179 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] inlineCallbacks cascading cancelling and more
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20inlineCallbacks%20cascading%20cancelling%20and%20more&In-Reply-To=%3C4C724BCE.5000605%40naumen.ru%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="055216.html">
+   <LINK REL="Next"  HREF="055220.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] inlineCallbacks cascading cancelling and more</H1>
+    <B>Sergey Magafurov</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20inlineCallbacks%20cascading%20cancelling%20and%20more&In-Reply-To=%3C4C724BCE.5000605%40naumen.ru%3E"
+       TITLE="[Twisted-Python] inlineCallbacks cascading cancelling and more">smagafurov at naumen.ru
+       </A><BR>
+    <I>Mon Aug 23 04:22:06 MDT 2010</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="055216.html">[Twisted-Python] inlineCallbacks cascading cancelling and more
+</A></li>
+        <LI>Next message (by thread): <A HREF="055220.html">[Twisted-Python] inlineCallbacks cascading cancelling and more
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55219">[ date ]</a>
+              <a href="thread.html#55219">[ thread ]</a>
+              <a href="subject.html#55219">[ subject ]</a>
+              <a href="author.html#55219">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Thanks to all!
+Especially to Yaroslav Fedevych who explain me my misstake in my native 
+language :)
+I was wrong with deferreds usage.
+
+Cascading cancelling of inlineCallbacks is still needed to me, but it 
+can be realized with current Deferred API.
+
+This way for example:
+
+class InlineCallbacksManagerWithCascadeCancelling(object):
+     _cancellation = False
+     _wait_result = None
+
+     def __init__(self):
+         self.deferred = defer.Deferred()
+         self.deferred.addBoth(self._cleanup)
+
+     def _cleanup(self, result):
+         if self._wait_result is not None:
+             self._cancellation = True
+             self._wait_result.cancel()
+         self._wait_result = None
+         self.deferred = None
+         return result
+
+     def _inlineCallbacks(self, result, g):
+         &quot;&quot;&quot;
+         See L{inlineCallbacks}.
+         &quot;&quot;&quot;
+         # This function is complicated by the need to prevent unbounded 
+recursion
+         # arising from repeatedly yielding immediately ready 
+deferreds.  This while
+         # loop and the waiting variable solve that by manually 
+unfolding the
+         # recursion.
+
+         waiting = [True, # waiting for result?
+                    None] # result
+
+         deferred = self.deferred
+
+         while 1:
+             if self._cancellation:
+                 g.close()
+                 return
+
+             try:
+                 # Send the last result back as the result of the yield 
+expression.
+                 isFailure = isinstance(result, Failure)
+                 if isFailure:
+                     result = result.throwExceptionIntoGenerator(g)
+                 else:
+                     result = g.send(result)
+             except StopIteration:
+                 # fell off the end, or &quot;return&quot; statement
+                 deferred.callback(None)
+                 return deferred
+             except defer._DefGen_Return, e:
+                 # returnValue() was called; time to give a result to 
+the original Deferred.
+                 deferred.callback(e.value)
+                 return deferred
+             except:
+                 deferred.errback()
+                 return deferred
+
+             if isinstance(result, defer.Deferred):
+                 # a deferred was yielded, get the result.
+                 def gotResult(r):
+                     if waiting[0]:
+                         waiting[0] = False
+                         waiting[1] = r
+                     else:
+                         self._wait_result = None
+                         self._inlineCallbacks(r, g)
+
+                 result.addBoth(gotResult)
+                 if waiting[0]:
+                     # Haven't called back yet, set flag so that we get 
+reinvoked
+                     # and return from the loop
+                     waiting[0] = False
+                     self._wait_result = result
+                     return deferred
+
+                 result = waiting[1]
+                 # Reset waiting to initial values for next loop.  
+gotResult uses
+                 # waiting, but this isn't a problem because gotResult 
+is only
+                 # executed once, and if it hasn't been executed yet, 
+the return
+                 # branch above would have been taken.
+
+                 waiting[0] = True
+                 waiting[1] = None
+
+def inlineCallbacksWithCascadeCancelling(f):
+     def unwind_generator(*args, **kwargs):
+         manager = InlineCallbacksManagerWithCascadeCancelling(*args, 
+**kwargs)
+         return manager._inlineCallbacks(None, f(*args, **kwargs))
+     return mergeFunctionMetadata(f, unwind_generator)
+
+This inlineCallbacksWithCascadeCancelling cancels immediately &quot;child&quot; 
+(wait result) deferred when &quot;parent&quot; deferred finished (canceled for 
+example) and stops generator.
+
+May be this behaviour must be default for inlineCallbacks (i.e. 
+defer.inlineCallbacks = inlineCallbacksWithCascadeCancelling)?
+
+I am happy with this behaviour :)
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20100823/c80f0a36/attachment.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="055216.html">[Twisted-Python] inlineCallbacks cascading cancelling and more
+</A></li>
+	<LI>Next message (by thread): <A HREF="055220.html">[Twisted-Python] inlineCallbacks cascading cancelling and more
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#55219">[ date ]</a>
+              <a href="thread.html#55219">[ thread ]</a>
+              <a href="subject.html#55219">[ subject ]</a>
+              <a href="author.html#55219">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

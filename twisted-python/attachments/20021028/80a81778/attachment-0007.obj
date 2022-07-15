@@ -1,0 +1,92 @@
+from pyunit import unittest
+from twisted.internet import defer, reactor
+from twisted.python import log
+
+class DeferredTestCase(unittest.TestCase):
+    def deferredFail(self, failure):
+        failure.trap(self.failureException)
+        self.testResult.addFailure(self, failure)
+        
+    def deferredError(self, failure):
+        self.testResult.addError(self, failure)
+
+    def _deferredFURaisesErrback(self, failure, *args):
+        expected = args[0]
+        failure.trap(expected)
+    def _deferredFURaisesCallback(self, success, *args):
+        expected = args[0]
+        if hasattr(expected, '__name__'):
+            excName = expected.__name__
+        else: excName = str(expected)
+        raise self.failureException, expected 
+
+    def deferredFailUnlessRaises(self, deferred, expected):
+        deferred.addCallbacks(callback=self._deferredFURaisesCallback,
+                              errback=self._deferredFURaisesErrback,
+                              callbackArgs=[expected],
+                              errbackArgs=[expected])
+
+
+    def _deferredFUEqualCallback(self, success, expected):
+        self.failUnlessEqual(expected, success)
+        
+    def deferredFailUnlessEqual(self, deferred, expected):
+        deferred.addCallback(self._deferredFUEqualCallback, expected)
+
+    def _runSetUp(self):
+        testDeferred = 0
+        self.testResult.startTest(self)
+        try:
+            d = self.setUp()
+            if d is not None and isinstance(d, defer.Deferred):
+                d.addCallbacks(callback=self._runTest, errback=self.deferredError)
+                testDeferred = 1
+        except:
+            self.testResult.addError(self, self._exc_info())
+            self.cleanup()
+            return
+        if not testDeferred:
+            self._runTest()
+
+    def _runTest(self, ignored=None):
+        tearDownDeferred = 0
+        try:
+            d = self.testMethod()
+            if d is not None and isinstance(d, defer.Deferred):
+                d.addErrback(self.deferredFail)
+                d.addErrback(self.deferredError)
+                d.addBoth(self._runTearDown)
+                tearDownDeferred = 1
+        except self.failureException, e:
+            self.testResult.addFailure(self, self._exc_info())
+        except:
+            self.testResult.addError(self, self._exc_info())
+        if not tearDownDeferred:
+            self._runTearDown()
+
+    def _runTearDown(self, ignored=None):
+        cleanupDeferred = 0
+        try:
+            d = self.tearDown()
+            if d is not None and isinstance(d, defer.Deferred):
+                d.addErrback(self.deferredError)
+                d.addBoth(self.cleanup)
+                cleanupDeferred = 1
+        except:
+            testResult.addError(self, self._exc_info())
+        for e in log.flushErrors():
+            self.testResult.addError(self, e)
+        if not cleanupDeferred:
+            self.cleanup()
+
+    def cleanup(self, ignored=None):
+        self.testResult.stopTest(self)
+        reactor.stop()
+        if self.testResult.wasSuccessful():
+            self.testResult.addSuccess(self)
+
+    def __call__(self, testResult=None):
+        if testResult is None: testResult = self.defaultTestResult()
+        self.testResult = testResult
+        self._runSetUp()
+        reactor.run()

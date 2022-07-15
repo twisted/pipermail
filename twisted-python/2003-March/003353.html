@@ -1,0 +1,238 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Problems with PB and Jelly...
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Problems%20with%20PB%20and%20Jelly...&In-Reply-To=20030323.142253.52688406.warner%40lothar.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003345.html">
+   <LINK REL="Next"  HREF="003314.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Problems with PB and Jelly...</H1>
+    <B>Jasper Phillips</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Problems%20with%20PB%20and%20Jelly...&In-Reply-To=20030323.142253.52688406.warner%40lothar.com"
+       TITLE="[Twisted-Python] Problems with PB and Jelly...">jasper at peak.org
+       </A><BR>
+    <I>Mon Mar 24 18:02:17 EST 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003345.html">[Twisted-Python] Problems with PB and Jelly...
+</A></li>
+        <LI>Next message: <A HREF="003314.html">[Twisted-Python] supporting start/stop/restart behavior
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3353">[ date ]</a>
+              <a href="thread.html#3353">[ thread ]</a>
+              <a href="subject.html#3353">[ subject ]</a>
+              <a href="author.html#3353">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+On Sun, 23 Mar 2003, Brian Warner wrote:
+
+Thanks for the response!
+
+[snip: pb.Copyable copies all references found]
+
+&gt;<i> &gt; However, I'm sometimes getting an exception when the actual dictionary
+</I>&gt;<i> &gt; copying is done, as something other than a dict is being copied into
+</I>&gt;<i> &gt; __dict__.  At this point the &quot;jelType&quot; is &quot;dereference&quot;...
+</I> 
+[snip]
+&gt;<i> If it's something else, let us know (and provide a small test case??) so we
+</I>&gt;<i> can fix it at the sprint.
+</I>
+Here's the relavent end of the error:
+File &quot;..\twisted\spread\flavors.py&quot;, line 386, in setCopyableState
+  self.__dict__ = state
+exceptions.TypeError: __dict__ must be set to a dictionary
+
+I've included a test case at the end of the message.
+
+&gt;<i> &gt; Damn, it looks like this might be the cuplrit.  &quot;reference&quot; jelyTypes are
+</I>&gt;<i> &gt; recursively descended into before they are stored, and if a dereference is
+</I>&gt;<i> &gt; found before it's stored... some sort of _Dereference object is created?
+</I>&gt;<i> &gt; An attempt is then made to copy this into __dict__, and boom.
+</I>&gt;<i> 
+</I>&gt;<i> Yes, the current Jelly code looks for objects that are referenced multiple
+</I>&gt;<i> times in the same jellying call and marks them with &quot;reference&quot; tags. When
+</I>&gt;<i> another reference to the same object is detected, it is jellied with a
+</I>&gt;<i> &quot;dereference&quot; tag that points to the earlier &quot;reference&quot; marker. The &quot;cook&quot;,
+</I>&gt;<i> &quot;prepare&quot;, and &quot;preserve&quot; methods are used to implement these multiple
+</I>&gt;<i> phases. Circular or recursive references are handled because the reference
+</I>&gt;<i> number is allocated when we start to jelly the object, even though the state
+</I>&gt;<i> is not yet known.
+</I>
+The number is allocated earlier on, but it isn't stored for use by
+&quot;derference&quot; jelTypes until after recursion, as I will attempt to describe:
+
+Here are the relavent parts of jelly._Unjellier.  Note that the reference is
+stored after it's value is recursively computed -+
+                                                 |
+def _unjelly_reference(self, lst):               |
+    refid = lst[0]                               |
+    exp   = lst[1]                               |
+    o     = self.unjelly(exp)           &lt;--------+
+    ref   = self.references.get(refid)  &lt;--------+
+    if (ref is None):
+        self.references[refid] = o
+    elif isinstance(ref, NotKnown):
+        ref.resolveDependants(o)
+        self.references[refid] = o
+    else:
+        assert 0, &quot;Multiple references with same ID!&quot;
+    return o
+
+This ends up causing the following method to return a _Dereference, rather
+than a state dictionary that unjelly() would normally return.  This then
+results in the error I list above.
+
+def _unjelly_dereference(self, lst):
+    refid = lst[0]
+    print refid #!!! added
+    x = self.references.get(refid)
+    if x is not None:
+        return x
+    der = _Dereference(refid)
+    self.references[refid] = der
+    return der
+
+
+&gt;<i> This scheme will change on Tuesday. The &quot;reference&quot; tags will go away and be
+</I>&gt;<i> replaced by an implicit marker that is notionally inserted every time we
+</I>&gt;<i> start jellying a new mutable object. The &quot;dereference&quot; tags will then point
+</I>&gt;<i> to these implicit markers. This should improve performance quite a bit, and
+</I>&gt;<i> will pave the way to a combined jelly+banana extension module that should
+</I>&gt;<i> give an enormous speedup (doing everything in C).
+</I>
+Sounds good!  No point in my suggesting a fix then. ;-)  Will a new version
+of twisted be released along with these changes, or would I have to go
+through CVS?
+
+[snip]
+
+Here are 3 files for reproducing the &quot;Unjellying a Circular Reference Bug&quot;.
+Just stick them all in the same place, and start the server then the
+client.
+
+- -Jasper
+
+
+Listing for objectBug.py
+=-=-=-=-=-=-=-=-=-=-=-=-
+from twisted.spread import pb
+
+class ClassA( pb.Copyable, pb.RemoteCopy ):
+    def __init__( self ):
+        self.ref = ClassB( self )
+
+class ClassB( pb.Copyable, pb.RemoteCopy ):
+    def __init__( self, ref ):
+        self.ref = ref
+
+import sys
+pb.setCopierForClassTree( sys.modules[__name__], pb.Copyable )
+
+
+Listing for serverBug.py
+=-=-=-=-=-=-=-=-=-=-=-=-
+#/usr/bin/env python
+from twisted.internet import app
+from twisted.spread   import pb
+from twisted.cred     import authorizer
+import clientBug, objectBug
+
+class MyPer( pb.Perspective ):
+    def attached( self, client, identity ):
+        self.client = client
+        return pb.Perspective.attached( self, client, identity )
+
+    def perspective_receive( self, obj ):
+        self.client.callRemote( &quot;receive&quot;, obj )
+
+class MyService( pb.Service ):
+    perspectiveClass = MyPer
+
+    def __init__( self, serviceParent, auth ):
+        pb.Service.__init__( self, &quot;MyService&quot;, serviceParent, auth )
+
+def startServer():
+    myApp = app.Application(&quot;pbServer&quot;)
+    auth  = authorizer.DefaultAuthorizer( myApp )
+    s     = MyService( myApp, auth )
+
+    s.createPerspective( &quot;player1&quot; ).makeIdentity( &quot;password1&quot; )
+
+    myApp.listenTCP( 9000, pb.BrokerFactory( pb.AuthRoot( auth )))
+    myApp.run( save=0 )
+
+if __name__ == '__main__':
+    startServer()
+
+
+Listing for clientBug.py
+=-=-=-=-=-=-=-=-=-=-=-=-
+#/usr/bin/env python
+from twisted.internet import reactor
+from twisted.spread   import pb
+import objectBug
+
+class MyClient( pb.Referenceable ):
+    def connect( self, ipAddress, port, user, password ):
+        defer = pb.connect( ipAddress, port, user, password,
+                            &quot;MyService&quot;, client=self, timeout=3 )
+        defer.addCallback( self.connected )
+
+    def connected( self, perspective ):
+        perspective.callRemote( &quot;receive&quot;, objectBug.ClassA() )
+
+    def remote_receive( self, obj ):
+        print &quot;Object received back&quot;
+
+def startClient():
+    client = MyClient()
+    client.connect( &quot;localhost&quot;, 9000, &quot;player1&quot;, &quot;password1&quot; )
+    reactor.run()
+
+if __name__ == '__main__':
+    startClient()
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.0.6 (GNU/Linux)
+Comment: For info see <A HREF="http://www.gnupg.org">http://www.gnupg.org</A>
+
+iD8DBQE+f45+8EpjZ7/X9bIRAr0yAJ9P2dwozcY478sVL6GKemwYoHAZmwCfYbhT
+ppjMznAw88wjXItJDczxTVU=
+=LvPx
+-----END PGP SIGNATURE-----
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003345.html">[Twisted-Python] Problems with PB and Jelly...
+</A></li>
+	<LI>Next message: <A HREF="003314.html">[Twisted-Python] supporting start/stop/restart behavior
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3353">[ date ]</a>
+              <a href="thread.html#3353">[ thread ]</a>
+              <a href="subject.html#3353">[ subject ]</a>
+              <a href="author.html#3353">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

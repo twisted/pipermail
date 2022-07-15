@@ -1,0 +1,1554 @@
+From woahyeahyeah at yahoo.com  Wed Jun  3 18:57:07 2009
+From: woahyeahyeah at yahoo.com (Jason St.Clair)
+Date: Wed, 3 Jun 2009 15:57:07 -0700 (PDT)
+Subject: [Twisted-web] Telnet chat server
+Message-ID: <406799.68971.qm@web51801.mail.re2.yahoo.com>
+
+I've got a simple little chat server set up that people can telnet into.? The code is as follows:
+
+----------
+
+from twisted.internet import reactor
+from twisted.internet.protocol import ServerFactory 
+from twisted.protocols.basic import LineOnlyReceiver 
+import threading
+
+class ChatProtocol(LineOnlyReceiver): 
+
+??? name = "" 
+
+??? def getName(self): 
+??????? if self.name!="": 
+??????????? return self.name 
+??????? return self.transport.getPeer().host 
+
+??? def connectionMade(self): 
+??????? print "New connection from "+self.getName() ?
+???????
+ self.sendLine("Welcome to the chat.\r\n/quit to quit.") 
+??????? self.factory.sendMessageToAllClients(self.getName()+" joined the chat.") 
+??????? self.factory.clientProtocols.append(self)
+
+??? def connectionLost(self, reason): 
+??????? print "Lost connection from "+self.getName() 
+??????? self.factory.clientProtocols.remove(self) 
+??????? self.factory.sendMessageToAllClients(self.getName()+" disconnected.") 
+
+??? def lineReceived(self, line): 
+??????? if line=="/quit": 
+??????????? self.transport.loseConnection() 
+??????? else:
+ 
+??????????? self.factory.sendMessageToAllClients(self.getName()+": "+line) 
+
+??? def sendLine(self, line): 
+??????? self.transport.write(line+"\r\n") 
+
+class ChatProtocolFactory(ServerFactory): 
+
+??? protocol = ChatProtocol 
+
+??? def __init__(self): 
+??????? self.clientProtocols = [] 
+
+??? def sendMessageToAllClients(self, mesg): 
+??????? for client in self.clientProtocols:
+??????????? client.sendLine(mesg) 
+?????????? ?
+def Test():
+??? global test
+??? factory.sendMessageToAllClients('Hey.')
+??? test = threading.Timer(1.0,
+ Test)
+??? test.start()
+test = threading.Timer(1.0, Test)
+test.start()
+
+print "Starting Server"
+factory = ChatProtocolFactory()
+reactor.listenTCP(3009, factory)
+reactor.run()
+
+----------
+
+The
+problem is that last def, "def Test()".? It should send the line "Hey."
+to all connected users every second.? It does that - however, the
+message only sends through if the client is typing or has entered a
+line.? So, if a client is idle for 30 seconds, then starts typing, he
+will receive "Hey." 30 times in a row - one for each second he was idle.
+
+Is there any way to get this to send the message and have it show up for a client even when they're idle?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090603/38fbd7a0/attachment.htm 
+
+From glyph at divmod.com  Thu Jun  4 00:51:10 2009
+From: glyph at divmod.com (glyph at divmod.com)
+Date: Thu, 04 Jun 2009 04:51:10 -0000
+Subject: [Twisted-web] Telnet chat server
+In-Reply-To: <406799.68971.qm@web51801.mail.re2.yahoo.com>
+References: <406799.68971.qm@web51801.mail.re2.yahoo.com>
+Message-ID: <20090604045110.12555.131317974.divmod.xquotient.12417@weber.divmod.com>
+
+
+This message is more appropriate for the twisted-python list, as it has 
+nothing to do with "web", so I've cross-posted it there.
+
+On 3 Jun, 10:57 pm, woahyeahyeah at yahoo.com wrote:
+>I've got a simple little chat server set up that people can telnet 
+>into.? The code is as follows:
+
+>from twisted.internet import reactor
+>from twisted.internet.protocol import ServerFactory
+>from twisted.protocols.basic import LineOnlyReceiver
+>import threading
+
+^ This is where things start to go (horribly) wrong.
+
+The protocol looks basically correct, but this part:
+>def Test():
+>??? global test
+>??? factory.sendMessageToAllClients('Hey.')
+>??? test = threading.Timer(1.0,
+>Test)
+>??? test.start()
+>test = threading.Timer(1.0, Test)
+>test.start()
+
+is very, very wrong.  You cannot call Twisted APIs from a thread.  Ever. 
+This is very important :).  The behavior to you appeared to be some 
+strange timing issues, but you can get anything from corrupted data to 
+crashing the entire program.
+>Is there any way to get this to send the message and have it show up 
+>for a client even when they're idle?
+
+Yes.  Use the reactor's timed-event APIs rather than threads.  In other 
+words, do this, after you create your factory:
+
+    from twisted.internet.task import LoopingCall
+    LoopingCall(factory.sendMessageToAllClients, 'Hey.').start(1.0)
+
+You may be interested to also read about these APIs:
+
+http://twistedmatrix.com/documents/8.2.0/api/twisted.internet.task.LoopingCall.html
+
+http://twistedmatrix.com/documents/8.2.0/api/twisted.internet.interfaces.IReactorTime.html
+
+
+From drew.smathers at gmail.com  Thu Jun  4 19:06:11 2009
+From: drew.smathers at gmail.com (Drew Smathers)
+Date: Thu, 4 Jun 2009 19:06:11 -0400
+Subject: [Twisted-web] Telnet chat server
+In-Reply-To: <406799.68971.qm@web51801.mail.re2.yahoo.com>
+References: <406799.68971.qm@web51801.mail.re2.yahoo.com>
+Message-ID: <368574aa0906041606y2d4eb0dfo682e2eb5451df916@mail.gmail.com>
+
+2009/6/3 Jason St.Clair <woahyeahyeah at yahoo.com>:
+> I've got a simple little chat server set up that people can telnet into.? The code is as follows:
+>
+> ----------
+>
+> from twisted.internet import reactor
+> from twisted.internet.protocol import ServerFactory
+> from twisted.protocols.basic import LineOnlyReceiver
+> import threading
+>
+> class ChatProtocol(LineOnlyReceiver):
+>
+> ??? name = ""
+>
+> ??? def getName(self):
+> ??????? if self.name!="":
+> ??????????? return self.name
+> ??????? return self.transport.getPeer().host
+>
+> ??? def connectionMade(self):
+> ??????? print "New connection from "+self.getName()
+> ??????? self.sendLine("Welcome to the chat.\r\n/quit to quit.")
+> ??????? self.factory.sendMessageToAllClients(self.getName()+" joined the chat.")
+> ??????? self.factory.clientProtocols.append(self)
+>
+> ??? def connectionLost(self, reason):
+> ??????? print "Lost connection from "+self.getName()
+> ??????? self.factory.clientProtocols.remove(self)
+> ??????? self.factory.sendMessageToAllClients(self.getName()+" disconnected.")
+>
+> ??? def lineReceived(self, line):
+> ??????? if line=="/quit":
+> ??????????? self.transport.loseConnection()
+> ??????? else:
+> ??????????? self.factory.sendMessageToAllClients(self.getName()+": "+line)
+>
+> ??? def sendLine(self, line):
+> ??????? self.transport.write(line+"\r\n")
+>
+> class ChatProtocolFactory(ServerFactory):
+>
+> ??? protocol = ChatProtocol
+>
+> ??? def __init__(self):
+> ??????? self.clientProtocols = []
+>
+> ??? def sendMessageToAllClients(self, mesg):
+> ??????? for client in self.clientProtocols:
+> ??????????? client.sendLine(mesg)
+>
+> def Test():
+> ??? global test
+> ??? factory.sendMessageToAllClients('Hey.')
+> ??? test = threading.Timer(1.0, Test)
+> ??? test.start()
+> test = threading.Timer(1.0, Test)
+> test.start()
+>
+> print "Starting Server"
+> factory = ChatProtocolFactory()
+> reactor.listenTCP(3009, factory)
+> reactor.run()
+>
+> ----------
+>
+> The problem is that last def, "def Test()".? It should send the line "Hey." to all connected users every second.? It does that - however, the message only sends through if the client is typing or has entered a line.? So, if a client is idle for 30 seconds, then starts typing, he will receive "Hey." 30 times in a row - one for each second he was idle.
+>
+> Is there any way to get this to send the message and have it show up for a client even when they're idle?
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+
+You should use twisted.internet.task.LoopingCall instead of
+threading.Timer and it's also worth mentioning that twisted APIs are
+*not* thread-safe; in use cases where you have to use threads (there
+are really few), you should use reactor.callFromThread().
+
+So the equivalent for the above using LoopingCall would be something like:
+
+def test():
+    factory.sendMessageToAllClients('Hey.')
+task = LoopingCall(test)
+reactor.callWhenRunning(task.start, 1.0, 0)
+...
+
+HTH
+
+-Drew
+
+
+From drew.smathers at gmail.com  Thu Jun  4 19:06:16 2009
+From: drew.smathers at gmail.com (Drew Smathers)
+Date: Thu, 4 Jun 2009 19:06:16 -0400
+Subject: [Twisted-web] Telnet chat server
+In-Reply-To: <368574aa0906041606y2d4eb0dfo682e2eb5451df916@mail.gmail.com>
+References: <406799.68971.qm@web51801.mail.re2.yahoo.com>
+	<368574aa0906041606y2d4eb0dfo682e2eb5451df916@mail.gmail.com>
+Message-ID: <368574aa0906041606k6cd49695w72569c67f026a7c2@mail.gmail.com>
+
+2009/6/4 Drew Smathers <drew.smathers at gmail.com>:
+> 2009/6/3 Jason St.Clair <woahyeahyeah at yahoo.com>:
+>> I've got a simple little chat server set up that people can telnet into.? The code is as follows:
+>>
+>> ----------
+>>
+>> from twisted.internet import reactor
+>> from twisted.internet.protocol import ServerFactory
+>> from twisted.protocols.basic import LineOnlyReceiver
+>> import threading
+>>
+>> class ChatProtocol(LineOnlyReceiver):
+>>
+>> ??? name = ""
+>>
+>> ??? def getName(self):
+>> ??????? if self.name!="":
+>> ??????????? return self.name
+>> ??????? return self.transport.getPeer().host
+>>
+>> ??? def connectionMade(self):
+>> ??????? print "New connection from "+self.getName()
+>> ??????? self.sendLine("Welcome to the chat.\r\n/quit to quit.")
+>> ??????? self.factory.sendMessageToAllClients(self.getName()+" joined the chat.")
+>> ??????? self.factory.clientProtocols.append(self)
+>>
+>> ??? def connectionLost(self, reason):
+>> ??????? print "Lost connection from "+self.getName()
+>> ??????? self.factory.clientProtocols.remove(self)
+>> ??????? self.factory.sendMessageToAllClients(self.getName()+" disconnected.")
+>>
+>> ??? def lineReceived(self, line):
+>> ??????? if line=="/quit":
+>> ??????????? self.transport.loseConnection()
+>> ??????? else:
+>> ??????????? self.factory.sendMessageToAllClients(self.getName()+": "+line)
+>>
+>> ??? def sendLine(self, line):
+>> ??????? self.transport.write(line+"\r\n")
+>>
+>> class ChatProtocolFactory(ServerFactory):
+>>
+>> ??? protocol = ChatProtocol
+>>
+>> ??? def __init__(self):
+>> ??????? self.clientProtocols = []
+>>
+>> ??? def sendMessageToAllClients(self, mesg):
+>> ??????? for client in self.clientProtocols:
+>> ??????????? client.sendLine(mesg)
+>>
+>> def Test():
+>> ??? global test
+>> ??? factory.sendMessageToAllClients('Hey.')
+>> ??? test = threading.Timer(1.0, Test)
+>> ??? test.start()
+>> test = threading.Timer(1.0, Test)
+>> test.start()
+>>
+>> print "Starting Server"
+>> factory = ChatProtocolFactory()
+>> reactor.listenTCP(3009, factory)
+>> reactor.run()
+>>
+>> ----------
+>>
+>> The problem is that last def, "def Test()".? It should send the line "Hey." to all connected users every second.? It does that - however, the message only sends through if the client is typing or has entered a line.? So, if a client is idle for 30 seconds, then starts typing, he will receive "Hey." 30 times in a row - one for each second he was idle.
+>>
+>> Is there any way to get this to send the message and have it show up for a client even when they're idle?
+>> _______________________________________________
+>> Twisted-web mailing list
+>> Twisted-web at twistedmatrix.com
+>> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>>
+>>
+>
+> You should use twisted.internet.task.LoopingCall instead of threading.Timer and it's also worth mentioning that twisted APIs are *not* thread-safe; in use cases where you have to use threads (there are really few), you should use reactor.callFromThread().
+>
+> So the equivalent for the above using LoopingCall would be something like:
+>
+> def test():
+> factory.sendMessageToAllClients('Hey.')
+> task = LoopingCall(test)
+> reactor.callWhenRunning(task.start, 1.0, 0)
+> ...
+>
+> HTH
+>
+> -Drew
+>
+
+Also, forgot to mention: This is a general question better asked at
+twisted-python mailing list (not twisted-web).
+
+-Drew
+
+
+From jjconti at gmail.com  Wed Jun 24 12:45:13 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Wed, 24 Jun 2009 13:45:13 -0300
+Subject: [Twisted-web] Hi everybody
+Message-ID: <3f9007680906240945k66b0fe7aq7ee7e98ac72725eb@mail.gmail.com>
+
+Hi everybody. I'm new here. I'm from Argentina and I am using Twisted and Nevow.
+
+Greets!
+-- 
+Juanjo Conti
+
+
+From radix at twistedmatrix.com  Wed Jun 24 13:03:58 2009
+From: radix at twistedmatrix.com (Christopher Armstrong)
+Date: Wed, 24 Jun 2009 13:03:58 -0400
+Subject: [Twisted-web] Hi everybody
+In-Reply-To: <3f9007680906240945k66b0fe7aq7ee7e98ac72725eb@mail.gmail.com>
+References: <3f9007680906240945k66b0fe7aq7ee7e98ac72725eb@mail.gmail.com>
+Message-ID: <60ed19d40906241003x17b11baawe5492a2673b7e18@mail.gmail.com>
+
+Welcome!
+
+On Jun 24, 2009 12:45 PM, "Juanjo Conti" <jjconti at gmail.com> wrote:
+
+Hi everybody. I'm new here. I'm from Argentina and I am using Twisted and
+Nevow.
+
+Greets!
+--
+Juanjo Conti
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090624/52d9655a/attachment.htm 
+
+From yann.pomarede_twisted at gadz.org  Wed Jun 24 15:03:05 2009
+From: yann.pomarede_twisted at gadz.org (Yann Pomarede)
+Date: Wed, 24 Jun 2009 21:03:05 +0200
+Subject: [Twisted-web] Multithread SSL
+In-Reply-To: <79ee6a400906241159y5a4e7a3ci20913443427f424c@mail.gmail.com>
+References: <79ee6a400906241159y5a4e7a3ci20913443427f424c@mail.gmail.com>
+Message-ID: <79ee6a400906241203v57c97aa4p39620998a00ada2d@mail.gmail.com>
+
+Hello,
+
+I used Twisted to write some kind of proxy and it's working great,
+it's so easy to develop and understand.
+
+But I have a problem. I use SSL (on both side of this app) and the
+bandwidth available is limited to the power of one of my CPU due to
+the high cost of the SSL encryption.
+I would like to use both core of my CPU to increase the bandwidth of
+this application but it does not seem easy to do.
+
+# Here is the server definition in myapp.tac
+from twisted.application import internet, service
+application = service.Application('MyApp', uid=1001, gid=1001)
+internet.SSLServer(80, serverFactory, MySSLContext(), 50,
+'xxx.xxx.xxx.xxx').setServiceParent(service.IServiceCollection(application))
+
+# And here the clients connections
+from twisted.internet import reactor, ssl
+mySSLContext = ssl.ClientContextFactory()
+mySSLContext.method = SSL.SSLv23_METHOD
+reactor.connectSSL(self.HOST, self.PORT, self, mySSLContext)
+
+Does anyone already have this kind of problem? Is there an easy way to
+multithread the SSL encryption part?
+
+Thank you,
+Yann from France.
+
+
+From duncan.mcgreggor at gmail.com  Wed Jun 24 15:08:57 2009
+From: duncan.mcgreggor at gmail.com (Duncan M. McGreggor)
+Date: Wed, 24 Jun 2009 14:08:57 -0500
+Subject: [Twisted-web] Multithread SSL
+In-Reply-To: <79ee6a400906241203v57c97aa4p39620998a00ada2d@mail.gmail.com>
+References: <79ee6a400906241159y5a4e7a3ci20913443427f424c@mail.gmail.com>
+	<79ee6a400906241203v57c97aa4p39620998a00ada2d@mail.gmail.com>
+Message-ID: <4A4279C9.8040904@gmail.com>
+
+Yann Pomarede wrote:
+> Hello,
+> 
+> I used Twisted to write some kind of proxy and it's working great,
+> it's so easy to develop and understand.
+> 
+> But I have a problem. I use SSL (on both side of this app) and the
+> bandwidth available is limited to the power of one of my CPU due to
+> the high cost of the SSL encryption.
+> I would like to use both core of my CPU to increase the bandwidth of
+> this application but it does not seem easy to do.
+> 
+> # Here is the server definition in myapp.tac
+> from twisted.application import internet, service
+> application = service.Application('MyApp', uid=1001, gid=1001)
+> internet.SSLServer(80, serverFactory, MySSLContext(), 50,
+> 'xxx.xxx.xxx.xxx').setServiceParent(service.IServiceCollection(application))
+> 
+> # And here the clients connections
+> from twisted.internet import reactor, ssl
+> mySSLContext = ssl.ClientContextFactory()
+> mySSLContext.method = SSL.SSLv23_METHOD
+> reactor.connectSSL(self.HOST, self.PORT, self, mySSLContext)
+> 
+> Does anyone already have this kind of problem? Is there an easy way to
+> multithread the SSL encryption part?
+
+
+You could run two instances and load balance them...
+
+d
+
+
+From yann.pomarede_twisted at gadz.org  Wed Jun 24 15:25:45 2009
+From: yann.pomarede_twisted at gadz.org (Yann Pomarede)
+Date: Wed, 24 Jun 2009 21:25:45 +0200
+Subject: [Twisted-web] Multithread SSL
+In-Reply-To: <79ee6a400906241223n435fbd3dt66f2576c192a1cec@mail.gmail.com>
+References: <79ee6a400906241159y5a4e7a3ci20913443427f424c@mail.gmail.com>
+	<79ee6a400906241203v57c97aa4p39620998a00ada2d@mail.gmail.com>
+	<4A4279C9.8040904@gmail.com>
+	<79ee6a400906241223n435fbd3dt66f2576c192a1cec@mail.gmail.com>
+Message-ID: <79ee6a400906241225x201819e7wac0d398adde19901@mail.gmail.com>
+
+Thanks for your reply.
+I already thought about that but I'll have other problems if I do so:
+- I need some variables to be common between the instances (Maybe it's
+not so difficult with RPC or a DB or shared memory).
+- I also need to keep a pool of all the outgoing the connections (to
+perform some real time stats and to limit the number of connection per
+user)
+
+But if I do not have other choices, it's certainly what I'll have to do...
+
+Yann.
+
+On Wed, Jun 24, 2009 at 21:08, Duncan M.
+McGreggor<duncan.mcgreggor at gmail.com> wrote:
+> Yann Pomarede wrote:
+>> Hello,
+>>
+>> I used Twisted to write some kind of proxy and it's working great,
+>> it's so easy to develop and understand.
+>>
+>> But I have a problem. I use SSL (on both side of this app) and the
+>> bandwidth available is limited to the power of one of my CPU due to
+>> the high cost of the SSL encryption.
+>> I would like to use both core of my CPU to increase the bandwidth of
+>> this application but it does not seem easy to do.
+>>
+>> # Here is the server definition in myapp.tac
+>> from twisted.application import internet, service
+>> application = service.Application('MyApp', uid=1001, gid=1001)
+>> internet.SSLServer(80, serverFactory, MySSLContext(), 50,
+>> 'xxx.xxx.xxx.xxx').setServiceParent(service.IServiceCollection(application))
+>>
+>> # And here the clients connections
+>> from twisted.internet import reactor, ssl
+>> mySSLContext = ssl.ClientContextFactory()
+>> mySSLContext.method = SSL.SSLv23_METHOD
+>> reactor.connectSSL(self.HOST, self.PORT, self, mySSLContext)
+>>
+>> Does anyone already have this kind of problem? Is there an easy way to
+>> multithread the SSL encryption part?
+>
+>
+> You could run two instances and load balance them...
+>
+> d
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+
+
+From lasizoillo at gmail.com  Wed Jun 24 16:00:51 2009
+From: lasizoillo at gmail.com (lasizoillo)
+Date: Wed, 24 Jun 2009 22:00:51 +0200
+Subject: [Twisted-web] Multithread SSL
+In-Reply-To: <79ee6a400906241225x201819e7wac0d398adde19901@mail.gmail.com>
+References: <79ee6a400906241159y5a4e7a3ci20913443427f424c@mail.gmail.com>
+	<79ee6a400906241203v57c97aa4p39620998a00ada2d@mail.gmail.com>
+	<4A4279C9.8040904@gmail.com>
+	<79ee6a400906241223n435fbd3dt66f2576c192a1cec@mail.gmail.com>
+	<79ee6a400906241225x201819e7wac0d398adde19901@mail.gmail.com>
+Message-ID: <49414f570906241300kb3302c1p9ec5b041f2668472@mail.gmail.com>
+
+2009/6/24 Yann Pomarede <yann.pomarede_twisted at gadz.org>:
+> Thanks for your reply.
+> I already thought about that but I'll have other problems if I do so:
+> - I need some variables to be common between the instances (Maybe it's
+> not so difficult with RPC or a DB or shared memory).
+If you need full ACI (ACID without durability) this can be a performance issue.
+
+> - I also need to keep a pool of all the outgoing the connections (to
+> perform some real time stats and to limit the number of connection per
+> user)
+>
+The load balancer can limit number of connections (without decipher
+ssl) or agregate real time stats from web servers (for easier
+management). You can upgrade code in your web app without lost service
+too ;-)
+
+> But if I do not have other choices, it's certainly what I'll have to do...
+>
+
+Threads are not  the solution. Python have a GIL (Global Inter-Lock)
+[1] and don't use multicore facilities. I don't know if you can do
+multiprocessing with twisted. A load balancer sound more easy (and
+maybe more horizontal scalable).
+
+[1] http://www.dabeaz.com/python/GIL.pdf
+
+Excuse my poor english.
+
+Regargs,
+
+Javi
+
+> Yann.
+>
+
+
+
+> On Wed, Jun 24, 2009 at 21:08, Duncan M.
+> McGreggor<duncan.mcgreggor at gmail.com> wrote:
+>> Yann Pomarede wrote:
+>>> Hello,
+>>>
+>>> I used Twisted to write some kind of proxy and it's working great,
+>>> it's so easy to develop and understand.
+>>>
+>>> But I have a problem. I use SSL (on both side of this app) and the
+>>> bandwidth available is limited to the power of one of my CPU due to
+>>> the high cost of the SSL encryption.
+>>> I would like to use both core of my CPU to increase the bandwidth of
+>>> this application but it does not seem easy to do.
+>>>
+>>> # Here is the server definition in myapp.tac
+>>> from twisted.application import internet, service
+>>> application = service.Application('MyApp', uid=1001, gid=1001)
+>>> internet.SSLServer(80, serverFactory, MySSLContext(), 50,
+>>> 'xxx.xxx.xxx.xxx').setServiceParent(service.IServiceCollection(application))
+>>>
+>>> # And here the clients connections
+>>> from twisted.internet import reactor, ssl
+>>> mySSLContext = ssl.ClientContextFactory()
+>>> mySSLContext.method = SSL.SSLv23_METHOD
+>>> reactor.connectSSL(self.HOST, self.PORT, self, mySSLContext)
+>>>
+>>> Does anyone already have this kind of problem? Is there an easy way to
+>>> multithread the SSL encryption part?
+>>
+>>
+>> You could run two instances and load balance them...
+>>
+>> d
+>>
+>> _______________________________________________
+>> Twisted-web mailing list
+>> Twisted-web at twistedmatrix.com
+>> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>>
+>>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+From radix at twistedmatrix.com  Wed Jun 24 16:05:16 2009
+From: radix at twistedmatrix.com (Christopher Armstrong)
+Date: Wed, 24 Jun 2009 16:05:16 -0400
+Subject: [Twisted-web] Multithread SSL
+In-Reply-To: <49414f570906241300kb3302c1p9ec5b041f2668472@mail.gmail.com>
+References: <79ee6a400906241159y5a4e7a3ci20913443427f424c@mail.gmail.com>
+	<79ee6a400906241203v57c97aa4p39620998a00ada2d@mail.gmail.com>
+	<4A4279C9.8040904@gmail.com>
+	<79ee6a400906241223n435fbd3dt66f2576c192a1cec@mail.gmail.com>
+	<79ee6a400906241225x201819e7wac0d398adde19901@mail.gmail.com>
+	<49414f570906241300kb3302c1p9ec5b041f2668472@mail.gmail.com>
+Message-ID: <60ed19d40906241305l3b55667encc3ddfc58b67ecdf@mail.gmail.com>
+
+On Wed, Jun 24, 2009 at 4:00 PM, lasizoillo<lasizoillo at gmail.com> wrote:
+> 2009/6/24 Yann Pomarede <yann.pomarede_twisted at gadz.org>:
+>> Thanks for your reply.
+>> I already thought about that but I'll have other problems if I do so:
+>> - I need some variables to be common between the instances (Maybe it's
+>> not so difficult with RPC or a DB or shared memory).
+> If you need full ACI (ACID without durability) this can be a performance issue.
+>
+>> - I also need to keep a pool of all the outgoing the connections (to
+>> perform some real time stats and to limit the number of connection per
+>> user)
+>>
+> The load balancer can limit number of connections (without decipher
+> ssl) or agregate real time stats from web servers (for easier
+> management). You can upgrade code in your web app without lost service
+> too ;-)
+>
+>> But if I do not have other choices, it's certainly what I'll have to do...
+>>
+>
+> Threads are not ?the solution. Python have a GIL (Global Inter-Lock)
+> [1] and don't use multicore facilities. I don't know if you can do
+> multiprocessing with twisted. A load balancer sound more easy (and
+> maybe more horizontal scalable).
+>
+> [1] http://www.dabeaz.com/python/GIL.pdf
+>
+> Excuse my poor english.
+
+
+A little bit of knowledge...
+
+Threads are indeed a possibility, because OpenSSL would be the thing
+doing the SSL work, and given that you use OpenSSL via a C extension,
+the C extension can release the GIL.
+
+
+-- 
+Christopher Armstrong
+http://radix.twistedmatrix.com/
+http://planet-if.com/
+http://canonical.com/
+
+
+From michal.dtz at gmail.com  Thu Jun 25 01:14:40 2009
+From: michal.dtz at gmail.com (Michal Pasternak)
+Date: Thu, 25 Jun 2009 07:14:40 +0200
+Subject: [Twisted-web] Multithread SSL
+In-Reply-To: <49414f570906241300kb3302c1p9ec5b041f2668472@mail.gmail.com>
+References: <79ee6a400906241159y5a4e7a3ci20913443427f424c@mail.gmail.com>
+	<79ee6a400906241203v57c97aa4p39620998a00ada2d@mail.gmail.com>
+	<4A4279C9.8040904@gmail.com>
+	<79ee6a400906241223n435fbd3dt66f2576c192a1cec@mail.gmail.com>
+	<79ee6a400906241225x201819e7wac0d398adde19901@mail.gmail.com>
+	<49414f570906241300kb3302c1p9ec5b041f2668472@mail.gmail.com>
+Message-ID: <10c877d90906242214g1d956da8r726f39f74addc71a@mail.gmail.com>
+
+What about ampoule, https://launchpad.net/ampoule , can you check it?
+
+-- 
+m
+
+
+2009/6/24 lasizoillo <lasizoillo at gmail.com>
+
+> 2009/6/24 Yann Pomarede <yann.pomarede_twisted at gadz.org>:
+> > Thanks for your reply.
+> > I already thought about that but I'll have other problems if I do so:
+> > - I need some variables to be common between the instances (Maybe it's
+> > not so difficult with RPC or a DB or shared memory).
+> If you need full ACI (ACID without durability) this can be a performance
+> issue.
+>
+> > - I also need to keep a pool of all the outgoing the connections (to
+> > perform some real time stats and to limit the number of connection per
+> > user)
+> >
+> The load balancer can limit number of connections (without decipher
+> ssl) or agregate real time stats from web servers (for easier
+> management). You can upgrade code in your web app without lost service
+> too ;-)
+>
+> > But if I do not have other choices, it's certainly what I'll have to
+> do...
+> >
+>
+> Threads are not  the solution. Python have a GIL (Global Inter-Lock)
+> [1] and don't use multicore facilities. I don't know if you can do
+> multiprocessing with twisted. A load balancer sound more easy (and
+> maybe more horizontal scalable).
+>
+> [1] http://www.dabeaz.com/python/GIL.pdf
+>
+> Excuse my poor english.
+>
+> Regargs,
+>
+> Javi
+>
+> > Yann.
+> >
+>
+>
+>
+> > On Wed, Jun 24, 2009 at 21:08, Duncan M.
+> > McGreggor<duncan.mcgreggor at gmail.com> wrote:
+> >> Yann Pomarede wrote:
+> >>> Hello,
+> >>>
+> >>> I used Twisted to write some kind of proxy and it's working great,
+> >>> it's so easy to develop and understand.
+> >>>
+> >>> But I have a problem. I use SSL (on both side of this app) and the
+> >>> bandwidth available is limited to the power of one of my CPU due to
+> >>> the high cost of the SSL encryption.
+> >>> I would like to use both core of my CPU to increase the bandwidth of
+> >>> this application but it does not seem easy to do.
+> >>>
+> >>> # Here is the server definition in myapp.tac
+> >>> from twisted.application import internet, service
+> >>> application = service.Application('MyApp', uid=1001, gid=1001)
+> >>> internet.SSLServer(80, serverFactory, MySSLContext(), 50,
+> >>>
+> 'xxx.xxx.xxx.xxx').setServiceParent(service.IServiceCollection(application))
+> >>>
+> >>> # And here the clients connections
+> >>> from twisted.internet import reactor, ssl
+> >>> mySSLContext = ssl.ClientContextFactory()
+> >>> mySSLContext.method = SSL.SSLv23_METHOD
+> >>> reactor.connectSSL(self.HOST, self.PORT, self, mySSLContext)
+> >>>
+> >>> Does anyone already have this kind of problem? Is there an easy way to
+> >>> multithread the SSL encryption part?
+> >>
+> >>
+> >> You could run two instances and load balance them...
+> >>
+> >> d
+> >>
+> >> _______________________________________________
+> >> Twisted-web mailing list
+> >> Twisted-web at twistedmatrix.com
+> >> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> >>
+> >>
+> >
+> > _______________________________________________
+> > Twisted-web mailing list
+> > Twisted-web at twistedmatrix.com
+> > http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+> >
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090625/0698c918/attachment-0001.htm 
+
+From jjconti at gmail.com  Thu Jun 25 15:17:20 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Thu, 25 Jun 2009 16:17:20 -0300
+Subject: [Twisted-web] Athena javascript question
+Message-ID: <3f9007680906251217t47126312r7744b74d15789266@mail.gmail.com>
+
+Hi all,
+
+I used Twisted to write a small server and now I am using Nevow.Athena
+to write a web administrative interface. I got the tutorials running
+and now I am changing it to reach what I want for my webapp.
+
+The problem I am having is in the javascript side. Whe I try this js:
+
+/ import Nevow.Athena
+
+TempDisplay.TempWidget = Nevow.Athena.Widget.subclass('TempDisplay.TempWidget');
+
+TempDisplay.TempWidget.methods(
+    function __init__(self, node) {
+        TempDisplay.TempWidget.upcall(self, "__init__", node);
+
+        self.tempWidget = self.nodeByAttribute('name', 'terElement');
+
+        self.tempSalaTxt = document.createTextNode('');
+        self.tempSala = self.nodeByAttribute('name', 'temp_sala')
+        self.tempSala.appendChild(self.tempSalaTxt);
+
+        self.tempRetornoTxt = document.createTextNode('');
+        self.tempRetorno = self.nodeByAttribute('name', 'temp_retorno');
+        self.tempRetorno.appendChild(self.tempRetornoTxt);
+
+        self.tempExteriorTxt = document.createTextNode('');
+        self.tempExterior = self.nodeByAttribute('name', 'temp_exterior');
+        self.tempExterior.appendChild(self.tempExteriorTxt);
+    },
+
+    function doRead(self) {
+        // ejecuta funcion read en servidor
+        self.callRemote("read");
+        return false;
+    },
+
+    function actualizarValores(self, data) {
+        // llamada por servidor para actualizar valores
+        var valores = data.split(',');
+
+        self.tempSala.remove(self.tempSalaTxt);
+        self.tempSalaTxt = document.createTextNode(valores[0]);
+        self.tempSala.appendChild(self.tempSalaTxt);
+
+        self.tempRetorno(self.tempRetornoTxt);
+        self.tempRetornoTxt = document.createTextNode(valores[1]);
+        self.tempRetorno.appendChild(self.tempRetornoTxt);
+
+        self.tempExterior.remove(self.tempExteriorTxt);
+        self.tempExteriorTxt = document.createTextNode(valores[2]);
+        self.tempExterior.appendChild(self.tempExteriorTxt);
+    });
+
+When the functi?n actualizarValores is excecuted from the server, I
+get this error:
+
+Unhandled error in Deferred:
+Traceback (most recent call last):
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\Runtime\__init__.js", lin
+ 566, in ([object Event])
+    d.callback(result);
+--- <exception caught here> ---
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\Runtime\__init__.js", lin
+ 566, in ([object Event])
+    d.callback(result);
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\__init__.js", line 249, i
+ ([object Object])
+    return methodFunction.apply(this, args);
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\Defer.js", line 258, in c
+llback([object Object],[object Object])
+    self._startRunCallbacks(result);
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\__init__.js", line 249, i
+ ([object Object])
+    return methodFunction.apply(this, args);
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\Defer.js", line 255, in _
+tartRunCallbacks([object Object],[object Object])
+    self._runCallbacks();
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\__init__.js", line 249, i
+ ()
+    return methodFunction.apply(this, args);
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\Defer.js", line 229, in _
+unCallbacks([object Object])
+    self._result = callback.apply(null, args);
+  File "c:\Python25\lib\site-packages\nevow\js\Nevow\Athena\__init__.js", line
+92, in ([object Array])
+    self.messageReceived(result[1]);
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\__init__.js", line 249, i
+ ([object Array])
+    return methodFunction.apply(this, args);
+  File "c:\Python25\lib\site-packages\nevow\js\Nevow\Athena\__init__.js", line
+35, in messageReceived([object Object],[object Array])
+    self.page['action_'+actionName].apply(self.page, actionArgs);
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\__init__.js", line 249, i
+ ("Nevow.Athena.callByAthenaID","s2c0",[object Array])
+    return methodFunction.apply(this, args);
+  File "c:\Python25\lib\site-packages\nevow\js\Nevow\Athena\__init__.js", line
+48, in action_call([object Object],"Nevow.Athena.callByAthenaID","s2c0",[object
+Array])
+    result = method.apply(target, funcArgs);
+  File "c:\Python25\lib\site-packages\nevow\js\Nevow\Athena\__init__.js", line
+259, in (1,"actualizarValores",[object Array])
+    return method.apply(widget, varargs);
+  File "c:\Python25\lib\site-packages\nevow\js\Divmod\__init__.js", line 249, i
+ ("21.4,27.8,31.8")
+    return methodFunction.apply(this, args);
+  File "C:\Documents and Settings\Teco2006\Escritorio\line\js\TempDisplay.js",
+ine 34, in actualizarValores([object Object],"21.4,27.8,31.8")
+    self.tempSala.remove(self.tempSalaTxt);
+nevow.athena.JSException: TypeError: self.tempSala.remove is not a function
+
+As far as I know, remove is a valid javascript function. Why can't I
+use it in this context?
+
+Thanks in advance!
+
+-- 
+Juanjo Conti
+
+
+From glyph at divmod.com  Thu Jun 25 15:54:22 2009
+From: glyph at divmod.com (glyph at divmod.com)
+Date: Thu, 25 Jun 2009 19:54:22 -0000
+Subject: [Twisted-web] Athena javascript question
+In-Reply-To: <3f9007680906251217t47126312r7744b74d15789266@mail.gmail.com>
+References: <3f9007680906251217t47126312r7744b74d15789266@mail.gmail.com>
+Message-ID: <20090625195422.12555.36620875.divmod.xquotient.14618@weber.divmod.com>
+
+
+On 07:17 pm, jjconti at gmail.com wrote:
+>As far as I know, remove is a valid javascript function. Why can't I
+>use it in this context?
+
+Happily, this isn't Athena's fault :-).  Remove isn't a valid method of 
+DOM nodes.  Perhaps you wanted removeChild?
+
+    http://www.w3.org/TR/DOM-Level-2-Core/core.html#ID-1734834066
+
+
+From jjconti at gmail.com  Thu Jun 25 22:54:13 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Thu, 25 Jun 2009 23:54:13 -0300
+Subject: [Twisted-web] Athena javascript question
+In-Reply-To: <20090625195422.12555.36620875.divmod.xquotient.14618@weber.divmod.com>
+References: <3f9007680906251217t47126312r7744b74d15789266@mail.gmail.com>
+	<20090625195422.12555.36620875.divmod.xquotient.14618@weber.divmod.com>
+Message-ID: <3f9007680906251954v13d3f284p4042d02b2b66f295@mail.gmail.com>
+
+Thanks you very much. I'll try it later.
+
+BTW, Is it possible to use JQuery with Athena?
+
+-- 
+Juanjo Conti
+
+
+From michal.dtz at gmail.com  Fri Jun 26 07:40:03 2009
+From: michal.dtz at gmail.com (=?iso-8859-2?Q?Micha=B3_Pasternak?=)
+Date: Fri, 26 Jun 2009 13:40:03 +0200
+Subject: [Twisted-web] Athena javascript question
+In-Reply-To: <3f9007680906251954v13d3f284p4042d02b2b66f295@mail.gmail.com>
+References: <3f9007680906251217t47126312r7744b74d15789266@mail.gmail.com>	<20090625195422.12555.36620875.divmod.xquotient.14618@weber.divmod.com>
+	<3f9007680906251954v13d3f284p4042d02b2b66f295@mail.gmail.com>
+Message-ID: <4a44b395.190c660a.104e.1696@mx.google.com>
+
+Depends what you mean by saying "with" :-)
+
+I used several 3rd-party JS libraries alongside Athena and they worked
+nicely. Even // import worked :-)
+
+-- 
+M
+
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com
+[mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of Juanjo Conti
+Sent: Friday, June 26, 2009 4:54 AM
+To: Twisted Web World
+Subject: Re: [Twisted-web] Athena javascript question
+
+Thanks you very much. I'll try it later.
+
+BTW, Is it possible to use JQuery with Athena?
+
+-- 
+Juanjo Conti
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+
+From jjconti at gmail.com  Fri Jun 26 11:18:35 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 26 Jun 2009 12:18:35 -0300
+Subject: [Twisted-web] Athena javascript question
+In-Reply-To: <4a44b395.190c660a.104e.1696@mx.google.com>
+References: <3f9007680906251217t47126312r7744b74d15789266@mail.gmail.com>
+	<20090625195422.12555.36620875.divmod.xquotient.14618@weber.divmod.com>
+	<3f9007680906251954v13d3f284p4042d02b2b66f295@mail.gmail.com>
+	<4a44b395.190c660a.104e.1696@mx.google.com>
+Message-ID: <3f9007680906260818t4c8c3d05tf975c638a6a36278@mail.gmail.com>
+
+Could you provide a link to an example?
+
+2009/6/26 Micha? Pasternak <michal.dtz at gmail.com>:
+> Depends what you mean by saying "with" :-)
+>
+> I used several 3rd-party JS libraries alongside Athena and they worked
+> nicely. Even // import worked :-)
+>
+> --
+> M
+>
+>
+> -----Original Message-----
+> From: twisted-web-bounces at twistedmatrix.com
+> [mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of Juanjo Conti
+> Sent: Friday, June 26, 2009 4:54 AM
+> To: Twisted Web World
+> Subject: Re: [Twisted-web] Athena javascript question
+>
+> Thanks you very much. I'll try it later.
+>
+> BTW, Is it possible to use JQuery with Athena?
+>
+> --
+> Juanjo Conti
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+
+
+
+-- 
+Juanjo Conti
+
+
+From spongelavapaul at googlemail.com  Fri Jun 26 15:01:00 2009
+From: spongelavapaul at googlemail.com (Paul Thomas)
+Date: Fri, 26 Jun 2009 20:01:00 +0100
+Subject: [Twisted-web] Athena javascript question
+In-Reply-To: <3f9007680906260818t4c8c3d05tf975c638a6a36278@mail.gmail.com>
+References: <3f9007680906251217t47126312r7744b74d15789266@mail.gmail.com>
+	<20090625195422.12555.36620875.divmod.xquotient.14618@weber.divmod.com>
+	<3f9007680906251954v13d3f284p4042d02b2b66f295@mail.gmail.com>
+	<4a44b395.190c660a.104e.1696@mx.google.com>
+	<3f9007680906260818t4c8c3d05tf975c638a6a36278@mail.gmail.com>
+Message-ID: <25BAD1A1-78AB-4CED-BC6B-5E89D7DFE09C@googlemail.com>
+
+
+On 26 Jun 2009, at 16:18, Juanjo Conti wrote:
+
+> Could you provide a link to an example?
+
++1
+
+We're using Nevow/Athena and we've reached the point where the UI  
+needs to get more complex. It's Athena + (something) or we have to  
+move to something like Cappuccino + (something). I think i'd rather  
+find a simple upgrade path using jQuery or similar.
+
+I've seen a few examples of MochiKit used with Athena - but that might  
+not be enough for us.
+
+pt.
+
+>
+> 2009/6/26 Micha? Pasternak <michal.dtz at gmail.com>:
+>> Depends what you mean by saying "with" :-)
+>>
+>> I used several 3rd-party JS libraries alongside Athena and they  
+>> worked
+>> nicely. Even // import worked :-)
+>>
+
+
+
+From jjconti at gmail.com  Fri Jun 26 15:56:04 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 26 Jun 2009 16:56:04 -0300
+Subject: [Twisted-web] How to know if a LIveElement is alive :)
+Message-ID: <3f9007680906261256v4d5505chc981b639a10a708a@mail.gmail.com>
+
+Hi, I wonder know if my nevow.athena.LiveElement intances are alive.
+This means for example, the web browser was now closed.
+
+I've been checking the API documentation at
+http://buildbot.divmod.org/apidocs/nevow.athena.LiveElement.html but
+didn't fin any sutable method for asking this.
+
+How do you do this stuff?
+
+Thanks,
+
+-- 
+Juanjo Conti
+
+
+From jjconti at gmail.com  Fri Jun 26 16:44:32 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 26 Jun 2009 17:44:32 -0300
+Subject: [Twisted-web] How to know if a LIveElement is alive :)
+In-Reply-To: <3f9007680906261256v4d5505chc981b639a10a708a@mail.gmail.com>
+References: <3f9007680906261256v4d5505chc981b639a10a708a@mail.gmail.com>
+Message-ID: <3f9007680906261344x64377c27tfd5a8c17c4acd967@mail.gmail.com>
+
+2009/6/26 Juanjo Conti <jjconti at gmail.com>:
+> Hi, I wonder know if my nevow.athena.LiveElement intances are alive.
+> This means for example, the web browser was now closed.
+>
+> I've been checking the API documentation at
+> http://buildbot.divmod.org/apidocs/nevow.athena.LiveElement.html but
+> didn't fin any sutable method for asking this.
+>
+
+I thought I could use the LiveElement detached method
+http://buildbot.divmod.org/apidocs/nevow.athena._LiveMixin.html#detached
+but it semms not to be called when I close the browser where a
+LIveElement is living...
+-- 
+Juanjo Conti
+
+
+From maillists at ivsn.com  Fri Jun 26 21:22:17 2009
+From: maillists at ivsn.com (Paul Reznicek)
+Date: Sat, 27 Jun 2009 03:22:17 +0200
+Subject: [Twisted-web] How to know if a LIveElement is alive :)
+In-Reply-To: <3f9007680906261344x64377c27tfd5a8c17c4acd967@mail.gmail.com>
+References: <3f9007680906261256v4d5505chc981b639a10a708a@mail.gmail.com>
+	<3f9007680906261344x64377c27tfd5a8c17c4acd967@mail.gmail.com>
+Message-ID: <4A457449.3070209@ivsn.com>
+
+Juanjo Conti wrote:
+> 2009/6/26 Juanjo Conti <jjconti at gmail.com>:
+>> Hi, I wonder know if my nevow.athena.LiveElement intances are alive.
+>> This means for example, the web browser was now closed.
+>>
+>> I've been checking the API documentation at
+>> http://buildbot.divmod.org/apidocs/nevow.athena.LiveElement.html but
+>> didn't fin any sutable method for asking this.
+>>
+> 
+> I thought I could use the LiveElement detached method
+> http://buildbot.divmod.org/apidocs/nevow.athena._LiveMixin.html#detached
+> but it semms not to be called when I close the browser where a
+> LIveElement is living...
+
+Hello,
+2 months back I've had same question - working solution from Werner
+is in attached message.
+Regards, Paul
+-------------- next part --------------
+An embedded message was scrubbed...
+From: Werner Thie <wthie at thiengineering.ch>
+Subject: Re: [Twisted-web] Athena LiveElement: how to putChild under unique
+	session URL?
+Date: Wed, 22 Apr 2009 16:44:17 +0200
+Size: 5044
+Url: http://twistedmatrix.com/pipermail/twisted-web/attachments/20090627/5347c8f7/attachment.eml 
+
+From jjconti at gmail.com  Fri Jun 26 22:25:45 2009
+From: jjconti at gmail.com (Juanjo Conti)
+Date: Fri, 26 Jun 2009 23:25:45 -0300
+Subject: [Twisted-web] How to know if a LIveElement is alive :)
+In-Reply-To: <4A457449.3070209@ivsn.com>
+References: <3f9007680906261256v4d5505chc981b639a10a708a@mail.gmail.com>
+	<3f9007680906261344x64377c27tfd5a8c17c4acd967@mail.gmail.com>
+	<4A457449.3070209@ivsn.com>
+Message-ID: <3f9007680906261925r7ac8949dyd60ff1042f6665f5@mail.gmail.com>
+
+Thanks! I'll try it.
+
+So... what is detached for?
+
+2009/6/26 Paul Reznicek <maillists at ivsn.com>:
+> Juanjo Conti wrote:
+>>
+>> 2009/6/26 Juanjo Conti <jjconti at gmail.com>:
+>>>
+>>> Hi, I wonder know if my nevow.athena.LiveElement intances are alive.
+>>> This means for example, the web browser was now closed.
+>>>
+>>> I've been checking the API documentation at
+>>> http://buildbot.divmod.org/apidocs/nevow.athena.LiveElement.html but
+>>> didn't fin any sutable method for asking this.
+>>>
+>>
+>> I thought I could use the LiveElement detached method
+>> http://buildbot.divmod.org/apidocs/nevow.athena._LiveMixin.html#detached
+>> but it semms not to be called when I close the browser where a
+>> LIveElement is living...
+>
+> Hello,
+> 2 months back I've had same question - working solution from Werner
+> is in attached message.
+> Regards, Paul
+>
+>
+> ---------- Mensaje reenviado ----------
+> From:?Werner Thie <wthie at thiengineering.ch>
+> To:?Twisted Web World <twisted-web at twistedmatrix.com>
+> Date:?Wed, 22 Apr 2009 16:44:17 +0200
+> Subject:?Re: [Twisted-web] Athena LiveElement: how to putChild under unique
+> session URL?
+> Paul Reznicek wrote:
+>>
+>> glyph at divmod.com wrote:
+>>>
+>>> On 21 Apr, 08:57 pm, maillists at ivsn.com wrote:
+>>>>
+>>>> Hello All,
+>>>>
+>>>> LiveElement is fantastic, but I'm too stupid to find out,
+>>>> how to put temporary page under sessiop URL...
+>>>> This work for js modules at start like:
+>>>> ? http://localhost:8080/user/<HASH clientID>/jsmodule/athena_test
+>>>>
+>>>> I'd like to add temporary during run time something like:
+>>>> ? http://localhost:8080/user/<HASH clientID>/your_data
+>>>> page or staticFile, which should exists only few minutes.
+>>
+>> Caveat is, that instances of gone clients are keeping in memory. Is there
+>> a way to find out, that a client is gone (closed browser or switched to
+>> other site)?
+>
+> Welcome to the land of garbage collecting languages... What was the losing
+> memory of the C++ ages is now the not releasing memory because of
+> noncollectable garbage and server processes eating all the memory the
+> machine has. I had to learn it the hard way but NEVER ever store a reference
+> to something like sessions, mind or the the hierarchy of your LiveElements
+> unless you're prepared to handle the breakup of the reference at cleanup
+> time. Also keep in mind that the object hierarchy of client and server must
+> be in sync or you're risking that the detach functionality does not work as
+> advertised. Please see the detach/detached functionality in athena.py
+>
+> class thePage(athena.LivePage):
+>
+> ?def beforeRender(self, ctx):
+> ? ? ? ? ? :
+> ? ?d = self.notifyOnDisconnect()
+> ? ?d.addErrback(self.disconn)
+>
+> ?def disconn(self, reason):
+> ? ?"""
+> ? ?we will be called back when the client disconnects, just iterate
+> ? ?over all children and call a disconnected func if available
+> ? ?"""
+> ? ?for child in self.liveFragmentChildren:
+> ? ? ?if hasattr(child, 'disconnected'):
+> ? ? ? ?child.disconnected(reason);
+>
+> Werner
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+> _______________________________________________
+> Twisted-web mailing list
+> Twisted-web at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+>
+>
+
+
+
+-- 
+Juanjo Conti
+
+
+From mithrandi at mithrandi.net  Sun Jun 28 12:02:15 2009
+From: mithrandi at mithrandi.net (Tristan Seligmann)
+Date: Sun, 28 Jun 2009 18:02:15 +0200
+Subject: [Twisted-web] How to know if a LIveElement is alive :)
+In-Reply-To: <3f9007680906261925r7ac8949dyd60ff1042f6665f5@mail.gmail.com>
+References: <3f9007680906261256v4d5505chc981b639a10a708a@mail.gmail.com>
+	<3f9007680906261344x64377c27tfd5a8c17c4acd967@mail.gmail.com>
+	<4A457449.3070209@ivsn.com>
+	<3f9007680906261925r7ac8949dyd60ff1042f6665f5@mail.gmail.com>
+Message-ID: <f5eea9170906280902q83e2422q15f634f0616de654@mail.gmail.com>
+
+On Sat, Jun 27, 2009 at 4:25 AM, Juanjo Conti<jjconti at gmail.com> wrote:
+> Thanks! I'll try it.
+>
+> So... what is detached for?
+
+You can call detach() on a widget in preparation for dynamically
+removing it from the page; once the detach process is complete,
+detached() is called.
+
+http://divmod.org/trac/ticket/2870 may be a better way to do what you
+want, once it has been implemented.
+-- 
+mithrandi, i Ainil en-Balandor, a faer Ambar
+
+
+From exarkun at divmod.com  Tue Jun 30 08:41:46 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 30 Jun 2009 08:41:46 -0400
+Subject: [Twisted-web] [Twisted-Python] http.Request and JSON
+In-Reply-To: <95bb10690906300512n4c4a45ecx805d89ff96dec703@mail.gmail.com>
+Message-ID: <20090630124146.22176.877063711.divmod.quotient.11236@henry.divmod.com>
+
+On Tue, 30 Jun 2009 13:12:05 +0100, Reza Lotun <rlotun at gmail.com> wrote:
+>Hi,
+>
+>On Tue, Jun 30, 2009 at 12:56 PM, Tristan
+>Seligmann<mithrandi at mithrandi.net> wrote:
+>>> To be safer, I do a request.content.getvalue() since content is a
+>>> cStringIO object and you can never be sure if somewhere along the
+>>> chain of processing someone hasn't done a .read and forgot to do a
+>>> .seek(0,0).
+>>
+>> You should probably do the seek/read instead, since I don't believe
+>> this is guaranteed to be a cStringIO; it might be an actual file on
+>> disk, or something else.
+>
+>If that's true then there really should be a .get_body() method on the
+>request object.
+
+Why can't you seek and read?
+
+Also, this discussion would be more appropriate on the twisted-web mailing
+list.
+
+Jean-Paul
+
+
+From ypena at infomed.sld.cu  Tue Jun 30 09:38:43 2009
+From: ypena at infomed.sld.cu (ypena at infomed.sld.cu)
+Date: Tue, 30 Jun 2009 08:38:43 -0500
+Subject: [Twisted-web] Soap Client through http proxy with authentication on
+	twisted!!!!!!!
+Message-ID: <1246369123.4a4a156392b5d@webmail.sld.cu>
+
+Hey,
+I'm working on an soap client at the moment with twisted package version 8.2.0-1. It soap
+client will have to work in environments where connections have to be routed through a
+http proxy with authentication,  but I can't find any way to specify a http proxy with
+authentication using any of the Twisted classes. Is this possible? I assumed it was
+seeing as how it is a fairly common situation but the documentation/API haven't
+provided any useful information. Help me.
+
+------------------------------
+Infomed - Red de Salud de Cuba
+http://www.sld.cu/
+
+
+---------------------------------------
+    Red Telematica de Salud - Cuba
+    	  CNICM - Infomed
+
+
+From rlotun at gmail.com  Tue Jun 30 09:49:48 2009
+From: rlotun at gmail.com (Reza Lotun)
+Date: Tue, 30 Jun 2009 14:49:48 +0100
+Subject: [Twisted-web] [Twisted-Python] http.Request and JSON
+In-Reply-To: <20090630124146.22176.877063711.divmod.quotient.11236@henry.divmod.com>
+References: <95bb10690906300512n4c4a45ecx805d89ff96dec703@mail.gmail.com>
+	<20090630124146.22176.877063711.divmod.quotient.11236@henry.divmod.com>
+Message-ID: <95bb10690906300649h20081679v409b7274893f41c@mail.gmail.com>
+
+On Tue, Jun 30, 2009 at 1:41 PM, Jean-Paul Calderone<exarkun at divmod.com> wrote:
+>>If that's true then there really should be a .get_body() method on the
+>>request object.
+>
+> Why can't you seek and read?
+
+I can, but it's not "nice". I realize that on some level twisted.web
+is a bit low-level, but having to remember to do a seek then read is a
+bit annoying. I'm sure those of us using twisted.web to, say,
+implement a REST interface end up writing some sort of convenience
+method anyway to do it.
+
+Perhaps there are other complications I haven't considered, but why
+can't you add a get_body method?
+
+Cheers,
+Reza
+
+
+-- 
+Reza Lotun
++44 (0)7521 310 763
+rlotun at gmail.com
+
+
+From p.mayers at imperial.ac.uk  Tue Jun 30 11:38:38 2009
+From: p.mayers at imperial.ac.uk (Phil Mayers)
+Date: Tue, 30 Jun 2009 16:38:38 +0100
+Subject: [Twisted-web] [Twisted-Python] http.Request and JSON
+In-Reply-To: <95bb10690906300649h20081679v409b7274893f41c@mail.gmail.com>
+References: <95bb10690906300512n4c4a45ecx805d89ff96dec703@mail.gmail.com>	<20090630124146.22176.877063711.divmod.quotient.11236@henry.divmod.com>
+	<95bb10690906300649h20081679v409b7274893f41c@mail.gmail.com>
+Message-ID: <4A4A317E.9020703@imperial.ac.uk>
+
+Reza Lotun wrote:
+> On Tue, Jun 30, 2009 at 1:41 PM, Jean-Paul Calderone<exarkun at divmod.com> wrote:
+>>> If that's true then there really should be a .get_body() method on the
+>>> request object.
+>> Why can't you seek and read?
+> 
+> I can, but it's not "nice". I realize that on some level twisted.web
+> is a bit low-level, but having to remember to do a seek then read is a
+> bit annoying. I'm sure those of us using twisted.web to, say,
+> implement a REST interface end up writing some sort of convenience
+> method anyway to do it.
+> 
+> Perhaps there are other complications I haven't considered, but why
+> can't you add a get_body method?
+
+A file-like is a python-esque idiom. You can pass it to all kinds of 
+things e.g. JSON parsers, XML parsers.
+
+What if the body is a 1 gigabyte string? Do you want twisted to read the 
+results in from the tempfile, instantiate a python string, and probably 
+get killed due to an out-of-memory condition?
+
+I vote for the file-like.
+
+
+From rlotun at gmail.com  Tue Jun 30 12:27:03 2009
+From: rlotun at gmail.com (Reza Lotun)
+Date: Tue, 30 Jun 2009 17:27:03 +0100
+Subject: [Twisted-web] [Twisted-Python] http.Request and JSON
+In-Reply-To: <4A4A317E.9020703@imperial.ac.uk>
+References: <95bb10690906300512n4c4a45ecx805d89ff96dec703@mail.gmail.com>
+	<20090630124146.22176.877063711.divmod.quotient.11236@henry.divmod.com>
+	<95bb10690906300649h20081679v409b7274893f41c@mail.gmail.com>
+	<4A4A317E.9020703@imperial.ac.uk>
+Message-ID: <95bb10690906300927h30733171s9815d6d19a308fbe@mail.gmail.com>
+
+Hi,
+
+On Tue, Jun 30, 2009 at 4:38 PM, Phil Mayers<p.mayers at imperial.ac.uk> wrote:
+> A file-like is a python-esque idiom. You can pass it to all kinds of
+> things e.g. JSON parsers, XML parsers.
+>
+> What if the body is a 1 gigabyte string? Do you want twisted to read the
+> results in from the tempfile, instantiate a python string, and probably
+> get killed due to an out-of-memory condition?
+
+Ok, fair enough. I suppose what I was getting at as in general a nicer
+way to extract body content. I agree the file-like idiom is pythonic
+and probably better overall. I've just seen some annoying debugging
+sessions where seek wasn't being performed and reads yielding nothing
+- it's rather confusing when you get into that situation. I guess
+there's no magic bullet for that.
+
+In fact, I guess the real annoyance stems from the memory of finally
+figuring out that the body could be retrieved from request.content *in
+the first place* took far too long when I was learning twisted.web.
+But that's a different discussion entirely.
+
+Thanks,
+Reza
+
+-- 
+Reza Lotun
++44 (0)7521 310 763
+rlotun at gmail.com
+
+
+From jared.gisin at isilon.com  Tue Jun 30 18:32:39 2009
+From: jared.gisin at isilon.com (Jared Gisin)
+Date: Tue, 30 Jun 2009 15:32:39 -0700
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <95bb10690906300927h30733171s9815d6d19a308fbe@mail.gmail.com>
+References: <95bb10690906300512n4c4a45ecx805d89ff96dec703@mail.gmail.com><20090630124146.22176.877063711.divmod.quotient.11236@henry.divmod.com><95bb10690906300649h20081679v409b7274893f41c@mail.gmail.com><4A4A317E.9020703@imperial.ac.uk>
+	<95bb10690906300927h30733171s9815d6d19a308fbe@mail.gmail.com>
+Message-ID: <0C40B34038FD824FACDB387E7788728702C6CF5C@seaxch08.desktop.isilon.com>
+
+Is it just me, or do I not get the spirit of HTTPAuthSessionWrapper. Why
+does it have a render method? This is a wrapper, shouldn't it be calling
+the render of the avatar that it's fetching, not itself? Why isn't it
+just a mixin that can enforce HTTP auth for any arbitrary resource?
+
+
+From jared.gisin at isilon.com  Tue Jun 30 18:38:46 2009
+From: jared.gisin at isilon.com (Jared Gisin)
+Date: Tue, 30 Jun 2009 15:38:46 -0700
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <0C40B34038FD824FACDB387E7788728702C6CF5C@seaxch08.desktop.isilon.com>
+References: <95bb10690906300512n4c4a45ecx805d89ff96dec703@mail.gmail.com><20090630124146.22176.877063711.divmod.quotient.11236@henry.divmod.com><95bb10690906300649h20081679v409b7274893f41c@mail.gmail.com><4A4A317E.9020703@imperial.ac.uk><95bb10690906300927h30733171s9815d6d19a308fbe@mail.gmail.com>
+	<0C40B34038FD824FACDB387E7788728702C6CF5C@seaxch08.desktop.isilon.com>
+Message-ID: <0C40B34038FD824FACDB387E7788728702C6CF63@seaxch08.desktop.isilon.com>
+
+It seems to be completely broken for wrapping a child resource. You can
+wrap the site root resource, but not a child?  What am I missing here?
+
+-----Original Message-----
+From: twisted-web-bounces at twistedmatrix.com
+[mailto:twisted-web-bounces at twistedmatrix.com] On Behalf Of Jared Gisin
+Sent: Tuesday, June 30, 2009 3:33 PM
+To: Twisted Web World
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+
+Is it just me, or do I not get the spirit of HTTPAuthSessionWrapper. Why
+does it have a render method? This is a wrapper, shouldn't it be calling
+the render of the avatar that it's fetching, not itself? Why isn't it
+just a mixin that can enforce HTTP auth for any arbitrary resource?
+
+_______________________________________________
+Twisted-web mailing list
+Twisted-web at twistedmatrix.com
+http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web
+
+
+From exarkun at divmod.com  Tue Jun 30 20:16:48 2009
+From: exarkun at divmod.com (Jean-Paul Calderone)
+Date: Tue, 30 Jun 2009 20:16:48 -0400
+Subject: [Twisted-web] HTTPAuthSessionWrapper render
+In-Reply-To: <0C40B34038FD824FACDB387E7788728702C6CF63@seaxch08.desktop.isilon.com>
+Message-ID: <20090701001648.22176.1376481381.divmod.quotient.11460@henry.divmod.com>
+
+On Tue, 30 Jun 2009 15:38:46 -0700, Jared Gisin <jared.gisin at isilon.com> wrote:
+>It seems to be completely broken for wrapping a child resource. You can
+>wrap the site root resource, but not a child?  What am I missing here?
+
+Its render method only ever raises NotImplementedError.  This is because
+it isn't ever supposed to be invoked.  If the code is working correctly,
+then the only thing which will ever happen to an HTTPAuthSessionWrapper
+is that some child of it will be requested.  That child may be rendered.
+
+If you're seeing HTTPAuthSessionWrapper.render get invoked, then it may
+be due to a bug in Twisted or due to a bug in how your code uses the
+wrapper.  Can you provide more details about what you're doing?  Perhaps
+we can track down the cause of the behavior you're observing.
+
+Jean-Paul
+
+

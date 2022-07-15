@@ -1,0 +1,227 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] the right way of unit testing protocols
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20the%20right%20way%20of%20unit%20testing%20protocols&In-Reply-To=%3C20030731110710.GA21641%40lapdog%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="037788.html">
+   <LINK REL="Next"  HREF="037809.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] the right way of unit testing protocols</H1>
+    <B>Tommi Virtanen</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20the%20right%20way%20of%20unit%20testing%20protocols&In-Reply-To=%3C20030731110710.GA21641%40lapdog%3E"
+       TITLE="[Twisted-Python] the right way of unit testing protocols">tv at twistedmatrix.com
+       </A><BR>
+    <I>Thu Jul 31 05:07:10 MDT 2003</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="037788.html">[Twisted-Python] the right way of unit testing protocols
+</A></li>
+        <LI>Next message (by thread): <A HREF="037809.html">[Twisted-Python] the right way of unit testing protocols
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37802">[ date ]</a>
+              <a href="thread.html#37802">[ thread ]</a>
+              <a href="subject.html#37802">[ subject ]</a>
+              <a href="author.html#37802">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Thu, Jul 31, 2003 at 12:09:00PM +1000, Andrew Bennetts wrote:
+ &gt; In general you'd just do some variant on:
+&gt;<i> &gt; 
+</I>&gt;<i> &gt;  reactor.listenTCP(1234, myServerFactory)
+</I>&gt;<i> &gt;  reactor.connectTCP(&quot;127.0.0.1&quot;, 1234, myClientFactory):
+</I>&gt;<i> &gt;  while someConditionIsn'tSet:
+</I>&gt;<i> &gt;      reactor.iterate()
+</I>&gt;<i> &gt;  # at this point some exchange should have finished successfully
+</I>&gt;<i> 
+</I>&gt;<i> Or you can use the loopback module -- twisted.protocols.loopback.  Many of
+</I>&gt;<i> the Twisted tests do this.
+</I>
+	I'd like to vote _heavily_ on using
+	twisted.protocols.loopback.loopback()
+
+	Opening TCP sockets in unit tests is just not _unit_ testing
+	in my book. Please don't do it in unit tests. It just makes it
+	harder to run your unit tests in varying environments. (Who
+	says I allow you to bind to port 1234? Who says it's free?
+	Who says I allow you to listen *at all*?)
+
+	&lt;/rant&gt;
+
+
+	Also, you should not be testing just interoperability between
+	*your* client and *your* server, but interoperability of your
+	server with a &quot;standard&quot;, and interoperability of your client
+	with a &quot;standard&quot;. For that, I prefer doing something like
+	this:
+
+class LDAPClientTestDriver:
+    &quot;&quot;&quot;
+
+    A test driver that looks somewhat like a real LDAPClient.
+
+    Pass in a list of lists of LDAPProtocolResponses. For each sent
+    LDAP message, the first item of said list is iterated through, and
+    all the items are sent as responses to the callback. The sent LDAP
+    messages are stored in self.sent, so you can assert that the sent
+    messages are what they are supposed to be.
+
+    &quot;&quot;&quot;
+    def __init__(self, *responses):
+        self.sent=[]
+        self.responses=list(responses)
+    def queue(self, x, callback):
+        self.sent.append(x)
+        assert self.responses, 'Ran out of responses at %r' % x
+        responses = self.responses.pop(0)
+        while responses:
+            r = responses.pop(0)
+            ret = callback(r)
+            if responses:
+                assert ret==0
+            else:
+                assert ret==1
+
+    def assertNothingSent(self):
+        # just a bit more explicit
+        self.assertSent()
+
+    def assertSent(self, *shouldBeSent):
+        shouldBeSent = list(shouldBeSent)
+        assert self.sent == shouldBeSent, \
+               '%s expected to send %r but sent %r' % (
+            self.__class__.__name__,
+            shouldBeSent,
+            self.sent)
+        sentStr = ''.join([str(x) for x in self.sent])
+	shouldBeSentStr = ''.join([str(x) for x in shouldBeSent])
+	assert sentStr == shouldBeSentStr, \
+               '%s expected to send data %r but sent %r' % (
+            self.__class__.__name__,
+            shouldBeSentStr,
+            sentStr)
+
+
+class LDAPSyntaxAttributesModificationOnWire(unittest.TestCase):
+    def testAdd(self):
+	&quot;&quot;&quot;Modify &amp; commit should write the right data to the server.&quot;&quot;&quot;
+
+        client = LDAPClientTestDriver(
+            [	pureldap.LDAPModifyResponse(resultCode=0,
+                                            matchedDN='',
+                                            errorMessage=''),
+                ])
+
+	o=ldapsyntax.LDAPEntry(client=client,
+                               dn='cn=foo,dc=example,dc=com',
+                               attributes={
+	    'objectClass': ['a', 'b'],
+	    'aValue': ['a'],
+	    })
+	o['aValue'].add('newValue')
+	o['aValue'].add('anotherNewValue')
+
+	d=o.commit()
+        val = deferredResult(d)
+
+        client.assertSent(pureldap.LDAPModifyRequest(
+	    object='cn=foo,dc=example,dc=com',
+	    modification=[
+	    pureldap.LDAPModification_add(vals=(('aValue',
+						 ['newValue']),)),
+	    pureldap.LDAPModification_add(vals=(('aValue',
+						 ['anotherNewValue']),)),
+	    ]))
+
+
+	And elsewhere, test the actual serialization of the
+	on-wire protocol message known as pureldap.LDAPModifyRequest:
+
+class KnownValues(unittest.TestCase):
+    knownValues=( # class, args, kwargs, expected_result
+
+	(pureldap.LDAPModifyRequest,
+	 [],
+	 { &quot;object&quot;: 'cn=foo, dc=example, dc=com',
+	   &quot;modification&quot;: [pureldap.LDAPModification_delete([('bar',)])]
+	   },
+	 [0x66, 0x2c]
+	 + [0x04, 0x1a]
+	 + l(&quot;cn=foo, dc=example, dc=com&quot;)
+	 + [0x30, 0x0e]
+	 + [0x30, 0x0c]
+	 + [0x0a, 0x01, 0x01]
+	 + [0x30, 0x07]
+	 + [0x04, 0x03] + l(&quot;bar&quot;)
+	 + [0x31, 0x00]),
+
+	...
+
+        )
+
+    def testToLDAP(self):
+	&quot;&quot;&quot;str(LDAPClass(...)) should give known result with known input&quot;&quot;&quot;
+	for klass, args, kwargs, encoded in self.knownValues:
+	    result = klass(*args, **kwargs)
+	    result = str(result)
+	    result = map(ord, result)
+	    if result!=encoded:
+		raise AssertionError, \
+		      &quot;Class %s(*%s, **%s) doesn't encode properly: &quot; \
+		      &quot;%s != %s&quot; % (klass.__name__,
+				    repr(args), repr(kwargs),
+				    repr(result), repr(encoded))
+
+    def testFromLDAP(self):
+	&quot;&quot;&quot;LDAPClass(encoded=&quot;...&quot;) should give known result with known input&quot;&quot;&quot;
+	for klass, args, kwargs, encoded in self.knownValues:
+	    m=MutableString(s(*encoded))
+	    m.append('foo')
+	    result = klass(encoded=m, berdecoder=pureber.BERDecoderContext())
+	    assert m=='foo'
+
+	    shouldBe = klass(*args, **kwargs)
+	    #TODO shouldn't use str below
+	    assert str(result)==str(shouldBe), \
+		   &quot;Class %s(*%s, **%s) doesn't decode properly: &quot; \
+		   &quot;%s != %s&quot; % (klass.__name__,
+				 repr(args), repr(kwargs),
+				 repr(result), repr(shouldBe))
+
+-- 
+:<i>(){ :|:&amp;};:
+</I>
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="037788.html">[Twisted-Python] the right way of unit testing protocols
+</A></li>
+	<LI>Next message (by thread): <A HREF="037809.html">[Twisted-Python] the right way of unit testing protocols
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#37802">[ date ]</a>
+              <a href="thread.html#37802">[ thread ]</a>
+              <a href="subject.html#37802">[ subject ]</a>
+              <a href="author.html#37802">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

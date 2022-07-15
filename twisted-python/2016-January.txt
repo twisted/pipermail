@@ -1,0 +1,1967 @@
+From glyph at twistedmatrix.com  Mon Jan  4 16:59:10 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Mon, 4 Jan 2016 15:59:10 -0800
+Subject: [Twisted-Python] on template processing
+In-Reply-To: <CAA-sNEaLqB6+VVc6D=8P-3JWEK7ewVfcdXoLD6L2OYC7cCjfrg@mail.gmail.com>
+References: <CAA-sNEaLqB6+VVc6D=8P-3JWEK7ewVfcdXoLD6L2OYC7cCjfrg@mail.gmail.com>
+Message-ID: <8D487458-E248-49C9-9CF0-0DFBC3E3AFD8@twistedmatrix.com>
+
+Hi Kevin!  Sorry for the delay; your message caught me (and I suspect many other people) on vacation.
+
+> On Dec 26, 2015, at 4:08 PM, Kevin Mcintyre <kebin70 at gmail.com> wrote:
+> 
+> 1) Is template block processing done top to bottom sequentially?  I've included example.py - it's interesting that by having a blocking call first the second request is blocked, but having the blocking call after a non-blocking call the second request is not.  I would've thought it would behave as a deferred list, but looking at _flattenTree and guessing not.  Maybe related to wait_for_it example?
+
+I'm not entirely sure what you mean by "top to bottom" or "sequentially", but I think for all reasonable meanings of these words the answer would be "yes".  However, blocking calls on the main loop always block the entire main loop in Twisted; multiple requests do not interact with each other in twisted.web.template, except for the fact that they share a main loop, just as everything else in Twisted does.
+
+> 2) Is it possible for a Resource to act as an Element too?  I've included a non-working elementresource.py.  I'm a total hack, but I would think that if an instance had a loader attr it could be processable.
+
+A Resource is a Resource; an Element is an Element.  They do different things, and muddling up the request-dispatching API further wouldn't help anything.  Multiple inheritance is always a "you have two problems" sort of scenario.  However, what I think you want (a place where you could conveniently return an Element or a Resource, and the result would be properly adapted) is supported by Klein:
+
+https://github.com/twisted/klein/blob/e336c5b1af25badb3f159ab72b3d1bf392d45ba5/klein/resource.py#L225-L226
+
+You can return an Element from any klein route and it will be turned into a Resource for you.
+
+> 3) Is it possible to include xmlns:t="http://twistedmatrix.com/ns/twisted.web.template/0.1 <http://twistedmatrix.com/ns/twisted.web.template/0.1>" not in a tag itself?  Or perhaps have a tag like 'render-block' that could be transparent-like?
+
+Not built-in, but the https://twistedmatrix.com/documents/15.5.0/api/twisted.web.iweb.ITemplateLoader.html interface allows you to load your template however you like.  I have written a couple of small apps that used html5lib with some post-processing to load templates instead of expat, and if I weren't so lazy I would have contributed one of them to Twisted :).  You could write a loader that wraps the document in an enclosing tag that adds the XML namespace textually, and that might do the trick.  We'd definitely be interested in a contribution that dealt with this.
+
+> 4) Is it possible to have xmlns:t="http://twistedmatrix.com/ns/twisted.web.template/0.1 <http://twistedmatrix.com/ns/twisted.web.template/0.1>" in multiple places in a template?  I have some cases with inline scripts that bonk out with > or < characters.  This is very much related to #3.
+
+"bonk out"?  It sounds like you have a cross-site-scripting attack in the making here.  Messing with how the template gets loaded is not the right way to address it.  Please describe this in more detail so I don't give you advice that is going to get your users pwnt because I don't fully understand your use-case :).
+
+> 5) Is it possible for a render element to return something like "<~sometag t:render>..." and process recursively?
+
+You mean return a literal string, or do you just mean you want an element to return another element from a renderer?
+
+> 6) Is there any examples of connection keep-alive long polling?
+
+Just return NOT_DONE_YET, save the request away, and call request.write/request.finish sometime later.  It's almost too simple to have an example :).
+
+> 7) Examples of request based scoping would be great.  All the examples on http://twistedmatrix.com/documents/13.0.0/web/howto/twisted-templates.html <http://twistedmatrix.com/documents/13.0.0/web/howto/twisted-templates.html> have flatten(None... -  I've included request_scope.py 
+
+Setting arbitrary attributes on the request is a terrible anti-pattern, so you won't find any examples of using the request for that.  Looking at the documentation now, I can see it doesn't really explain how to manage state necessary for rendering an element, and it probably should.  This type of documentation oversight is very common in Twisted, unfortunately, because there's a strange disconnect between the way the average Twisted core developer thinks and the way the average Python developer thinks that continues to mystify me.  In this case, we assume you've put your state on 'self' so the examples all focus on just how to inject it into the template with slots.
+
+This is exemplified by this Stack Overflow question I wrote a while ago - http://stackoverflow.com/questions/7313761/how-do-i-add-two-integers-together-with-twisted - it's an extremely general problem that's hard to pin down.  It shows up particularly often when twisted's users are trying to make multiple protocols, or web resources, interact with each other.  The general question is: how do I use Twisted to manage the state associated with these connections?  What Twisted API should I use to move state between them?  In your case, you're asking how you can use APIs within Element or Resource to move state from your resource's render method to the Element you're instantiating.
+
+The answer is: your Element is just a Python class.  Don't stick stuff onto the request and then pass the request into the Element via the rendering mechanism so that you can pull the state back out again.  Just pass the state that the Element needs to do its job into its constructor.
+
+The reason the docs often don't cover this sort of thing is that it seems bizarre to have to explain how Python classes work; and in fact I'm sure you (and our audience) do know how they work, so an explanation of how to write a constructor seems out of place in the documentation for twisted.web.  I can see that this is a "best practice" that should at least be touched on though, so that people don't encounter this sort of confusion.
+
+> 8) The wait_for_it example, is that meant as a chunked transfer example?  It would be cool to have an example I could open in a browser.  Trying to wrap my head around this and subviews in the meantime.
+
+Chunked transfer is a transport implementation detail; this is meant as an example of how you can use Deferreds.  The problem with demonstrating this concept in a browser is that browsers have weird, arbitrary thresholds for incremental rendering and will generally intentionally avoid partially rendering anything example-sized, instead opting to leave the page blank until the full body has been received. This example will send "before waiting ..." to the browser as soon as the request is sent, but we can't control what the browser actually does with it.  I actually tried to fix this up a few months ago and the rules that browsers use for incremental rendering just completely baffled me; if you can figure out a way to reliably demonstrate this it would be great.
+
+Thanks for using Twisted!
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160104/25383c8a/attachment.html>
+
+From oliverpalmer at opalmer.com  Wed Jan  6 16:35:51 2016
+From: oliverpalmer at opalmer.com (Oliver Palmer)
+Date: Wed, 6 Jan 2016 18:35:51 -0500
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+Message-ID: <CAEgpGv7tgOX6=1YxjBJoM4cK2Vy70xnTTVdAYP1G0CYhcWt3aQ@mail.gmail.com>
+
+So expanding on the "Should the CFFI wrapper and functions for win32 be a
+separate project" thread from six months ago I think I'd like some
+feedback.  The pywincffi <https://github.com/opalmer/pywincffi> project,
+which I'm planning to use to start replacing pywin32 in Twisted, is getting
+close to its first release.  At this point there's enough code in place
+that it could probably be used to replace pywin32 in
+twisted.python.lockfile and other parts of pywin32 in Twisted.  Before
+proposing any patches however, I'd like to take this opportunity to welcome
+feedback from people on this list.  Although pywincffi will not be a
+'Twisted project' Twisted will be the primary consumer of pywincffi so I'd
+like to make sure developers here are happy with the direction that has
+been taken.
+
+For some background, the core objectives and intended design features are
+below (nothing all that special mostly):
+
+* It should be easy to build and retrieve the binary files (wheels for now,
+easy to add more later).
+* Python 2.6, 2.7 and 3.x are supported from a single code base.
+* Type conversion, error checking and other 'C like' code should be the
+responsibility of the library where possible.
+* APIs provided by pywincffi should mirror their Windows counterparts as
+closely as possible so the MSDN documentation can be more easily used as
+reference.
+* For contributors, it should be possible to work on any platform.  It
+should also be possible to contribute without having to manually build a VM.
+* For consumers, documentation and error messages should be descriptive,
+consistent, complete and accessible.  Examples should be provided for more
+complex use cases.
+
+>From a functionality and design standpoint, I think the above are more or
+less achieved and can be maintained going forward.  With that in mind, I'd
+like to know if anyone here has other ideas that they believe should be
+incorporated.  Of course if anyone happens to look at the code and find
+functional issues with it now would be a good time to address those issues
+too.
+
+Thanks in advance for the help!
+
+---Oliver
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160106/f76894a6/attachment.html>
+
+From glyph at twistedmatrix.com  Wed Jan  6 16:44:43 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Wed, 6 Jan 2016 15:44:43 -0800
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <CAEgpGv7tgOX6=1YxjBJoM4cK2Vy70xnTTVdAYP1G0CYhcWt3aQ@mail.gmail.com>
+References: <CAEgpGv7tgOX6=1YxjBJoM4cK2Vy70xnTTVdAYP1G0CYhcWt3aQ@mail.gmail.com>
+Message-ID: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+
+
+> On Jan 6, 2016, at 15:35, Oliver Palmer <oliverpalmer at opalmer.com> wrote:
+> 
+> So expanding on the "Should the CFFI wrapper and functions for win32 be a separate project" thread from six months ago I think I'd like some feedback.  The pywincffi <https://github.com/opalmer/pywincffi> project, which I'm planning to use to start replacing pywin32 in Twisted, is getting close to its first release.  At this point there's enough code in place that it could probably be used to replace pywin32 in twisted.python.lockfile and other parts of pywin32 in Twisted.  Before proposing any patches however, I'd like to take this opportunity to welcome feedback from people on this list.  Although pywincffi will not be a 'Twisted project' Twisted will be the primary consumer of pywincffi so I'd like to make sure developers here are happy with the direction that has been taken.
+> 
+> For some background, the core objectives and intended design features are below (nothing all that special mostly):
+> 
+> * It should be easy to build and retrieve the binary files (wheels for now, easy to add more later).
+> * Python 2.6, 2.7 and 3.x are supported from a single code base.
+> * Type conversion, error checking and other 'C like' code should be the responsibility of the library where possible.
+> * APIs provided by pywincffi should mirror their Windows counterparts as closely as possible so the MSDN documentation can be more easily used as reference.
+> * For contributors, it should be possible to work on any platform.  It should also be possible to contribute without having to manually build a VM.
+> * For consumers, documentation and error messages should be descriptive, consistent, complete and accessible.  Examples should be provided for more complex use cases.
+> 
+> From a functionality and design standpoint, I think the above are more or less achieved and can be maintained going forward.  With that in mind, I'd like to know if anyone here has other ideas that they believe should be incorporated.  Of course if anyone happens to look at the code and find functional issues with it now would be a good time to address those issues too.
+> 
+> Thanks in advance for the help!
+
+This sounds absolutely fantastic - thank you for taking this on.
+
+Something else that would be nice to keep in mind - I would really like to eliminate our Pyrex support files for IOCP as well; if you could make sure those APIs are wrapped by pywincffi (I think they might be missing from pywin32, or at least, I believe they were at one point, which is why Pavel wrote his own thing), and perhaps even contribute patches to eliminate that old and crufty code, that would be fantastic :).
+
+-glyph
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160106/392be295/attachment.html>
+
+From jasonjwwilliams at gmail.com  Wed Jan  6 19:46:19 2016
+From: jasonjwwilliams at gmail.com (Jason J. W. Williams)
+Date: Wed, 6 Jan 2016 18:46:19 -0800
+Subject: [Twisted-Python] Shiji - JSON REST API Framework built with Twisted
+	Web
+Message-ID: <CAHZAEpdTBG7Wk=TK7uXgdVVEg677iJ2S3gvDbq1NKidNxDioiQ@mail.gmail.com>
+
+HI Guys,
+
+In case its of help to anyone, my company is open sourcing the framework we
+built using Twisted Web to help us build & serve JSON REST APIs:
+
+https://github.com/williamsjj/shiji
+
+We've been using it successfully for a few years and built it to solve a
+bunch of repetitive tasks for us:
+
+* API versioning
+* Signed cookie handling w/ support for key rotation.
+* Enforcement of required JSON arguments and validation of JSON argument
+datatypes.
+* Enforcement of required query string arguments.
+* Standardized JSON error responses.
+* Basic sanity checking of pagination arguments for API calls that support
+it.
+* Automatic generation of API documentation based on call docstrings and
+subclasses of our APIError super class.
+
+MIT License, so feel free to do with it as you please. If you have any
+questions, just let me know. Hope it's useful to someone else as well.
+
+-J
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160106/02564058/attachment.html>
+
+From hawkowl at atleastfornow.net  Wed Jan  6 19:49:59 2016
+From: hawkowl at atleastfornow.net (Amber Brown)
+Date: Thu, 07 Jan 2016 10:49:59 +0800
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+Message-ID: <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+
+Worth noting, I have a CFFI binding for IOCP already (its blocked on base support for Windows on Py3, that ticket is up for review), so it's not needed right now. Although, ideally, replacing our custom built thing with a library would be the best case, but we can put more important things first :)
+
+On 7 Jan 2016 07:44, Glyph Lefkowitz <glyph at twistedmatrix.com> wrote:
+>
+>
+>> On Jan 6, 2016, at 15:35, Oliver Palmer <oliverpalmer at opalmer.com> wrote:
+>>
+>> So expanding on the "Should the CFFI wrapper and functions for win32 be a separate project" thread from six months ago I think I'd like some feedback.? The pywincffi?project, which I'm planning to use to start replacing pywin32 in Twisted, is getting close to its first release.? At this point there's enough code in place that it could probably be used to replace pywin32 in twisted.python.lockfile and other parts of pywin32 in Twisted.? Before proposing any patches however, I'd like to take this opportunity to welcome feedback from people on this list.? Although pywincffi will not be a 'Twisted project' Twisted will be the primary consumer of pywincffi so I'd like to make sure developers here are happy with the direction that has been taken.
+>>
+>> For some background, the core objectives and intended design features are below (nothing all that special mostly):
+>>
+>> * It should be easy to build and retrieve the binary files (wheels for now, easy to add more later).
+>> * Python 2.6, 2.7 and 3.x are supported from a single code base.
+>> * Type conversion, error checking and other 'C like' code should be the responsibility of the library where possible.
+>> * APIs provided by pywincffi should mirror their Windows counterparts as closely as possible so the MSDN documentation can be more easily used as reference.
+>> * For contributors, it should be possible to work on any platform.? It should also be possible to contribute without having to manually build a VM.
+>> * For consumers, documentation and error messages should be descriptive, consistent, complete and accessible.? Examples should be provided for more complex use cases.
+>>
+>> From a functionality and design standpoint, I think the above are more or less achieved and can be maintained going forward.? With that in mind, I'd like to know if anyone here has other ideas that they believe should be incorporated.? Of course if anyone happens to look at the code and find functional issues with it now would be a good time to address those issues too.
+>>
+>> Thanks in advance for the help!
+>
+>
+> This sounds absolutely fantastic - thank you for taking this on.
+>
+> Something else that would be nice to keep in mind - I would really like to eliminate our Pyrex support files for IOCP as well; if you could make sure those APIs are wrapped by pywincffi (I think they might be missing from pywin32, or at least, I believe they were at one point, which is why Pavel wrote his own thing), and perhaps even contribute patches to eliminate that old and crufty code, that would be fantastic :).
+>
+> -glyph
+>
+>
+
+From glyph at twistedmatrix.com  Thu Jan  7 02:59:03 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Thu, 7 Jan 2016 01:59:03 -0800
+Subject: [Twisted-Python] Shiji - JSON REST API Framework built with
+	Twisted Web
+In-Reply-To: <CAHZAEpdTBG7Wk=TK7uXgdVVEg677iJ2S3gvDbq1NKidNxDioiQ@mail.gmail.com>
+References: <CAHZAEpdTBG7Wk=TK7uXgdVVEg677iJ2S3gvDbq1NKidNxDioiQ@mail.gmail.com>
+Message-ID: <D2C46A71-2163-4FFA-AEE3-ACECB6B9C8EA@twistedmatrix.com>
+
+
+> On Jan 6, 2016, at 6:46 PM, Jason J. W. Williams <jasonjwwilliams at gmail.com> wrote:
+> 
+> HI Guys,
+> 
+> In case its of help to anyone, my company is open sourcing the framework we built using Twisted Web to help us build & serve JSON REST APIs: 
+> 
+> https://github.com/williamsjj/shiji <https://github.com/williamsjj/shiji>
+> 
+> We've been using it successfully for a few years and built it to solve a bunch of repetitive tasks for us:
+> 
+> * API versioning
+> * Signed cookie handling w/ support for key rotation.
+> * Enforcement of required JSON arguments and validation of JSON argument datatypes.
+> * Enforcement of required query string arguments.
+> * Standardized JSON error responses.
+> * Basic sanity checking of pagination arguments for API calls that support it.
+> * Automatic generation of API documentation based on call docstrings and subclasses of our APIError super class.
+> 
+> MIT License, so feel free to do with it as you please. If you have any questions, just let me know. Hope it's useful to someone else as well.
+
+Thanks for this announcement, and thanks for open sourcing it!  Always good to have new developments in the ecosystem :-D.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160107/a00ddcb2/attachment-0001.html>
+
+From jasonjwwilliams at gmail.com  Thu Jan  7 17:26:49 2016
+From: jasonjwwilliams at gmail.com (Jason J. W. Williams)
+Date: Thu, 7 Jan 2016 16:26:49 -0800
+Subject: [Twisted-Python] Shiji - JSON REST API Framework built with
+ Twisted Web
+In-Reply-To: <D2C46A71-2163-4FFA-AEE3-ACECB6B9C8EA@twistedmatrix.com>
+References: <CAHZAEpdTBG7Wk=TK7uXgdVVEg677iJ2S3gvDbq1NKidNxDioiQ@mail.gmail.com>
+ <D2C46A71-2163-4FFA-AEE3-ACECB6B9C8EA@twistedmatrix.com>
+Message-ID: <CAHZAEpfjCcS9+0Rz_LyC7sgE62s9RbLt24R3iBtX=j8CxSuiQw@mail.gmail.com>
+
+>
+> Thanks for this announcement, and thanks for open sourcing it!  Always
+> good to have new developments in the ecosystem :-D.
+>
+> -glyph
+>
+>
+My pleasure! It's been on my shortlist for awhile. :)
+
+-J
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160107/b2486859/attachment.html>
+
+From avosirenfal at gmail.com  Sat Jan  9 14:56:00 2016
+From: avosirenfal at gmail.com (Sirenfal)
+Date: Sat, 09 Jan 2016 21:56:00 +0000
+Subject: [Twisted-Python] Trying to use adoptStreamConnection and Protocol
+	isn't being disposed
+Message-ID: <em6c6dfb71-f998-41bc-a67a-80fc1d2480e5@solaire>
+
+I'm trying to pass a TCP connection to a Twisted subprocess with 
+adoptStreamConnection, but I can't figure out how to get the Process 
+disposed in the main process after doing that.
+
+My desired flow looks like this:
+
+- Finish writing any data the Protocol transport has waiting
+- When we know the write buffer is empty send the AMP message to 
+transfer the socket to the subprocess
+- Dispose the Protocol instance in the main process
+- I tried doing nothing, loseConnection, abortConnection, and monkey 
+patching _socketClose out and using loseConnection. See code here: 
+http://pastebin.com/nK0Huxuj
+
+In all cases the Protocol object still exists in the main process after 
+the socket has been transferred, even if the main process isn't 
+listening to that socket anymore. How can I clean this up?
+
+Thanks in advance.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160109/3bdd0631/attachment.html>
+
+From avosirenfal at gmail.com  Sat Jan  9 15:03:18 2016
+From: avosirenfal at gmail.com (Sirenfal)
+Date: Sat, 09 Jan 2016 22:03:18 +0000
+Subject: [Twisted-Python] Trying to use adoptStreamConnection and
+ Protocolisn't being disposed
+In-Reply-To: <em6c6dfb71-f998-41bc-a67a-80fc1d2480e5@solaire>
+Message-ID: <em34ff1b96-e892-4e93-ae9b-d42800662151@solaire>
+
+Sorry, I meant to say "get the Protocol disposed in the main process" in 
+the first sentence :)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160109/3fd1613d/attachment.html>
+
+From glyph at twistedmatrix.com  Sat Jan  9 15:14:37 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Sat, 9 Jan 2016 14:14:37 -0800
+Subject: [Twisted-Python] Trying to use adoptStreamConnection and
+	Protocol isn't being disposed
+In-Reply-To: <em6c6dfb71-f998-41bc-a67a-80fc1d2480e5@solaire>
+References: <em6c6dfb71-f998-41bc-a67a-80fc1d2480e5@solaire>
+Message-ID: <57CF4945-489C-4978-9177-133A9198B296@twistedmatrix.com>
+
+
+> On Jan 9, 2016, at 1:56 PM, Sirenfal <avosirenfal at gmail.com> wrote:
+> 
+> I'm trying to pass a TCP connection to a Twisted subprocess with adoptStreamConnection, but I can't figure out how to get the Process disposed in the main process after doing that.
+>  
+> My desired flow looks like this:
+>  
+> - Finish writing any data the Protocol transport has waiting
+> - When we know the write buffer is empty send the AMP message to transfer the socket to the subprocess
+> - Dispose the Protocol instance in the main process
+> - I tried doing nothing, loseConnection, abortConnection, and monkey patching _socketClose out and using loseConnection. See code here: http://pastebin.com/nK0Huxuj <http://pastebin.com/nK0Huxuj>
+>  
+> In all cases the Protocol object still exists in the main process after the socket has been transferred, even if the main process isn't listening to that socket anymore. How can I clean this up?
+>  
+
+Since you also asked on Stack Overflow I answered there: http://stackoverflow.com/a/34699544/13564
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160109/f2743aef/attachment.html>
+
+From zookog at gmail.com  Tue Jan 12 18:44:39 2016
+From: zookog at gmail.com (Zooko Wilcox-O'Hearn)
+Date: Wed, 13 Jan 2016 01:44:39 +0000
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+Message-ID: <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+
+FYI, this would, if it were compatible with Tahoe's packaging, fix
+these outstanding issues for Tahoe:
+
+* https://tahoe-lafs.org/trac/tahoe-lafs/ticket/142# pywin32 can't be
+installed automatically
+
+* https://tahoe-lafs.org/trac/tahoe-lafs/ticket/2028# Twisted
+endpoints introduce a dependency on pywin32
+
+Sincerely,
+
+Zooko
+
+
+From oliverpalmer at opalmer.com  Wed Jan 13 18:59:24 2016
+From: oliverpalmer at opalmer.com (Oliver Palmer)
+Date: Wed, 13 Jan 2016 20:59:24 -0500
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+ <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+Message-ID: <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+
+Sounds like pywincffi should fix that issue....I'm planning on distributing
+binary wheels which pip and setuptools should be able to install like any
+other dependency.  I can make sure to build other formats (exe, msi, egg,
+etc) if it helps though the binary wheels should be enough to avoid the
+same installation issues pywin32 has in most cases.  Is Tahoe's packaging
+going to require anything special that I should account for or will Twisted
+depending on pywincffi work for Tahoe?
+
+On Tue, Jan 12, 2016 at 8:44 PM, Zooko Wilcox-O'Hearn <zookog at gmail.com>
+wrote:
+
+> FYI, this would, if it were compatible with Tahoe's packaging, fix
+> these outstanding issues for Tahoe:
+>
+> * https://tahoe-lafs.org/trac/tahoe-lafs/ticket/142# pywin32 can't be
+> installed automatically
+>
+> * https://tahoe-lafs.org/trac/tahoe-lafs/ticket/2028# Twisted
+> endpoints introduce a dependency on pywin32
+>
+> Sincerely,
+>
+> Zooko
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160113/b5360b3f/attachment.html>
+
+From jim at carroll.com  Thu Jan 14 18:12:47 2016
+From: jim at carroll.com (Jim Carroll)
+Date: Thu, 14 Jan 2016 20:12:47 -0500
+Subject: [Twisted-Python] Stdout from child of ProcessProtocol not
+	propogating
+Message-ID: <003d01d14f31$d8c49a10$8a4dce30$@carroll.com>
+
+We've been experimenting with creating an SSH virtual server for Windows
+based on conch. We've made good process, but we've run into a problem
+running child processes (children of spawnProcess()), in that stdout does
+not make it back to the client.  
+
+ 
+
+I can demonstrate the problem using the example ptyserv.py script with a
+slight change for Windows. Here's the code to demonstrate the problem:
+
+ 
+
+    from twisted.internet import reactor, protocol
+
+ 
+
+    class FakeTelnet(protocol.Protocol):
+
+ 
+
+        commandToRun = ['c:\\Windows\\System32\\cmd.exe']
+
+ 
+
+        def connectionMade(self):
+
+            print 'connection made'
+
+            self.propro = ProcessProtocol(self)
+
+            reactor.spawnProcess(self.propro, self.commandToRun[0], 
+
+                                 self.commandToRun, os.environ)
+
+ 
+
+        def dataReceived(self, data):
+
+            self.propro.transport.write(data)
+
+ 
+
+        def conectionLost(self, reason):
+
+            print 'connection lost'
+
+            self.propro.tranport.loseConnection()
+
+ 
+
+    class ProcessProtocol(protocol.ProcessProtocol):
+
+ 
+
+        def __init__(self, pr):
+
+            self.pr = pr
+
+ 
+
+        def outReceived(self, data):
+
+            self.pr.transport.write(data)
+
+ 
+
+        def processEnded(self, reason):
+
+            print 'protocol connection lost'
+
+            self.pr.transport.loseConnection()
+
+ 
+
+    f = protocol.Factory()
+
+    f.protocol = FakeTelnet
+
+    reactor.listenTCP(5823, f)
+
+    reactor.run()
+
+ 
+
+ 
+
+Run the above code on Windows, and telnet to localhost 5823.
+
+ 
+
+After you get the CMD.exe prompt, try to launch python.  This is what you'll
+
+see:
+
+ 
+
+    Microsoft Windows [Version 6.3.9600]
+
+    (c) 2013 Microsoft Corporation. All rights reserved.
+
+ 
+
+    C:\Temp>python
+
+    python
+
+ 
+
+ 
+
+That's it. Hitting enter just drops down to another next blank line. 
+
+ 
+
+Now what's interesting is that writes to stdin of the spawned CMD.exe get
+there. You can see this by pressing <CTRL>-D. The python subprocess will
+exit and you'll still be connected to your telnet session, now back at the
+CMD.exe prompt.
+
+ 
+
+I've experimented with modifying twisted.internet._dumbwin32proc.py so that
+the DuplicateHandle() calls (lines 147 - 163) are not called, thinking that
+inheritance was the cause, but no-go.  I've also tried adding calls to
+msvcrt.set_mode() to os.O_BINARY to make sure windows isn't somehow cooking
+the child processes output, but that had no effect either.
+
+ 
+
+I've been banging my head against this for a week and I've reached a stuck
+point. I was wondering if someone could point me towards where I'm going
+wrong. Any advice would be appreciated....
+
+ 
+
+FYI - once we get this worked out, we'd be happy to share the code.
+
+ 
+
+Thanks
+
+Jim C.
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160114/eae30137/attachment.html>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: smime.p7s
+Type: application/pkcs7-signature
+Size: 4722 bytes
+Desc: not available
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160114/eae30137/attachment.bin>
+
+From db3l.net at gmail.com  Thu Jan 14 22:17:17 2016
+From: db3l.net at gmail.com (David Bolen)
+Date: Fri, 15 Jan 2016 00:17:17 -0500
+Subject: [Twisted-Python] Stdout from child of ProcessProtocol not
+	propogating
+References: <003d01d14f31$d8c49a10$8a4dce30$@carroll.com>
+Message-ID: <m2a8o7wheq.fsf@valheru.db3l.homeip.net>
+
+"Jim Carroll" <jim at carroll.com> writes:
+
+> After you get the CMD.exe prompt, try to launch python.  This is what you'll
+>
+> see:
+>
+>  
+>
+>     Microsoft Windows [Version 6.3.9600]
+>
+>     (c) 2013 Microsoft Corporation. All rights reserved.
+>
+>  
+>
+>     C:\Temp>python
+>
+>     python
+>
+>  
+>
+>  
+>
+> That's it. Hitting enter just drops down to another next blank line. 
+
+I suspect it's not a Twisted issue as much as a common risk running
+programs in a child process under Windows, especially executables using
+the standard C RTL with its default stdout buffering behavior.
+
+Do the built-in commands like DIR work ok?  If so, then it's likely that
+it isn't that stdout isn't making it back to the client; rather it isn't
+even making it to your parent Twisted process.  Usually it's a buffering
+or tty detection issue since a Windows child shell won't appear to be a
+tty.  I'll note that python behaves the same way you describe when run
+from within a cmd shell under Cygwin's ssh server for example.
+
+In python's case, the C RTL is going into fully buffered mode.  You
+should eventually get output once enough is generated (~8K) or the
+process exits.  You can't control how the child executable will buffer
+from the parent unless the executable provides a way.  So how you work
+around the issue depends on the actual command being run.
+
+Assuming this is the issue you're running into, using either "python -u"
+(if you just need output as it occurs) or "python -i" (for interactive
+use) should be a workaround.  Or if you want to avoid clients having to
+remember the options, you can install appropriate environment variables
+(PYTHONUNBUFFERED or PYTHONINSPECT respectively) into the child process.
+But that's Python specific - there's no general solution for all
+executables, and there will be some for which you simply can't disable
+the buffering.
+
+The other thing you have to watch out for are executables you may run
+that actually use the Win32 console API rather than interact with
+stdin/stdout.  Or certain methods of character inputs (like Python's
+msvcrt.getch).  Again, not a Twisted issue, but you can't interact with
+that (unless you jump through some significant hoops).  This shows up
+often with password prompts (which want to prevent echoing), curses like
+applications, or even in unexpected places for Y/N prompts in some
+utilities (like SC's default help, or NET TIME /SET's confirmation).
+
+Of course if you're just implementing the ssh server portion, you should
+be able to pretty much punt on it and leave it up to the user to
+determine how to best run whatever commands they are using.  The
+behavior with your shell should be similar to other remote shell
+approaches.
+
+-- David
+
+
+
+From jasonjwwilliams at gmail.com  Mon Jan 18 14:39:45 2016
+From: jasonjwwilliams at gmail.com (Jason J. W. Williams)
+Date: Mon, 18 Jan 2016 13:39:45 -0800
+Subject: [Twisted-Python] Kafka Client
+Message-ID: <CAHZAEpeGJBQ6wWMPbwLcTBm1wLBj8wP-LMnjkkGg6qWZkYMe7w@mail.gmail.com>
+
+Hey,
+
+Is anyone use Kafka successfully with Twisted? So far it looks like there's
+only synchronous python clients:
+
+https://github.com/Parsely/pykafka
+https://github.com/dpkp/kafka-python
+
+Any input is greatly appreciated.
+
+-J
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160118/16b8613c/attachment.html>
+
+From glyph at twistedmatrix.com  Thu Jan 21 22:32:43 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Thu, 21 Jan 2016 21:32:43 -0800
+Subject: [Twisted-Python] code of conduct
+Message-ID: <CEA18295-A781-46DB-9034-7A90AE98374A@twistedmatrix.com>
+
+As per previous discussion on this list, the Twisted project has officially adopted the Contributor Covenant as our code of conduct.  The official change took place here: https://twistedmatrix.com/trac/ticket/8173#comment:5 <https://twistedmatrix.com/trac/ticket/8173#comment:5> and you can find out more about the Contributor Covenant here: http://contributor-covenant.org <http://contributor-covenant.org/>.  Thanks to everyone who helped figure out which policy to adopt and how to administer it.
+
+Discussion of this sort of thing is often contentious, so I would just like to personally ask anyone who disagrees with either codes of conduct in general or this specific code of conduct to keep their feelings to themselves at this point; the time for discussion has passed.  I don't do a lot of unilateral project-leader-y stuff, but it is extremely important to me that Twisted be a friendly place for everyone, and this is a necessary part of that.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160121/75682ed2/attachment.html>
+
+From oliverpalmer at opalmer.com  Sat Jan 23 18:18:40 2016
+From: oliverpalmer at opalmer.com (Oliver Palmer)
+Date: Sat, 23 Jan 2016 20:18:40 -0500
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+ <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+ <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+Message-ID: <CAEgpGv4KBeYznSidzgOJEgrLWwdeX08kLaB=2g6RQ-Xfh1HxOw@mail.gmail.com>
+
+So 0.1.2 is out and I've uploaded a patch set for review to #7889 which
+replaces win32api.FormatMessage and removes the dependency on pywin32 in
+twisted.python.lockfile (though it looks like we can do without needing to
+call on pywincffi in this case).
+
+Unfortunately, my update was spam filtered with a 57.36% probability of
+being spam. I'm human, I promise.
+
+On Wed, Jan 13, 2016 at 8:59 PM, Oliver Palmer <oliverpalmer at opalmer.com>
+wrote:
+
+> Sounds like pywincffi should fix that issue....I'm planning on
+> distributing binary wheels which pip and setuptools should be able to
+> install like any other dependency.  I can make sure to build other formats
+> (exe, msi, egg, etc) if it helps though the binary wheels should be enough
+> to avoid the same installation issues pywin32 has in most cases.  Is
+> Tahoe's packaging going to require anything special that I should account
+> for or will Twisted depending on pywincffi work for Tahoe?
+>
+> On Tue, Jan 12, 2016 at 8:44 PM, Zooko Wilcox-O'Hearn <zookog at gmail.com>
+> wrote:
+>
+>> FYI, this would, if it were compatible with Tahoe's packaging, fix
+>> these outstanding issues for Tahoe:
+>>
+>> * https://tahoe-lafs.org/trac/tahoe-lafs/ticket/142# pywin32 can't be
+>> installed automatically
+>>
+>> * https://tahoe-lafs.org/trac/tahoe-lafs/ticket/2028# Twisted
+>> endpoints introduce a dependency on pywin32
+>>
+>> Sincerely,
+>>
+>> Zooko
+>>
+>> _______________________________________________
+>> Twisted-Python mailing list
+>> Twisted-Python at twistedmatrix.com
+>> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160123/2a5f1d80/attachment.html>
+
+From glyph at twistedmatrix.com  Sat Jan 23 22:01:42 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Sat, 23 Jan 2016 21:01:42 -0800
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <CAEgpGv4KBeYznSidzgOJEgrLWwdeX08kLaB=2g6RQ-Xfh1HxOw@mail.gmail.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+ <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+ <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+ <CAEgpGv4KBeYznSidzgOJEgrLWwdeX08kLaB=2g6RQ-Xfh1HxOw@mail.gmail.com>
+Message-ID: <3D811FB4-4C61-48BE-8A9B-196C4680C5CF@twistedmatrix.com>
+
+
+> On Jan 23, 2016, at 5:18 PM, Oliver Palmer <oliverpalmer at opalmer.com> wrote:
+> 
+> So 0.1.2 is out and I've uploaded a patch set for review to #7889 which replaces win32api.FormatMessage and removes the dependency on pywin32 in twisted.python.lockfile (though it looks like we can do without needing to call on pywincffi in this case).
+> 
+> Unfortunately, my update was spam filtered with a 57.36% probability of being spam. I'm human, I promise.
+
+I've trained the spam database to correct the error, hopefully you can submit it again.
+
+-glyph
+
+
+
+From oliverpalmer at opalmer.com  Sat Jan 23 23:09:26 2016
+From: oliverpalmer at opalmer.com (Oliver Palmer)
+Date: Sun, 24 Jan 2016 01:09:26 -0500
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <3D811FB4-4C61-48BE-8A9B-196C4680C5CF@twistedmatrix.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+ <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+ <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+ <CAEgpGv4KBeYznSidzgOJEgrLWwdeX08kLaB=2g6RQ-Xfh1HxOw@mail.gmail.com>
+ <3D811FB4-4C61-48BE-8A9B-196C4680C5CF@twistedmatrix.com>
+Message-ID: <CAEgpGv5-jHPPJdOnkuPWxaVr=+wr9hVHbtzFJXdeMV9egKox6w@mail.gmail.com>
+
+Worked that time, thanks Glyph.
+
+On Sun, Jan 24, 2016 at 12:01 AM, Glyph Lefkowitz <glyph at twistedmatrix.com>
+wrote:
+
+>
+> > On Jan 23, 2016, at 5:18 PM, Oliver Palmer <oliverpalmer at opalmer.com>
+> wrote:
+> >
+> > So 0.1.2 is out and I've uploaded a patch set for review to #7889 which
+> replaces win32api.FormatMessage and removes the dependency on pywin32 in
+> twisted.python.lockfile (though it looks like we can do without needing to
+> call on pywincffi in this case).
+> >
+> > Unfortunately, my update was spam filtered with a 57.36% probability of
+> being spam. I'm human, I promise.
+>
+> I've trained the spam database to correct the error, hopefully you can
+> submit it again.
+>
+> -glyph
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160124/6442184c/attachment.html>
+
+From a at runtel.ru  Mon Jan 25 00:22:09 2016
+From: a at runtel.ru (a at runtel.ru)
+Date: Mon, 25 Jan 2016 10:22:09 +0300
+Subject: [Twisted-Python] Help with log
+Message-ID: <3129841453706529@web23g.yandex.ru>
+
+ Hi All!
+
+Tell me how to wait for the start of the log on twistd.
+When I start twistd - i see print out in log in stdout.
+log.msg("123") now work.
+
+from twisted.application.service import Application
+from twisted.python.log import ILogObserver, FileLogObserver
+from twisted.python.logfile import DailyLogFile
+# from twisted.python import log
+
+from raspberry.raspberry import Raspberry
+from raspberry.config import config
+
+application = Application("raspberry")
+logfile = DailyLogFile(config["log_file"], config["log_path"])
+application.setComponent(ILogObserver, FileLogObserver(logfile).emit)
+
+
+runner = Raspberry(application, config)
+runner.run()
+
+
+Thanks! 
+
+
+From glyph at twistedmatrix.com  Mon Jan 25 16:02:59 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Mon, 25 Jan 2016 15:02:59 -0800
+Subject: [Twisted-Python] news file confusion
+Message-ID: <67C8DC8D-0825-4F70-BB37-25F6EB0741F0@twistedmatrix.com>
+
+It looks like both https://github.com/twisted/newsbuilder/ and https://github.com/hawkowl/towncrier/ are extractions of the news-builder functionality in our release module.  If "towncrier" is the official name, we should probably move that to the twisted org.
+
+Also, does anyone feel like doing the work to remove the newsbuilder (IIRC, entirely private API, so no deprecation) and migrating our release process to use towncrier?
+
+-glyph
+
+From hawkowl at atleastfornow.net  Mon Jan 25 18:44:06 2016
+From: hawkowl at atleastfornow.net (Amber Brown)
+Date: Tue, 26 Jan 2016 09:44:06 +0800
+Subject: [Twisted-Python] news file confusion
+In-Reply-To: <67C8DC8D-0825-4F70-BB37-25F6EB0741F0@twistedmatrix.com>
+Message-ID: <3f1a86df-5320-469e-a4fb-90fcb3206c7c@email.android.com>
+
+Towncrier is actually a from-scratch rewrite :)
+
+I'm in for the migration - there's a Klein PR to migrate that as a proof of concept, I need to double check if anyone looked at it.
+
+- Amber
+
+On 26 Jan 2016 07:02, Glyph Lefkowitz <glyph at twistedmatrix.com> wrote:
+>
+> It looks like both https://github.com/twisted/newsbuilder/ and https://github.com/hawkowl/towncrier/ are extractions of the news-builder functionality in our release module.? If "towncrier" is the official name, we should probably move that to the twisted org. 
+>
+> Also, does anyone feel like doing the work to remove the newsbuilder (IIRC, entirely private API, so no deprecation) and migrating our release process to use towncrier? 
+>
+> -glyph 
+> _______________________________________________ 
+> Twisted-Python mailing list 
+> Twisted-Python at twistedmatrix.com 
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python 
+
+From glyph at twistedmatrix.com  Sun Jan 31 17:46:12 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Sun, 31 Jan 2016 16:46:12 -0800
+Subject: [Twisted-Python] operations: baby steps. buildbot move?
+Message-ID: <919D1FB1-CCC7-4041-ADDA-8BD99EEB33C9@twistedmatrix.com>
+
+In the spirit of having more of our discussions of what's going on with the operations of twistedmatrix.com <http://twistedmatrix.com/> happening out in the open so that folks can jump in and help, we are going to start discussing this stuff on the public mailing list instead of in private side discussions or the administrative list.  Credentials and other operationally sensitive things will of course still be sent via private GPG-encrypted messages but general "what's going on" stuff should be here.
+
+Right now we have a creaky old machine (dornkirk) running in a datacenter operated by Tummy.  Although they have been generous with discounts, we do have actually free hardware elsewhere, including some sponsored by my employer (Rackspace).  I would like to get everything off of Tummy's hardware for several reasons:
+
+we actually have to pay for tummy's hosting, which is a drain (albeit a minor one) on our very taxed resources from the Conservancy.  (hey slackers: get out your credit cards and head to the sponsor form twistedmatrix.com <http://twistedmatrix.com/> or the site is literally going to go down one day).
+by co-locating so many services we can't upgrade the host operating system as often as we'd like without fear of breaking something else
+buildbot's TLS cert is expired and I'd like to use Let's Encrypt to get a new one, but the way the web server is configured makes this a bit tricky; it would be easier if it lived on its own host.
+the buildmaster is slow and it would be nice if it were on faster hardware
+given that many of our builders themselves are running in the cloud, we'd have lower latency if the buildmaster actually ran there
+
+So at some point in the coming week I'd like to just move exactly the version of the Buildmaster we're running right now to a new cloud host on Rackspace; probably the smallest one that comes with an SSD.
+
+Hawkowl is in the process of upgrading us to Buildbot 9 which will be wonderful when it happens, but I want to be clear that this effort is wholly independent from that and neither depends on the other :-).
+
+It looks to me like the thing I need to do is 'fab config.production buildbot.stop; fab config.production buildbot.dump', then make the relevant DNS change.  At this point I think I need to add a new environment to ENVIRONMENTS and do 'fab config.buildbot buildbot.dump'.  It's not obvious to me how to have two hosts present in 'config.production' but if somebody knows this please let me know.
+
+If you're interested in getting involved in operational stuff to help us out with this, I'll be available for pair-opsing (what do you call pair programming when it's ops?) so just get in touch.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160131/9e061af9/attachment.html>
+
+From hawkowl at atleastfornow.net  Sun Jan 31 17:56:53 2016
+From: hawkowl at atleastfornow.net (Amber "Hawkie" Brown)
+Date: Mon, 1 Feb 2016 08:56:53 +0800
+Subject: [Twisted-Python] operations: baby steps. buildbot move?
+In-Reply-To: <919D1FB1-CCC7-4041-ADDA-8BD99EEB33C9@twistedmatrix.com>
+References: <919D1FB1-CCC7-4041-ADDA-8BD99EEB33C9@twistedmatrix.com>
+Message-ID: <4DA01BF6-7F43-4DBF-99BD-B35C198D2DA0@atleastfornow.net>
+
+
+> On 1 Feb 2016, at 08:46, Glyph Lefkowitz <glyph at twistedmatrix.com> wrote:
+> 
+> So at some point in the coming week I'd like to just move exactly the version of the Buildmaster we're running right now to a new cloud host on Rackspace; probably the smallest one that comes with an SSD.
+
+Sounds good. The 2GB General Purpose that I use for the buildbots is plenty fast, and has enough RAM that we don't have to care (although I think RAX is smart enough that we can start at 1GB and move up to 2GB if needed?).
+
+> Hawkowl is in the process of upgrading us to Buildbot 9 which will be wonderful when it happens, but I want to be clear that this effort is wholly independent from that and neither depends on the other :-).
+
+Yep, Nine is separate.
+
+> 
+> It looks to me like the thing I need to do is 'fab config.production buildbot.stop; fab config.production buildbot.dump', then make the relevant DNS change.  At this point I think I need to add a new environment to ENVIRONMENTS and do 'fab config.buildbot buildbot.dump'.  It's not obvious to me how to have two hosts present in 'config.production' but if somebody knows this please let me know.
+
+I think "config.production" is a bit of a eh name to have after, we should change it if we have more machines. Eg. config.prod-dornkirk, or whatever. Then we just need to write what goes where.
+
+- Amber
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 455 bytes
+Desc: Message signed with OpenPGP using GPGMail
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160201/0ad0e058/attachment.pgp>
+
+From mithrandi at mithrandi.net  Sun Jan 31 20:52:01 2016
+From: mithrandi at mithrandi.net (Tristan Seligmann)
+Date: Mon, 01 Feb 2016 03:52:01 +0000
+Subject: [Twisted-Python] Debian unstable builder
+Message-ID: <CAMcKhMT3RkvEJ9PV0U3fH=fk2gZ9W9Z10kkV1ZqZCGDuw5rzkg@mail.gmail.com>
+
+Working on tickets such as #8180[1] and #8187[2] suggests that it would be
+useful to have a builder running on Debian unstable (and/or other "bleeding
+edge" distributions, most of them have something similar) in order to pick
+up problematic changes like this sooner. #8180 is just a case of a newer
+upstream release (OpenSSH 7.0 disables DSA key support by default), whereas
+I think #8187 is a "distro policy" type thing (OpenSSL in Debian unstable
+is compiled without SSLv3_METHOD support).
+
+I don't think making such a builder be a supported platform would be
+feasible (at least as things currently stand), but at least it would serve
+as a canary for this sort of issue.
+
+Thoughts?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://twistedmatrix.com/pipermail/twisted-python/attachments/20160201/5b3d0624/attachment.html>
+
+From glyph at twistedmatrix.com  Mon Jan  4 16:59:10 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Mon, 4 Jan 2016 15:59:10 -0800
+Subject: [Twisted-Python] on template processing
+In-Reply-To: <CAA-sNEaLqB6+VVc6D=8P-3JWEK7ewVfcdXoLD6L2OYC7cCjfrg@mail.gmail.com>
+References: <CAA-sNEaLqB6+VVc6D=8P-3JWEK7ewVfcdXoLD6L2OYC7cCjfrg@mail.gmail.com>
+Message-ID: <8D487458-E248-49C9-9CF0-0DFBC3E3AFD8@twistedmatrix.com>
+
+Hi Kevin!  Sorry for the delay; your message caught me (and I suspect many other people) on vacation.
+
+> On Dec 26, 2015, at 4:08 PM, Kevin Mcintyre <kebin70 at gmail.com> wrote:
+> 
+> 1) Is template block processing done top to bottom sequentially?  I've included example.py - it's interesting that by having a blocking call first the second request is blocked, but having the blocking call after a non-blocking call the second request is not.  I would've thought it would behave as a deferred list, but looking at _flattenTree and guessing not.  Maybe related to wait_for_it example?
+
+I'm not entirely sure what you mean by "top to bottom" or "sequentially", but I think for all reasonable meanings of these words the answer would be "yes".  However, blocking calls on the main loop always block the entire main loop in Twisted; multiple requests do not interact with each other in twisted.web.template, except for the fact that they share a main loop, just as everything else in Twisted does.
+
+> 2) Is it possible for a Resource to act as an Element too?  I've included a non-working elementresource.py.  I'm a total hack, but I would think that if an instance had a loader attr it could be processable.
+
+A Resource is a Resource; an Element is an Element.  They do different things, and muddling up the request-dispatching API further wouldn't help anything.  Multiple inheritance is always a "you have two problems" sort of scenario.  However, what I think you want (a place where you could conveniently return an Element or a Resource, and the result would be properly adapted) is supported by Klein:
+
+https://github.com/twisted/klein/blob/e336c5b1af25badb3f159ab72b3d1bf392d45ba5/klein/resource.py#L225-L226
+
+You can return an Element from any klein route and it will be turned into a Resource for you.
+
+> 3) Is it possible to include xmlns:t="http://twistedmatrix.com/ns/twisted.web.template/0.1 <http://twistedmatrix.com/ns/twisted.web.template/0.1>" not in a tag itself?  Or perhaps have a tag like 'render-block' that could be transparent-like?
+
+Not built-in, but the https://twistedmatrix.com/documents/15.5.0/api/twisted.web.iweb.ITemplateLoader.html interface allows you to load your template however you like.  I have written a couple of small apps that used html5lib with some post-processing to load templates instead of expat, and if I weren't so lazy I would have contributed one of them to Twisted :).  You could write a loader that wraps the document in an enclosing tag that adds the XML namespace textually, and that might do the trick.  We'd definitely be interested in a contribution that dealt with this.
+
+> 4) Is it possible to have xmlns:t="http://twistedmatrix.com/ns/twisted.web.template/0.1 <http://twistedmatrix.com/ns/twisted.web.template/0.1>" in multiple places in a template?  I have some cases with inline scripts that bonk out with > or < characters.  This is very much related to #3.
+
+"bonk out"?  It sounds like you have a cross-site-scripting attack in the making here.  Messing with how the template gets loaded is not the right way to address it.  Please describe this in more detail so I don't give you advice that is going to get your users pwnt because I don't fully understand your use-case :).
+
+> 5) Is it possible for a render element to return something like "<~sometag t:render>..." and process recursively?
+
+You mean return a literal string, or do you just mean you want an element to return another element from a renderer?
+
+> 6) Is there any examples of connection keep-alive long polling?
+
+Just return NOT_DONE_YET, save the request away, and call request.write/request.finish sometime later.  It's almost too simple to have an example :).
+
+> 7) Examples of request based scoping would be great.  All the examples on http://twistedmatrix.com/documents/13.0.0/web/howto/twisted-templates.html <http://twistedmatrix.com/documents/13.0.0/web/howto/twisted-templates.html> have flatten(None... -  I've included request_scope.py 
+
+Setting arbitrary attributes on the request is a terrible anti-pattern, so you won't find any examples of using the request for that.  Looking at the documentation now, I can see it doesn't really explain how to manage state necessary for rendering an element, and it probably should.  This type of documentation oversight is very common in Twisted, unfortunately, because there's a strange disconnect between the way the average Twisted core developer thinks and the way the average Python developer thinks that continues to mystify me.  In this case, we assume you've put your state on 'self' so the examples all focus on just how to inject it into the template with slots.
+
+This is exemplified by this Stack Overflow question I wrote a while ago - http://stackoverflow.com/questions/7313761/how-do-i-add-two-integers-together-with-twisted - it's an extremely general problem that's hard to pin down.  It shows up particularly often when twisted's users are trying to make multiple protocols, or web resources, interact with each other.  The general question is: how do I use Twisted to manage the state associated with these connections?  What Twisted API should I use to move state between them?  In your case, you're asking how you can use APIs within Element or Resource to move state from your resource's render method to the Element you're instantiating.
+
+The answer is: your Element is just a Python class.  Don't stick stuff onto the request and then pass the request into the Element via the rendering mechanism so that you can pull the state back out again.  Just pass the state that the Element needs to do its job into its constructor.
+
+The reason the docs often don't cover this sort of thing is that it seems bizarre to have to explain how Python classes work; and in fact I'm sure you (and our audience) do know how they work, so an explanation of how to write a constructor seems out of place in the documentation for twisted.web.  I can see that this is a "best practice" that should at least be touched on though, so that people don't encounter this sort of confusion.
+
+> 8) The wait_for_it example, is that meant as a chunked transfer example?  It would be cool to have an example I could open in a browser.  Trying to wrap my head around this and subviews in the meantime.
+
+Chunked transfer is a transport implementation detail; this is meant as an example of how you can use Deferreds.  The problem with demonstrating this concept in a browser is that browsers have weird, arbitrary thresholds for incremental rendering and will generally intentionally avoid partially rendering anything example-sized, instead opting to leave the page blank until the full body has been received. This example will send "before waiting ..." to the browser as soon as the request is sent, but we can't control what the browser actually does with it.  I actually tried to fix this up a few months ago and the rules that browsers use for incremental rendering just completely baffled me; if you can figure out a way to reliably demonstrate this it would be great.
+
+Thanks for using Twisted!
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160104/25383c8a/attachment-0002.html>
+
+From oliverpalmer at opalmer.com  Wed Jan  6 16:35:51 2016
+From: oliverpalmer at opalmer.com (Oliver Palmer)
+Date: Wed, 6 Jan 2016 18:35:51 -0500
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+Message-ID: <CAEgpGv7tgOX6=1YxjBJoM4cK2Vy70xnTTVdAYP1G0CYhcWt3aQ@mail.gmail.com>
+
+So expanding on the "Should the CFFI wrapper and functions for win32 be a
+separate project" thread from six months ago I think I'd like some
+feedback.  The pywincffi <https://github.com/opalmer/pywincffi> project,
+which I'm planning to use to start replacing pywin32 in Twisted, is getting
+close to its first release.  At this point there's enough code in place
+that it could probably be used to replace pywin32 in
+twisted.python.lockfile and other parts of pywin32 in Twisted.  Before
+proposing any patches however, I'd like to take this opportunity to welcome
+feedback from people on this list.  Although pywincffi will not be a
+'Twisted project' Twisted will be the primary consumer of pywincffi so I'd
+like to make sure developers here are happy with the direction that has
+been taken.
+
+For some background, the core objectives and intended design features are
+below (nothing all that special mostly):
+
+* It should be easy to build and retrieve the binary files (wheels for now,
+easy to add more later).
+* Python 2.6, 2.7 and 3.x are supported from a single code base.
+* Type conversion, error checking and other 'C like' code should be the
+responsibility of the library where possible.
+* APIs provided by pywincffi should mirror their Windows counterparts as
+closely as possible so the MSDN documentation can be more easily used as
+reference.
+* For contributors, it should be possible to work on any platform.  It
+should also be possible to contribute without having to manually build a VM.
+* For consumers, documentation and error messages should be descriptive,
+consistent, complete and accessible.  Examples should be provided for more
+complex use cases.
+
+>From a functionality and design standpoint, I think the above are more or
+less achieved and can be maintained going forward.  With that in mind, I'd
+like to know if anyone here has other ideas that they believe should be
+incorporated.  Of course if anyone happens to look at the code and find
+functional issues with it now would be a good time to address those issues
+too.
+
+Thanks in advance for the help!
+
+---Oliver
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160106/f76894a6/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Wed Jan  6 16:44:43 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Wed, 6 Jan 2016 15:44:43 -0800
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <CAEgpGv7tgOX6=1YxjBJoM4cK2Vy70xnTTVdAYP1G0CYhcWt3aQ@mail.gmail.com>
+References: <CAEgpGv7tgOX6=1YxjBJoM4cK2Vy70xnTTVdAYP1G0CYhcWt3aQ@mail.gmail.com>
+Message-ID: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+
+
+> On Jan 6, 2016, at 15:35, Oliver Palmer <oliverpalmer at opalmer.com> wrote:
+> 
+> So expanding on the "Should the CFFI wrapper and functions for win32 be a separate project" thread from six months ago I think I'd like some feedback.  The pywincffi <https://github.com/opalmer/pywincffi> project, which I'm planning to use to start replacing pywin32 in Twisted, is getting close to its first release.  At this point there's enough code in place that it could probably be used to replace pywin32 in twisted.python.lockfile and other parts of pywin32 in Twisted.  Before proposing any patches however, I'd like to take this opportunity to welcome feedback from people on this list.  Although pywincffi will not be a 'Twisted project' Twisted will be the primary consumer of pywincffi so I'd like to make sure developers here are happy with the direction that has been taken.
+> 
+> For some background, the core objectives and intended design features are below (nothing all that special mostly):
+> 
+> * It should be easy to build and retrieve the binary files (wheels for now, easy to add more later).
+> * Python 2.6, 2.7 and 3.x are supported from a single code base.
+> * Type conversion, error checking and other 'C like' code should be the responsibility of the library where possible.
+> * APIs provided by pywincffi should mirror their Windows counterparts as closely as possible so the MSDN documentation can be more easily used as reference.
+> * For contributors, it should be possible to work on any platform.  It should also be possible to contribute without having to manually build a VM.
+> * For consumers, documentation and error messages should be descriptive, consistent, complete and accessible.  Examples should be provided for more complex use cases.
+> 
+> From a functionality and design standpoint, I think the above are more or less achieved and can be maintained going forward.  With that in mind, I'd like to know if anyone here has other ideas that they believe should be incorporated.  Of course if anyone happens to look at the code and find functional issues with it now would be a good time to address those issues too.
+> 
+> Thanks in advance for the help!
+
+This sounds absolutely fantastic - thank you for taking this on.
+
+Something else that would be nice to keep in mind - I would really like to eliminate our Pyrex support files for IOCP as well; if you could make sure those APIs are wrapped by pywincffi (I think they might be missing from pywin32, or at least, I believe they were at one point, which is why Pavel wrote his own thing), and perhaps even contribute patches to eliminate that old and crufty code, that would be fantastic :).
+
+-glyph
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160106/392be295/attachment-0002.html>
+
+From jasonjwwilliams at gmail.com  Wed Jan  6 19:46:19 2016
+From: jasonjwwilliams at gmail.com (Jason J. W. Williams)
+Date: Wed, 6 Jan 2016 18:46:19 -0800
+Subject: [Twisted-Python] Shiji - JSON REST API Framework built with Twisted
+	Web
+Message-ID: <CAHZAEpdTBG7Wk=TK7uXgdVVEg677iJ2S3gvDbq1NKidNxDioiQ@mail.gmail.com>
+
+HI Guys,
+
+In case its of help to anyone, my company is open sourcing the framework we
+built using Twisted Web to help us build & serve JSON REST APIs:
+
+https://github.com/williamsjj/shiji
+
+We've been using it successfully for a few years and built it to solve a
+bunch of repetitive tasks for us:
+
+* API versioning
+* Signed cookie handling w/ support for key rotation.
+* Enforcement of required JSON arguments and validation of JSON argument
+datatypes.
+* Enforcement of required query string arguments.
+* Standardized JSON error responses.
+* Basic sanity checking of pagination arguments for API calls that support
+it.
+* Automatic generation of API documentation based on call docstrings and
+subclasses of our APIError super class.
+
+MIT License, so feel free to do with it as you please. If you have any
+questions, just let me know. Hope it's useful to someone else as well.
+
+-J
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160106/02564058/attachment-0002.html>
+
+From hawkowl at atleastfornow.net  Wed Jan  6 19:49:59 2016
+From: hawkowl at atleastfornow.net (Amber Brown)
+Date: Thu, 07 Jan 2016 10:49:59 +0800
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+Message-ID: <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+
+Worth noting, I have a CFFI binding for IOCP already (its blocked on base support for Windows on Py3, that ticket is up for review), so it's not needed right now. Although, ideally, replacing our custom built thing with a library would be the best case, but we can put more important things first :)
+
+On 7 Jan 2016 07:44, Glyph Lefkowitz <glyph at twistedmatrix.com> wrote:
+>
+>
+>> On Jan 6, 2016, at 15:35, Oliver Palmer <oliverpalmer at opalmer.com> wrote:
+>>
+>> So expanding on the "Should the CFFI wrapper and functions for win32 be a separate project" thread from six months ago I think I'd like some feedback.  The pywincffi project, which I'm planning to use to start replacing pywin32 in Twisted, is getting close to its first release.  At this point there's enough code in place that it could probably be used to replace pywin32 in twisted.python.lockfile and other parts of pywin32 in Twisted.  Before proposing any patches however, I'd like to take this opportunity to welcome feedback from people on this list.  Although pywincffi will not be a 'Twisted project' Twisted will be the primary consumer of pywincffi so I'd like to make sure developers here are happy with the direction that has been taken.
+>>
+>> For some background, the core objectives and intended design features are below (nothing all that special mostly):
+>>
+>> * It should be easy to build and retrieve the binary files (wheels for now, easy to add more later).
+>> * Python 2.6, 2.7 and 3.x are supported from a single code base.
+>> * Type conversion, error checking and other 'C like' code should be the responsibility of the library where possible.
+>> * APIs provided by pywincffi should mirror their Windows counterparts as closely as possible so the MSDN documentation can be more easily used as reference.
+>> * For contributors, it should be possible to work on any platform.  It should also be possible to contribute without having to manually build a VM.
+>> * For consumers, documentation and error messages should be descriptive, consistent, complete and accessible.  Examples should be provided for more complex use cases.
+>>
+>> From a functionality and design standpoint, I think the above are more or less achieved and can be maintained going forward.  With that in mind, I'd like to know if anyone here has other ideas that they believe should be incorporated.  Of course if anyone happens to look at the code and find functional issues with it now would be a good time to address those issues too.
+>>
+>> Thanks in advance for the help!
+>
+>
+> This sounds absolutely fantastic - thank you for taking this on.
+>
+> Something else that would be nice to keep in mind - I would really like to eliminate our Pyrex support files for IOCP as well; if you could make sure those APIs are wrapped by pywincffi (I think they might be missing from pywin32, or at least, I believe they were at one point, which is why Pavel wrote his own thing), and perhaps even contribute patches to eliminate that old and crufty code, that would be fantastic :).
+>
+> -glyph
+>
+>
+
+From glyph at twistedmatrix.com  Thu Jan  7 02:59:03 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Thu, 7 Jan 2016 01:59:03 -0800
+Subject: [Twisted-Python] Shiji - JSON REST API Framework built with
+	Twisted Web
+In-Reply-To: <CAHZAEpdTBG7Wk=TK7uXgdVVEg677iJ2S3gvDbq1NKidNxDioiQ@mail.gmail.com>
+References: <CAHZAEpdTBG7Wk=TK7uXgdVVEg677iJ2S3gvDbq1NKidNxDioiQ@mail.gmail.com>
+Message-ID: <D2C46A71-2163-4FFA-AEE3-ACECB6B9C8EA@twistedmatrix.com>
+
+
+> On Jan 6, 2016, at 6:46 PM, Jason J. W. Williams <jasonjwwilliams at gmail.com> wrote:
+> 
+> HI Guys,
+> 
+> In case its of help to anyone, my company is open sourcing the framework we built using Twisted Web to help us build & serve JSON REST APIs: 
+> 
+> https://github.com/williamsjj/shiji <https://github.com/williamsjj/shiji>
+> 
+> We've been using it successfully for a few years and built it to solve a bunch of repetitive tasks for us:
+> 
+> * API versioning
+> * Signed cookie handling w/ support for key rotation.
+> * Enforcement of required JSON arguments and validation of JSON argument datatypes.
+> * Enforcement of required query string arguments.
+> * Standardized JSON error responses.
+> * Basic sanity checking of pagination arguments for API calls that support it.
+> * Automatic generation of API documentation based on call docstrings and subclasses of our APIError super class.
+> 
+> MIT License, so feel free to do with it as you please. If you have any questions, just let me know. Hope it's useful to someone else as well.
+
+Thanks for this announcement, and thanks for open sourcing it!  Always good to have new developments in the ecosystem :-D.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160107/a00ddcb2/attachment-0002.html>
+
+From jasonjwwilliams at gmail.com  Thu Jan  7 17:26:49 2016
+From: jasonjwwilliams at gmail.com (Jason J. W. Williams)
+Date: Thu, 7 Jan 2016 16:26:49 -0800
+Subject: [Twisted-Python] Shiji - JSON REST API Framework built with
+ Twisted Web
+In-Reply-To: <D2C46A71-2163-4FFA-AEE3-ACECB6B9C8EA@twistedmatrix.com>
+References: <CAHZAEpdTBG7Wk=TK7uXgdVVEg677iJ2S3gvDbq1NKidNxDioiQ@mail.gmail.com>
+ <D2C46A71-2163-4FFA-AEE3-ACECB6B9C8EA@twistedmatrix.com>
+Message-ID: <CAHZAEpfjCcS9+0Rz_LyC7sgE62s9RbLt24R3iBtX=j8CxSuiQw@mail.gmail.com>
+
+>
+> Thanks for this announcement, and thanks for open sourcing it!  Always
+> good to have new developments in the ecosystem :-D.
+>
+> -glyph
+>
+>
+My pleasure! It's been on my shortlist for awhile. :)
+
+-J
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160107/b2486859/attachment-0002.html>
+
+From avosirenfal at gmail.com  Sat Jan  9 14:56:00 2016
+From: avosirenfal at gmail.com (Sirenfal)
+Date: Sat, 09 Jan 2016 21:56:00 +0000
+Subject: [Twisted-Python] Trying to use adoptStreamConnection and Protocol
+	isn't being disposed
+Message-ID: <em6c6dfb71-f998-41bc-a67a-80fc1d2480e5@solaire>
+
+I'm trying to pass a TCP connection to a Twisted subprocess with 
+adoptStreamConnection, but I can't figure out how to get the Process 
+disposed in the main process after doing that.
+
+My desired flow looks like this:
+
+- Finish writing any data the Protocol transport has waiting
+- When we know the write buffer is empty send the AMP message to 
+transfer the socket to the subprocess
+- Dispose the Protocol instance in the main process
+- I tried doing nothing, loseConnection, abortConnection, and monkey 
+patching _socketClose out and using loseConnection. See code here: 
+http://pastebin.com/nK0Huxuj
+
+In all cases the Protocol object still exists in the main process after 
+the socket has been transferred, even if the main process isn't 
+listening to that socket anymore. How can I clean this up?
+
+Thanks in advance.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160109/3bdd0631/attachment-0002.html>
+
+From avosirenfal at gmail.com  Sat Jan  9 15:03:18 2016
+From: avosirenfal at gmail.com (Sirenfal)
+Date: Sat, 09 Jan 2016 22:03:18 +0000
+Subject: [Twisted-Python] Trying to use adoptStreamConnection and
+ Protocolisn't being disposed
+In-Reply-To: <em6c6dfb71-f998-41bc-a67a-80fc1d2480e5@solaire>
+Message-ID: <em34ff1b96-e892-4e93-ae9b-d42800662151@solaire>
+
+Sorry, I meant to say "get the Protocol disposed in the main process" in 
+the first sentence :)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160109/3fd1613d/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Sat Jan  9 15:14:37 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Sat, 9 Jan 2016 14:14:37 -0800
+Subject: [Twisted-Python] Trying to use adoptStreamConnection and
+	Protocol isn't being disposed
+In-Reply-To: <em6c6dfb71-f998-41bc-a67a-80fc1d2480e5@solaire>
+References: <em6c6dfb71-f998-41bc-a67a-80fc1d2480e5@solaire>
+Message-ID: <57CF4945-489C-4978-9177-133A9198B296@twistedmatrix.com>
+
+
+> On Jan 9, 2016, at 1:56 PM, Sirenfal <avosirenfal at gmail.com> wrote:
+> 
+> I'm trying to pass a TCP connection to a Twisted subprocess with adoptStreamConnection, but I can't figure out how to get the Process disposed in the main process after doing that.
+>  
+> My desired flow looks like this:
+>  
+> - Finish writing any data the Protocol transport has waiting
+> - When we know the write buffer is empty send the AMP message to transfer the socket to the subprocess
+> - Dispose the Protocol instance in the main process
+> - I tried doing nothing, loseConnection, abortConnection, and monkey patching _socketClose out and using loseConnection. See code here: http://pastebin.com/nK0Huxuj <http://pastebin.com/nK0Huxuj>
+>  
+> In all cases the Protocol object still exists in the main process after the socket has been transferred, even if the main process isn't listening to that socket anymore. How can I clean this up?
+>  
+
+Since you also asked on Stack Overflow I answered there: http://stackoverflow.com/a/34699544/13564
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160109/f2743aef/attachment-0002.html>
+
+From zookog at gmail.com  Tue Jan 12 18:44:39 2016
+From: zookog at gmail.com (Zooko Wilcox-O'Hearn)
+Date: Wed, 13 Jan 2016 01:44:39 +0000
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+Message-ID: <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+
+FYI, this would, if it were compatible with Tahoe's packaging, fix
+these outstanding issues for Tahoe:
+
+* https://tahoe-lafs.org/trac/tahoe-lafs/ticket/142# pywin32 can't be
+installed automatically
+
+* https://tahoe-lafs.org/trac/tahoe-lafs/ticket/2028# Twisted
+endpoints introduce a dependency on pywin32
+
+Sincerely,
+
+Zooko
+
+
+
+From oliverpalmer at opalmer.com  Wed Jan 13 18:59:24 2016
+From: oliverpalmer at opalmer.com (Oliver Palmer)
+Date: Wed, 13 Jan 2016 20:59:24 -0500
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+ <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+Message-ID: <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+
+Sounds like pywincffi should fix that issue....I'm planning on distributing
+binary wheels which pip and setuptools should be able to install like any
+other dependency.  I can make sure to build other formats (exe, msi, egg,
+etc) if it helps though the binary wheels should be enough to avoid the
+same installation issues pywin32 has in most cases.  Is Tahoe's packaging
+going to require anything special that I should account for or will Twisted
+depending on pywincffi work for Tahoe?
+
+On Tue, Jan 12, 2016 at 8:44 PM, Zooko Wilcox-O'Hearn <zookog at gmail.com>
+wrote:
+
+> FYI, this would, if it were compatible with Tahoe's packaging, fix
+> these outstanding issues for Tahoe:
+>
+> * https://tahoe-lafs.org/trac/tahoe-lafs/ticket/142# pywin32 can't be
+> installed automatically
+>
+> * https://tahoe-lafs.org/trac/tahoe-lafs/ticket/2028# Twisted
+> endpoints introduce a dependency on pywin32
+>
+> Sincerely,
+>
+> Zooko
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160113/b5360b3f/attachment-0002.html>
+
+From jim at carroll.com  Thu Jan 14 18:12:47 2016
+From: jim at carroll.com (Jim Carroll)
+Date: Thu, 14 Jan 2016 20:12:47 -0500
+Subject: [Twisted-Python] Stdout from child of ProcessProtocol not
+	propogating
+Message-ID: <003d01d14f31$d8c49a10$8a4dce30$@carroll.com>
+
+We've been experimenting with creating an SSH virtual server for Windows
+based on conch. We've made good process, but we've run into a problem
+running child processes (children of spawnProcess()), in that stdout does
+not make it back to the client.  
+
+ 
+
+I can demonstrate the problem using the example ptyserv.py script with a
+slight change for Windows. Here's the code to demonstrate the problem:
+
+ 
+
+    from twisted.internet import reactor, protocol
+
+ 
+
+    class FakeTelnet(protocol.Protocol):
+
+ 
+
+        commandToRun = ['c:\\Windows\\System32\\cmd.exe']
+
+ 
+
+        def connectionMade(self):
+
+            print 'connection made'
+
+            self.propro = ProcessProtocol(self)
+
+            reactor.spawnProcess(self.propro, self.commandToRun[0], 
+
+                                 self.commandToRun, os.environ)
+
+ 
+
+        def dataReceived(self, data):
+
+            self.propro.transport.write(data)
+
+ 
+
+        def conectionLost(self, reason):
+
+            print 'connection lost'
+
+            self.propro.tranport.loseConnection()
+
+ 
+
+    class ProcessProtocol(protocol.ProcessProtocol):
+
+ 
+
+        def __init__(self, pr):
+
+            self.pr = pr
+
+ 
+
+        def outReceived(self, data):
+
+            self.pr.transport.write(data)
+
+ 
+
+        def processEnded(self, reason):
+
+            print 'protocol connection lost'
+
+            self.pr.transport.loseConnection()
+
+ 
+
+    f = protocol.Factory()
+
+    f.protocol = FakeTelnet
+
+    reactor.listenTCP(5823, f)
+
+    reactor.run()
+
+ 
+
+ 
+
+Run the above code on Windows, and telnet to localhost 5823.
+
+ 
+
+After you get the CMD.exe prompt, try to launch python.  This is what you'll
+
+see:
+
+ 
+
+    Microsoft Windows [Version 6.3.9600]
+
+    (c) 2013 Microsoft Corporation. All rights reserved.
+
+ 
+
+    C:\Temp>python
+
+    python
+
+ 
+
+ 
+
+That's it. Hitting enter just drops down to another next blank line. 
+
+ 
+
+Now what's interesting is that writes to stdin of the spawned CMD.exe get
+there. You can see this by pressing <CTRL>-D. The python subprocess will
+exit and you'll still be connected to your telnet session, now back at the
+CMD.exe prompt.
+
+ 
+
+I've experimented with modifying twisted.internet._dumbwin32proc.py so that
+the DuplicateHandle() calls (lines 147 - 163) are not called, thinking that
+inheritance was the cause, but no-go.  I've also tried adding calls to
+msvcrt.set_mode() to os.O_BINARY to make sure windows isn't somehow cooking
+the child processes output, but that had no effect either.
+
+ 
+
+I've been banging my head against this for a week and I've reached a stuck
+point. I was wondering if someone could point me towards where I'm going
+wrong. Any advice would be appreciated....
+
+ 
+
+FYI - once we get this worked out, we'd be happy to share the code.
+
+ 
+
+Thanks
+
+Jim C.
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160114/eae30137/attachment-0002.html>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: smime.p7s
+Type: application/pkcs7-signature
+Size: 4722 bytes
+Desc: not available
+URL: </pipermail/twisted-python/attachments/20160114/eae30137/attachment-0002.bin>
+
+From db3l.net at gmail.com  Thu Jan 14 22:17:17 2016
+From: db3l.net at gmail.com (David Bolen)
+Date: Fri, 15 Jan 2016 00:17:17 -0500
+Subject: [Twisted-Python] Stdout from child of ProcessProtocol not
+	propogating
+References: <003d01d14f31$d8c49a10$8a4dce30$@carroll.com>
+Message-ID: <m2a8o7wheq.fsf@valheru.db3l.homeip.net>
+
+"Jim Carroll" <jim at carroll.com> writes:
+
+> After you get the CMD.exe prompt, try to launch python.  This is what you'll
+>
+> see:
+>
+>  
+>
+>     Microsoft Windows [Version 6.3.9600]
+>
+>     (c) 2013 Microsoft Corporation. All rights reserved.
+>
+>  
+>
+>     C:\Temp>python
+>
+>     python
+>
+>  
+>
+>  
+>
+> That's it. Hitting enter just drops down to another next blank line. 
+
+I suspect it's not a Twisted issue as much as a common risk running
+programs in a child process under Windows, especially executables using
+the standard C RTL with its default stdout buffering behavior.
+
+Do the built-in commands like DIR work ok?  If so, then it's likely that
+it isn't that stdout isn't making it back to the client; rather it isn't
+even making it to your parent Twisted process.  Usually it's a buffering
+or tty detection issue since a Windows child shell won't appear to be a
+tty.  I'll note that python behaves the same way you describe when run
+from within a cmd shell under Cygwin's ssh server for example.
+
+In python's case, the C RTL is going into fully buffered mode.  You
+should eventually get output once enough is generated (~8K) or the
+process exits.  You can't control how the child executable will buffer
+from the parent unless the executable provides a way.  So how you work
+around the issue depends on the actual command being run.
+
+Assuming this is the issue you're running into, using either "python -u"
+(if you just need output as it occurs) or "python -i" (for interactive
+use) should be a workaround.  Or if you want to avoid clients having to
+remember the options, you can install appropriate environment variables
+(PYTHONUNBUFFERED or PYTHONINSPECT respectively) into the child process.
+But that's Python specific - there's no general solution for all
+executables, and there will be some for which you simply can't disable
+the buffering.
+
+The other thing you have to watch out for are executables you may run
+that actually use the Win32 console API rather than interact with
+stdin/stdout.  Or certain methods of character inputs (like Python's
+msvcrt.getch).  Again, not a Twisted issue, but you can't interact with
+that (unless you jump through some significant hoops).  This shows up
+often with password prompts (which want to prevent echoing), curses like
+applications, or even in unexpected places for Y/N prompts in some
+utilities (like SC's default help, or NET TIME /SET's confirmation).
+
+Of course if you're just implementing the ssh server portion, you should
+be able to pretty much punt on it and leave it up to the user to
+determine how to best run whatever commands they are using.  The
+behavior with your shell should be similar to other remote shell
+approaches.
+
+-- David
+
+
+
+
+From jasonjwwilliams at gmail.com  Mon Jan 18 14:39:45 2016
+From: jasonjwwilliams at gmail.com (Jason J. W. Williams)
+Date: Mon, 18 Jan 2016 13:39:45 -0800
+Subject: [Twisted-Python] Kafka Client
+Message-ID: <CAHZAEpeGJBQ6wWMPbwLcTBm1wLBj8wP-LMnjkkGg6qWZkYMe7w@mail.gmail.com>
+
+Hey,
+
+Is anyone use Kafka successfully with Twisted? So far it looks like there's
+only synchronous python clients:
+
+https://github.com/Parsely/pykafka
+https://github.com/dpkp/kafka-python
+
+Any input is greatly appreciated.
+
+-J
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160118/16b8613c/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Thu Jan 21 22:32:43 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Thu, 21 Jan 2016 21:32:43 -0800
+Subject: [Twisted-Python] code of conduct
+Message-ID: <CEA18295-A781-46DB-9034-7A90AE98374A@twistedmatrix.com>
+
+As per previous discussion on this list, the Twisted project has officially adopted the Contributor Covenant as our code of conduct.  The official change took place here: https://twistedmatrix.com/trac/ticket/8173#comment:5 <https://twistedmatrix.com/trac/ticket/8173#comment:5> and you can find out more about the Contributor Covenant here: http://contributor-covenant.org <http://contributor-covenant.org/>.  Thanks to everyone who helped figure out which policy to adopt and how to administer it.
+
+Discussion of this sort of thing is often contentious, so I would just like to personally ask anyone who disagrees with either codes of conduct in general or this specific code of conduct to keep their feelings to themselves at this point; the time for discussion has passed.  I don't do a lot of unilateral project-leader-y stuff, but it is extremely important to me that Twisted be a friendly place for everyone, and this is a necessary part of that.
+
+-glyph
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160121/75682ed2/attachment-0002.html>
+
+From oliverpalmer at opalmer.com  Sat Jan 23 18:18:40 2016
+From: oliverpalmer at opalmer.com (Oliver Palmer)
+Date: Sat, 23 Jan 2016 20:18:40 -0500
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+ <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+ <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+Message-ID: <CAEgpGv4KBeYznSidzgOJEgrLWwdeX08kLaB=2g6RQ-Xfh1HxOw@mail.gmail.com>
+
+So 0.1.2 is out and I've uploaded a patch set for review to #7889 which
+replaces win32api.FormatMessage and removes the dependency on pywin32 in
+twisted.python.lockfile (though it looks like we can do without needing to
+call on pywincffi in this case).
+
+Unfortunately, my update was spam filtered with a 57.36% probability of
+being spam. I'm human, I promise.
+
+On Wed, Jan 13, 2016 at 8:59 PM, Oliver Palmer <oliverpalmer at opalmer.com>
+wrote:
+
+> Sounds like pywincffi should fix that issue....I'm planning on
+> distributing binary wheels which pip and setuptools should be able to
+> install like any other dependency.  I can make sure to build other formats
+> (exe, msi, egg, etc) if it helps though the binary wheels should be enough
+> to avoid the same installation issues pywin32 has in most cases.  Is
+> Tahoe's packaging going to require anything special that I should account
+> for or will Twisted depending on pywincffi work for Tahoe?
+>
+> On Tue, Jan 12, 2016 at 8:44 PM, Zooko Wilcox-O'Hearn <zookog at gmail.com>
+> wrote:
+>
+>> FYI, this would, if it were compatible with Tahoe's packaging, fix
+>> these outstanding issues for Tahoe:
+>>
+>> * https://tahoe-lafs.org/trac/tahoe-lafs/ticket/142# pywin32 can't be
+>> installed automatically
+>>
+>> * https://tahoe-lafs.org/trac/tahoe-lafs/ticket/2028# Twisted
+>> endpoints introduce a dependency on pywin32
+>>
+>> Sincerely,
+>>
+>> Zooko
+>>
+>> _______________________________________________
+>> Twisted-Python mailing list
+>> Twisted-Python at twistedmatrix.com
+>> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160123/2a5f1d80/attachment-0002.html>
+
+From glyph at twistedmatrix.com  Sat Jan 23 22:01:42 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Sat, 23 Jan 2016 21:01:42 -0800
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <CAEgpGv4KBeYznSidzgOJEgrLWwdeX08kLaB=2g6RQ-Xfh1HxOw@mail.gmail.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+ <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+ <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+ <CAEgpGv4KBeYznSidzgOJEgrLWwdeX08kLaB=2g6RQ-Xfh1HxOw@mail.gmail.com>
+Message-ID: <3D811FB4-4C61-48BE-8A9B-196C4680C5CF@twistedmatrix.com>
+
+
+> On Jan 23, 2016, at 5:18 PM, Oliver Palmer <oliverpalmer at opalmer.com> wrote:
+> 
+> So 0.1.2 is out and I've uploaded a patch set for review to #7889 which replaces win32api.FormatMessage and removes the dependency on pywin32 in twisted.python.lockfile (though it looks like we can do without needing to call on pywincffi in this case).
+> 
+> Unfortunately, my update was spam filtered with a 57.36% probability of being spam. I'm human, I promise.
+
+I've trained the spam database to correct the error, hopefully you can submit it again.
+
+-glyph
+
+
+
+
+From oliverpalmer at opalmer.com  Sat Jan 23 23:09:26 2016
+From: oliverpalmer at opalmer.com (Oliver Palmer)
+Date: Sun, 24 Jan 2016 01:09:26 -0500
+Subject: [Twisted-Python] pywin32 -> cffi update and feedback request
+In-Reply-To: <3D811FB4-4C61-48BE-8A9B-196C4680C5CF@twistedmatrix.com>
+References: <A0C0309D-15E7-4C7C-B0D7-49AD543693F9@twistedmatrix.com>
+ <fdc91d65-d630-40ea-9f65-9caf2bee4eb4@email.android.com>
+ <CANdZDc7_VUU19h8iRCuDR0ZZ1Tc01zHdxfpiDYydpeqahHP05A@mail.gmail.com>
+ <CAEgpGv5UJJmvuuQXuexK9ku_UVcPPe_wYPuyVMUY+UA6V1wHig@mail.gmail.com>
+ <CAEgpGv4KBeYznSidzgOJEgrLWwdeX08kLaB=2g6RQ-Xfh1HxOw@mail.gmail.com>
+ <3D811FB4-4C61-48BE-8A9B-196C4680C5CF@twistedmatrix.com>
+Message-ID: <CAEgpGv5-jHPPJdOnkuPWxaVr=+wr9hVHbtzFJXdeMV9egKox6w@mail.gmail.com>
+
+Worked that time, thanks Glyph.
+
+On Sun, Jan 24, 2016 at 12:01 AM, Glyph Lefkowitz <glyph at twistedmatrix.com>
+wrote:
+
+>
+> > On Jan 23, 2016, at 5:18 PM, Oliver Palmer <oliverpalmer at opalmer.com>
+> wrote:
+> >
+> > So 0.1.2 is out and I've uploaded a patch set for review to #7889 which
+> replaces win32api.FormatMessage and removes the dependency on pywin32 in
+> twisted.python.lockfile (though it looks like we can do without needing to
+> call on pywincffi in this case).
+> >
+> > Unfortunately, my update was spam filtered with a 57.36% probability of
+> being spam. I'm human, I promise.
+>
+> I've trained the spam database to correct the error, hopefully you can
+> submit it again.
+>
+> -glyph
+>
+>
+> _______________________________________________
+> Twisted-Python mailing list
+> Twisted-Python at twistedmatrix.com
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160124/6442184c/attachment-0002.html>
+
+From a at runtel.ru  Mon Jan 25 00:22:09 2016
+From: a at runtel.ru (a at runtel.ru)
+Date: Mon, 25 Jan 2016 10:22:09 +0300
+Subject: [Twisted-Python] Help with log
+Message-ID: <3129841453706529@web23g.yandex.ru>
+
+ Hi All!
+
+Tell me how to wait for the start of the log on twistd.
+When I start twistd - i see print out in log in stdout.
+log.msg("123") now work.
+
+from twisted.application.service import Application
+from twisted.python.log import ILogObserver, FileLogObserver
+from twisted.python.logfile import DailyLogFile
+# from twisted.python import log
+
+from raspberry.raspberry import Raspberry
+from raspberry.config import config
+
+application = Application("raspberry")
+logfile = DailyLogFile(config["log_file"], config["log_path"])
+application.setComponent(ILogObserver, FileLogObserver(logfile).emit)
+
+
+runner = Raspberry(application, config)
+runner.run()
+
+
+Thanks! 
+
+
+
+From glyph at twistedmatrix.com  Mon Jan 25 16:02:59 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Mon, 25 Jan 2016 15:02:59 -0800
+Subject: [Twisted-Python] news file confusion
+Message-ID: <67C8DC8D-0825-4F70-BB37-25F6EB0741F0@twistedmatrix.com>
+
+It looks like both https://github.com/twisted/newsbuilder/ and https://github.com/hawkowl/towncrier/ are extractions of the news-builder functionality in our release module.  If "towncrier" is the official name, we should probably move that to the twisted org.
+
+Also, does anyone feel like doing the work to remove the newsbuilder (IIRC, entirely private API, so no deprecation) and migrating our release process to use towncrier?
+
+-glyph
+
+
+From hawkowl at atleastfornow.net  Mon Jan 25 18:44:06 2016
+From: hawkowl at atleastfornow.net (Amber Brown)
+Date: Tue, 26 Jan 2016 09:44:06 +0800
+Subject: [Twisted-Python] news file confusion
+In-Reply-To: <67C8DC8D-0825-4F70-BB37-25F6EB0741F0@twistedmatrix.com>
+Message-ID: <3f1a86df-5320-469e-a4fb-90fcb3206c7c@email.android.com>
+
+Towncrier is actually a from-scratch rewrite :)
+
+I'm in for the migration - there's a Klein PR to migrate that as a proof of concept, I need to double check if anyone looked at it.
+
+- Amber
+
+On 26 Jan 2016 07:02, Glyph Lefkowitz <glyph at twistedmatrix.com> wrote:
+>
+> It looks like both https://github.com/twisted/newsbuilder/ and https://github.com/hawkowl/towncrier/ are extractions of the news-builder functionality in our release module.  If "towncrier" is the official name, we should probably move that to the twisted org. 
+>
+> Also, does anyone feel like doing the work to remove the newsbuilder (IIRC, entirely private API, so no deprecation) and migrating our release process to use towncrier? 
+>
+> -glyph 
+> _______________________________________________ 
+> Twisted-Python mailing list 
+> Twisted-Python at twistedmatrix.com 
+> http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python 
+
+From glyph at twistedmatrix.com  Sun Jan 31 17:46:12 2016
+From: glyph at twistedmatrix.com (Glyph Lefkowitz)
+Date: Sun, 31 Jan 2016 16:46:12 -0800
+Subject: [Twisted-Python] operations: baby steps. buildbot move?
+Message-ID: <919D1FB1-CCC7-4041-ADDA-8BD99EEB33C9@twistedmatrix.com>
+
+In the spirit of having more of our discussions of what's going on with the operations of twistedmatrix.com <http://twistedmatrix.com/> happening out in the open so that folks can jump in and help, we are going to start discussing this stuff on the public mailing list instead of in private side discussions or the administrative list.  Credentials and other operationally sensitive things will of course still be sent via private GPG-encrypted messages but general "what's going on" stuff should be here.
+
+Right now we have a creaky old machine (dornkirk) running in a datacenter operated by Tummy.  Although they have been generous with discounts, we do have actually free hardware elsewhere, including some sponsored by my employer (Rackspace).  I would like to get everything off of Tummy's hardware for several reasons:
+
+we actually have to pay for tummy's hosting, which is a drain (albeit a minor one) on our very taxed resources from the Conservancy.  (hey slackers: get out your credit cards and head to the sponsor form twistedmatrix.com <http://twistedmatrix.com/> or the site is literally going to go down one day).
+by co-locating so many services we can't upgrade the host operating system as often as we'd like without fear of breaking something else
+buildbot's TLS cert is expired and I'd like to use Let's Encrypt to get a new one, but the way the web server is configured makes this a bit tricky; it would be easier if it lived on its own host.
+the buildmaster is slow and it would be nice if it were on faster hardware
+given that many of our builders themselves are running in the cloud, we'd have lower latency if the buildmaster actually ran there
+
+So at some point in the coming week I'd like to just move exactly the version of the Buildmaster we're running right now to a new cloud host on Rackspace; probably the smallest one that comes with an SSD.
+
+Hawkowl is in the process of upgrading us to Buildbot 9 which will be wonderful when it happens, but I want to be clear that this effort is wholly independent from that and neither depends on the other :-).
+
+It looks to me like the thing I need to do is 'fab config.production buildbot.stop; fab config.production buildbot.dump', then make the relevant DNS change.  At this point I think I need to add a new environment to ENVIRONMENTS and do 'fab config.buildbot buildbot.dump'.  It's not obvious to me how to have two hosts present in 'config.production' but if somebody knows this please let me know.
+
+If you're interested in getting involved in operational stuff to help us out with this, I'll be available for pair-opsing (what do you call pair programming when it's ops?) so just get in touch.
+
+-glyph
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160131/9e061af9/attachment-0002.html>
+
+From hawkowl at atleastfornow.net  Sun Jan 31 17:56:53 2016
+From: hawkowl at atleastfornow.net (Amber "Hawkie" Brown)
+Date: Mon, 1 Feb 2016 08:56:53 +0800
+Subject: [Twisted-Python] operations: baby steps. buildbot move?
+In-Reply-To: <919D1FB1-CCC7-4041-ADDA-8BD99EEB33C9@twistedmatrix.com>
+References: <919D1FB1-CCC7-4041-ADDA-8BD99EEB33C9@twistedmatrix.com>
+Message-ID: <4DA01BF6-7F43-4DBF-99BD-B35C198D2DA0@atleastfornow.net>
+
+
+> On 1 Feb 2016, at 08:46, Glyph Lefkowitz <glyph at twistedmatrix.com> wrote:
+> 
+> So at some point in the coming week I'd like to just move exactly the version of the Buildmaster we're running right now to a new cloud host on Rackspace; probably the smallest one that comes with an SSD.
+
+Sounds good. The 2GB General Purpose that I use for the buildbots is plenty fast, and has enough RAM that we don't have to care (although I think RAX is smart enough that we can start at 1GB and move up to 2GB if needed?).
+
+> Hawkowl is in the process of upgrading us to Buildbot 9 which will be wonderful when it happens, but I want to be clear that this effort is wholly independent from that and neither depends on the other :-).
+
+Yep, Nine is separate.
+
+> 
+> It looks to me like the thing I need to do is 'fab config.production buildbot.stop; fab config.production buildbot.dump', then make the relevant DNS change.  At this point I think I need to add a new environment to ENVIRONMENTS and do 'fab config.buildbot buildbot.dump'.  It's not obvious to me how to have two hosts present in 'config.production' but if somebody knows this please let me know.
+
+I think "config.production" is a bit of a eh name to have after, we should change it if we have more machines. Eg. config.prod-dornkirk, or whatever. Then we just need to write what goes where.
+
+- Amber
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 455 bytes
+Desc: Message signed with OpenPGP using GPGMail
+URL: </pipermail/twisted-python/attachments/20160201/0ad0e058/attachment.sig>
+
+From mithrandi at mithrandi.net  Sun Jan 31 20:52:01 2016
+From: mithrandi at mithrandi.net (Tristan Seligmann)
+Date: Mon, 01 Feb 2016 03:52:01 +0000
+Subject: [Twisted-Python] Debian unstable builder
+Message-ID: <CAMcKhMT3RkvEJ9PV0U3fH=fk2gZ9W9Z10kkV1ZqZCGDuw5rzkg@mail.gmail.com>
+
+Working on tickets such as #8180[1] and #8187[2] suggests that it would be
+useful to have a builder running on Debian unstable (and/or other "bleeding
+edge" distributions, most of them have something similar) in order to pick
+up problematic changes like this sooner. #8180 is just a case of a newer
+upstream release (OpenSSH 7.0 disables DSA key support by default), whereas
+I think #8187 is a "distro policy" type thing (OpenSSL in Debian unstable
+is compiled without SSLv3_METHOD support).
+
+I don't think making such a builder be a supported platform would be
+feasible (at least as things currently stand), but at least it would serve
+as a canary for this sort of issue.
+
+Thoughts?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: </pipermail/twisted-python/attachments/20160201/5b3d0624/attachment-0002.html>
+

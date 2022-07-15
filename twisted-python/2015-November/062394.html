@@ -1,0 +1,228 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Implementing Postfix Inet Policy Check Client
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Implementing%20Postfix%20Inet%20Policy%20Check%20Client&In-Reply-To=%3C564C44D9.3050001%40t0mb.net%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="062390.html">
+   <LINK REL="Next"  HREF="062403.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Implementing Postfix Inet Policy Check Client</H1>
+    <B>Tom Boland</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Implementing%20Postfix%20Inet%20Policy%20Check%20Client&In-Reply-To=%3C564C44D9.3050001%40t0mb.net%3E"
+       TITLE="[Twisted-Python] Implementing Postfix Inet Policy Check Client">tom at t0mb.net
+       </A><BR>
+    <I>Wed Nov 18 02:28:57 MST 2015</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="062390.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+        <LI>Next message (by thread): <A HREF="062403.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#62394">[ date ]</a>
+              <a href="thread.html#62394">[ thread ]</a>
+              <a href="subject.html#62394">[ subject ]</a>
+              <a href="author.html#62394">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi Exvito,
+
+Thanks very much for this. I think I might just give a bit of context
+about using this.
+
+I have an SMTP proxy using Nginx.  It uses queries an HTTP service to
+establish whether mail should be forwarded, and where to (on to
+postfix/dovecot/exchange backends).  It uses Twisted for the HTTP
+authorisation service, and I've been using a similar model for years for
+POP and IMAP in production, and for the last year on an outbound SMTP
+relay.  The Twisted http service handles password authentication as well
+lookups that point connections on to the correct backend servers.  All
+of our custom business logic is in the python (database lookups and the
+like).  Twisted has performed brilliantly as the HTTP service for years.
+
+I'm now writing an inbound SMTP proxy service, and initially, it just
+does DNSBL checks, which will actually stop around 12 million emails a
+day from reaching postfix and tying up smtpd processes!  I fire off a
+number of DNSBL checks in a deferred chain, and just come back to it
+once the chain has completed.  The postfix policy check was going to be
+added to this chain of events and initially I was going to use it to
+query the dovecot quota daemon running on the appropriate backend for a
+given mailbox, therefore I'd have a few tens of connections open, one to
+each of the policy daemons on the dovecot backend servers.  This is just
+to avoid queuing and trying to deliver mail to a mailbox that's over-quota.
+
+I think what you've provided me with is useful for me, but I think it's
+backwards for my purposes, as I need to be connecting to the policy
+daemon rather than being the policy daemon!
+
+I wanted to do this with deferred calls in case one of the policy
+daemons becomes unreachable and blocks my application.  Do you think I
+should do something differently in that regard?  My SQL lookups are done
+synchronously.  If the database server goes away, I've got bigger
+problems anyway!
+
+Many thanks for your help.  I'll work a bit on this this morning and
+come back!
+
+Thanks again.  Tom.
+
+
+
+On 18/11/15 02:14, Ex Vito wrote:
+&gt;<i> Tom,
+</I>&gt;<i>
+</I>&gt;<i> I guess LineReceiver can help you with that, it's a matter of using a
+</I>&gt;<i> different delimiter. Here is a rough sketch of something you can start
+</I>&gt;<i> exploring:
+</I>&gt;<i>
+</I>&gt;<i> from __future__ import print_function
+</I>&gt;<i>
+</I>&gt;<i> from twisted.internet import reactor, protocol, endpoints, defer
+</I>&gt;<i> from twisted.protocols import basic
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> class PostfixProtocol(basic.LineReceiver):
+</I>&gt;<i>
+</I>&gt;<i>     # Assuming Postfix sends '\r\n' line breaks (does it?)
+</I>&gt;<i>     delimiter = '\r\n\r\n'
+</I>&gt;<i>
+</I>&gt;<i>     def lineReceived(self, multi_line):
+</I>&gt;<i>         input_dict = {
+</I>&gt;<i>             k: v for k, v in (
+</I>&gt;<i>                 line.split('=') for line in multi_line.split('\r\n')
+</I>&gt;<i>             )
+</I>&gt;<i>         }
+</I>&gt;<i>         self.gotPostfixRequest(input_dict)
+</I>&gt;<i>
+</I>&gt;<i>     def gotPostfixRequest(self, request_dict):
+</I>&gt;<i>         # Silly deferred-based implementation.
+</I>&gt;<i>         d = defer.Deferred()
+</I>&gt;<i>         d.addCallback(self.sendPostfixAction)
+</I>&gt;<i>         # Simulate a deferred being fired with success.
+</I>&gt;<i>         reactor.callLater(1, d.callback, 'OK')
+</I>&gt;<i>
+</I>&gt;<i>     def sendPostfixAction(self, response):
+</I>&gt;<i>         # NOTE: Sends self.delimiter after the payload.
+</I>&gt;<i>         #       Use self.tranport.write if you don't want it.
+</I>&gt;<i>         self.sendLine('action={}'.format(response))
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> if __name__ == '__main__':
+</I>&gt;<i>
+</I>&gt;<i>     ep = endpoints.serverFromString(reactor, 'tcp:10000')
+</I>&gt;<i>     f = protocol.Factory()
+</I>&gt;<i>     f.protocol = PostfixProtocol
+</I>&gt;<i>     ep.listen(f)
+</I>&gt;<i>     reactor.run()
+</I>&gt;<i>
+</I>&gt;<i> Key ideas:
+</I>&gt;<i> - PostfixProtocol overrides LineReceiver's delimiter (setting it to
+</I>&gt;<i> '\r\n\r\n')
+</I>&gt;<i> - lineReceived parses the muti_line and calls gotPostfixRequest.
+</I>&gt;<i> - gotPostfixRequest should decide (or delegate, you choice) what kind
+</I>&gt;<i> of response to send back.
+</I>&gt;<i> - sendPostfixAction sends a response back to Postfix.
+</I>&gt;<i>
+</I>&gt;<i> Notes:
+</I>&gt;<i> - The multi_line parsing code is short(ish) but not very robust. It
+</I>&gt;<i> may fail in bad ways with invalid input.
+</I>&gt;<i> - The gotPostfixRequest implementation is written for the sake of a
+</I>&gt;<i> deferred-based example.
+</I>&gt;<i>
+</I>&gt;<i> Does this help you in any way?
+</I>&gt;<i> Cheers,
+</I>&gt;<i> --
+</I>&gt;<i> exvito
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> On Tue, Nov 17, 2015 at 4:56 PM, Tom Boland &lt;<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">tom at t0mb.net</A>
+</I>&gt;<i> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">tom at t0mb.net</A>&gt;&gt; wrote:
+</I>&gt;<i> &gt; Greetings all.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; This may be a very basic question.  I'm hoping to implement a postfix
+</I>&gt;<i> &gt; policy check client in twisted.  It's a simple protocol.  You send
+</I>&gt;<i> &gt; newline separated key value pairs like:
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; recipient=<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">email at ddr.ess</A>
+</I>&gt;<i> &gt; sender=<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">another at ddr.ess</A>
+</I>&gt;<i> &gt; size=1024
+</I>&gt;<i> &gt; helo_name=mail.server
+</I>&gt;<i> &gt; etc..
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; you terminate the request with an additional newline.  The response
+</I>&gt;<i> &gt; comes back like
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; action=OK
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; You can send mutliple requests in the same connection.  What I'm
+</I>&gt;<i> &gt; envisaging is a module that can be used to provide a deferred
+</I>&gt;<i> &gt; request/response pairing to my calling application.  The module class
+</I>&gt;<i> &gt; will manage the single connection to the postfix policy daemon (I'm
+</I>&gt;<i> &gt; actually going to have persistent connections to a few daemons), and
+</I>&gt;<i> &gt; reconnect when necessary etc.  Any requests will return a deferred that
+</I>&gt;<i> &gt; I can add callbacks to.  How would you design this with twisted?  I can
+</I>&gt;<i> &gt; easily envisage a way of using a clientfactory to instantiate separate
+</I>&gt;<i> &gt; connections for each request/response, but actually being able to simply
+</I>&gt;<i> &gt; send a request and receive the single response for that request is
+</I>&gt;<i> &gt; something I'm struggling to do within a LineReceiver instance (for
+</I>&gt;<i> &gt; instance).  Would the twisted.protocols.amp module help given that I
+</I>&gt;<i> &gt; can't change the server-side protocol?
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Any advice much appreciated!
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Thanks.  Tom.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; _______________________________________________
+</I>&gt;<i> &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt; <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &lt;mailto:<A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>&gt;
+</I>&gt;<i> &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> -- 
+</I>&gt;<i> --
+</I>&gt;<i>   exvito
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: &lt;/pipermail/twisted-python/attachments/20151118/9211d411/attachment-0002.html&gt;
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="062390.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+	<LI>Next message (by thread): <A HREF="062403.html">[Twisted-Python] Implementing Postfix Inet Policy Check Client
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#62394">[ date ]</a>
+              <a href="thread.html#62394">[ thread ]</a>
+              <a href="subject.html#62394">[ subject ]</a>
+              <a href="author.html#62394">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

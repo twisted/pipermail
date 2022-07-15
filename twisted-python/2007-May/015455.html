@@ -1,0 +1,254 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] RE: Modifying a web proxy to use SSL
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20RE%3A%20Modifying%20a%20web%20proxy%20to%20use%20SSL&In-Reply-To=5DA9F92FACA0914D951AE5EB57F9236E02B9BB8F%40THN-EXCLS1.dc1.doubleclick.corp">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="015456.html">
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] RE: Modifying a web proxy to use SSL</H1>
+    <B>Adams, Larry</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20RE%3A%20Modifying%20a%20web%20proxy%20to%20use%20SSL&In-Reply-To=5DA9F92FACA0914D951AE5EB57F9236E02B9BB8F%40THN-EXCLS1.dc1.doubleclick.corp"
+       TITLE="[Twisted-Python] RE: Modifying a web proxy to use SSL">LAdams at doubleclick.com
+       </A><BR>
+    <I>Wed May 30 17:20:56 EDT 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="015456.html">[Twisted-Python] New to twisted- need help to hit stride
+</A></li>
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15455">[ date ]</a>
+              <a href="thread.html#15455">[ thread ]</a>
+              <a href="subject.html#15455">[ subject ]</a>
+              <a href="author.html#15455">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Here is a little more detail on my problem.  I've been able to verify
+that the connection is made to the https server and that data is
+received.  In fact, I've overridden the ProxyRequest.handleResponseEnd()
+method to save this data to a database.  I can see the raw html and
+image data in the database, but nothing is returned to the browser.
+Does anyone have any experience implementing their own proxy with SSL
+that might be able to point me in the right direction?  Any assistance
+would be greatly appreciated.
+ 
+-larry
+ 
+Here is my custom ProxyRequest class (i had to modify some stuff because
+secure urls have the https stripped and :443 added to the uri for some
+reason):
+ 
+class SerpicoProxyRequest(proxy.ProxyRequest):
+    #protocols = {'http': SerpicoProxyClientFactory}
+    #LEA - added https
+    protocols = {'http': SerpicoProxyClientFactory, 'https' :
+SerpicoProxyClientFactory}
+    ports = {'http' : 80, 'https' : 443}
+ 
+    def __init__(self, *args):
+        proxy.ProxyRequest.__init__(self, *args)
+ 
+    def process(self):
+        if (self.uri.find(':443')&gt;0):
+            self.uri = '<A HREF="https://'">https://'</A> + self.uri.replace(':443','')
+            self.method = 'GET'
+            parsed = urlparse.urlparse(self.uri)
+            protocol = parsed[0]
+            host = parsed[1]
+            port = self.ports[protocol]
+            self.setHost(host,port,1)
+            if ':' in host:
+                host, port = host.split(':')
+                port = int(port)
+ 
+            rest = urlparse.urlunparse(('','')+parsed[2:])
+            if not rest:
+                rest = rest+'/'
+            class_ = self.protocols[protocol]
+            headers = self.getAllHeaders().copy()
+            if not headers.has_key('host'):
+                headers['host'] = host
+            self.content.seek(0,0)
+            s = self.content.read()
+            clientFactory = class_(self.method, rest, self.clientproto,
+headers, s, self)
+            clientContextFactory = ssl.ClientContextFactory()
+            c = reactor.connectSSL(host, port, clientFactory,
+clientContextFactory)
+        else:
+            proxy.ProxyRequest.process(self)
+ 
+Here is my custom ProxyClient (the Page() object is what I'm using to
+save the data to the database):
+ 
+class SerpicoProxyClient(proxy.ProxyClient):
+    def connectionMade(self):
+        global CURRENTJOBID
+        global CURRENTCHILDID
+        log.msg(&quot;initializing connection&quot;)
+        self.page = Page()
+        if not self.father.uri == &quot;%s/command/get_agent_task/%s&quot; %
+(command_site,machine_name):
+            self.page.instance = machine_name
+            self.page.job_id = int(CURRENTJOBID or 0)
+            self.page.task_id = int(CURRENTCHILDID or 0)
+            # self.father refers to the http.Request object
+            self.page.request_uri = self.father.uri
+            self.page.save()
+            log.msg(&quot;MACHINE NAME IS %s&quot; % machine_name)
+            log.msg(&quot;PROXYREQUEST %s&quot; % self.father.uri)
+            log.msg(&quot;TRANSPORT %s&quot; % self.transport)
+            log.msg(&quot;ISSECURE %s&quot; % self.father.isSecure())
+        proxy.ProxyClient.connectionMade(self)
+ 
+    def handleHeader(self, key, value):
+        proxy.ProxyClient.handleHeader(self, key, value)
+#        log.msg(&quot;%s : %s added&quot; % (key, value))
+        if not self.father.uri == &quot;%s/command/get_agent_task/%s&quot; %
+(command_site,machine_name):
+            self.page.header_set.create(key=key, value=value)
+ 
+    def handleResponsePart(self, data):
+        if not self.father.uri == &quot;%s/command/get_agent_task/%s&quot; %
+(command_site,machine_name):
+            self.page.data = data
+        proxy.ProxyClient.handleResponsePart(self, data)
+ 
+    def handleResponseEnd(self):
+        if not self.father.uri == &quot;%s/command/get_agent_task/%s&quot; %
+(command_site,machine_name):
+            self.page.save()
+        log.msg('ending response with my
+data::%s\n\nfatherdata::%s\n\nmytransport::%s' % (self.page.data,
+self.father.c
+hannel.transport, self.transport))
+        self.transport.loseConnection()
+        self.father.channel.transport.loseConnection()
+ 
+
+________________________________
+
+From: Adams, Larry 
+Sent: Tuesday, May 29, 2007 3:42 PM
+To: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python at twistedmatrix.com</A>
+Subject: Modifying a web proxy to use SSL
+
+
+
+I'm trying to use twisted to proxy all web requests for a set of PCs
+(virtual machines actually). I've created my own ProxyRequest class to
+override the process() method so that it will use SSL if the URL is
+secure. It makes the connection and retrieves the data successfully, but
+the browser still doesn't display the HTML. I must be missing some other
+class/method that I have to override, but I'm at a loss as to which one
+at the moment.
+
+Below is some logging from my application for the same page called via
+http and https respectively. Any help or pointers to working examples
+would be greatly appreciated!
+
+Thanks,
+Larry Adams 
+2007/05/29 15:10 -0500 [SerpicoProxy,11,172.18.36.22] Starting factory
+&lt;__main__.SerpicoProxyClientFactory instance at 0xb71d8cec&gt;
+
+2007/05/29 15:10 -0500 [Uninitialized] building protocol for addr:
+IPv4Address(TCP, 'www.connectcommerce.com
+&lt;<A HREF="file://www.connectcommerce.com">file://www.connectcommerce.com</A>&gt; ', 80)
+2007/05/29 15:10 -0500 [Uninitialized] initializing connection
+2007/05/29 15:10 -0500 [Uninitialized] MACHINE NAME IS surfsidekick
+2007/05/29 15:10 -0500 [Uninitialized] PROXYREQUEST
+<A HREF="http://www.connectcommerce.com/">http://www.connectcommerce.com/</A> &lt;<A HREF="http://www.connectcommerce.com/">http://www.connectcommerce.com/</A>&gt; 
+2007/05/29 15:10 -0500 [Uninitialized] TRANSPORT &lt;&lt;class
+'twisted.internet.tcp.Client'&gt; to ('www.connectcommerce.com
+&lt;<A HREF="file://www.connectcommerce.com">file://www.connectcommerce.com</A>&gt; ', 80) at b71d8ccc&gt;
+
+2007/05/29 15:10 -0500 [Uninitialized] ISSECURE False
+2007/05/29 15:10 -0500 [SerpicoProxyClient,client] Date : Tue, 29 May
+2007 20:11:27 GMT added
+2007/05/29 15:10 -0500 [SerpicoProxyClient,client] Server :
+Apache/1.3.33 (Unix) (Gentoo/Linux) added
+2007/05/29 15:10 -0500 [SerpicoProxyClient,client] Location :
+<A HREF="http://www.connectcommerce.com/global/login.html">http://www.connectcommerce.com/global/login.html</A>
+&lt;<A HREF="http://www.connectcommerce.com/global/login.html">http://www.connectcommerce.com/global/login.html</A>&gt;  added
+2007/05/29 15:10 -0500 [SerpicoProxyClient,client] Connection : close
+added
+2007/05/29 15:10 -0500 [SerpicoProxyClient,client] Content-Type :
+text/html; charset=iso-8859-1 added
+2007/05/29 15:10 -0500 [SerpicoProxyClient,client] trying to lose
+connection for transport: &lt;&lt;class 'twisted.internet.tcp.Client'&gt; to
+('www.connectcommerce.com &lt;<A HREF="file://www.connectcommerce.com">file://www.connectcommerce.com</A>&gt; ', 80) at
+b71d8ccc&gt;
+
+2007/05/29 15:10 -0500 [SerpicoProxyClient,client] parent transport :
+&lt;SerpicoProxy #11 on 74007&gt;
+2007/05/29 15:10 -0500 [SerpicoProxyClient,client] Stopping factory
+&lt;__main__.SerpicoProxyClientFactory instance at 0xb71d8cec&gt;
+
+2007/05/29 15:11 -0500 [SerpicoProxy,18,172.18.36.22] Starting factory
+&lt;__main__.SerpicoProxyClientFactory instance at 0xb71d8d0c&gt;
+
+2007/05/29 15:11 -0500 [Uninitialized] building protocol for addr:
+IPv4Address(TCP, 'www.connectcommerce.com
+&lt;<A HREF="file://www.connectcommerce.com">file://www.connectcommerce.com</A>&gt; ', 443)
+2007/05/29 15:11 -0500 [Uninitialized] initializing connection
+2007/05/29 15:11 -0500 [Uninitialized] MACHINE NAME IS surfsidekick
+2007/05/29 15:11 -0500 [Uninitialized] PROXYREQUEST
+<A HREF="https://www.connectcommerce.com">https://www.connectcommerce.com</A> &lt;<A HREF="https://www.connectcommerce.com">https://www.connectcommerce.com</A>&gt; 
+2007/05/29 15:11 -0500 [Uninitialized] TRANSPORT &lt;&lt;class
+'twisted.internet.tcp.TLSConnection'&gt; to ('www.connectcommerce.com
+&lt;<A HREF="file://www.connectcommerce.com">file://www.connectcommerce.com</A>&gt; ', 443) at b71bd86c&gt;
+
+2007/05/29 15:11 -0500 [Uninitialized] ISSECURE True
+2007/05/29 15:11 -0500 [SerpicoProxyClient,client] Date : Tue, 29 May
+2007 20:12:00 GMT added
+2007/05/29 15:11 -0500 [SerpicoProxyClient,client] Server :
+Apache/1.3.33 (Unix) (Gentoo/Linux) added
+2007/05/29 15:11 -0500 [SerpicoProxyClient,client] Location :
+<A HREF="http://www.connectcommerce.com/global/login.html">http://www.connectcommerce.com/global/login.html</A>
+&lt;<A HREF="http://www.connectcommerce.com/global/login.html">http://www.connectcommerce.com/global/login.html</A>&gt;  added
+2007/05/29 15:11 -0500 [SerpicoProxyClient,client] Connection : close
+added
+2007/05/29 15:11 -0500 [SerpicoProxyClient,client] Content-Type :
+text/html; charset=iso-8859-1 added
+2007/05/29 15:11 -0500 [SerpicoProxyClient,client] trying to lose
+connection for transport: &lt;&lt;class 'twisted.internet.tcp.TLSConnection'&gt;
+to ('www.connectcommerce.com &lt;<A HREF="file://www.connectcommerce.com">file://www.connectcommerce.com</A>&gt; ', 443) at
+b71bd86c&gt;
+
+2007/05/29 15:11 -0500 [SerpicoProxyClient,client] parent transport :
+&lt;SerpicoProxy #18 on 74007&gt;
+2007/05/29 15:11 -0500 [SerpicoProxyClient,client] Stopping factory
+&lt;__main__.SerpicoProxyClientFactory instance at 0xb71d8d0c&gt;
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <A HREF="http://twistedmatrix.com/pipermail/twisted-python/attachments/20070530/890d0334/attachment.htm">http://twistedmatrix.com/pipermail/twisted-python/attachments/20070530/890d0334/attachment.htm</A> 
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="015456.html">[Twisted-Python] New to twisted- need help to hit stride
+</A></li>
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#15455">[ date ]</a>
+              <a href="thread.html#15455">[ thread ]</a>
+              <a href="subject.html#15455">[ subject ]</a>
+              <a href="author.html#15455">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

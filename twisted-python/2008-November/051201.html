@@ -1,0 +1,393 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Deferreds vs sys.getrecursionlimit()
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Deferreds%20vs%20sys.getrecursionlimit%28%29&In-Reply-To=%3C20081114185500.301cc10f%40fluxx.allmydata.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <LINK REL="Previous"  HREF="051213.html">
+   <LINK REL="Next"  HREF="051202.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Deferreds vs sys.getrecursionlimit()</H1>
+    <B>Brian Warner</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20Deferreds%20vs%20sys.getrecursionlimit%28%29&In-Reply-To=%3C20081114185500.301cc10f%40fluxx.allmydata.com%3E"
+       TITLE="[Twisted-Python] Deferreds vs sys.getrecursionlimit()">warner at lothar.com
+       </A><BR>
+    <I>Fri Nov 14 19:55:00 MST 2008</I>
+    <P><UL>
+        <LI>Previous message (by thread): <A HREF="051213.html">[Twisted-Python] Opening a fifo
+</A></li>
+        <LI>Next message (by thread): <A HREF="051202.html">[Twisted-Python] Deferreds vs sys.getrecursionlimit()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51201">[ date ]</a>
+              <a href="thread.html#51201">[ thread ]</a>
+              <a href="subject.html#51201">[ subject ]</a>
+              <a href="author.html#51201">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>About once every six months, I wind up debugging a python stack
+overflow in my Deferred-using code. The symptom is usually a log
+message that ends with:
+
+  File &quot;/usr/lib/python2.5/site-packages/twisted/internet/defer.py&quot;, line 344, in _runCallbacks
+    self.result = failure.Failure()
+  File &quot;/usr/lib/python2.5/site-packages/twisted/python/failure.py&quot;, line 265, in __init__
+    parentCs = reflect.allYourBase(self.type)
+  File &quot;/usr/lib/python2.5/site-packages/twisted/python/reflect.py&quot;, line 542, in allYourBase
+    accumulateBases(classObj, l, baseClass)
+  File &quot;/usr/lib/python2.5/site-packages/twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;/usr/lib/python2.5/site-packages/twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;/usr/lib/python2.5/site-packages/twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;/usr/lib/python2.5/site-packages/twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+exceptions.RuntimeError: maximum recursion depth exceeded
+
+It's always something weird. This time, I took notes. I offer these hints to
+help future searchers find a starting point in their own debugging efforts.
+The executive summary:
+
+ Certain patterns of using Deferreds work fine while testing, but will fail
+ in mysterious ways later on as the application's workload grows larger.
+
+These notes are formatted for Trac, as they were originally written as a
+comment for <A HREF="http://allmydata.org/trac/tahoe/ticket/237">http://allmydata.org/trac/tahoe/ticket/237</A> . Also, the
+&quot;solutions&quot; suggested require the eventual-send operator as provided by
+Foolscap, and until/unless reactor.eventually() makes it into Twisted proper,
+these solutions may not be convenient for projects that aren't already using
+Foolscap.
+
+cheers,
+ -Brian
+
+
+== Problem One: long list of callbacks, all of them are ready ==
+
+Each Deferred (we'll call the first one Deferred A) has a list of callback
+functions. Each time you do d.addCallback(), this list grows by one element.
+
+When Deferred A fires, the list is executed in a 'while' loop, in
+Deferred._runCallbacks. If the callbacks all return either a normal value or
+a Failure, then the list is completely consumed during the one call to
+_runCallbacks, and everything is fine.
+
+However, when a callback returns another Deferred B (chaining), the first
+Deferred A must wait for the second to finish. The code that does this looks
+like:
+
+{{{
+    if isinstance(self.result, Deferred):
+        self.pause()
+        self.result.addBoth(self._continue)
+        break
+}}}
+
+The second Deferred B might have already been fired by this point, either
+because it was born ready (created with defer.succeed, or
+defer.maybeDeferred), or because whatever was being waited upon has already
+occurred.
+
+If this occurs, the subsequent callback in Deferred A's chain will fire (with
+B's result), but it will fire through a 6-frame recursive loop instead of
+firing on the next pass of the 'while' loop. As a result, each such
+ready-to-fire Deferred will add 6 stack frames. 166 such loops are enough to
+put more than 1000 frames on the stack, which will exceed Python's default
+sys.getrecursionlimit() .
+
+The 6-frame cycle is:
+
+{{{
+  File &quot;twisted/internet/defer.py&quot;, line 214, in addBoth
+    callbackKeywords=kw, errbackKeywords=kw)
+  File &quot;twisted/internet/defer.py&quot;, line 186, in addCallbacks
+    self._runCallbacks()
+  File &quot;twisted/internet/defer.py&quot;, line 328, in _runCallbacks
+    self.result = callback(self.result, *args, **kw)
+  File &quot;twisted/internet/defer.py&quot;, line 289, in _continue
+    self.unpause()
+  File &quot;twisted/internet/defer.py&quot;, line 285, in unpause
+    self._runCallbacks()
+  File &quot;twisted/internet/defer.py&quot;, line 341, in _runCallbacks
+    self.result.addBoth(self._continue)
+}}}
+
+
+The following sample code will cause this situation:
+
+{{{
+import traceback
+from twisted.internet import defer
+
+def fire(res, which):
+    #print &quot;FIRE&quot;, which, &quot;stack:&quot;, len(traceback.extract_stack())
+    #if which == 2:
+    #    traceback.print_stack()
+    return defer.succeed(None)
+
+d = defer.Deferred()
+for i in range(170):
+    d.addCallback(fire, i)
+
+d.callback(&quot;go&quot;)
+}}}
+
+The exception that this provokes is caught by the Deferred's Failure
+mechanisms, but then Twisted has an internal failure while trying to capture
+it. The actual Unhandled error in Deferred that gets put into the logs is:
+
+{{{
+Unhandled error in Deferred:
+Traceback (most recent call last):
+  File &quot;twisted/internet/defer.py&quot;, line 285, in unpause
+    self._runCallbacks()
+  File &quot;twisted/internet/defer.py&quot;, line 341, in _runCallbacks
+    self.result.addBoth(self._continue)
+  File &quot;twisted/internet/defer.py&quot;, line 214, in addBoth
+    callbackKeywords=kw, errbackKeywords=kw)
+  File &quot;twisted/internet/defer.py&quot;, line 186, in addCallbacks
+    self._runCallbacks()
+--- &lt;exception caught here&gt; ---
+  File &quot;twisted/internet/defer.py&quot;, line 328, in _runCallbacks
+    self.result = callback(self.result, *args, **kw)
+  File &quot;twisted/internet/defer.py&quot;, line 289, in _continue
+    self.unpause()
+  File &quot;twisted/internet/defer.py&quot;, line 285, in unpause
+    self._runCallbacks()
+  File &quot;twisted/internet/defer.py&quot;, line 344, in _runCallbacks
+    self.result = failure.Failure()
+  File &quot;twisted/python/failure.py&quot;, line 265, in __init__
+    parentCs = reflect.allYourBase(self.type)
+  File &quot;twisted/python/reflect.py&quot;, line 542, in allYourBase
+    accumulateBases(classObj, l, baseClass)
+  File &quot;twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+exceptions.RuntimeError: maximum recursion depth exceeded
+}}}
+
+This problem frequently shows up in code which returns a Deferred for
+generality (i.e. some day it might be async), but is using defer.succeed() or
+defer.maybeDeferred(some_immediate_call) in the meanwhile.
+
+== Problem Two: deep chain of callbacks, e.g. recursive delayed polling ==
+
+The other kind of recursion-limit-violation failures that occurs with
+Deferreds involves a long chain that finally fires. The most common way to
+generate such a chain is with a recursive method that separates each call
+with a Deferred, such as a polling function that returns a Deferred:
+
+{{{
+   def wait_until_done(self, ignored=None):
+       if self.done:
+          return True
+       else:
+          d = Deferred()
+          reactor.callLater(1.0, d.callback, None)
+          d.addCallback(self.wait_until_done)
+          return d
+}}}
+
+If this function must poll more than 331 times, the reactor tick which
+notices the expired timer and fires d.callback will see a
+recursion-depth-exceeded exception. The last Deferred fires, which triggers
+the _continue callback on the next-to-last Deferred, which allows it to fire,
+which triggers the {{{[-2]}}} Deferred, etc. This recursive cycle is of
+length 3 and has the following frames:
+
+{{{
+  File &quot;twisted/internet/defer.py&quot;, line 328, in _runCallbacks
+    self.result = callback(self.result, *args, **kw)
+  File &quot;twisted/internet/defer.py&quot;, line 289, in _continue
+    self.unpause()
+  File &quot;twisted/internet/defer.py&quot;, line 285, in unpause
+    self._runCallbacks()
+}}}
+
+This one is trickier to find, because the root of the stack will be some
+internal reactor call rather than application code. In particular, the bottom
+of the stack will look like:
+
+{{{
+  File &quot;/tmp/t.py&quot;, line 26, in &lt;module&gt;
+    reactor.run()
+  File &quot;twisted/internet/base.py&quot;, line 1048, in run
+    self.mainLoop()
+  File &quot;twisted/internet/base.py&quot;, line 1057, in mainLoop
+    self.runUntilCurrent()
+  File &quot;twisted/internet/base.py&quot;, line 705, in runUntilCurrent
+    call.func(*call.args, **call.kw)
+  File &quot;twisted/internet/defer.py&quot;, line 243, in callback
+    self._startRunCallbacks(result)
+  File &quot;twisted/internet/defer.py&quot;, line 312, in _startRunCallbacks
+    self._runCallbacks()
+  File &quot;twisted/internet/defer.py&quot;, line 328, in _runCallbacks
+    self.result = callback(self.result, *args, **kw)
+  File &quot;twisted/internet/defer.py&quot;, line 289, in _continue
+    self.unpause()
+  File &quot;twisted/internet/defer.py&quot;, line 285, in unpause
+    self._runCallbacks()
+}}}
+
+The other tricky thing about this failure is that the application code is
+sitting on the end of the stack: any callback that is attached to the
+Deferred that {{{wait_until_done}}} returns will run in a low-stack
+environment. As a result, recursion-depth-exceeded exceptions will be
+triggered by seemingly innocent application code. Note how the &quot;DONE&quot; number
+changes as you modify the self.count comparsion value in this example:
+
+{{{
+#! /usr/bin/python
+
+import traceback
+from twisted.internet import reactor
+from twisted.internet.defer import Deferred
+
+class Poller:
+    count = 0
+    def wait_until_done(self, ignored=None):
+        self.count += 1
+        if self.count &gt; 301: # 331 works, 332 fails.
+            return True
+        else:
+            d = Deferred()
+            reactor.callLater(0.0, d.callback, None)
+            d.addCallback(self.wait_until_done)
+            return d
+
+p = Poller()
+def done(res):
+    #traceback.print_stack()
+    print &quot;DONE&quot;, len(traceback.extract_stack())
+d = p.wait_until_done()
+d.addCallback(done)
+reactor.run()
+}}}
+
+
+
+When this fails, the traceback that shows up in the logs looks like:
+
+{{{
+Unhandled error in Deferred:
+Traceback (most recent call last):
+  File &quot;twisted/internet/defer.py&quot;, line 285, in unpause
+    self._runCallbacks()
+  File &quot;twisted/internet/defer.py&quot;, line 328, in _runCallbacks
+    self.result = callback(self.result, *args, **kw)
+  File &quot;twisted/internet/defer.py&quot;, line 289, in _continue
+    self.unpause()
+  File &quot;twisted/internet/defer.py&quot;, line 285, in unpause
+    self._runCallbacks()
+--- &lt;exception caught here&gt; ---
+  File &quot;twisted/internet/defer.py&quot;, line 328, in _runCallbacks
+    self.result = callback(self.result, *args, **kw)
+  File &quot;twisted/internet/defer.py&quot;, line 289, in _continue
+    self.unpause()
+  File &quot;twisted/internet/defer.py&quot;, line 285, in unpause
+    self._runCallbacks()
+  File &quot;twisted/internet/defer.py&quot;, line 344, in _runCallbacks
+    self.result = failure.Failure()
+  File &quot;twisted/python/failure.py&quot;, line 265, in __init__
+    parentCs = reflect.allYourBase(self.type)
+  File &quot;twisted/python/reflect.py&quot;, line 542, in allYourBase
+    accumulateBases(classObj, l, baseClass)
+  File &quot;twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+  File &quot;twisted/python/reflect.py&quot;, line 550, in accumulateBases
+    accumulateBases(base, l, baseClass)
+exceptions.RuntimeError: maximum recursion depth exceeded
+}}}
+
+== Combinations ==
+
+Note that these two problems can interact. Each ready-to-fire callback
+attached to a single Deferred uses 6 stack frames, and each chained callback
+uses 3 stack frames. If X*6+Y*3 &gt; 1000, the code will fail.
+
+== Solutions ==
+
+For problem one, the requirement is that Deferreds never wind up with more
+than 166 callbacks that are ready to fire. In other words, there must be at
+least one not-ready-to-fire Deferred in each span of 166 callbacks.
+
+One way to accomplish this is to have every 100th call return
+{{{foolscap.eventual.fireEventually(result)}}} instead of
+{{{defer.succeed(result)}}}. Having every call do this works too, it just
+slows things down a bit. (note that the reactor must be running for
+fireEventually to work)
+
+{{{
+def fire(res, which):
+    return defer.fireEventually(None)
+
+d = defer.Deferred()
+for i in range(170):
+    d.addCallback(fire, i)
+}}}
+
+
+For problem two, the requirement is that the depth of the tail-recursion
+chain not exceed 331 cycles, minus some room for the code you're eventually
+going to attach to the end. One way to accomplish this is to have every 300th
+call (or every single call, if you are willing to accept the slowdown) add an
+additional {{{fireEventually}}} to break up the stack.
+
+{{{
+    def wait_until_done(self, ignored=None):
+        self.count += 1
+        if self.count &gt; 301: # 331 works, 332 fails.
+            return True
+        else:
+            d = Deferred()
+            reactor.callLater(0.0, d.callback, None)
+            d.addCallback(self.wait_until_done)
+            d.addCallback(lambda res: fireEventually(res))
+            return d
+}}}
+
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message (by thread): <A HREF="051213.html">[Twisted-Python] Opening a fifo
+</A></li>
+	<LI>Next message (by thread): <A HREF="051202.html">[Twisted-Python] Deferreds vs sys.getrecursionlimit()
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#51201">[ date ]</a>
+              <a href="thread.html#51201">[ thread ]</a>
+              <a href="subject.html#51201">[ subject ]</a>
+              <a href="author.html#51201">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

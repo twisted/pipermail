@@ -1,0 +1,275 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] debugging a memory leak
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20debugging%20a%20memory%20leak&In-Reply-To=4B838615.8060205%40thiengineering.ch">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="021647.html">
+   <LINK REL="Next"  HREF="021681.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] debugging a memory leak</H1>
+    <B>Alec Matusis</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20debugging%20a%20memory%20leak&In-Reply-To=4B838615.8060205%40thiengineering.ch"
+       TITLE="[Twisted-Python] debugging a memory leak">matusis at yahoo.com
+       </A><BR>
+    <I>Wed Feb 24 16:57:16 EST 2010</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="021647.html">[Twisted-Python] debugging a memory leak
+</A></li>
+        <LI>Next message: <A HREF="021681.html">[Twisted-Python] debugging a memory leak
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21670">[ date ]</a>
+              <a href="thread.html#21670">[ thread ]</a>
+              <a href="subject.html#21670">[ subject ]</a>
+              <a href="author.html#21670">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>In desperation of not finding the real memory leak on the production server,
+
+I wrote a test server that I can push to arbitrary high RSS memory. I am far
+from sure if this the same leak that I observe in production, but I would
+like to understand what this one is. 
+This is the server code:
+
+Server.py:
+
+import twisted.protocols.basic
+from twisted.internet.protocol import Factory
+from twisted.internet import reactor
+        
+class HiRate(twisted.protocols.basic.LineOnlyReceiver):
+        MAX_LENGTH = 20000
+        
+        def lineReceived(self, line):
+                if line == 'get':
+                        out = 'a'*4000+'\r\r' 
+                        self.transport.write(out)
+        
+                
+                
+factory = Factory()
+factory.protocol = HiRate
+        
+reactor.listenTCP(8007, factory, backlog=50, interface='10.18.0.2')
+reactor.run()   
+
+This server has to be flooded by &quot;get&quot; requests from this client:
+
+Client.py:
+
+import socket, time
+
+HOST='10.18.0.2'
+PORT=8007
+def client():
+    &quot;&quot;&quot;high rate client, needs a dedicated CPU to run&quot;&quot;&quot;
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.connect((HOST,PORT))
+    except socket.error, e:
+        print 'client error is %s' %e
+        return
+    n=0
+    while 1:
+        #print &quot;iter %s&quot; %n
+        #time.sleep(.001)
+        s.send('get\r\n')
+        s.setblocking(0)
+        try:
+            r = s.recv(1024)
+        except:
+            r=0
+        while r:
+            #print r
+            try:
+                r=s.recv(1024)
+            except socket.error, e:
+                r=0
+        s.setblocking(1)
+        n+=1
+
+client()
+
+To reproduce the memory leak, I either need two machines with fast LAN
+between them (since the client program takes 100% CPU), or possibly one
+machine with a dual core CPU (I have not tried that). It is important that
+client.py is given a separate CPU to run.
+When the length of the response from the server is sufficient,  (out =
+'a'*4000+'\r\r' ,  4000 is enough in my case), the RSS of the server process
+starts to leak without a bound.
+If you introduce a small delay in the client (#time.sleep(.001)), the leak
+does not occur.
+
+Looking at tcpdump on the server machine, I sometimes see many &quot;get&quot; packets
+from the client in a row, that are not followed by response packets from the
+server with payload 'aaaaa...'.  Only when the server is in this
+&quot;overwhelmed&quot; state, the memory seems to grow unbounded.
+I first thought it may be an issue of the unbounded send queue on the
+server, but the examination of Send-Q with netstat shows that Send-Q
+saturates to a certain ceiling value, while the RSS memory of the server
+process continues to grow.  
+
+Here are some commands I was using to watch the parameters of the server:
+Watch send-Q and recv-Q:
+root$ watch -n1 netstat -an 
+RSS memory of the server:
+root$ watch -n1 ps -orss -p`netstat -nlp | grep :8007 | awk '{print $7}' |
+cut -d/ -f1`
+Traffic to/from the server:
+root$ tcpdump -A -s10024 -nn -i eth1 'port 8007' (in my case I use eth1 for
+LAN to the client)
+
+&gt;<i> -----Original Message-----
+</I>&gt;<i> From: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A> [mailto:twisted-python-
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">bounces at twistedmatrix.com</A>] On Behalf Of Werner Thie
+</I>&gt;<i> Sent: Monday, February 22, 2010 11:39 PM
+</I>&gt;<i> To: Twisted general discussion
+</I>&gt;<i> Subject: Re: [Twisted-Python] debugging a memory leak
+</I>&gt;<i> 
+</I>&gt;<i> Hi
+</I>&gt;<i> 
+</I>&gt;<i> Assuming that if memory not released to the OS can be reused by the
+</I>&gt;<i> interpreter because of a suballocation system used in the interpreter
+</I>&gt;<i> should eventually lead to a leveling out of the overall memory usage
+</I>&gt;<i> over time, that's what I observe with our processes (sitting at several
+</I>&gt;<i> 100 MB per process). We are using external C libraries which do lots of
+</I>&gt;<i> malloc/free and one of the bigger sources of pain is indeed to bring
+</I>&gt;<i> such a library to a point where its clean not only by freeing all memory
+</I>&gt;<i> allocated in every circumstance but also Python refcounting wise. I
+</I>&gt;<i> usually go thru all the motions to build up a complete debug chain for
+</I>&gt;<i> all modules involved in a project and write a test bed to proof clean
+</I>&gt;<i> and proper implementation.
+</I>&gt;<i> 
+</I>&gt;<i> So if your using C/C++ based modules in your project I would mark them
+</I>&gt;<i> as highly suspicious to be responsible for leaks until proven otherwise.
+</I>&gt;<i> 
+</I>&gt;<i> Not to bother you with numbers but I usually allocate about 30% of
+</I>&gt;<i> overall project time to bring a server into a production ready state,
+</I>&gt;<i> meaning uptimes of months/years, no fishy feelings, no performance
+</I>&gt;<i> oscillations, predictable caving and recuperating when overloaded, just
+</I>&gt;<i> all the things you have to tick to sign off a project as completed,
+</I>&gt;<i> meaning you don't have to do daily 'tire kicking' maintenance and
+</I>&gt;<i> periodic reboots.
+</I>&gt;<i> 
+</I>&gt;<i> Werner
+</I>&gt;<i> 
+</I>&gt;<i> Alec Matusis wrote:
+</I>&gt;<i> &gt; Hi Maarten,
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; Your link
+</I>&gt;<i> &gt; <A HREF="http://effbot.org/pyfaq/why-doesnt-python-release-the-memory-when-i-">http://effbot.org/pyfaq/why-doesnt-python-release-the-memory-when-i-</A>
+</I>&gt;<i> delete-
+</I>&gt;<i> &gt; a-large-object.htm
+</I>&gt;<i> &gt; seems to suggest that even though the interpreter does not release
+</I>memory
+&gt;<i> &gt; back to the OS, it can be re-used by the interpreter.
+</I>&gt;<i> &gt; If this was our problem, I'd expect the memory to be set by the highest
+</I>&gt;<i> &gt; usage, as opposed to it constantly leaking: in my case, the load is
+</I>&gt;<i> &gt; virtually constant, but the memory still leaks over time.
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; The environment is Linux 2.6.24 x86-64, the extensions used are MySQLdb,
+</I>&gt;<i> &gt; pyCrypto (latest stable releases for both).
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;&gt; -----Original Message-----
+</I>&gt;<i> &gt;&gt; From: <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">twisted-python-bounces at twistedmatrix.com</A> [mailto:twisted-
+</I>&gt;<i> python-
+</I>&gt;<i> &gt;&gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">bounces at twistedmatrix.com</A>] On Behalf Of Maarten ter Huurne
+</I>&gt;<i> &gt;&gt; Sent: Monday, February 22, 2010 6:24 PM
+</I>&gt;<i> &gt;&gt; To: Twisted general discussion
+</I>&gt;<i> &gt;&gt; Subject: Re: [Twisted-Python] debugging a memory leak
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt; On Tuesday 23 February 2010, Alec Matusis wrote:
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt;&gt; When I start the process, both python object sizes and their counts
+</I>rise
+&gt;<i> &gt;&gt;&gt; proportionally to the numbers of reconnected clients, and then they
+</I>&gt;<i> &gt;&gt;&gt; stabilize after all clients have reconnected.
+</I>&gt;<i> &gt;&gt;&gt; At that moment, the &quot;external&quot; RSS process size is about 260MB. The
+</I>&gt;<i> &gt;&gt;&gt; &quot;internal size&quot; of all python objects reported by Heapy is about
+</I>150MB.
+&gt;<i> &gt;&gt;&gt; After two days, the internal sizes/counts stay the same, but the
+</I>&gt;<i> &gt; external
+</I>&gt;<i> &gt;&gt;&gt; size grows to 1500MB.
+</I>&gt;<i> &gt;&gt;&gt;
+</I>&gt;<i> &gt;&gt;&gt; Python object counts/total sizes are measured from the manhole.
+</I>&gt;<i> &gt;&gt;&gt; Is this sufficient to conclude that this is a C memory leak in one of
+</I>&gt;<i> &gt; the
+</I>&gt;<i> &gt;&gt;&gt; external modules or in the Python interpreter itself?
+</I>&gt;<i> &gt;&gt; In general, there are other reasons why heap size and RSS size do not
+</I>&gt;<i> &gt; match:
+</I>&gt;<i> &gt;&gt; 1. pages are empty but not returned to the OS
+</I>&gt;<i> &gt;&gt; 2. pages cannot be returned to the OS because they are not completely
+</I>&gt;<i> &gt; empty
+</I>&gt;<i> &gt;&gt; It seems Python has different allocators for small and large objects:
+</I>&gt;<i> &gt;&gt; <A HREF="http://www.mail-archive.com/python-list@python.org/msg256116.html">http://www.mail-archive.com/python-list@python.org/msg256116.html</A>
+</I>&gt;<i> &gt;&gt; <A HREF="http://effbot.org/pyfaq/why-doesnt-python-release-the-memory-when-i-">http://effbot.org/pyfaq/why-doesnt-python-release-the-memory-when-i-</A>
+</I>&gt;<i> &gt;&gt; delete-
+</I>&gt;<i> &gt;&gt; a-large-object.htm
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt; Assuming Python uses malloc for all its allocations (does it?), it is
+</I>the
+&gt;<i> &gt;&gt; malloc implementation that determines whether empty pages are returned
+</I>&gt;<i> to
+</I>&gt;<i> &gt;&gt; the OS. Under Linux with glibc (your system?), empty pages are
+</I>returned,
+&gt;<i> &gt; so
+</I>&gt;<i> &gt;&gt; there reason 1 does not apply.
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt; Depending on the allocation behaviour of Python, the pages may not be
+</I>&gt;<i> &gt;&gt; empty
+</I>&gt;<i> &gt;&gt; though, so reason 2 is a likely suspect.
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt; Python extensions written in C could also leak or fragment memory. Are
+</I>&gt;<i> you
+</I>&gt;<i> &gt;&gt; using any extensions that are not pure Python?
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt; Bye,
+</I>&gt;<i> &gt;&gt; 		Maarten
+</I>&gt;<i> &gt;&gt;
+</I>&gt;<i> &gt;&gt; _______________________________________________
+</I>&gt;<i> &gt;&gt; Twisted-Python mailing list
+</I>&gt;<i> &gt;&gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt;&gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt;
+</I>&gt;<i> &gt; _______________________________________________
+</I>&gt;<i> &gt; Twisted-Python mailing list
+</I>&gt;<i> &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> &gt; <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>&gt;<i> 
+</I>&gt;<i> _______________________________________________
+</I>&gt;<i> Twisted-Python mailing list
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i> <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="021647.html">[Twisted-Python] debugging a memory leak
+</A></li>
+	<LI>Next message: <A HREF="021681.html">[Twisted-Python] debugging a memory leak
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#21670">[ date ]</a>
+              <a href="thread.html#21670">[ thread ]</a>
+              <a href="subject.html#21670">[ subject ]</a>
+              <a href="author.html#21670">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

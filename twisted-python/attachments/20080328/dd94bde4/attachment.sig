@@ -1,0 +1,7 @@
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v2.0.8 (GNU/Linux)
+
+iEYEARECAAYFAkftAHYACgkQpNuXDQIV94oJcwCfT7NWYcq0VlhRaYfS6xdl+l2D
+QqkAnjHudy+xONoGDv4xwT94ecIvFrG6
+=fMME
+-----END PGP SIGNATURE-----

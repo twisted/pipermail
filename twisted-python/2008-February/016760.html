@@ -1,0 +1,186 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: How to make a secure connection between two	computers
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20How%20to%20make%20a%20secure%20connection%20between%20two%0A%09computers&In-Reply-To=368574aa0802121307s335d475mfd3e0f29c93a70%40mail.gmail.com">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="016757.html">
+   <LINK REL="Next"  HREF="016761.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: How to make a secure connection between two	computers</H1>
+    <B>Noam Raphael</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20How%20to%20make%20a%20secure%20connection%20between%20two%0A%09computers&In-Reply-To=368574aa0802121307s335d475mfd3e0f29c93a70%40mail.gmail.com"
+       TITLE="[Twisted-Python] Re: How to make a secure connection between two	computers">noamraph at gmail.com
+       </A><BR>
+    <I>Tue Feb 12 18:04:28 EST 2008</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="016757.html">[Twisted-Python] Re: How to make a secure connection between two	computers
+</A></li>
+        <LI>Next message: <A HREF="016761.html">[Twisted-Python] Re: How to make a secure connection between two	computers
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16760">[ date ]</a>
+              <a href="thread.html#16760">[ thread ]</a>
+              <a href="subject.html#16760">[ subject ]</a>
+              <a href="author.html#16760">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>2008/2/12, Drew Smathers &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">drew.smathers at gmail.com</A>&gt;:
+&gt;<i> I think you could have written the equivalent program in less lines of code
+</I>&gt;<i> using facilities provided by Twisted.  And you'd have the benefits of a
+</I>&gt;<i> number of things your program doesn't provide including:
+</I>&gt;<i>
+</I>&gt;<i> * transport/protocol separation
+</I>&gt;<i> * ability to handle multiple clients efficiently
+</I>&gt;<i>
+</I>As it happens, I don't really need to handle multiple clients
+efficiently. I started to write the program using twisted, and stopped
+when I realized that I had to write a fairly complex state machine. If
+you have a simple way to write this protocol using twisted, it would
+be nice to know.
+
+&gt;<i> It is not my area expertise by any means, but shared-secret message hashing
+</I>&gt;<i> is a rather crude (read : easy to sniff and replay traffic) security
+</I>&gt;<i> mechanism.
+</I>&gt;<i>
+</I>Well, in TLS, after handshaking, both sides have a shared secret they
+use for communication. I just skip the handshaking. (I do have a
+challenge-response in the protocol, so I don't think replaying will
+work.) But I did forget about hashing the data, so here's a better
+version:
+
+#!/usr/bin/env python
+
+import sys
+import struct
+import socket
+
+from Crypto.Hash import SHA
+from Crypto.Cipher import ARC4
+
+RANDOM_LEN = 16
+
+def get_random():
+    return open('/dev/urandom').read(RANDOM_LEN)
+
+class SocketEOFError(socket.error):
+    pass
+
+def recv(sock, n):
+    buf = ''
+    while len(buf) &lt; n:
+        r = sock.recv(n - len(buf))
+        if not r:
+            if not buf:
+                raise SocketEOFError(&quot;Connection closed&quot;)
+            else:
+                raise socket.error(&quot;Couldn't read enough bytes&quot;)
+        buf += r
+    return buf
+
+def handshake(sock, secret):
+    my_random = get_random()
+    my_rc4 = ARC4.new(SHA.new(secret + my_random).digest())
+    sock.sendall(my_random)
+    peer_random = recv(sock, RANDOM_LEN)
+    peer_rc4 = ARC4.new(SHA.new(secret + peer_random).digest())
+    sock.sendall(peer_rc4.encrypt('\0'*RANDOM_LEN))
+    peer_response = recv(sock, RANDOM_LEN)
+    if my_rc4.decrypt(peer_response) != '\0' * RANDOM_LEN:
+        raise socket.error('Failed peer authentication')
+    return my_rc4, peer_rc4
+
+def send_data(sock, peer_rc4, secret, data):
+    length_s = struct.pack('&lt;h', len(data))
+    mac = SHA.new(secret + data + length_s).digest()
+    sock.sendall(length_s + peer_rc4.encrypt(data + mac))
+
+def recv_data(sock, my_rc4, secret):
+    try:
+        length_s = recv(sock, 2)
+    except SocketEOFError:
+        return ''
+    length = struct.unpack('&lt;h', length_s)[0]
+    msg = my_rc4.decrypt(recv(sock, length + SHA.digest_size))
+    data = msg[:length]
+    mac = SHA.new(secret + data + length_s).digest()
+    if mac != msg[length:]:
+        raise socket.error('Failed hash')
+    return data
+
+def server(host, port, secret):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind((host, port))
+    s.listen(1)
+    while True:
+        conn, addr = s.accept()
+        print 'Connected by', addr
+        conn.settimeout(1)
+        try:
+            my_rc4, peer_rc4 = handshake(conn, secret)
+            while True:
+                data = recv_data(conn, my_rc4, secret)
+                if not data: break
+                print 'Received', repr(data)
+                send_data(conn, peer_rc4, secret, data)
+            conn.close()
+        except socket.error, e:
+            print 'Error:', e
+        else:
+            print 'Closed connection'
+
+def client(host, port, secret):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(1)
+    s.connect((host, port))
+    my_rc4, peer_rc4 = handshake(s, secret)
+    send_data(s, peer_rc4, secret, 'Hello, world!')
+    data = recv_data(s, my_rc4, secret)
+    s.close()
+    print 'Received', repr(data)
+
+def main():
+    if len(sys.argv) != 5 or sys.argv[1] not in ('server', 'client'):
+        print &quot;Usage: %s server/client host port secret&quot;
+        return
+    is_server = sys.argv[1] == 'server'
+    host = sys.argv[2]
+    port = int(sys.argv[3])
+    secret = sys.argv[4]
+    if is_server:
+        server(host, port, secret)
+    else:
+        client(host, port, secret)
+
+if __name__ == '__main__':
+    main()
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="016757.html">[Twisted-Python] Re: How to make a secure connection between two	computers
+</A></li>
+	<LI>Next message: <A HREF="016761.html">[Twisted-Python] Re: How to make a secure connection between two	computers
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16760">[ date ]</a>
+              <a href="thread.html#16760">[ thread ]</a>
+              <a href="subject.html#16760">[ subject ]</a>
+              <a href="author.html#16760">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

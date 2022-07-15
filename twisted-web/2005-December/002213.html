@@ -1,0 +1,219 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] forwarding client information from twisted proxy to
+	nevow monster
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20forwarding%20client%20information%20from%20twisted%20proxy%20to%0A%09nevow%20monster&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="002225.html">
+   <LINK REL="Next"  HREF="002219.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] forwarding client information from twisted proxy to
+	nevow monster</H1>
+    <B>Andrea Arcangeli</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=%5BTwisted-web%5D%20forwarding%20client%20information%20from%20twisted%20proxy%20to%0A%09nevow%20monster&In-Reply-To="
+       TITLE="[Twisted-web] forwarding client information from twisted proxy to
+	nevow monster">andrea at cpushare.com
+       </A><BR>
+    <I>Tue Dec 13 15:48:11 MST 2005</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="002225.html">[Twisted-web] remove ugliness when creating Nevow sessions
+</A></li>
+        <LI>Next message: <A HREF="002219.html">[Twisted-web] socket.error: (24, 'Too many open files')
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2213">[ date ]</a>
+              <a href="thread.html#2213">[ thread ]</a>
+              <a href="subject.html#2213">[ subject ]</a>
+              <a href="author.html#2213">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Without this patch, a nevow server behind twisted proxy can't receive
+the correct client information.
+
+It's backwards compatible, passClient = True must be explicitly passed
+when creating both the proxy and monster classes for this to work (and
+as usual the monster resource must be under the firewall, only the
+&quot;trusted&quot; proxy must be allowed to connect to it, for the client info to
+be trustable).
+
+Here the Nevow part.
+
+Index: Nevow/nevow/vhost.py
+===================================================================
+--- Nevow/nevow/vhost.py	(revision 3434)
++++ Nevow/nevow/vhost.py	(working copy)
+@@ -134,13 +134,15 @@
+     *after* it returns the (resource,segments) tuple.
+     &quot;&quot;&quot;
+     implements(inevow.IResource)
++
++    def __init__(self, vhost_segments):
++        self.prepath_segments = vhost_segments+1 # +1 is for /vhost
++
+     def locateChild(self, ctx, segments):
+         request = inevow.IRequest(ctx)
+-        request.prepath = request.prepath[3:]
++        request.prepath = request.prepath[self.prepath_segments:]
+         return request.site.resource, segments
+ 
+-_prepathCleaner = _VHostMonsterResourcePrepathCleaner()
+-
+ class VHostMonsterResource:
+     &quot;&quot;&quot;VHostMonster resource that helps to deploy a Nevow site behind a proxy.
+     
+@@ -174,17 +176,30 @@
+     This also means your private server should serve the real content at
+     /foo/bar, and not at the root of the tree.
+ 
++    If passClient is set to True it expects the client to be passed by the
++    proxy (see ReverseProxyResource passClient parameter for details). When
++    passClient is True this page should not be reacheable directly from the
++    internet if logging the IP address and port securely is needed.
++
+     Warning: anyone who can access a VHostMonsterResource can fake the
+     host name they are contacting. This can lead to cookie stealing or
+     cross site scripting attacks. Never expose /vhost to the Internet.
+     &quot;&quot;&quot;
+     implements(inevow.IResource)
+ 
++    vhost_segments = 2
++
++    def __init__(self, passClient = False):
++        self.passClient = passClient
++        if passClient:
++            self.vhost_segments = 3
++        self._prepathCleaner = _VHostMonsterResourcePrepathCleaner(self.vhost_segments)
++
+     def locateChild(self, ctx, segments):
+ 
+         request = inevow.IRequest(ctx)
+ 
+-        if len(segments) &lt; 2:
++        if len(segments) &lt; self.vhost_segments:
+             return rend.NotFound
+         else:
+             if segments[0] == 'http':
+@@ -197,13 +212,18 @@
+                 port = int(port)
+             else:
+                 host, port = segments[1], 80
+-           
+             request.setHost(host, port)
+ 
+-            prefixLen = len('/'+'/'.join(request.prepath)+'/'+'/'.join(segments[:2]))
+-            request.path = '/'+'/'.join(segments[2:])
++            if self.passClient:
++                if ':' not in segments[2]:
++                    return rend.NotFound
++                host, port = segments[2].split(':')
++                request.setClient(host, port)
++
++            prefixLen = len('/'+'/'.join(request.prepath)+'/'+'/'.join(segments[:self.vhost_segments]))
++            request.path = '/'+'/'.join(segments[self.vhost_segments:])
+             request.uri = request.uri[prefixLen:]
+ 
+-            return _prepathCleaner, segments[2:]
++            return self._prepathCleaner, segments[self.vhost_segments:]
+         
+ compy.backwardsCompatImplements(VHostMonsterResource)
+
+
+Here the twisted part:
+
+Index: Twisted/twisted/web/http.py
+===================================================================
+--- Twisted/twisted/web/http.py	(revision 15293)
++++ Twisted/twisted/web/http.py	(working copy)
+@@ -876,6 +876,10 @@
+         self.received_headers[&quot;host&quot;] = host
+         self.host = address.IPv4Address(&quot;TCP&quot;, host, port)
+ 
++    def setClient(self, host, port):
++        &quot;&quot;&quot;Same as setHost but for the client address&quot;&quot;&quot;
++        self.client = address.IPv4Address(&quot;TCP&quot;, host, port)
++
+     def getClientIP(self):
+         if isinstance(self.client, address.IPv4Address):
+             return self.client.host
+Index: Twisted/twisted/web/proxy.py
+===================================================================
+--- Twisted/twisted/web/proxy.py	(revision 15293)
++++ Twisted/twisted/web/proxy.py	(working copy)
+@@ -162,23 +162,33 @@
+     to a different server.
+     &quot;&quot;&quot;
+ 
+-    def __init__(self, host, port, path):
++    def __init__(self, host, port, path, passClient = False):
+         resource.Resource.__init__(self)
+         self.host = host
+         self.port = port
+         self.path = path
++        self.passClient = passClient
+ 
++    def getPath(self, request):
++        path = self.path
++        if self.passClient:
++            path += '/%s:%d' % (request.client.host, request.client.port)
++        return path
++
+     def getChild(self, path, request):
+-        return ReverseProxyResource(self.host, self.port, self.path+'/'+path)
++        return ReverseProxyResource(self.host, self.port, self.getPath(request)+'/'+path, False)
+ 
+     def render(self, request):
+         request.received_headers['host'] = self.host
+         request.content.seek(0, 0)
++
++        path = self.getPath(request)
++
+         qs = urlparse.urlparse(request.uri)[4]
+         if qs:
+-            rest = self.path + '?' + qs
++            rest = path + '?' + qs
+         else:
+-            rest = self.path
++            rest = path
+         clientFactory = ProxyClientFactory(request.method, rest, 
+                                      request.clientproto, 
+                                      request.getAllHeaders(),
+
+</PRE>
+
+
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="002225.html">[Twisted-web] remove ugliness when creating Nevow sessions
+</A></li>
+	<LI>Next message: <A HREF="002219.html">[Twisted-web] socket.error: (24, 'Too many open files')
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#2213">[ date ]</a>
+              <a href="thread.html#2213">[ thread ]</a>
+              <a href="subject.html#2213">[ subject ]</a>
+              <a href="author.html#2213">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>

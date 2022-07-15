@@ -1,0 +1,193 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] Re: Reentrant reactor iteration
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Reentrant%20reactor%20iteration&In-Reply-To=87d4ctqitl.fsf%40hbox.dyndns.org">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="019309.html">
+   <LINK REL="Next"  HREF="019311.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] Re: Reentrant reactor iteration</H1>
+    <B>Jean-Paul Calderone</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20Re%3A%20Reentrant%20reactor%20iteration&In-Reply-To=87d4ctqitl.fsf%40hbox.dyndns.org"
+       TITLE="[Twisted-Python] Re: Reentrant reactor iteration">exarkun at divmod.com
+       </A><BR>
+    <I>Sat Mar  7 15:04:15 EST 2009</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="019309.html">[Twisted-Python] Re: Reentrant reactor iteration
+</A></li>
+        <LI>Next message: <A HREF="019311.html">[Twisted-Python] Re: Reentrant reactor iteration
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19310">[ date ]</a>
+              <a href="thread.html#19310">[ thread ]</a>
+              <a href="subject.html#19310">[ subject ]</a>
+              <a href="author.html#19310">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On Sat, 07 Mar 2009 19:38:46 +0100, Martin Geisler &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">mg at daimi.au.dk</A>&gt; wrote:
+&gt;<i>Jean-Paul Calderone &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at divmod.com</A>&gt; writes:
+</I>&gt;<i>
+</I>&gt;<i>Hi,
+</I>&gt;<i>
+</I>&gt;<i>Thanks for the answer. I'm also with the VIFF project and I would like
+</I>&gt;<i>to explain a bit more about the background for the hack by Marcel.
+</I>&gt;<i>
+</I>&gt;&gt;<i> [snip]
+</I>&gt;&gt;<i>
+</I>&gt;&gt;<i> So you're doing a ton of work all at once now and you want to split up
+</I>&gt;&gt;<i> that ton of work into smaller pieces and do it a little at a time?
+</I>&gt;<i>
+</I>&gt;<i>Sort of. We have overloaded the arithmetic operators in our library, so
+</I>&gt;<i>people will expect to be able to write
+</I>&gt;<i>
+</I>&gt;<i>  # xs and ys are big lists of our objects
+</I>&gt;<i>  dot_product
+</I>&gt;<i>  for (x, y) in zip(xs, ys):
+</I>&gt;<i>    dot_product += x * y
+</I>&gt;<i>
+</I>&gt;<i>Here the multiplications involves network traffic and return Deferreds.
+</I>&gt;<i>We would like the network traffic for the first multiplication to begin
+</I>&gt;<i>immediately, *before* the remaining multiplications are done.
+</I>&gt;<i>
+</I>&gt;<i>Doing all the multiplications up front makes the code block the reactor
+</I>&gt;<i>and uses an awful lot of RAM. If we let each multiplication trigger the
+</I>&gt;<i>sending of its data immediately, and if we process incoming messages
+</I>&gt;<i>along the way, memory can be reclaimed for the earlier multiplications
+</I>&gt;<i>and the above calculation should run in constant memory.
+</I>
+Hm.  I would bet the constant would be pretty high, though.  Things will
+only balance out once the network is keeping up with the local for loop.
+Actually, I'm not sure why it would be constant at all.  Won't the local
+for loop always run much faster than any network operations can happen?
+In this case, memory usage will go towards K(local) * set size - K(remote)
+* set size, or just O(set size); that is to say, linear.
+
+&gt;<i>Sending and processing data in a more even flow makes our benchmark
+</I>&gt;<i>results better and more consistent from one run to the next.
+</I>
+It seems like what you'll really benefit from most is pipelining with a
+maximum pipeline depth that's not too big (so as to conserve memory) but
+not too small (so as to avoid wasting time on network round trip time).
+
+&gt;&gt;<i> If that's the case, then you don't need to modify the reactor, you
+</I>&gt;&gt;<i> just need to split up the work your code is going. There are a lot of
+</I>&gt;&gt;<i> techniques for doing this. coiterate and inlineCallbacks are two
+</I>&gt;&gt;<i> solutions which are closest to &quot;cookie cutter&quot; (ie, you have the least
+</I>&gt;&gt;<i> flexibility in deciding how to use them).
+</I>&gt;<i>
+</I>&gt;<i>Right -- we might be able to use these techniques. I haven't looked at
+</I>&gt;<i>coiterate yet. With inlineCallbacks I guess the code would look
+</I>&gt;<i>something like this:
+</I>&gt;<i>
+</I>&gt;<i>  # xs and ys are big lists of our objects
+</I>&gt;<i>  dot_product
+</I>&gt;<i>  for (x, y) in zip(xs, ys):
+</I>&gt;<i>    dot_product += (yield x * y)
+</I>&gt;<i>
+</I>&gt;<i>which is not so bad, expect that it destroys the nice illusion that x
+</I>&gt;<i>and y behave like normal integers even though the multiplication
+</I>&gt;<i>involves network traffic.
+</I>
+Perhaps with coiterate this might look something like...
+
+    def op(xs, ys):
+        dot_product = 0
+        for (x, y) in zip(xs, ys):
+            dot_product += x * y
+            yield
+
+        yield dot_product
+
+    d = coiterate(op(xs, ys))
+
+This is flawed, but maybe it can be fixed.  What's good about it is that
+it doesn't try to drive the reactor re-entrantly. :)  It also avoids the
+yield in the += and * operations, which somewhat preserves your illusion
+of normalcy (I'm not saying I like that illusion, but I'll leave that aside
+for now).
+
+What's bad about it is that it still lets the local loop run arbitrarily
+far ahead of the results from the network, giving you unbounded memory
+usage.  To fix that, it should yield a Deferred every once in a while.
+The reason I leave it flawed here is that it's a little tricky to figure
+out which Deferred to yield.  What would be great would be to yield the
+Deferred for an operation which preceeds the most recently executed
+operation by some number of operations.  The number of operations by
+which it preceeds the most recent will be your pipeline depth (roughly).
+The effect this has on coiterate is to cause your local loop to cease to
+execute until that Deferred has fired.  By making it a Deferred for an
+operation some time /before/ the most recent operation, you keep the
+network busy and avoid wasting time on round trip times.  Once the Deferred
+fires, your loop gets run a few more times which has the effect of putting
+more work into the pipeline - until you've got enough extra work to keep
+things from stalling again, and then coiterate puts you to sleep for a
+while again.
+
+&gt;&gt;<i> You have a very long, steep, uphill battle to convince me that adding
+</I>&gt;&gt;<i> support for re-entrant iteration is a good idea.
+</I>&gt;<i>
+</I>&gt;<i>One problem I can think of is the memory usage associated with a very
+</I>&gt;<i>deep recursion. Since there is no such thing as tail call optimization
+</I>&gt;<i>in Python, each level in the recursion will hold onto any local
+</I>&gt;<i>variables even though they might not be needed any more.
+</I>&gt;<i>
+</I>&gt;<i>Are there other general problems with having a re-entrant reactor?
+</I>
+One general problem is simply that the reactor is not written with this
+in mind.  So with the current implementation, even including the patch
+Marcel contributed, it doesn't work, period.  When I say &quot;doesn't work&quot;,
+I mean that there are cases which will simply result in incorrect behavior,
+though there may be other cases where everything does work out as you
+expect.  Going along with this, it's quite a bit harder to test that
+things work when re-entrancy is allowed or expected than if it isn't, so
+even if all of the current reactor implementations were made re-entrant,
+there would likely be a higher rate of defects related to this in the
+future, simply because it's harder.
+
+This isn't limited solely to the reactor, either.  A re-entrant reactor
+almost certainly means that application code will be invoked re-entrantly.
+This is actually the case already, unfortunately, and it is a bit of an
+open question as to what should be done about it.  A very common bug I
+find (and write! :() in Twisted applications is failure to handle various
+forms of re-entrancy correctly.  This is an existing issue with Twisted,
+not related to this proposed change, but making this change would only
+make the problem worse and essentially destroy and hope for ever making it
+better.
+
+Actually, that general problem is so general that I can't really think of
+any others to discuss, so I'll leave it at that for now. :)  If you want,
+I can probably share some specific examples of how re-entrancy leads to
+surprising bugs in unexpected places (probably from real programs, too :/).
+
+Jean-Paul
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="019309.html">[Twisted-Python] Re: Reentrant reactor iteration
+</A></li>
+	<LI>Next message: <A HREF="019311.html">[Twisted-Python] Re: Reentrant reactor iteration
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19310">[ date ]</a>
+              <a href="thread.html#19310">[ thread ]</a>
+              <a href="subject.html#19310">[ subject ]</a>
+              <a href="author.html#19310">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

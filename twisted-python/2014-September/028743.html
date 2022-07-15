@@ -1,0 +1,243 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] PEP3131: non-ascii identifiers
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20PEP3131%3A%20non-ascii%20identifiers&In-Reply-To=%3C20140908142619.20413.1258694452.divmod.xquotient.2237%40top%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="028742.html">
+   <LINK REL="Next"  HREF="028746.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] PEP3131: non-ascii identifiers</H1>
+    <B>exarkun at twistedmatrix.com</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-Python%5D%20PEP3131%3A%20non-ascii%20identifiers&In-Reply-To=%3C20140908142619.20413.1258694452.divmod.xquotient.2237%40top%3E"
+       TITLE="[Twisted-Python] PEP3131: non-ascii identifiers">exarkun at twistedmatrix.com
+       </A><BR>
+    <I>Mon Sep  8 08:26:19 MDT 2014</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="028742.html">[Twisted-Python] PEP3131: non-ascii identifiers
+</A></li>
+        <LI>Next message: <A HREF="028746.html">[Twisted-Python] a brief note about buildbots
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28743">[ date ]</a>
+              <a href="thread.html#28743">[ thread ]</a>
+              <a href="subject.html#28743">[ subject ]</a>
+              <a href="author.html#28743">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 01:07 pm, <A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">wolfgang.kde at rohdewald.de</A> wrote:
+&gt;<i>Am Montag, 8. September 2014, 12:04:46 schrieb 
+</I>&gt;<i><A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">exarkun at twistedmatrix.com</A>:
+</I>&gt;&gt;<i>PB supports unicode perfectly well and has for many years.  This is 
+</I>&gt;&gt;<i>why
+</I>&gt;&gt;<i>I asked which specific part of PB has a problem.
+</I>&gt;<i>
+</I>&gt;<i>PB transfers names of methods and classes as bytes, not as unicode.
+</I>
+PB actually transfers *everything* as bytes. ;)  Bytes are the only 
+thing you can send over a socket.  If you have anything else - integers, 
+unicode, whatever - you have to encode them as bytes first.
+
+As far as I know, the PB protocol is not specified apart from the 
+implementation in Twisted (and this being the only implementation (I am 
+intentionally disregarding TwistedJava) it must serve as the 
+specification, I think).
+
+What you meant above, I think, is that PB represents method names as 
+bytes at the banana layer.  That is, when you want to call a remote 
+method, you indicate its name by supplying bytes to the banana encoding 
+layer - not unicode (which is good because banana doesn't actually 
+support unicode at all, that's a jelly feature).
+
+This does indeed mean we don't simply want to start sending unicode to 
+refer to methods by name - because we can't!  At least, not unless we 
+extend banana to support a new type which we probably don't want to do - 
+that would be another incompatible protocol change and so not allowed 
+(since it could break interoperability between different implementations 
+of PB).
+
+So, it is necessary to continue to represent method names using bytes.
+
+This is fairly easily done. On Python 3, encode any unicode strings 
+which represent method names (using a well-known encoding, probably 
+UTF-8) when making the call and decode them in the same way when 
+dispatching those calls.
+
+This can almost be done at the application level:
+
+    # Some Python 3 code
+    def remote_&#228;(self):
+        pass
+
+    ref.callRemote(u&quot;&#228;&quot;.encode(&quot;utf-8&quot;))
+
+except that Python 3 has actually changed to enforce the type of the 
+second argument of getattr - if it is not a unicode string then a 
+TypeError is raised - so it's not possible to make the decoding step 
+happen (which one might otherwise have done using `__getattr__` or by 
+adding the encoded name of the method to the class dictionary).
+
+So if it is going to be supported in Twisted's PB API then that support 
+probably needs to be in Twisted's PB implementation.  The same general 
+idea applies, though.  Just move the encoding into the implementation of 
+`callRemote`:
+
+    def callRemote(self, _name, ...):
+        ... _name.encode(&quot;utf-8&quot;) ...
+
+And add a corresponding decode to the other side (probably in 
+`_recvMessage`).
+
+This would make the Python 3 PB API be &quot;method names are unicode 
+strings&quot; which makes sense considering the decisions that were made for 
+Python 3.  Note that it does not change the wire protocol - method names 
+are still bytes at the banana level.  Or does it?  These bytes were 
+previously always an ASCII subset.  Is expanding out of the ASCII range 
+an incompatible change?
+
+What could this break?
+
+Let's say you have Python 2 talking to Python 2.  It's already possible 
+to construct a method call like this:
+
+    class Foo(Referenceable):
+        def remote_foo(self):
+            pass
+    setattr(Foo, u&quot;remote_foo&#228;&quot;.encode(&quot;utf-8&quot;), Foo.remote_foo)
+
+    ...
+
+    ref.callRemote(u&quot;remote_foo&#228;&quot;.encode(&quot;utf-8&quot;))
+
+This actually works.  Python 2 doesn't much care about how you name your 
+class attributes.  PB doesn't care that the high bit is set in one or 
+more of the bytes in the method name.  It all just works.
+
+So let's say you have Python 2 talking to Python 3 instead.  In Python 
+3, you can't do that setattr() call (the language and runtime disallow 
+it).  But you can have `def remote_foo&#228;(self)` instead.  If PB on Python 
+3 decodes the method name before dispatching it (using UTF-8) then again 
+things work.
+
+And if you reverse the situation and PB on Python 3 encodes the method 
+name before sending it, then Python 2 is still happen because it can 
+operate on that UTF-8 encoded byte string.
+
+Finally, if Python 3 talks to Python 3 then it also works because the 
+sending side encodes and the receiving side decodes.
+
+So we get to make a judgement call here, I think.  Without a 
+specification there's no objectively correct answer.  So, because the 
+current implementation is actually perfectly compatible with non-ASCII 
+bytes - even though the intent is clearly that you would never have 
+those - combined with the point that I made above, that there are no 
+other PB implementations, I suspect it's fine to expand beyond ASCII 
+here because it won't actually break any real world programs.
+
+The only case that I can think of that actually would be a problem is 
+the case where someone is already sending non-ASCII, non-UTF-8 method 
+names around.  These might decode wrong or might fail to decode at all. 
+I don't think this is likely enough to worry about - but maybe someone 
+who is doing this will speak up and prove me wrong. ;)
+
+And to repeat myself a bit, none of this should change the Python 2 PB 
+API.  It should continue accepting bytes - because that's what it always 
+accepted.  Separately, we could introduce a new feature to support 
+unicode on Python 2.  This would be done in the usual way for 
+introducing new features into any Twisted APIs (and there aren't 
+reasonable backwards compatibility considerations here as far as I can 
+tell).  The point would be to make it a little more convenient for 
+Python 2 applications to interact with other PB applications that have 
+decided to use unicode method names.
+
+Lastly, on another topic, I am subscribed to the mailing list - you 
+don't have to cc me on your replies.
+
+Jean-Paul
+&gt;<i>
+</I>&gt;<i>Which is logical since PY2 does not support unicode identifiers,
+</I>&gt;<i>and bytes is already a native PY2 string. Unicode is only used
+</I>&gt;<i>for content. It not yet always clear to me what is content and
+</I>&gt;<i>what is a formal string like method names or the *_atom strings
+</I>&gt;<i>which must be bytes, this needs more testing.
+</I>&gt;<i>
+</I>&gt;<i>I guess I should patch banana.py such that it dumps all it encodes
+</I>&gt;<i>or decodes into one file, so I can compare output from PY2/PY3 tests.
+</I>&gt;<i>
+</I>&gt;<i>I was assuming that suddenly transferring method names as unicode
+</I>&gt;<i>would really be a break of wire protocol stability, or do you
+</I>&gt;<i>think otherwise? If you think this is acceptable, I will check
+</I>&gt;<i>if the existing twisted code can handle getting those as unicode
+</I>&gt;<i>without source code changes. Not sure. Just tested this with
+</I>&gt;<i>Python2.6, and I am surprised that it works:
+</I>&gt;&gt;&gt;&gt;<i>getattr(A,u'x')
+</I>&gt;<i>&lt;unbound method A.x&gt;
+</I>&gt;<i>
+</I>&gt;<i>
+</I>&gt;<i>Supporting PEP3131 would only introduce a backward-incompatibility.
+</I>&gt;<i>
+</I>&gt;<i>Of course you are right that this is not part of porting.
+</I>&gt;<i>
+</I>&gt;<i>Right now I have a long list of small unsorted git commits, I will
+</I>&gt;<i>have to do a lot of reshuffling and cleaning before I will ask
+</I>&gt;<i>you how to get it into the official codebase.
+</I>&gt;<i>Not all of those commits are strictly porting, some just clean
+</I>&gt;<i>the code, making the porting commits simpler.
+</I>&gt;&gt;<i>A failing unit test or a minimal example (&lt;<A HREF="http://sscce.org/">http://sscce.org/</A>&gt;) would
+</I>&gt;&gt;<i>communicate this most clearly, but perhaps you can just mention a
+</I>&gt;&gt;<i>specific API and give an incomplete example of how it will fail when 
+</I>&gt;&gt;<i>it
+</I>&gt;&gt;<i>runs up against the changes defined by PEP 3131.
+</I>&gt;<i>
+</I>&gt;<i>see my first mail in this thread: take test_pb.py, rename getSimple
+</I>&gt;<i>to getSimple&#228;, run the test.
+</I>&gt;<i>
+</I>&gt;<i>--
+</I>&gt;<i>Wolfgang
+</I>&gt;<i>
+</I>&gt;<i>_______________________________________________
+</I>&gt;<i>Twisted-Python mailing list
+</I>&gt;<i><A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">Twisted-Python at twistedmatrix.com</A>
+</I>&gt;<i><A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python</A>
+</I>
+</PRE>
+
+
+
+
+
+
+
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="028742.html">[Twisted-Python] PEP3131: non-ascii identifiers
+</A></li>
+	<LI>Next message: <A HREF="028746.html">[Twisted-Python] a brief note about buildbots
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#28743">[ date ]</a>
+              <a href="thread.html#28743">[ thread ]</a>
+              <a href="subject.html#28743">[ subject ]</a>
+              <a href="author.html#28743">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

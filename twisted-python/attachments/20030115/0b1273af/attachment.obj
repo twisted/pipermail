@@ -1,0 +1,118 @@
+from __future__ import generators
+from twisted.python import reflect, failure
+from twisted.internet import defer, reactor
+
+class DeferredFlowCommand:
+    """Base class for all DeferredFlow flow control commands
+    """
+    value = None
+    flow = None
+    def prime(self, flow):
+        self.flow = flow
+
+    def finish(self):
+        raise NotImplementedError
+
+class GetDeferredResult(DeferredFlowCommand):
+    """Get a result from a deferred, and set the local variables result and error
+    Usage:
+        result = GetDeferredResult(someDeferred, timeout = None)
+        yield result
+        try:
+            result = result.get()
+        except Exception, errback:
+            myFailure = errback
+    """
+    def __init__(self, deferred):
+        self.failure = None
+        self.result = None
+        deferred.addCallbacks(self.finish, self.error)
+        
+    def get(self):
+        if self.failure:
+            raise self.failure
+        return self.result
+
+    def error(self, ff):
+        if not isinstance(ff, failure.Failure):
+            try:
+                raise ff
+            except:
+                ff = failure.Failure()
+        self.failure = ff
+        self.finish()
+        
+    def finish(self, result = None):
+        self.result = result
+        reactor.callLater(0, self.flow.next)
+
+class Sleep(DeferredFlowCommand):
+    """Sleep for N seconds, then resume
+    """
+    def __init__(self, seconds):
+        reactor.callLater(seconds, self.finish)
+
+    def finish(self):
+        reactor.callLater(0, self.flow.next)
+        
+class FinalResult(DeferredFlowCommand):
+    """equivalent to .callback
+    make sure to return or raise StopIteration immediately afterwards
+    """
+    def __init__(self, result=None):
+        self.result = result
+
+class FinalError(DeferredFlowCommand):
+    """equivalent to .errback
+    make sure to return or raise StopIteration immediately afterwards
+    """
+    def __init__(self, error):
+        self.error = error
+
+class deferredflow(defer.Deferred, object):
+    """Use this like staticmethod() or classmethod()
+    The function must yield only instances of DeferredFlowCommand,
+    any call to the function will yield a Deferred subclass.
+    If it finishes without yielding a FinalResult, it will callback with None
+    """
+    gfunc = None
+    def __init__(self, gfunc):
+        self.gfunc = gfunc
+
+    def __get__(self, obj, clazz = None):
+        return deferredflow(self.gfunc.__get__(obj, clazz))
+
+    def __call__(self, *args, **kwargs):
+        return DeferredFlow(self.gfunc(*args, **kwargs))
+
+class DeferredFlow(defer.Deferred):
+    """You don't often want to instantiate this directly
+    or use it any differently than you would a deferred
+    """
+    def __init__(self, generator):
+        defer.Deferred.__init__(self)
+        self.generator = generator
+        reactor.callLater(0, self.next)
+
+    def next(self):
+        try:
+            command = self.generator.next()
+            if isinstance(command, failure.Failure):
+                return self.errback(command)
+            assert isinstance(command, DeferredFlowCommand)
+            if isinstance(command, FinalResult):
+                self.callback(command.result)
+                # impossible condition, hoping StopIteration is raised
+                assert self.generator.next() == self
+            elif isinstance(command, FinalError):
+                self.errback(command.error)
+                # impossible condition, hoping StopIteration is raised
+                assert self.generator.next() == self
+            else:
+                command.prime(self)
+        except StopIteration:
+            if not self.called:
+                self.callback(None)
+        except:
+            f = failure.Failure()
+            self.errback(f)

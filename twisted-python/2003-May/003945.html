@@ -1,0 +1,209 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-Python] twisted.internet.app.unlisten* Broken (patch)
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20twisted.internet.app.unlisten%2A%20Broken%20%28patch%29&In-Reply-To=">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="003947.html">
+   <LINK REL="Next"  HREF="003948.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-Python] twisted.internet.app.unlisten* Broken (patch)</H1>
+    <B>W.J.</B> 
+    <A HREF="mailto:twisted-python%40twistedmatrix.com?Subject=%5BTwisted-Python%5D%20twisted.internet.app.unlisten%2A%20Broken%20%28patch%29&In-Reply-To="
+       TITLE="[Twisted-Python] twisted.internet.app.unlisten* Broken (patch)">miathan at goliath.darktech.org
+       </A><BR>
+    <I>Wed May  7 11:38:28 EDT 2003</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="003947.html">[Twisted-Python] [Andrei.Doicin at cern.ch: timing out an ssh command]
+</A></li>
+        <LI>Next message: <A HREF="003948.html">[Twisted-Python] Twisted experiences on Solaris?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3945">[ date ]</a>
+              <a href="thread.html#3945">[ thread ]</a>
+              <a href="subject.html#3945">[ subject ]</a>
+              <a href="author.html#3945">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Hi,
+
+For my project, I needed to be able to bind and unbind listeners on the
+fly - twisted API has this functionality, but it is inconsistent in its
+implementation. My patch fixes this, so the following works:
+
+[[ On a twisted server with only manhole running ]]
+----
+$ telnet localhost 8007
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+
+twisted.manhole.telnet.ShellFactory
+Twisted 1.0.4
+username: boss
+password: *****
+&gt;&gt;&gt;<i> from twisted.internet.app import Application
+</I>&gt;&gt;&gt;<i> from twisted.internet.protocol import Factory
+</I>&gt;&gt;&gt;<i> from twisted.protocols.wire import QOTD
+</I>&gt;&gt;&gt;<i> # add QOTD server
+</I>&gt;&gt;&gt;<i> f = Factory()
+</I>&gt;&gt;&gt;<i> f.protocol = QOTD
+</I>&gt;&gt;&gt;<i> app.listenTCP(8123, f)
+</I>&gt;&gt;&gt;<i> # system now listening on port 8123 (worked already)
+</I>&gt;&gt;&gt;<i> app.unlistenTCP(8123, f)
+</I>&gt;&gt;&gt;<i> # system no longer listening on port 8123 (used to be broken! patch
+</I>fixes this)
+
+In addition to the TCP case, it also fixes UDP(tested) and SSL(untested).
+It does this by changing the format of _listenerDict to tuples
+(type, param1, param2, ...) where type is 'UDP', 'TCP', 'UNIX' or 'SSL'.
+
+This should _not_ affect persistence, because _listenerDict is internal.
+
+Wladimir
+
+-------------- next part --------------
+--- /usr/src/Twisted-1.0.4/twisted/internet/app.py	2003-04-14 19:39:21.000000000 +0200
++++ /file/zope/lib/python2.1/site-packages/twisted/internet/app.py	2003-05-07 17:10:36.000000000 +0200
+@@ -538,7 +538,9 @@
+         self.tcpPorts.append((port, factory, backlog, interface))
+         if self.running:
+             from twisted.internet import reactor
+-            return reactor.listenTCP(port, factory, backlog, interface)
++            listener = reactor.listenTCP(port, factory, backlog, interface)
++            self._listenerDict[(&quot;TCP&quot;, port, interface)] = listener
++            return listener
+ 
+     def unlistenTCP(self, port, interface=''):
+         &quot;&quot;&quot;
+@@ -552,8 +554,8 @@
+         if toRemove:
+             for t in toRemove:
+                 self.tcpPorts.remove(t)
+-            if self._listenerDict.has_key((port, interface)):
+-                self._listenerDict[(port, interface)].stopListening()
++            if self._listenerDict.has_key((&quot;TCP&quot;, port, interface)):
++                self._listenerDict[(&quot;TCP&quot;, port, interface)].stopListening()
+         else:
+             raise error.NotListeningError, (interface, port)
+ 
+@@ -564,7 +566,9 @@
+         self.unixPorts.append((filename, factory, backlog, mode))
+         if self.running:
+             from twisted.internet import reactor
+-            return reactor.listenUNIX(filename, factory, backlog, mode)
++            listener = reactor.listenUNIX(filename, factory, backlog, mode)
++            self._listenerDict[&quot;UNIX&quot;, filename] = listener
++            return listener
+ 
+     def unlistenUNIX(self, filename):
+         &quot;&quot;&quot;
+@@ -578,8 +582,8 @@
+         if toRemove:
+             for t in toRemove:
+                 self.unixPorts.remove(t)
+-            if self._listenerDict.has_key(filename):
+-                self._listenerDict[filename].stopListening()
++            if self._listenerDict.has_key((&quot;UNIX&quot;, filename)):
++                self._listenerDict[&quot;UNIX&quot;, filename].stopListening()
+         else:
+             raise error.NotListeningError, filename
+ 
+@@ -590,7 +594,9 @@
+         self.udpPorts.append((port, proto, interface, maxPacketSize))
+         if self.running:
+             from twisted.internet import reactor
+-            return reactor.listenUDP(port, proto, interface, maxPacketSize)
++            listener = reactor.listenUDP(port, proto, interface, maxPacketSize)
++            self._listenerDict[(&quot;UDP&quot;, port, interface)] = listener
++            return listener
+ 
+     def unlistenUDP(self, port, interface=''):
+         &quot;&quot;&quot;
+@@ -605,6 +611,8 @@
+         if toRemove:
+             for t in toRemove:
+                 self.udpPorts.remove(t)
++            if self._listenerDict.has_key((&quot;UDP&quot;, port, interface)):
++                self._listenerDict[(&quot;UDP&quot;, port, interface)].stopListening()
+         else:
+             raise error.NotListeningError, (interface, port)
+ 
+@@ -617,7 +625,9 @@
+         self.sslPorts.append((port, factory, ctxFactory, backlog, interface))
+         if self.running:
+             from twisted.internet import reactor
+-            return reactor.listenSSL(port, factory, ctxFactory, backlog, interface)
++            listener = reactor.listenSSL(port, factory, ctxFactory, backlog, interface)
++            self._listenerDict[(&quot;SSL&quot;, port, interface)] = listener
++            return listener
+ 
+     def unlistenSSL(self, port, interface=''):
+         &quot;&quot;&quot;
+@@ -631,6 +641,8 @@
+         if toRemove:
+             for t in toRemove:
+                 self.sslPorts.remove(t)
++                if self._listenerDict.has_key((&quot;SSL&quot;, port, interface)):
++                    self._listenerDict[(&quot;SSL&quot;, port, interface)].stopListening()
+         else:
+             raise error.NotListeningError, (interface, port)
+ 
+@@ -804,25 +816,25 @@
+ 
+             for filename, factory, backlog, mode in self.unixPorts:
+                 try:
+-                    self._listenerDict[filename] = reactor.listenUNIX(filename, factory, backlog, mode)
++                    self._listenerDict[&quot;UNIX&quot;, filename] = reactor.listenUNIX(filename, factory, backlog, mode)
+                 except error.CannotListenError, msg:
+                     log.msg('error on UNIX socket %s: %s' % (filename, msg))
+                     return
+             for port, factory, backlog, interface in self.tcpPorts:
+                 try:
+-                    self._listenerDict[port, interface] = reactor.listenTCP(port, factory, backlog, interface)
++                    self._listenerDict[&quot;TCP&quot;, port, interface] = reactor.listenTCP(port, factory, backlog, interface)
+                 except error.CannotListenError, msg:
+                     log.msg('error on TCP port %s: %s' % (port, msg))
+                     return
+             for port, factory, interface, maxPacketSize in self.udpPorts:
+                 try:
+-                    reactor.listenUDP(port, factory, interface, maxPacketSize)
++                    self._listenerDict[&quot;UDP&quot;, port, interface] = reactor.listenUDP(port, factory, interface, maxPacketSize)
+                 except error.CannotListenError, msg:
+                     log.msg('error on UDP port %s: %s' % (port, msg))
+                     return
+             for port, factory, ctxFactory, backlog, interface in self.sslPorts:
+                 try:
+-                    reactor.listenSSL(port, factory, ctxFactory, backlog, interface)
++                    self._listenerDict[&quot;SSL&quot;, port, interface] = reactor.listenSSL(port, factory, ctxFactory, backlog, interface)
+                 except error.CannotListenError, msg:
+                     log.msg('error on SSL port %s: %s' % (port, msg))
+                     return
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="003947.html">[Twisted-Python] [Andrei.Doicin at cern.ch: timing out an ssh command]
+</A></li>
+	<LI>Next message: <A HREF="003948.html">[Twisted-Python] Twisted experiences on Solaris?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#3945">[ date ]</a>
+              <a href="thread.html#3945">[ thread ]</a>
+              <a href="subject.html#3945">[ subject ]</a>
+              <a href="author.html#3945">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-python">More information about the Twisted-Python
+mailing list</a><br>
+</body></html>

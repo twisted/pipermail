@@ -1,0 +1,135 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Twisted-web] How does Twisted Web Multiprocess work ?
+   </TITLE>
+   <LINK REL="Index" HREF="index.html" >
+   <LINK REL="made" HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20How%20does%20Twisted%20Web%20Multiprocess%20work%20%3F&In-Reply-To=%3CCALL7chkY8WjeQ1T1UiO%3D_xc%2BNeF3uktBKBkUVtuZ1ZBj7nCSYw%40mail.gmail.com%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="005173.html">
+   <LINK REL="Next"  HREF="005175.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Twisted-web] How does Twisted Web Multiprocess work ?</H1>
+    <B>Gavin Panella</B> 
+    <A HREF="mailto:twisted-web%40twistedmatrix.com?Subject=Re%3A%20%5BTwisted-web%5D%20How%20does%20Twisted%20Web%20Multiprocess%20work%20%3F&In-Reply-To=%3CCALL7chkY8WjeQ1T1UiO%3D_xc%2BNeF3uktBKBkUVtuZ1ZBj7nCSYw%40mail.gmail.com%3E"
+       TITLE="[Twisted-web] How does Twisted Web Multiprocess work ?">gavin at gromper.net
+       </A><BR>
+    <I>Wed Jun 10 03:23:27 MDT 2015</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="005173.html">[Twisted-web] How does Twisted Web Multiprocess work ?
+</A></li>
+        <LI>Next message: <A HREF="005175.html">[Twisted-web] How does Twisted Web Multiprocess work ?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5174">[ date ]</a>
+              <a href="thread.html#5174">[ thread ]</a>
+              <a href="subject.html#5174">[ subject ]</a>
+              <a href="author.html#5174">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>On 10 June 2015 at 03:01, Sagar Dixit &lt;<A HREF="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">sagar.dixit at gmail.com</A>&gt; wrote:
+&gt;<i> Hi,
+</I>&gt;<i>
+</I>&gt;<i> I am exploring Twisted Web for my RESTful application. My application
+</I>&gt;<i> is stateless and involves storing and retrieving objects based on
+</I>&gt;<i> Object-ID. This application will run on beefy (multicore, lots of
+</I>&gt;<i> memory) machine. However, not all APIs that the application issues to
+</I>&gt;<i> underlying storage are async and hence I cannot fully utilize
+</I>&gt;<i> Deferreds
+</I>&gt;<i> Which means, there will some blocking calls and hence my primary
+</I>&gt;<i> interest is to use Twisted Web in multiprocessing mode
+</I>&gt;<i>
+</I>&gt;<i> I came across
+</I>&gt;<i> <A HREF="http://stackoverflow.com/questions/10077745/twistedweb-on-multicore-multiprocessor">http://stackoverflow.com/questions/10077745/twistedweb-on-multicore-multiprocessor</A>
+</I>&gt;<i>
+</I>&gt;<i> However, I am not sure if it is the &quot;correct&quot; way of doing things.
+</I>&gt;<i>
+</I>&gt;<i> Hence I had some questions around it:
+</I>&gt;<i>
+</I>&gt;<i> 1. Is there an interface (similar to defertoThread) which allows me to
+</I>&gt;<i> execute a blocking call in a separate process ?
+</I>&gt;<i>
+</I>&gt;<i> 2. Does reactor synchronize access of all processes to the shared
+</I>&gt;<i> listen socket ?
+</I>&gt;<i>
+</I>&gt;<i> 3. Is there a sample code I can refer to where the application is
+</I>&gt;<i> spawning subprocesses to handle HTTP requests ?
+</I>
+We've used SO_REUSEPORT (which is briefly mentioned on the SO page you
+linked to) in order to run multiple processes. On a recentish Linux the
+following approach has worked well for us:
+
+    # Make a socket with SO_REUSEPORT set so that we can run multiple web
+    # applications. This is easier to do from outside of Twisted as there's
+    # not yet official support for setting socket options.
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # The following might not work on older kernels, or SO_REUSEPORT
+    # might not be available if Python was compiled with older headers.
+    # In the former case you're out of luck, but you can define the
+    # header yourself if it's missing from Python's socket module.
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+
+    # Listen on all interfaces on port 1234.
+    s.bind(('0.0.0.0', 1234))
+
+    # Use a backlog of 50, which seems to be fairly common.
+    s.listen(50)
+
+    # Adopt this socket into something more Twisty.
+    endpoint = AdoptedStreamServerEndpoint(reactor, s.fileno(), s.family)
+
+    # Prevent garbage collection. This is something we discovered we
+    # needed, and is perhaps something that AdoptedStreamServerEndpoint
+    # ought to do itself.
+    endpoint.socket = s
+
+    # Create a service with the endpoint.
+    service = OurService(site_endpoint)
+
+(Derived from src/maasserver/eventloop.py in MAAS.)
+
+We then use Upstart (Ubuntu 14.10 and before) or systemd (Ubuntu 15.04)
+to run multiple processes. For us this mean 4, but you can have as many
+or as few as you need, for example 1 process per CPU core. I like this
+approach because we can use the system's facilities for process
+supervision instead of cobbling together our own.
+
+One caveat is that the processes are running concurrently. If you're
+modifiying shared resources you'll want to consider explicit locking
+where before you might have been safe with Twisted' single-threadedness.
+
+Gavin.
+
+</PRE>
+
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="005173.html">[Twisted-web] How does Twisted Web Multiprocess work ?
+</A></li>
+	<LI>Next message: <A HREF="005175.html">[Twisted-web] How does Twisted Web Multiprocess work ?
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#5174">[ date ]</a>
+              <a href="thread.html#5174">[ thread ]</a>
+              <a href="subject.html#5174">[ subject ]</a>
+              <a href="author.html#5174">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="http://twistedmatrix.com/cgi-bin/mailman/listinfo/twisted-web">More information about the Twisted-web
+mailing list</a><br>
+</body></html>
